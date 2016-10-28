@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -x
+
+curl -H "Authorization: Bearer $(ssh core bash -lc dev_token)" $*

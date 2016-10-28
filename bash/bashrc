@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+# This file should maintain backwards compatability with bash 3.2 as
+# that's still the only version by default on macs
+
+##########################################################################
+### Shell Options
+##########################################################################
+
+# this allows as much history as possible to caputured between many shells.
+shopt -s histappend
+
+# in the event that you intentionally (or unintentionally) activated
+# history expansion, this will instead substitue the command you are about
+# to run into the prompt and then you can press enter.
+shopt -s histverify
+
+# Allows the use of better globbing. Globbing is almost always the right
+# answer compared to any other form of command parsing. Please read up on
+# it if you haven't already. http://mywiki.wooledge.org/glob
+shopt -s extglob
+
+# Ignore some controlling instructions
+# HISTIGNORE is a colon-delimited list of patterns which should be excluded.
+# The '&' is a special pattern which suppresses duplicate entries.
+export HISTIGNORE=$'[ \t]*:&:[fb]g:exit'
+
+# Whenever displaying the prompt, write the previous line to disk
+export PROMPT_COMMAND="history -a"
+
+export HISTCONTROL="ignoredups"
+export HISTFILESIZE=500000
+export HISTSIZE=500000
+
+export PS1='\n\d \t\n\u@\H\n\w\n\$ '
+
+##########################################################################
+### standard software configuration
+##########################################################################
+
+GREP_OPTIONS='--color=auto'
+GREP_COLOR='1;32'
+
+export EDITOR='vim'
+
+# prefer emacs if it's available
+if type emacs > /dev/null 2>&1
+then
+    export EDITOR='emacs'
+fi
+
+# Functions
+
+for f in ~/.functions/*.bash
+do
+  if [[ -f $f ]]
+  then
+    . "$f"
+  fi
+done
+
+# Aliases
+
+for f in ~/.aliases/*.bash;
+do
+  if [[ -f $f ]]
+  then
+    . "$f"
+  fi
+done
+
+# display file type hints and colorize the output of ls
+alias ls='ls -FGh'
+alias ll='ls -l'
+
+# human readable figures
+alias df='df -h'
+alias du='du -h'
+
+# use a colorized pager in ag
+alias ag='ag --pager "less -R"'
+
+##########################################################################
+### ChefDK
+##########################################################################
+
+# if command -v chef > /dev/null
+# then
+#     eval "$(chef shell-init bash)"
+# fi
+
+##########################################################################
+### Overrides
+##########################################################################
+
+# The above should only be overriden for a good reason. This configuration
+# helps us work smoothly with each other. If you want to override
+# something, consider changing it in the default and publishing it.
+#
+# That said if you absolutely must override something, you can do so by
+# placing .bash files in the ~/.config/stitch/ide/bash/ directory.
+
+if [[ -d ~/.config/stitch/ide/bash ]]
+then
+    set -x nullglob
+    for f in ~/.config/stitch/ide/bash/*.bash
+    do
+        if [[ -f $f ]]
+        then
+            source "$f"
+        fi
+    done
+    set -u nullglob
+fi

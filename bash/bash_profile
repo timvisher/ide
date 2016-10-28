@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+export PATH=~/bin:$PATH
+
+source ~/.bashrc
+
+if [[ -e ~/.iterm2_shell_integration.bash ]]
+then
+    source ~/.iterm2_shell_integration.bash
+fi
