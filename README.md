@@ -24,6 +24,9 @@ cd ~/git/ide/bash && ./install.bash
 cd ~/git/ide/bash && ./remove.bash
 ```
 
+**NOTE:** An enormous amount of our functionality requires `jq` to be
+installed.
+
 ### General
 
 #### `backup`
@@ -77,6 +80,87 @@ Sun Oct 23 09:24:18 EDT 2016
 ```
 
 ### AWS
+
+To get started, set up your `iam` profile using `aws --profile iam
+configure` and your AWS provided key pair and then run
+`configure_aws_profiles`.
+
+`configure_aws_profiles` will set up the following profiles:
+
+- `dev_admin_global`
+- `prod_admin`
+- `prod_admin_global`
+- `prod_read_only`
+- `stitch_dev_admin_global`
+- `stitch_prod_admin`
+- `stitch_prod_admin_global`
+
+You can then use them either by `set_default_profile` or by `assume_*`.
+
+#### `set_default_profile`
+
+The aws cli is capable of handling MFA etc for you if you export the
+default profile or use `--profile` arguments properly.
+
+See
+[their docs](http://docs.aws.amazon.com/cli/latest/userguide/cli-roles.html)
+for more details.
+
+```
+Fri Oct 28 16:31:26
+tvisher@timvisher-rjmetrics.local
+~
+$ set_default_profile stitch_prod_read_only
+
+Fri Oct 28 16:31:34
+tvisher@timvisher-rjmetrics.local
+[default profile: stitch_prod_read_only]
+~
+$
+```
+
+Use `unassume_role` to unset your default role.
+
+#### `assume_*`
+
+If you need to assume an AWS role for a tool other than the aws cli you'll
+need to export the proper environment variables.
+
+You can initialize a shell with a new role using one of the `assume_*`
+convenience aliases.
+
+```
+Mon Oct 31 13:42:43
+tvisher@timvisher-rjmetrics.local
+~/git/ide
+$ assume_stitch_prod_read_only 484610
+
+Mon Oct 31 13:42:58
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:59m]
+~/git/ide
+$
+```
+
+If you've assumed a role and it still hasn't expired you can export it
+into another shell using `export_aws_vars`.
+
+```
+Mon Oct 31 13:51:52
+tvisher@timvisher-rjmetrics.local
+~/git/ide
+$ export_aws_vars
+
+Mon Oct 31 13:51:56
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:51m]
+~/git/ide
+$
+```
+
+Variables take precedence over the default profile.
+
+To see the currently cached role you can use `pp_role_cache`.
 
 #### `ssh_stack_instances`
 

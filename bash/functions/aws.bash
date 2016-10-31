@@ -150,3 +150,161 @@ instance_ips() {
     done \
         | sort
 }
+
+pp_role_cache() {
+    if [[ -r ~/.stitch/assume-role-cache ]]
+    then
+        jq '.' < ~/.stitch/assume-role-cache
+    else
+        echo '# No role cache' >&2
+    fi
+}
+
+mins_until_expired() {
+    target="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$AWS_ROLE_EXPIRATION" '+%s')"
+    now="$(date +"%s")"
+    echo "$(((target - now)/60))"
+}
+
+export_aws_vars() {
+    if [[ ! -r ~/.stitch/assume-role-cache ]]
+    then
+        echo '# Run shell_init_role' >&2
+        return 1
+    fi
+
+    export AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache)"
+    export AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache)"
+    export AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache)"
+    export AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache)"
+    export AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+
+    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired)m]\n\w\n\$ '
+}
+
+alias unexport_aws_vars=unassume_role
+
+shell_init_usage() {
+    echo '# Usage: shell_init_role role_name mfa_token' >&2
+}
+
+shell_init_role() {
+    local role_name="$1"
+    local mfa_token="$2"
+
+    if [[ -z $role_name || -z $mfa_token ]]
+    then
+        shell_init_usage
+        return 1
+    fi
+
+    mkdir -p ~/.stitch
+
+    aws --profile "$(aws --profile "$role_name" configure get source_profile)" \
+        sts assume-role \
+        --role-arn "$(aws --profile "$role_name" configure get role_arn)" \
+        --serial-number "$(aws --profile "$role_name" configure get mfa_serial)" \
+        --role-session-name vm.cli.user-"$LOGNAME" \
+        --token-code "$mfa_token" > ~/.stitch/assume-role-cache
+
+    if (( 0 != $? ))
+    then
+        return 1
+    fi
+
+    echo "$role_name" > ~/.stitch/aws-role-name-cache
+
+    export_aws_vars
+}
+
+unassume_role() {
+    unset AWS_ACCESS_KEY_ID
+    unset AWS_SECRET_ACCESS_KEY
+    unset AWS_SESSION_TOKEN
+    unset AWS_ROLE_EXPIRATION
+    unset AWS_ROLE_NAME
+    export PS1="$default_ps1"
+}
+
+alias assume_dev_admin_global='shell_init_role dev_admin_global'
+alias assume_prod_admin='shell_init_role prod_admin'
+alias assume_prod_admin_global='shell_init_role prod_admin_global'
+alias assume_prod_read_only='shell_init_role prod_read_only'
+alias assume_stitch_dev_admin_global='shell_init_role stitch_dev_admin_global'
+alias assume_stitch_prod_admin='shell_init_role stitch_prod_admin'
+alias assume_stitch_prod_admin_global='shell_init_role stitch_prod_admin_global'
+
+set_default_profile() {
+    if aws --profile "$1" configure get role_arn > /dev/null 2>&1
+    then
+        export AWS_DEFAULT_PROFILE="$1"
+        export PS1='\n\d \t\n\u@\H\n[default profile: $AWS_DEFAULT_PROFILE]\n\w\n\$ '
+    else
+        echo "# Profile $1 is not configured" >&2
+    fi
+}
+
+unset_default_profile() {
+    unset AWS_DEFAULT_PROFILE
+    export PS1="$default_ps1"
+}
+
+configure_aws_profiles() {
+    if ! aws --profile iam configure get aws_access_key_id > /dev/null 2>&1 || ! aws --profile iam configure get aws_secret_access_key > /dev/null 2>&1
+    then
+        echo '# Configure your iam profile.' >&2
+        echo 'aws --profile iam configure' >&2
+        return 1
+    fi
+
+    # good to try to grab the iam user
+    
+    mkdir -p ~/.stitch/
+
+    aws --profile iam iam get-user > ~/.stitch/aws-iam-user-cache 2>/dev/null
+
+    if (( 0 != $? ))
+    then
+        echo '# Unable to retrieve the user associated with the iam profile. Please check your keys.' >&2
+        return 1
+    fi
+
+    # good to generate the template
+
+    local user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-iam-user-cache)"
+
+    # dev_admin_global
+    aws --profile dev_admin_global configure set role_arn 'arn:aws:iam::718988833002:role/dev_admin_global'
+    aws --profile dev_admin_global configure set source_profile iam
+    aws --profile dev_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # prod_admin
+    aws --profile prod_admin configure set role_arn 'arn:aws:iam::618319395214:role/prod_admin'
+    aws --profile prod_admin configure set source_profile iam
+    aws --profile prod_admin configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # prod_admin_global
+    aws --profile prod_admin_global configure set role_arn 'arn:aws:iam::618319395214:role/prod_admin_global'
+    aws --profile prod_admin_global configure set source_profile iam
+    aws --profile prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # prod_read_only
+    aws --profile prod_read_only configure set role_arn 'arn:aws:iam::618319395214:role/prod_read_only'
+    aws --profile prod_read_only configure set source_profile iam
+    aws --profile prod_read_only configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # stitch_dev_admin_global
+    aws --profile stitch_dev_admin_global configure set role_arn 'arn:aws:iam::286131424992:role/stitch_dev_admin_global'
+    aws --profile stitch_dev_admin_global configure set source_profile iam
+    aws --profile stitch_dev_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # stitch_prod_admin
+    aws --profile stitch_prod_admin configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin'
+    aws --profile stitch_prod_admin configure set source_profile iam
+    aws --profile stitch_prod_admin configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # stitch_prod_admin_global
+    aws --profile stitch_prod_admin_global configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin_global'
+    aws --profile stitch_prod_admin_global configure set source_profile iam
+    aws --profile stitch_prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+}
