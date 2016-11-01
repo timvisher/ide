@@ -221,14 +221,22 @@ mins_until_expired() {
 }
 
 export_aws_vars() {
-    if [[ ! -r ~/.stitch/assume-role-cache."$AWS_ROLE_NAME" ]]
+    role_name="$1"
+
+    if [[ -z $role_name ]]
+    then
+        echo '# Usage: export_aws_vars role_name' >&2
+        return 1
+    fi
+
+    if [[ ! -r ~/.stitch/assume-role-cache."$role_name" ]]
     then
         echo '# Run shell_init_role' >&2
         return 1
     fi
 
     # shellcheck disable=SC2155
-    export AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+    export AWS_ROLE_NAME="$role_name"
     # shellcheck disable=SC2155
     export AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
     # shellcheck disable=SC2155
@@ -297,7 +305,7 @@ shell_init_role() {
 
     echo "$role_name" > ~/.stitch/aws-role-name-cache
 
-    export_aws_vars
+    export_aws_vars "$role_name"
 }
 
 unassume_role() {
