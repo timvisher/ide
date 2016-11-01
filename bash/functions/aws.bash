@@ -33,19 +33,17 @@ stack_layers() {
 }
 
 layer_id() {
-    local stack_id="$1"
+    local stack_name="$1"
     local layer_name="$2"
-    stack_layers "$stack_id" \
+    stack_layers "$stack_name" \
         | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
 layer_instances() {
     local stack_name="$1"
-    # shellcheck disable=SC2155
-    local stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
 
-    aws opsworks describe-instances --layer-id "$(layer_id "$stack_id" "$layer_name")"
+    aws opsworks describe-instances --layer-id "$(layer_id "$stack_name" "$layer_name")"
 }
 
 ssh_layer_instances() {
