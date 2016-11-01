@@ -24,7 +24,8 @@ stack_json() {
 
 stack_layers() {
     local stack_name="$1"
-    local stack_id="$(stack_id "$stack_name")"
+    local stack_id
+    stack_id="$(stack_id "$stack_name")"
 
     aws opsworks describe-layers --stack-id "$stack_id"
 }
@@ -38,7 +39,8 @@ layer_id() {
 
 layer_instances() {
     local stack_name="$1"
-    local stack_id="$(stack_id "$stack_name")"
+    local stack_id
+    stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
 
     aws opsworks describe-instances --layer-id "$(layer_id "$stack_id" "$layer_name")"
@@ -64,14 +66,15 @@ layer_instances_ips() {
 
 create_and_start_instance() {
     local stack_name="$1"
-    local stack_id="$(stack_id "$stack_name")"
+    local stack_id
+    stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
     local instance_type="$3"
 
     new_instance_id="$(aws opsworks \
       create-instance \
       --stack-id "$stack_id" \
-      --layer-ids $(layer_id "$stack_id" "$layer_name") \
+      --layer-ids "$(layer_id "$stack_id" "$layer_name")" \
       --instance-type "$instance_type" \
     | jq -r '.InstanceId')"
 
@@ -135,9 +138,10 @@ instance_id() {
 }
 
 stop_instance() {
-    local stack_id="$(stack_id "$1")"
-    local hostname="$2"
-    local instance_id="$(instance_id "$stack_id" "$2")"
+    local stack_id
+    stack_id="$(stack_id "$1")"
+    local instance_id
+    instance_id="$(instance_id "$stack_id" "$2")"
 
     aws opsworks stop-instance --instance-id "$instance_id"
 }
@@ -160,9 +164,49 @@ pp_role_cache() {
     fi
 }
 
+gnu_date_command() {
+    local target="$1"
+
+    date -d "$target" +'%s'
+}
+
+bsd_date_command() {
+    local target="$1"
+
+    date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$target" '+%s'
+}
+
+determine_date_flavor() {
+    if [[ -n $date_flavor ]]
+    then
+        return 0
+    elif bsd_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
+    then
+        date_flavor=bsd
+    elif gnu_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
+    then
+        date_flavor=gnu
+    fi
+}
+
 mins_until_expired() {
-    target="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$AWS_ROLE_EXPIRATION" '+%s')"
-    now="$(date +"%s")"
+    determine_date_flavor
+
+    if [[ $date_flavor == bsd ]]
+    then
+        local target
+        target="$(bsd_date_command "$AWS_ROLE_EXPIRATION")"
+    elif [[ $date_flavor == gnu ]]
+    then
+        local target
+        target="$(gnu_date_command "$AWS_ROLE_EXPIRATION")"
+    else
+        echo '# Unable to determine your date flavor.' >&2
+        return 1
+    fi
+
+    local now
+    now="$(date '+%s')"
     echo "$(((target - now)/60))"
 }
 
@@ -173,11 +217,23 @@ export_aws_vars() {
         return 1
     fi
 
-    export AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache)"
-    export AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache)"
-    export AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache)"
-    export AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache)"
-    export AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+    export AWS_ACCESS_KEY_ID
+    AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache)"
+    export AWS_SECRET_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache)"
+    export AWS_SESSION_TOKEN
+    AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache)"
+    export AWS_ROLE_EXPIRATION
+    AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache)"
+    export AWS_ROLE_NAME
+    AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+
+    if ! mins_until_expired > /dev/null 2>&1
+    then
+        echo '# Unable to run mins_until_expired. exporting was not successful.' >&2
+        unexport_aws_vars
+        return 1
+    fi
 
     export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired)m]\n\w\n\$ '
 }
@@ -200,15 +256,14 @@ shell_init_role() {
 
     mkdir -p ~/.stitch
 
-    aws --profile "$(aws --profile "$role_name" configure get source_profile)" \
-        sts assume-role \
-        --role-arn "$(aws --profile "$role_name" configure get role_arn)" \
-        --serial-number "$(aws --profile "$role_name" configure get mfa_serial)" \
-        --role-session-name vm.cli.user-"$LOGNAME" \
-        --token-code "$mfa_token" > ~/.stitch/assume-role-cache
-
-    if (( 0 != $? ))
+    if ! aws --profile "$(aws --profile "$role_name" configure get source_profile)" \
+         sts assume-role \
+         --role-arn "$(aws --profile "$role_name" configure get role_arn)" \
+         --serial-number "$(aws --profile "$role_name" configure get mfa_serial)" \
+         --role-session-name vm.cli.user-"$LOGNAME" \
+         --token-code "$mfa_token" > ~/.stitch/assume-role-cache
     then
+        echo '# Failed to fetch the role cache from aws.' >&2
         return 1
     fi
 
@@ -223,7 +278,7 @@ unassume_role() {
     unset AWS_SESSION_TOKEN
     unset AWS_ROLE_EXPIRATION
     unset AWS_ROLE_NAME
-    export PS1="$default_ps1"
+    export PS1="$DEFAULT_PS1"
 }
 
 alias assume_dev_admin_global='shell_init_role dev_admin_global'
@@ -246,7 +301,7 @@ set_default_profile() {
 
 unset_default_profile() {
     unset AWS_DEFAULT_PROFILE
-    export PS1="$default_ps1"
+    export PS1="$DEFAULT_PS1"
 }
 
 configure_aws_profiles() {
@@ -258,12 +313,10 @@ configure_aws_profiles() {
     fi
 
     # good to try to grab the iam user
-    
+
     mkdir -p ~/.stitch/
 
-    aws --profile iam iam get-user > ~/.stitch/aws-iam-user-cache 2>/dev/null
-
-    if (( 0 != $? ))
+    if ! aws --profile iam iam get-user > ~/.stitch/aws-iam-user-cache 2>/dev/null
     then
         echo '# Unable to retrieve the user associated with the iam profile. Please check your keys.' >&2
         return 1
@@ -271,7 +324,8 @@ configure_aws_profiles() {
 
     # good to generate the template
 
-    local user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-iam-user-cache)"
+    local user_name
+    user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-iam-user-cache)"
 
     # dev_admin_global
     aws --profile dev_admin_global configure set role_arn 'arn:aws:iam::718988833002:role/dev_admin_global'
