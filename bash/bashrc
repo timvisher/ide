@@ -103,7 +103,7 @@ alias ag='ag --pager "less -R"'
 
 if [[ -d ~/.config/stitch/ide/bash ]]
 then
-    set -x nullglob
+    shopt -s nullglob
     for f in ~/.config/stitch/ide/bash/*.bash
     do
         if [[ -f $f ]]
@@ -111,5 +111,5 @@ then
             source "$f"
         fi
     done
-    set -u nullglob
+    shopt -u nullglob
 fi
