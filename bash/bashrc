@@ -32,8 +32,8 @@ export HISTCONTROL="ignoredups"
 export HISTFILESIZE=500000
 export HISTSIZE=500000
 
-export default_ps1='\n\d \t\n\u@\H\n\w\n\$ '
-export PS1="$default_ps1"
+export DEFAULT_PS1='\n\d \t\n\u@\H\n\w\n\$ '
+export PS1="$DEFAULT_PS1"
 
 ##########################################################################
 ### standard software configuration
