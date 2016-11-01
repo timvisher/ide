@@ -143,7 +143,9 @@ $
 ```
 
 If you've assumed a role and it still hasn't expired you can export it
-into another shell using `export_aws_vars`.
+into another shell using `export_aws_vars` or just run the corresponding
+`assume_*` command which will read from the cache if it exists and has not
+expired.
 
 ```
 Mon Oct 31 13:51:52
@@ -156,6 +158,20 @@ tvisher@timvisher-rjmetrics.local
 [stitch_prod_read_only:51m]
 ~/git/ide
 $
+```
+
+To see your currently cached roles and when they're good till you can run
+`pp_role_caches`.
+
+```
+Tue Nov 01 11:24:48
+tvisher@timvisher-rjmetrics.local
+[stitch_dev_admin_global:41m]
+~/git/ide
+$ pp_role_caches
+assume_stitch_dev_admin_global 123456 # 41m
+assume_stitch_prod_admin_global 123456 # 39m
+
 ```
 
 Variables take precedence over the default profile.

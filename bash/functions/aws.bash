@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+
 stack_names() {
     aws opsworks describe-stacks | jq --compact-output --raw-output --monochrome-output '.Stacks[] | .Name'
 }
@@ -24,8 +26,8 @@ stack_json() {
 
 stack_layers() {
     local stack_name="$1"
-    local stack_id
-    stack_id="$(stack_id "$stack_name")"
+    # shellcheck disable=SC2155
+    local stack_id="$(stack_id "$stack_name")"
 
     aws opsworks describe-layers --stack-id "$stack_id"
 }
@@ -39,8 +41,8 @@ layer_id() {
 
 layer_instances() {
     local stack_name="$1"
-    local stack_id
-    stack_id="$(stack_id "$stack_name")"
+    # shellcheck disable=SC2155
+    local stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
 
     aws opsworks describe-instances --layer-id "$(layer_id "$stack_id" "$layer_name")"
@@ -66,8 +68,8 @@ layer_instances_ips() {
 
 create_and_start_instance() {
     local stack_name="$1"
-    local stack_id
-    stack_id="$(stack_id "$stack_name")"
+    # shellcheck disable=SC2155
+    local stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
     local instance_type="$3"
 
@@ -138,10 +140,10 @@ instance_id() {
 }
 
 stop_instance() {
-    local stack_id
-    stack_id="$(stack_id "$1")"
-    local instance_id
-    instance_id="$(instance_id "$stack_id" "$2")"
+    # shellcheck disable=SC2155
+    local stack_id="$(stack_id "$1")"
+    # shellcheck disable=SC2155
+    local instance_id="$(instance_id "$stack_id" "$2")"
 
     aws opsworks stop-instance --instance-id "$instance_id"
 }
@@ -155,13 +157,22 @@ instance_ips() {
         | sort
 }
 
-pp_role_cache() {
-    if [[ -r ~/.stitch/assume-role-cache ]]
+_pp_role_cache_file() {
+    local role_cache_file="$1"
+    if [[ -r "$role_cache_file" ]]
     then
-        jq '.' < ~/.stitch/assume-role-cache
+        echo "assume_${role_cache_file##*\.} 123456 # $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")")m"
     else
         echo '# No role cache' >&2
     fi
+}
+
+pp_role_caches() {
+    local cache_file
+    for cache_file in ~/.stitch/assume-role-cache.*
+    do
+        _pp_role_cache_file "$cache_file"
+    done
 }
 
 gnu_date_command() {
@@ -190,58 +201,74 @@ determine_date_flavor() {
 }
 
 mins_until_expired() {
+    local input_date="$1"
     determine_date_flavor
 
     if [[ $date_flavor == bsd ]]
     then
-        local target
-        target="$(bsd_date_command "$AWS_ROLE_EXPIRATION")"
+        # shellcheck disable=SC2155
+        local target="$(bsd_date_command "$input_date")"
     elif [[ $date_flavor == gnu ]]
     then
-        local target
-        target="$(gnu_date_command "$AWS_ROLE_EXPIRATION")"
+        # shellcheck disable=SC2155
+        local target="$(gnu_date_command "$input_date")"
     else
         echo '# Unable to determine your date flavor.' >&2
         return 1
     fi
 
-    local now
-    now="$(date '+%s')"
+    # shellcheck disable=SC2155
+    local now="$(date '+%s')"
     echo "$(((target - now)/60))"
 }
 
 export_aws_vars() {
-    if [[ ! -r ~/.stitch/assume-role-cache ]]
+    if [[ ! -r ~/.stitch/assume-role-cache."$AWS_ROLE_NAME" ]]
     then
         echo '# Run shell_init_role' >&2
         return 1
     fi
 
-    export AWS_ACCESS_KEY_ID
-    AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache)"
-    export AWS_SECRET_ACCESS_KEY
-    AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache)"
-    export AWS_SESSION_TOKEN
-    AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache)"
-    export AWS_ROLE_EXPIRATION
-    AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache)"
-    export AWS_ROLE_NAME
-    AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+    # shellcheck disable=SC2155
+    export AWS_ROLE_NAME="$(< ~/.stitch/aws-role-name-cache)"
+    # shellcheck disable=SC2155
+    export AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
+    # shellcheck disable=SC2155
+    export AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
+    # shellcheck disable=SC2155
+    export AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
+    # shellcheck disable=SC2155
+    export AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
 
-    if ! mins_until_expired > /dev/null 2>&1
+    if ! mins_until_expired "$AWS_ROLE_EXPIRATION" > /dev/null 2>&1
     then
         echo '# Unable to run mins_until_expired. exporting was not successful.' >&2
         unexport_aws_vars
         return 1
     fi
 
-    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired)m]\n\w\n\$ '
+    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w\n\$ '
 }
 
 alias unexport_aws_vars=unassume_role
 
 shell_init_usage() {
     echo '# Usage: shell_init_role role_name mfa_token' >&2
+}
+
+role_expired() {
+    local role_name="$1"
+    # role cache doesn't exist so we're 'expired'
+    if [[ ! -r ~/.stitch/assume-role-cache."$role_name" ]]
+    then
+        return 0
+    # less than 1 minutes left
+    elif (( 1 > $(mins_until_expired "$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache."$role_name")") ))
+    then
+        return 0
+    else
+        return 1
+    fi
 }
 
 shell_init_role() {
@@ -256,15 +283,18 @@ shell_init_role() {
 
     mkdir -p ~/.stitch
 
-    if ! aws --profile "$(aws --profile "$role_name" configure get source_profile)" \
-         sts assume-role \
-         --role-arn "$(aws --profile "$role_name" configure get role_arn)" \
-         --serial-number "$(aws --profile "$role_name" configure get mfa_serial)" \
-         --role-session-name vm.cli.user-"$LOGNAME" \
-         --token-code "$mfa_token" > ~/.stitch/assume-role-cache
+    if role_expired "$role_name"
     then
-        echo '# Failed to fetch the role cache from aws.' >&2
-        return 1
+        if ! aws --profile "$(aws --profile "$role_name" configure get source_profile)" \
+             sts assume-role \
+             --role-arn "$(aws --profile "$role_name" configure get role_arn)" \
+             --serial-number "$(aws --profile "$role_name" configure get mfa_serial)" \
+             --role-session-name vm.cli.user-"$LOGNAME" \
+             --token-code "$mfa_token" > ~/.stitch/assume-role-cache."$role_name"
+        then
+            echo '# Failed to fetch the role cache from aws.' >&2
+            return 1
+        fi
     fi
 
     echo "$role_name" > ~/.stitch/aws-role-name-cache
