@@ -1,6 +1,7 @@
 # The Stitch IDE
 
-The definitive collection of host-only tooling for working with Stitch.
+The definitive collection of tooling that should work on your host for
+working with Stitch.
 
 Please check out to `~/git/ide`.
 
@@ -307,3 +308,27 @@ $ vbox_matching_uuid boxc
 8fb863f9-5b66-46c5-a9cb-f8b9e5b7695b # boxcutter_core_1476144949883_86068
 0cbf6ed5-ec95-4d88-9ace-9a1bb58812fa # kitchen-boxcutter-default-rjmetrics-os_default_1477621648011_25989
 ```
+
+## Rationale
+
+The vast majority of our tooling for working with Stitch must exist on the
+VM in order to be maintainable. This allows us to make a large number of
+assumptions and thus reduce complexity and move quickly to provide it.
+
+However, some things should be available from the host as well. You
+shouldn't need a VM in order to list an s3 bucket, for instance, or ssh to
+a prod box. You should _also_ be able to do these things from the VM, but
+you shouldn't need to.
+
+So everything that exists here should also exist on the VM, but everything
+that it makes sense to also do from your host should exist here.
+
+The general rule of thumb should be that if you would need to do something
+outside the normal course of developing a feature (which a VM is required
+to do) you should add the tooling here and then it will be included in the
+VM.
+
+## Compatibility
+
+In general, whatever we do here must be compatible with Ubuntu LTS and
+macOS 10.12.
