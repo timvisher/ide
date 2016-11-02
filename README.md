@@ -5,6 +5,53 @@ working with Stitch.
 
 Please check out to `~/git/ide`.
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
+
+- [Installation](#installation)
+- [`bash`](#bash)
+  - [Installation](#installation-1)
+  - [General](#general)
+    - [`backup`](#backup)
+    - [`cd`](#cd)
+    - [`days_ago`](#days_ago)
+  - [AWS](#aws)
+    - [`set_default_profile`](#set_default_profile)
+    - [`assume_*`](#assume_)
+    - [`ssh_stack_instances`](#ssh_stack_instances)
+    - [`ssh_matching_instances`](#ssh_matching_instances)
+    - [`instance_ips`](#instance_ips)
+  - [Editing environments](#editing-environments)
+    - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
+  - [Clojure](#clojure)
+    - [`search_clojars`](#search_clojars)
+  - [Stitch](#stitch)
+    - [`rjmadmin`](#rjmadmin)
+  - [`tmux`](#tmux)
+    - [aliases](#aliases)
+    - [`nt`/`ntmux`](#ntntmux)
+  - [VirtualBox](#virtualbox)
+    - [`vbox_matching_uuid`](#vbox_matching_uuid)
+- [Rationale](#rationale)
+- [Compatibility](#compatibility)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
+## Installation
+
+Installation will be specific to most of the sections written below here.
+See the 'Installation' section of the tool you're interested in for more
+details.
+
+As a general note though, be aware that updates to this repo will have to
+be refreshed into whatever running environments you already have open. For
+instance, bash will have to `source ~/.bashrc` to fully refresh the bash
+configuration. Even then, if there was a breaking change like the rename
+of a function your running shell will still have the old stuff present.
+You'll need to develop a bit of situational awareness to decide how best
+to get updates for a given tool.
+
 ## `bash`
 
 `bash` is our shell. We generally have to maintain backwards compatibility
@@ -14,6 +61,8 @@ have anything else.
 If you want to use `zsh` keep in mind that you may develop habits that are
 out of step with prod and with the dev boxes. Prod and the dev boxes will
 likely never have `zsh` as the default shell.
+
+### Installation
 
 You can install or remove this configuration by:
 
