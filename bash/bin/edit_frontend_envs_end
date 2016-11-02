@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+
+commit_arg="$1"
+
+# source in the iso8601 function
+# shellcheck disable=SC1090
+source ~/.functions/date.bash
+
+environment_names=(
+    api
+    dashboard
+)
+
+echo '# Checking the following environments'
+for environment_name in "${environment_names[@]}"
+do
+    echo "$environment_name"
+done
+
+environment_name_to_editing_file() {
+    local environment_name="$1"
+
+    echo ~/env_tmp/php-stitch-"$environment_name".prod.environment.json
+}
+
+assert_parsable() {
+    for environment_name in "${environment_names[@]}"
+    do
+        if ! jq '.' < "$(environment_name_to_editing_file "$environment_name")" > /dev/null
+        then
+            echo "# $(environment_name_to_editing_file "$environment_name") did not parse."
+            echo '# See jq errors above for details'
+            return 1
+        fi
+    done
+
+    echo '# All environment files parse'
+}
+
+if ! assert_parsable
+then
+    echo '# Fix json'
+    exit 1
+fi
+
+##########################################################################
+### parsing succeeded
+###
+### NB: keep the order here!
+##########################################################################
+
+maybe_commit() {
+    local environment_name="$1"
+
+    # diff exits _non-0_ when there _is_ a diff. So we negate it.
+    if ! diff -u "$(environment_name_to_editing_file "$environment_name")"{.bak,}
+    then
+        # different
+        local confirm
+        read -rp "# Are you sure you want to commit the diff above for $(tput setaf 1)$(tput bold)$environment_name$(tput sgr0)? [y/N]: " confirm
+        if [[ $confirm == y ]]
+        then
+            # backup current values
+            # shellcheck disable=SC2155
+            local backup_date="$(iso8601)"
+            local s3_prod_prefix=s3://dev-deployment-assets/php-stitch-"$environment_name"
+            local s3_backup_prefix=s3://dev-deployment-assets/php-stitch-"$environment_name"-backups/"$backup_date"
+            if aws s3 cp --recursive "$s3_prod_prefix" "$s3_backup_prefix" > /dev/null 2>&1
+            then
+                echo "# Successfully created backup"
+                echo "# aws s3 cp --recursive '$s3_backup_prefix' '$s3_prod_prefix' # to rollback"
+            else
+                echo "$(tput setaf 1)# Couldn't create backup! Exiting$(tput sgr0)"
+                echo "$(tput setaf 1)# We do not roll backup prior successes.$(tput sgr0)"
+                echo "$(tput setaf 1)# Please check the logs to see what you should do.$(tput sgr0)"
+                exit 1
+            fi
+
+            # write new values
+            # Note: we've already echoed our diff because of the conditional
+            aws s3 cp "$(environment_name_to_editing_file "$environment_name")" s3://dev-deployment-assets/php-stitch-"$environment_name"/prod/environment.json
+        else
+            echo "# Not commiting changes to $(tput setaf 1)$(tput bold)$environment_name$(tput sgr0)"
+        fi
+    else
+        # not different
+        echo "# $environment_name had no changes"
+    fi
+}
+
+commit_changes() {
+    echo '# Presenting files to commit'
+    for environment_name in "${environment_names[@]}"
+    do
+        maybe_commit "$environment_name"
+    done
+}
+
+review_changes() {
+    echo '# Doing a dry run!'
+    echo '# edit_frontend_envs_end --commit # when you'"'"'re ready'
+    for environment_name in "${environment_names[@]}"
+    do
+        local diff_text
+        if ! diff_text="$(diff -u "$(environment_name_to_editing_file "$environment_name")"{.bak,})"
+        then
+            echo "# Changes in $environment_name"
+            echo "$diff_text"
+        else
+            echo "# No changes in $environment_name"
+        fi
+    done
+}
+
+if [[ $commit_arg == '--commit' ]]
+then
+    commit_changes
+else
+    review_changes
+fi

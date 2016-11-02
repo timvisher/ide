@@ -223,6 +223,141 @@ $ instance_ips
 {"Hostname":"webhooks-service9","PrivateIp":"10.0.5.71","StackId":"350219f7-38aa-400e-b872-1ed195cf74e4","Ec2InstanceId":"i-4e3b8edd"}
 ```
 
+### Editing environments
+
+#### `edit_frontend_envs_[start|end]`
+
+These functions allow you to:
+
+- pull frontend environment files from S3
+- verify that changes are valid JSON (using jq)
+- show a diff of the changes in a dry-run
+- commit the changes back to S3
+
+example:
+
+```
+Wed Nov 02 12:39:45
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ edit_frontend_envs_start
+# Prepped api for editing.
+emacs ~/env_tmp/php-stitch-api.prod.environment.json
+# Prepped dashboard for editing.
+emacs ~/env_tmp/php-stitch-dashboard.prod.environment.json
+Make your edits and then run edit_frontend_envs_end to verify your edits and copy your local environments back to s3
+
+Wed Nov 02 12:41:08
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ emacs ~/env_tmp/php-stitch-api.prod.environment.json
+
+Wed Nov 02 12:43:26
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ edit_frontend_envs_end
+# Checking the following environments
+api
+dashboard
+parse error: Expected separator between values at line 3, column 9
+# /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json did not parse.
+# See jq errors above for details
+# Fix json
+
+Wed Nov 02 12:43:37
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ echo 'See that json parse error? :)'
+See that json parse error? :)
+
+Wed Nov 02 12:43:55
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ emacs ~/env_tmp/php-stitch-api.prod.environment.json
+
+Wed Nov 02 12:44:09
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ edit_frontend_envs_end
+# Checking the following environments
+api
+dashboard
+# All environment files parse
+# Doing a dry run!
+# edit_frontend_envs_end --commit # when you're ready
+# Changes in api
+--- /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json.bak     2016-11-02 12:41:07.000000000 -0400
++++ /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json 2016-11-02 12:44:04.000000000 -0400
+@@ -1,4 +1,5 @@
+ {
++    "charnock": true,
+     "api": {
+         "adminDataSource": {
+             "host": "masterdb.internal.rjmetrics.com",
+# No changes in dashboard
+
+Wed Nov 02 12:44:15
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ echo "We're ready to commit"'!'
+We're ready to commit!
+
+Wed Nov 02 12:44:43
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ edit_frontend_envs_end --commit # when you're ready
+# Checking the following environments
+api
+dashboard
+# All environment files parse
+# Presenting files to commit
+--- /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json.bak     2016-11-02 12:41:07.000000000 -0400
++++ /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json 2016-11-02 12:44:04.000000000 -0400
+@@ -1,4 +1,5 @@
+ {
++    "charnock": true,
+     "api": {
+         "adminDataSource": {
+             "host": "masterdb.internal.rjmetrics.com",
+# Are you sure you want to commit the diff above for api? [y/N]: yes
+# Not commiting changes to api
+# dashboard had no changes
+
+Wed Nov 02 12:45:01
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ echo "Only api was changed so only api attempted to commit. You _must_ enter 'y' specifically."
+Only api was changed so only api attempted to commit. You _must_ enter 'y' specifically.
+
+Wed Nov 02 12:45:23
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$ edit_frontend_envs_end --commit # when you're ready
+# Checking the following environments
+api
+dashboard
+# All environment files parse
+# Presenting files to commit
+--- /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json.bak     2016-11-02 12:41:07.000000000 -0400
++++ /Users/tvisher/env_tmp/php-stitch-api.prod.environment.json 2016-11-02 12:44:04.000000000 -0400
+@@ -1,4 +1,5 @@
+ {
++    "charnock": true,
+     "api": {
+         "adminDataSource": {
+             "host": "masterdb.internal.rjmetrics.com",
+# Are you sure you want to commit the diff above for api? [y/N]: y
+# Successfully created backup
+# aws s3 cp --recursive 's3://dev-deployment-assets/php-stitch-api-backups/2016-11-02T16:45:30Z' 's3://dev-deployment-assets/php-stitch-api' # to rollback
+upload: ../../env_tmp/php-stitch-api.prod.environment.json to s3://dev-deployment-assets/php-stitch-api/prod/environment.json
+# dashboard had no changes
+
+Wed Nov 02 12:45:32
+tvisher@timvisher-rjmetrics.local
+~/git/ide (stitchdata-feature/edit-env-functions)
+$
+```
+
 ### Clojure
 
 #### `search_clojars`

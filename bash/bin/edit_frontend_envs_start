@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+prep_file_for_editing() {
+    local environment_name="$1"
+
+    aws s3 cp s3://dev-deployment-assets/php-stitch-"$environment_name"/prod/environment.json ~/env_tmp/php-stitch-"$environment_name".prod.environment.json > /dev/null
+    cp ~/env_tmp/php-stitch-"$environment_name".prod.environment.json ~/env_tmp/php-stitch-"$environment_name".prod.environment.json.bak
+
+    echo "# Prepped $environment_name for editing."
+    echo "$EDITOR ~/env_tmp/php-stitch-$environment_name.prod.environment.json"
+}
+
+mkdir -p ~/env_tmp
+
+environment_names=(
+    api
+    dashboard
+)
+
+for environment_name in "${environment_names[@]}"
+do
+    prep_file_for_editing "$environment_name"
+done
+
+echo "Make your edits and then run edit_frontend_envs_end to verify your edits and copy your local environments back to s3"

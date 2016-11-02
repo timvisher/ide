@@ -1,3 +1,3 @@
 backup() {
-  cp "$1" "$1".$(date "+%Y%m%dT%H%M%S").bak
+  cp -v "$1" "$1"."$(iso8601)".bak
 }
