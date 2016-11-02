@@ -32,7 +32,24 @@ export HISTCONTROL="ignoredups"
 export HISTFILESIZE=500000
 export HISTSIZE=500000
 
-export DEFAULT_PS1='\n\d \t\n\u@\H\n\w\n\$ '
+# Load in bash_completion if we can find it.
+if [[ -r /usr/local/etc/bash_completion ]]
+then
+    source /usr/local/etc/bash_completion
+elif [[ -r /usr/share/bash-completion/bash_completion ]]
+then
+    source /usr/share/bash-completion/bash_completion
+else
+    echo "# Can't find bash-completion. You should install it." >&2
+fi
+
+if ! command -v __git_ps1 > /dev/null 2>&1
+then
+    echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
+    __git_ps1() { return 0; }
+fi
+
+export DEFAULT_PS1='\n\d \t\n\u@\H\n\w$(__git_ps1)\n\$ '
 export PS1="$DEFAULT_PS1"
 
 ##########################################################################

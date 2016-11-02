@@ -253,7 +253,8 @@ export_aws_vars() {
         return 1
     fi
 
-    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w\n\$ '
+    # FIXME we need a way to generate a PS1 template
+    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w$(__git_ps1)\n\$ '
 }
 
 alias unexport_aws_vars=unassume_role
@@ -329,7 +330,7 @@ set_default_profile() {
     if aws --profile "$1" configure get role_arn > /dev/null 2>&1
     then
         export AWS_DEFAULT_PROFILE="$1"
-        export PS1='\n\d \t\n\u@\H\n[default profile: $AWS_DEFAULT_PROFILE]\n\w\n\$ '
+        export PS1='\n\d \t\n\u@\H\n[default profile: $AWS_DEFAULT_PROFILE]\n\w$(__git_ps1)\n\$ '
     else
         echo "# Profile $1 is not configured" >&2
     fi
