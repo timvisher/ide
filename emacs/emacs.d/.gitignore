@@ -1,0 +1,10 @@
+.org-id-locations
+auto-save-list/
+backups/
+bookmarks
+ido.last
+places
+projectile-bookmarks.eld
+projectile.cache
+tramp
+var/
