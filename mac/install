@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+if ! command -v brew > /dev/null 2>&1
+then
+    read -rp '# `brew` not installed. Want me to install it for you? [y/N] ' homebrew_install_response
+    if [[ $homebrew_install_response == y ]]
+    then
+        /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+    else
+        echo "$(tput setaf 1)$(tput bold)# Not installing. Please install then rerun.$(tput sgr0)" >&2
+        exit 1
+    fi
+fi
+
+if (( 0 != $? ))
+then
+    echo "$(tput setaf 1)$(tput bold)# Couldn't find or install "'`brew`'". Please install it and then rerun.$(tput sgr0)" >&2
+    exit 1
+fi
+
+# `brew` is available
+
+# get cli packages
+
+if ! brew cask install $(< homebrew_packages)
+then
+    echo "$(tput setaf 1)$(tput bold)# Couldn't install packages from homebrew_packages. Exiting." >&2
+    exit 1
+fi
+
+# get casks
+
+if ! brew tap caskroom/cask
+then
+    echo "$(tput setaf 1)$(tput bold)# Couldn't tap cask.$(tput sgr0)" >&2
+    exit 1
+fi
+
+# brew cask has been tapped
+
+if ! brew cask install $(< homebrew_cask_packages)
+then
+    echo "$(tput setaf 1)$(tput bold)# Couldn't install casks from homebrew_cask_packages. Exiting." >&2
+    exit 1
+fi
