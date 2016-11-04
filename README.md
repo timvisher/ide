@@ -33,6 +33,19 @@ Please check out to `~/git/ide`.
     - [`nt`/`ntmux`](#ntntmux)
   - [VirtualBox](#virtualbox)
     - [`vbox_matching_uuid`](#vbox_matching_uuid)
+- [emacs](#emacs)
+  - [Installation](#installation-2)
+  - [General Notes](#general-notes)
+  - [Active repositories](#active-repositories)
+  - [Selected Packages](#selected-packages)
+  - [`M-x header-comment`](#m-x-header-comment)
+  - [`C-c C`/`M-x rjmetrics-dired-code-dir`](#c-c-cm-x-rjmetrics-dired-code-dir)
+  - [`M-x rjmetrics-clone-repo`](#m-x-rjmetrics-clone-repo)
+  - [`<f5>`/`M-x todo-frame-bounce`](#f5m-x-todo-frame-bounce)
+  - [`M-x github-source-link`](#m-x-github-source-link)
+  - [`M-x github-compare`](#m-x-github-compare)
+  - [`M-x github-add-my-public`](#m-x-github-add-my-public)
+  - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
 - [Rationale](#rationale)
 - [Compatibility](#compatibility)
 
@@ -492,6 +505,123 @@ $ vbox_matching_uuid boxc
 8fb863f9-5b66-46c5-a9cb-f8b9e5b7695b # boxcutter_core_1476144949883_86068
 0cbf6ed5-ec95-4d88-9ace-9a1bb58812fa # kitchen-boxcutter-default-rjmetrics-os_default_1477621648011_25989
 ```
+
+## emacs
+
+It is assumed that you're running at least the latest stable version of
+emacs, 25.1. You may need to install that from source depending on your
+package manager.
+
+### Installation
+
+```
+cd ~/git/ide/emacs
+./install
+```
+
+This should fail if you have an existing ~/.emacs or ~/.emacs.d that
+doesn't point to this project.
+
+### General Notes
+
+`C-x C-c` is disabled by default to accomodate using `org-mode` more
+safely. `M-x kill-emacs` instead.
+
+We bind `M-x` to `smex`.
+
+You can use `ag` to search the current project using `C-c A`.
+
+Several keys are bound to `expand-region` convenience functions under `C-c
+r`.
+
+We use `y-or-n-p` rather than `yes-or-no-p`.
+
+`dired-x` is enabled.
+
+`dired-dwim-target` is enabled.
+
+We turn on `delete-selection-mode` so text entry with an active region
+will replace that region (like it does in most other editors).
+
+`sentence-end-double-space` is turned on.
+
+`winner-mode` is turned on.
+
+### Active repositories
+
+- gnu
+- marmalade
+- melpa
+- melpa-stable
+
+### Selected Packages
+
+- ag
+- bats-mode
+- better-defaults
+- cider
+- coffee-mode
+- expand-region
+- fixme-mode
+- ido-ubiquitous
+- ido-vertical-mode
+- magit
+- markdown-mode
+- mediawiki
+- org
+- paredit
+- php-mode
+- projectile
+- smex
+- terraform-mode
+- yaml-mode
+
+### `M-x header-comment`
+
+Prompts for and inserts a comment like the following:
+
+```
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; foo
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+```
+
+The length of the wrappers comes from `fill-column` and the comment
+character is derived from the current mode.
+
+### `C-c C`/`M-x rjmetrics-dired-code-dir`
+
+Opens a dired buffer aimed at your VM's `/opt/code` directory.
+
+### `M-x rjmetrics-clone-repo`
+
+Clones a repo from the `RJMetrics` org into the current directory.
+
+### `<f5>`/`M-x todo-frame-bounce`
+
+Opens a dedicated frame for keeping a temporary org-mode todo list in the
+current project.
+
+If you're currently looking at the todo list, it takes you back to the
+previous frame.
+
+### `M-x github-source-link`
+
+Echoes a link GitHub with the current active region highlighted to the
+minibuffer.
+
+### `M-x github-compare`
+
+Echoes a compare link for the current branch and upstream.
+
+### `M-x github-add-my-public`
+
+Add's your push remote to the current repository as a remote named
+`public`.
+
+### `M-Q`/`M-x unfill-paragraph`
+
+Unfills the current paragrah.
 
 ## Rationale
 
