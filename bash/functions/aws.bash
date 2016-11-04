@@ -288,6 +288,12 @@ shell_init_role() {
         return 1
     fi
 
+    if ! grep -qF "[profile $role_name]" ~/.aws/config
+    then
+        echo "$(tput setaf 1)$(tput bold)# Unable to find AWS profile $role_name.$(tput sgr0)"
+        return 1
+    fi
+
     mkdir -p ~/.stitch
 
     if role_expired "$role_name"
@@ -323,6 +329,7 @@ alias assume_prod_admin='shell_init_role prod_admin'
 alias assume_prod_admin_global='shell_init_role prod_admin_global'
 alias assume_prod_read_only='shell_init_role prod_read_only'
 alias assume_stitch_dev_admin_global='shell_init_role stitch_dev_admin_global'
+alias assume_stitch_prod_read_only='shell_init_role stitch_prod_read_only'
 alias assume_stitch_prod_admin='shell_init_role stitch_prod_admin'
 alias assume_stitch_prod_admin_global='shell_init_role stitch_prod_admin_global'
 
@@ -388,6 +395,11 @@ configure_aws_profiles() {
     aws --profile stitch_dev_admin_global configure set role_arn 'arn:aws:iam::286131424992:role/stitch_dev_admin_global'
     aws --profile stitch_dev_admin_global configure set source_profile iam
     aws --profile stitch_dev_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # stitch_prod_read_only
+    aws --profile stitch_prod_read_only configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_read_only'
+    aws --profile stitch_prod_read_only configure set source_profile iam
+    aws --profile stitch_prod_read_only configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
 
     # stitch_prod_admin
     aws --profile stitch_prod_admin configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin'
