@@ -61,12 +61,6 @@ GREP_COLOR='1;32'
 
 export EDITOR='vim'
 
-# prefer emacs if it's available
-if type emacs > /dev/null 2>&1
-then
-    export EDITOR='emacs'
-fi
-
 # Functions
 
 for f in ~/.functions/*.bash
