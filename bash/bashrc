@@ -49,6 +49,24 @@ then
     __git_ps1() { return 0; }
 fi
 
+# only works if using __git_ps1 as a PROMPT_COMMAND
+# export GIT_PS1_SHOWCOLORHINTS=1
+export GIT_PS1_SHOWDIRTYSTATE=1
+export GIT_PS1_SHOWSTASHSTATE=1
+export GIT_PS1_SHOWUNTRACKEDFILES=1
+export GIT_PS1_SHOWUPSTREAM=auto
+
+git_prompt_help() {
+    echo '* unstaged changes'
+    echo '+ staged changes'
+    echo '$ stashes'
+    echo '% untracked files'
+    echo '< behind'
+    echo '> ahead'
+    echo '<> diverged'
+    echo '= no difference'
+}
+
 export DEFAULT_PS1='\n\d \t\n\u@\H\n\w$(__git_ps1)\n\$ '
 export PS1="$DEFAULT_PS1"
 
