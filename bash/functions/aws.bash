@@ -159,7 +159,10 @@ _pp_role_cache_file() {
     local role_cache_file="$1"
     if [[ -r "$role_cache_file" ]]
     then
-        echo "assume_${role_cache_file##*\.} 123456 # $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")")m"
+        if [[ $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")") != -* ]]
+        then
+            echo "assume_${role_cache_file##*\.} 123456 # $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")")m"
+        fi
     else
         echo '# No role cache' >&2
     fi
