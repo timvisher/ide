@@ -10,6 +10,7 @@ gnupg
 gnutls
 gpg-agent
 html2text
+htop
 hub
 jq
 mobile-shell
@@ -20,6 +21,7 @@ reattach-to-user-namespace
 rlwrap
 shellcheck
 the_silver_searcher
+tldr
 tmux
 trash
 tree
