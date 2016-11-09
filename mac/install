@@ -22,7 +22,7 @@ fi
 
 # get cli packages
 
-if ! brew cask install $(< homebrew_packages)
+if ! brew install $(< homebrew_packages)
 then
     echo "$(tput setaf 1)$(tput bold)# Couldn't install packages from homebrew_packages. Exiting." >&2
     exit 1
