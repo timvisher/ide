@@ -450,7 +450,7 @@ again."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+    (go-mode org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
  '(projectile-global-mode t)
  '(projectile-mode-line " Projectile")
  '(search-default-mode (quote char-fold-to-regexp))
