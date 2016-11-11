@@ -122,11 +122,43 @@ ssh_stack_instances() {
              '.Instances[] | select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
+stack_instances() {
+    local stack_name="$1"
+    aws opsworks describe-instances --stack-id "$(stack_id "$stack_name")"
+}
+
 ssh_matching_instances() {
     local stack_name="$1"
     local pattern="$2"
 
     ssh_stack_instances "$stack_name" | grep -F "$pattern"
+}
+
+multi_exec() {
+    local stack_name="$1"
+    local stack_instances="$(stack_instances "$stack_name")"
+    shift
+    local pattern="$1"
+    shift
+
+    hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(contains("'"$pattern"'"))' <<<"$stack_instances"))
+
+    echo '# Run `'"$*"'` on the following hosts?'
+    for hn in "${hostnames[@]}"
+    do
+        echo "# $hn"
+    done
+    read -rp "[y/N]" run_answer
+
+    if [[ $run_answer != "y" ]]
+    then
+        echo '# Not running'
+        return 0
+    fi
+
+    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
+
+    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 instance_id() {
