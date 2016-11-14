@@ -148,7 +148,7 @@ multi_exec() {
     do
         echo "# $hn"
     done
-    read -rp "[y/N]" run_answer
+    read -rp "# [y/N] " run_answer
 
     if [[ $run_answer != "y" ]]
     then
@@ -451,4 +451,20 @@ configure_aws_profiles() {
     aws --profile stitch_prod_admin_global configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin_global'
     aws --profile stitch_prod_admin_global configure set source_profile iam
     aws --profile stitch_prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+}
+
+export_profile_key() {
+    local profile_name="$1"
+
+    if ! aws configure get aws_access_key_id --profile "$profile_name" >/dev/null 2>&1 || ! aws configure get aws_secret_access_key --profile "$profile_name" >/dev/null 2>&1
+    then
+        echo "# Couldn't find key pair for $profile_name" >&2
+        return 1
+    fi
+
+    export AWS_ACCESS_KEY_ID="$(aws configure get aws_access_key_id --profile "$profile_name")"
+    export AWS_SECRET_ACCESS_KEY="$(aws configure get aws_secret_access_key --profile "$profile_name")"
+
+    echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+    echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
 }
