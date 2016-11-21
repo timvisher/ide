@@ -450,7 +450,26 @@ again."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (go-mode org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+    (org
+     mediawiki
+     coffee-mode
+     yaml-mode
+     smex
+     projectile
+     paredit
+     markdown-mode
+     magit
+     ido-vertical-mode
+     ido-ubiquitous
+     fixme-mode
+     expand-region
+     cider
+     better-defaults
+     bats-mode
+     ag
+     terraform-mode
+     coffee-mode
+     php-mode)))
  '(projectile-global-mode t)
  '(projectile-mode-line " Projectile")
  '(search-default-mode (quote char-fold-to-regexp))
@@ -458,7 +477,14 @@ again."
  '(whitespace-line-column nil)
  '(whitespace-style
    (quote
-    (face trailing tabs lines newline empty space-after-tab space-before-tab tab-mark)))
+    (face
+     trailing
+     tabs
+     newline
+     empty
+     space-after-tab
+     space-before-tab
+     tab-mark)))
  '(winner-mode t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
