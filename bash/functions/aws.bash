@@ -185,14 +185,25 @@ multi_exec() {
     local pattern="$1"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(contains("'"$pattern"'"))' <<<"$stack_instances"))
+    hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(test("'"$pattern"'"))' <<<"$stack_instances"))
 
-    echo '# Run `'"$*"'` on the following hosts?'
-    for hn in "${hostnames[@]}"
-    do
-        echo "# $hn"
-    done
-    read -rp "# [y/N] " run_answer
+    if [[ --force == $1 ]]
+    then
+        run_answer=y
+        shift
+        echo '# Running `'"$*"'` on the following hosts?'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+    else
+        echo '# Run `'"$*"'` on the following hosts?'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+        read -rp "# [y/N] " run_answer
+    fi
 
     if [[ $run_answer != "y" ]]
     then
@@ -200,7 +211,7 @@ multi_exec() {
         return 0
     fi
 
-    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
+    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | test("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
 
     parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
