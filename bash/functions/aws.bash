@@ -32,6 +32,12 @@ stack_layers() {
     aws opsworks describe-layers --stack-id "$stack_id"
 }
 
+layer_names() {
+    local stack_name="$1"
+
+    stack_layers "$stack_name" | jq --raw-output '.Layers[] | .Name'
+}
+
 layer_id() {
     local stack_name="$1"
     local layer_name="$2"
@@ -132,6 +138,44 @@ ssh_matching_instances() {
     local pattern="$2"
 
     ssh_stack_instances "$stack_name" | grep -F "$pattern"
+}
+
+multi_exec_layer() {
+    local stack_name="$1"
+    shift
+    local layer_name="$1"
+    local layer_instances="$(layer_instances "$stack_name" "$layer_name")"
+    shift
+
+    hostnames=($(jq --raw-output '.Instances[] | .Hostname' <<<"$layer_instances" ))
+
+    if [[ --force == $1 ]]
+    then
+        run_answer=y
+        shift
+        echo '# Running `'"$*"'` on the '"$layer_name"' layer:'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+    else
+        echo '# Run `'"$*"'` on the '"$layer_name"' layer?'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+        read -rp "# [y/N] " run_answer
+    fi
+
+    if [[ $run_answer != "y" ]]
+    then
+        echo '# Not running'
+        return 0
+    fi
+
+    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
+
+    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 multi_exec() {
