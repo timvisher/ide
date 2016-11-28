@@ -17,11 +17,12 @@ Please check out to `~/git/ide`.
     - [`cd`](#cd)
     - [`days_ago`](#days_ago)
   - [AWS](#aws)
-    - [`set_default_profile`](#set_default_profile)
     - [`assume_*`](#assume_)
-    - [`ssh_stack_instances`](#ssh_stack_instances)
+    - [`multi_exec` and `multi_exec_layer`](#multi_exec-and-multi_exec_layer)
+    - [`set_default_profile`](#set_default_profile)
+    - [`ssh_layer_instances`](#ssh_layer_instances)
     - [`ssh_matching_instances`](#ssh_matching_instances)
-    - [`instance_ips`](#instance_ips)
+    - [`ssh_stack_instances`](#ssh_stack_instances)
   - [Editing environments](#editing-environments)
     - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
   - [Clojure](#clojure)
@@ -160,30 +161,6 @@ configure` and your AWS provided key pair and then run
 
 You can then use them either by `set_default_profile` or by `assume_*`.
 
-#### `set_default_profile`
-
-The aws cli is capable of handling MFA etc for you if you export the
-default profile or use `--profile` arguments properly.
-
-See
-[their docs](http://docs.aws.amazon.com/cli/latest/userguide/cli-roles.html)
-for more details.
-
-```
-Fri Oct 28 16:31:26
-tvisher@timvisher-rjmetrics.local
-~
-$ set_default_profile stitch_prod_read_only
-
-Fri Oct 28 16:31:34
-tvisher@timvisher-rjmetrics.local
-[default profile: stitch_prod_read_only]
-~
-$
-```
-
-Use `unassume_role` to unset your default role.
-
 #### `assume_*`
 
 If you need to assume an AWS role for a tool other than the aws cli you'll
@@ -241,17 +218,100 @@ Variables take precedence over the default profile.
 
 To see the currently cached role you can use `pp_role_cache`.
 
-#### `ssh_stack_instances`
+#### `multi_exec` and `multi_exec_layer`
+
+You can run a command on multiple OpsWorks instances using the following
+commands:
 
 ```
-Fri Oct 28 11:55:46
+Mon Nov 28 10:36:25
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:26m]
+~
+$ layer_instances pipeline kafka | jq -r '.Instances[] | .Hostname'
+kafka4
+kafka3
+kafka2
+kafka1
+kafka5
+
+Mon Nov 28 10:42:52
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:20m]
+~
+$ multi_exec_layer pipeline kafka --force date
+# Running `date` on the kafka layer:
+# kafka4
+# kafka3
+# kafka2
+# kafka1
+# kafka5
+kafka2
+Mon Nov 28 15:44:02 UTC 2016
+kafka3
+Mon Nov 28 15:44:02 UTC 2016
+kafka4
+Mon Nov 28 15:44:02 UTC 2016
+kafka1
+Mon Nov 28 15:44:02 UTC 2016
+kafka5
+Mon Nov 28 15:44:02 UTC 2016
+
+Mon Nov 28 10:44:02
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:18m]
+~
+$ multi_exec pipeline 'kafka[124]' --force date
+# Running `date` on the following hosts?
+# kafka4
+# kafka2
+# kafka1
+kafka2
+Mon Nov 28 15:44:18 UTC 2016
+kafka4
+Mon Nov 28 15:44:18 UTC 2016
+kafka1
+Mon Nov 28 15:44:18 UTC 2016
+```
+
+
+#### `set_default_profile`
+
+The aws cli is capable of handling MFA etc for you if you export the
+default profile or use `--profile` arguments properly.
+
+See
+[their docs](http://docs.aws.amazon.com/cli/latest/userguide/cli-roles.html)
+for more details.
+
+```
+Fri Oct 28 16:31:26
 tvisher@timvisher-rjmetrics.local
 ~
-$ ssh_stack_instances primary
-ssh '10.0.5.82' # 'dbreplicators-service3'
-ssh '10.0.5.50' # 'core-service2'
-…
-ssh '10.0.5.171' # 'sourcerer-workers10'
+$ set_default_profile stitch_prod_read_only
+
+Fri Oct 28 16:31:34
+tvisher@timvisher-rjmetrics.local
+[default profile: stitch_prod_read_only]
+~
+$
+```
+
+Use `unassume_role` to unset your default role.
+
+#### `ssh_layer_instances`
+
+```
+Mon Nov 28 10:37:34
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:25m]
+~
+$ ssh_layer_instances pipeline kafka
+ssh '10.2.83.142' # 'kafka4'
+ssh '10.2.86.58' # 'kafka3'
+ssh '10.2.79.194' # 'kafka2'
+ssh '10.2.80.191' # 'kafka1'
+ssh '10.2.76.11' # 'kafka5'
 ```
 
 #### `ssh_matching_instances`
@@ -269,20 +329,17 @@ ssh '10.0.87.33' # 'dbreplicators-workers5'
 ssh '10.0.86.82' # 'dbreplicators-workers6'
 ```
 
-#### `instance_ips`
+#### `ssh_stack_instances`
 
 ```
-Fri Oct 28 12:01:40
+Fri Oct 28 11:55:46
 tvisher@timvisher-rjmetrics.local
 ~
-$ instance_ips
-{"Hostname":"admin-staging3","PrivateIp":"10.0.69.12","StackId":"725831b0-00a3-4ed6-bee6-a27de24e95c4","Ec2InstanceId":"i-08b7239b"}
-{"Hostname":"admin3","PrivateIp":"10.0.70.5","StackId":"6c75c8a6-6dde-4a44-8c69-018e3aa6d088","Ec2InstanceId":"i-4eef384f"}
-{"Hostname":"admin4","PrivateIp":"10.0.71.76","StackId":"6c75c8a6-6dde-4a44-8c69-018e3aa6d088","Ec2InstanceId":"i-1ba02d88"}
-{"Hostname":"admin5","PrivateIp":"10.0.71.117","StackId":"6c75c8a6-6dde-4a44-8c69-018e3aa6d088","Ec2InstanceId":"i-12a12c81"}
-{"Hostname":"api-staging2","PrivateIp":"10.0.71.22","StackId":"725831b0-00a3-4ed6-bee6-a27de24e95c4","Ec2InstanceId":"i-df4eda4c"}
+$ ssh_stack_instances primary
+ssh '10.0.5.82' # 'dbreplicators-service3'
+ssh '10.0.5.50' # 'core-service2'
 …
-{"Hostname":"webhooks-service9","PrivateIp":"10.0.5.71","StackId":"350219f7-38aa-400e-b872-1ed195cf74e4","Ec2InstanceId":"i-4e3b8edd"}
+ssh '10.0.5.171' # 'sourcerer-workers10'
 ```
 
 ### Editing environments
