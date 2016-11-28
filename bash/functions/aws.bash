@@ -140,6 +140,7 @@ ssh_matching_instances() {
     ssh_stack_instances "$stack_name" | grep -F "$pattern"
 }
 
+# FIXME refactor this and `multi_exec`
 multi_exec_layer() {
     local stack_name="$1"
     shift
@@ -148,6 +149,12 @@ multi_exec_layer() {
     shift
 
     hostnames=($(jq --raw-output '.Instances[] | .Hostname' <<<"$layer_instances" ))
+
+    if [[ -z $hostnames ]]
+    then
+        echo '# No hostnames available for '"$layer_name"'. Check your creds.' >&2
+        return 1
+    fi
 
     if [[ --force == $1 ]]
     then
@@ -178,6 +185,7 @@ multi_exec_layer() {
     parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
+# FIXME refactor this and `multi_exec_layer`
 multi_exec() {
     local stack_name="$1"
     local stack_instances="$(stack_instances "$stack_name")"
@@ -186,6 +194,12 @@ multi_exec() {
     shift
 
     hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(test("'"$pattern"'"))' <<<"$stack_instances"))
+
+    if [[ -z $hostnames ]]
+    then
+        echo '# No hostnames available for '"$pattern"'. Check your creds.' >&2
+        return 1
+    fi
 
     if [[ --force == $1 ]]
     then
