@@ -450,7 +450,8 @@ again."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (org
+    (align-cljlet
+     org
      mediawiki
      coffee-mode
      yaml-mode

@@ -614,6 +614,7 @@ will replace that region (like it does in most other editors).
 ### Selected Packages
 
 - ag
+- align-cljlet
 - bats-mode
 - better-defaults
 - cider
