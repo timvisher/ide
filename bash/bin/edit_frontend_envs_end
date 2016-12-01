@@ -7,8 +7,9 @@ commit_arg="$1"
 source ~/.functions/date.bash
 
 environment_names=(
-    api
-    dashboard
+    app
+    app-staging
+    admin
 )
 
 echo '# Checking the following environments'
@@ -63,8 +64,8 @@ maybe_commit() {
             # backup current values
             # shellcheck disable=SC2155
             local backup_date="$(iso8601)"
-            local s3_prod_prefix=s3://dev-deployment-assets/php-stitch-"$environment_name"
-            local s3_backup_prefix=s3://dev-deployment-assets/php-stitch-"$environment_name"-backups/"$backup_date"
+            local s3_prod_prefix=s3://com-stitchdata-prod-deployment-assets/php-stitch-"$environment_name"
+            local s3_backup_prefix=s3://com-stitchdata-prod-deployment-assets/php-stitch-"$environment_name"-backups/"$backup_date"
             if aws s3 cp --recursive "$s3_prod_prefix" "$s3_backup_prefix" > /dev/null 2>&1
             then
                 echo "# Successfully created backup"
@@ -78,7 +79,7 @@ maybe_commit() {
 
             # write new values
             # Note: we've already echoed our diff because of the conditional
-            aws s3 cp "$(environment_name_to_editing_file "$environment_name")" s3://dev-deployment-assets/php-stitch-"$environment_name"/prod/environment.json
+            aws s3 cp "$(environment_name_to_editing_file "$environment_name")" s3://com-stitchdata-prod-deployment-assets/php-stitch-"$environment_name"/prod/environment.json
         else
             echo "# Not commiting changes to $(tput setaf 1)$(tput bold)$environment_name$(tput sgr0)"
         fi
