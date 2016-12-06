@@ -45,6 +45,7 @@ Please check out to `~/git/ide`.
   - [`M-x rjmetrics-clone-repo`](#m-x-rjmetrics-clone-repo)
   - [`<f5>`/`M-x todo-frame-bounce`](#f5m-x-todo-frame-bounce)
   - [`M-x github-source-link`](#m-x-github-source-link)
+  - [`M-x github-commit-link`](#m-x-github-commit-link)
   - [`M-x github-compare`](#m-x-github-compare)
   - [`M-x github-add-my-public`](#m-x-github-add-my-public)
   - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
@@ -692,6 +693,11 @@ previous frame.
 
 Echoes a link GitHub with the current active region highlighted to the
 minibuffer.
+
+### `M-x github-commit-link`
+
+Echoes a link to the current commit at point to the minibuffer. With a
+prefix arg, also attempts to browse it.
 
 ### `M-x github-compare`
 

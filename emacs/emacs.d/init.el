@@ -287,6 +287,35 @@ again."
     (when (prefix-arg-count-p arg 1)
       (browse-url compare-link))))
 
+(defun github-commit-link
+    (arg)
+  (interactive "p")
+  (let* ((remote-name (github-branch-to-remote-name
+                       (magit-get-push-branch)))
+         (remote-url (magit-get "remote" remote-name "url"))
+         (project-name (github-url-to-repo-name remote-url))
+         (github-user (github-url-to-user-name remote-url))
+         (commit-hash (magit-rev-parse
+                       (magit-branch-or-commit-at-point)))
+         (commit-link (format
+                       (concat "https://github.com/"
+                               ;; Push remote like: stitchdata
+                               "%s/"
+                               ;; Push project like: ide
+                               "%s/"
+                               "commit/"
+                               ;; commit hash like: b9b11cc
+                               "%s")
+                       github-user
+                       project-name
+                       commit-hash)))
+    (if (not commit-hash)
+        (error "No commit at point!")
+      ;; like: https://github.com/stitchdata/ide/commit/b9b11cc05baaf8383b2cc7968990a4fbf966c4a0
+      (message commit-link)
+      (when (prefix-arg-count-p arg 1)
+        (browse-url commit-link)))))
+
 (defun github-add-my-public (github-username)
   (interactive "sGitHub username: ")
   (let ((remote-url (magit-get "remote" (magit-get-remote) "url")))
