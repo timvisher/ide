@@ -243,9 +243,11 @@ again."
 
 (defun prefix-arg-count-p
     (arg count)
-  (if (= 0 (% arg 4))
-      (= count (/ arg 4))
-    (error "%d not evenly divisible by 4" arg)))
+  (if (= 1 arg)
+      (= 0 count)
+    (if (= 0 (% arg 4))
+        (= count (/ arg 4))
+      (error "%d not evenly divisible by 4" arg))))
 
 (defun github-compare
     (arg)
