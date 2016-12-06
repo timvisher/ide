@@ -285,9 +285,22 @@ _pp_role_cache_file() {
     local role_cache_file="$1"
     if [[ -r "$role_cache_file" ]]
     then
-        if [[ $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")") != -* ]]
+        expiration="$(jq -r '.Credentials.Expiration' < "$role_cache_file")"
+        if [[ -n $expiration ]]
         then
-            echo "assume_${role_cache_file##*\.} 123456 # $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")")m"
+            if [[ $(mins_until_expired "$expiration") != -* ]]
+            then
+                echo "assume_${role_cache_file##*\.} 123456 # $(mins_until_expired "$(jq -r '.Credentials.Expiration' < "$role_cache_file")")m"
+            fi
+        else
+            tput setaf 1
+            tput bold
+            echo "# Bad role cache file: $role_cache_file" >&2
+            local role_cache_file_dir="${role_cache_file%/*}"
+            local role_cache_file_name="${role_cache_file##*/}"
+            mv -v "$role_cache_file" "${role_cache_file_dir}/bad.${role_cache_file_name}"
+            tput sgr0
+            return 1
         fi
     else
         echo '# No role cache' >&2
