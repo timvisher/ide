@@ -140,6 +140,31 @@ ssh_matching_instances() {
     ssh_stack_instances "$stack_name" | grep -F "$pattern"
 }
 
+layer_instance_exec() {
+    local stack_name="$1"
+    shift
+    local layer_name="$1"
+    shift
+    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '.Instances[1] | {PrivateIp, Hostname}')"
+
+    if [[ --force == $1 ]]
+    then
+        shift
+        run_on_ip_answer=y
+        echo '# Running `'"$*"'` on '"$(jq -r '.Hostname' <<<"$instance")"
+    else
+        read -rp '# Run `'"$*"'` on '"$(jq -r '.Hostname' <<<"$instance")? [y/N] " run_on_ip_answer
+    fi
+
+    if [[ y != $run_on_ip_answer ]]
+    then
+        echo '# Exiting at user request'
+        return 0
+    fi
+
+    ssh -o StrictHostKeyChecking=no "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
+}
+
 # FIXME refactor this and `multi_exec`
 multi_exec_layer() {
     local stack_name="$1"

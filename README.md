@@ -19,6 +19,7 @@ Please check out to `~/git/ide`.
   - [AWS](#aws)
     - [`assume_*`](#assume_)
     - [`multi_exec` and `multi_exec_layer`](#multi_exec-and-multi_exec_layer)
+    - [`layer_instance_exec`](#layer_instance_exec)
     - [`set_default_profile`](#set_default_profile)
     - [`ssh_layer_instances`](#ssh_layer_instances)
     - [`ssh_matching_instances`](#ssh_matching_instances)
@@ -274,6 +275,30 @@ kafka1
 Mon Nov 28 15:44:18 UTC 2016
 ```
 
+#### `layer_instance_exec`
+
+Selects an instance from a layer and execs a command on it, possibly
+non-interactively.
+
+```
+Tue Dec 06 10:32:38
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:48m]
+~/git/cloudcutter (master *$=)
+$ layer_instance_exec pipeline kafka date
+# Run `date` on kafka1? [y/N] y
+kafka1
+Tue Dec  6 15:39:44 UTC 2016
+
+Tue Dec 06 10:39:44
+tvisher@timvisher-rjmetrics.local
+[stitch_prod_read_only:41m]
+~/git/cloudcutter (master *$=)
+$ layer_instance_exec pipeline kafka --force date
+# Running `date` on kafka1
+kafka1
+Tue Dec  6 15:39:50 UTC 2016
+```
 
 #### `set_default_profile`
 
