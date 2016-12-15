@@ -24,6 +24,7 @@ Please check out to `~/git/ide`.
     - [`ssh_layer_instances`](#ssh_layer_instances)
     - [`ssh_matching_instances`](#ssh_matching_instances)
     - [`ssh_stack_instances`](#ssh_stack_instances)
+    - [`delete_known_host_line`](#delete_known_host_line)
   - [Editing environments](#editing-environments)
     - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
   - [Clojure](#clojure)
