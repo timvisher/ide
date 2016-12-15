@@ -368,6 +368,42 @@ ssh '10.0.5.50' # 'core-service2'
 ssh '10.0.5.171' # 'sourcerer-workers10'
 ```
 
+#### `delete_known_host_line`
+
+Allows you to delete a line from your known_hosts file.
+
+```
+Thu Dec 15 10:23:56
+tvisher@timvisher-rjmetrics.local
+[prod_read_only:58m]
+~
+$ ssh '10.0.5.211' # 'loader-pg2'
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+…
+Offending ECDSA key in /Users/tvisher/.ssh/known_hosts:210
+…
+
+Thu Dec 15 10:24:22
+tvisher@timvisher-rjmetrics.local
+[prod_read_only:58m]
+~
+$ delete_known_host_line 210
+
+Thu Dec 15 10:26:36
+tvisher@timvisher-rjmetrics.local
+[prod_read_only:56m]
+~
+$ ssh '10.0.5.211' # 'loader-pg2'
+…
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added '10.0.5.211' (ECDSA) to the list of known hosts.
+…
+tvisher@loader-pg2:~$
+```
+
+
 ### Editing environments
 
 #### `edit_frontend_envs_[start|end]`
