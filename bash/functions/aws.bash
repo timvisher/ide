@@ -575,3 +575,25 @@ export_profile_key() {
     echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
     echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
 }
+
+configure_stitch_dev_keys() {
+    local my_user=$1
+
+    if aws configure get aws_access_key_id --profile stitch_dev_keys >/dev/null 2>&1 && aws configure get aws_secret_access_key --profile stitch_dev_keys >/dev/null 2>&1
+    then
+        echo "# You already have a stitch_dev_keys keypair" >&2
+        return 1
+    fi
+
+    if ! aws iam create-access-key --user-name "$my_user" >~/.stitch/access-key-cache
+    then
+        echo "# Couldn't create stitch_dev_keys pair for user $my_user"
+        return 1
+    fi
+
+    local access_key="$(jq -r '.AccessKey.AccessKeyId' < ~/.stitch/access-key-cache)"
+    local secret_key="$(jq -r '.AccessKey.SecretAccessKey' < ~/.stitch/access-key-cache)"
+
+    aws --profile stitch_dev_keys configure set aws_access_key_id "$access_key"
+    aws --profile stitch_dev_keys configure set aws_secret_access_key "$secret_key"
+}
