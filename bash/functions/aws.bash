@@ -577,17 +577,41 @@ export_profile_key() {
 }
 
 configure_stitch_dev_keys() {
-    local my_user=$1
+    local my_user="$1"
+
+    if [[ -z $my_user ]]
+    then
+        echo "# Usage:" >&2
+        echo "# As stitch_dev_admin_global" >&2
+        echo "# configure_stitch_dev_keys <aws username>" >&2
+        return 1
+    fi
 
     if aws configure get aws_access_key_id --profile stitch_dev_keys >/dev/null 2>&1 && aws configure get aws_secret_access_key --profile stitch_dev_keys >/dev/null 2>&1
     then
+        tput setaf 2
+        tput bold
         echo "# You already have a stitch_dev_keys keypair" >&2
+        tput sgr0
+        return 0
+    fi
+
+    if [[ stitch_dev_admin_global != $AWS_ROLE_NAME ]]
+    then
+        tput setaf 1
+        tput bold
+        echo "# Please run:" >&2
+        echo "# assume_stitch_dev_admin_global <mfa>" >&2
+        tput sgr0
         return 1
     fi
 
     if ! aws iam create-access-key --user-name "$my_user" >~/.stitch/access-key-cache
     then
+        tput setaf 1
+        tput bold
         echo "# Couldn't create stitch_dev_keys pair for user $my_user"
+        tput sgr0
         return 1
     fi
 
@@ -596,4 +620,12 @@ configure_stitch_dev_keys() {
 
     aws --profile stitch_dev_keys configure set aws_access_key_id "$access_key"
     aws --profile stitch_dev_keys configure set aws_secret_access_key "$secret_key"
+
+    tput setaf 2
+    tput bold
+    echo "Successfully configured the stitch_dev_keys profile." >&2
+    tput sgr0
+
+    echo "AWS_ACCESS_KEY_ID=$(aws --profile stitch_dev_keys configure get aws_access_key_id)"
+    echo "AWS_SECRET_ACCESS_KEY=$(aws --profile stitch_dev_keys configure get aws_secret_access_key)"
 }
