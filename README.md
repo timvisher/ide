@@ -50,6 +50,7 @@ Please check out to `~/git/ide`.
   - [`M-x github-compare`](#m-x-github-compare)
   - [`M-x github-add-my-public`](#m-x-github-add-my-public)
   - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
+- [`ssh`](#ssh)
 - [Rationale](#rationale)
 - [Compatibility](#compatibility)
 
