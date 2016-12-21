@@ -749,6 +749,13 @@ Add's your push remote to the current repository as a remote named
 
 Unfills the current paragrah.
 
+## `ssh`
+
+In order to make interacting with prod easier it's highly recommended that
+you add the contents of
+[`ssh/config`](https://github.com/stitchdata/ide/blob/master/ssh/config)
+to your `~/.ssh/config` file.
+
 ## Rationale
 
 The vast majority of our tooling for working with Stitch must exist on the
