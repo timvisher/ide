@@ -475,6 +475,9 @@ alias assume_stitch_dev_admin_global='shell_init_role stitch_dev_admin_global'
 alias assume_stitch_prod_read_only='shell_init_role stitch_prod_read_only'
 alias assume_stitch_prod_admin='shell_init_role stitch_prod_admin'
 alias assume_stitch_prod_admin_global='shell_init_role stitch_prod_admin_global'
+alias assume_read_only='shell_init_role read_only'
+alias assume_poweruser='shell_init_role poweruser'
+alias assume_admin_global='shell_init_role admin_global'
 
 set_default_profile() {
     if aws --profile "$1" configure get role_arn > /dev/null 2>&1
@@ -558,6 +561,22 @@ configure_aws_profiles() {
     aws --profile stitch_prod_admin_global configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin_global'
     aws --profile stitch_prod_admin_global configure set source_profile iam
     aws --profile stitch_prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
+
+    # admin_global
+    aws --profile admin_global configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
+    aws --profile admin_global configure set source_profile stitch_dev_keys
+    aws --profile admin_global configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+
+    # poweruser
+    aws --profile poweruser configure set role_arn 'arn:aws:iam::218546966473:role/poweruser'
+    aws --profile poweruser configure set source_profile stitch_dev_keys
+    aws --profile powerusr configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+
+    # read_only
+    aws --profile read_only configure set role_arn 'arn:aws:iam::218546966473:role/read_only'
+    aws --profile read_only configure set source_profile stitch_dev_keys
+    aws --profile read_only configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+
 }
 
 export_profile_key() {
@@ -582,7 +601,6 @@ configure_stitch_dev_keys() {
     if [[ -z $my_user ]]
     then
         echo "# Usage:" >&2
-        echo "# As stitch_dev_admin_global" >&2
         echo "# configure_stitch_dev_keys <aws username>" >&2
         return 1
     fi
@@ -594,16 +612,6 @@ configure_stitch_dev_keys() {
         echo "# You already have a stitch_dev_keys keypair" >&2
         tput sgr0
         return 0
-    fi
-
-    if [[ stitch_dev_admin_global != $AWS_ROLE_NAME ]]
-    then
-        tput setaf 1
-        tput bold
-        echo "# Please run:" >&2
-        echo "# assume_stitch_dev_admin_global <mfa>" >&2
-        tput sgr0
-        return 1
     fi
 
     if ! aws iam create-access-key --user-name "$my_user" >~/.stitch/access-key-cache
