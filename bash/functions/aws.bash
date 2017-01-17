@@ -166,6 +166,90 @@ layer_instance_exec() {
 }
 
 # FIXME refactor this and `multi_exec`
+multi_exec_stack() {
+    local stack_name="$1"
+    local stack_instances="$(stack_instances "$stack_name")"
+    shift
+
+    hostnames=($(jq --raw-output '.Instances[] | .Hostname' <<<"$stack_instances" ))
+
+    if [[ -z $hostnames ]]
+    then
+        echo '# No hostnames available for '"$stack_name"'. Check your creds.' >&2
+        return 1
+    fi
+
+    if [[ --force == $1 ]]
+    then
+        run_answer=y
+        shift
+        echo '# Running `'"$*"'` on the '"$stack_name"' stack:'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+    else
+        echo '# Run `'"$*"'` on the '"$stack_name"' stack?'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+        read -rp "# [y/N] " run_answer
+    fi
+
+    if [[ $run_answer != "y" ]]
+    then
+        echo '# Not running'
+        return 0
+    fi
+
+    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
+
+    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+}
+
+# FIXME refactor this and `multi_exec`
+multi_exec_global() {
+    global_instances="$(instances)"
+
+    hostnames=($(jq --raw-output '.Hostname' <<<"$global_instances" ))
+
+    if [[ -z $hostnames ]]
+    then
+        echo '# No hostnames available for '"$global_name"'. Check your creds.' >&2
+        return 1
+    fi
+
+    if [[ --force == $1 ]]
+    then
+        run_answer=y
+        shift
+        echo '# Running `'"$*"'` on the '"$global_name"' global:'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+    else
+        echo '# Run `'"$*"'` on the '"$global_name"' global?'
+        for hn in "${hostnames[@]}"
+        do
+            echo "# $hn"
+        done
+        read -rp "# [y/N] " run_answer
+    fi
+
+    if [[ $run_answer != "y" ]]
+    then
+        echo '# Not running'
+        return 0
+    fi
+
+    hostips=($(jq --raw-output 'select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
+
+    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+}
+
+# FIXME refactor this and `multi_exec`
 multi_exec_layer() {
     local stack_name="$1"
     shift
@@ -270,6 +354,13 @@ stop_instance() {
     local instance_id="$(instance_id "$stack_id" "$2")"
 
     aws opsworks stop-instance --instance-id "$instance_id"
+}
+
+instances() {
+    while read -r stack_id
+    do
+        aws opsworks describe-instances --stack-id="$stack_id" | jq '.Instances[]'
+    done < <(stack_ids)
 }
 
 instance_ips() {

@@ -18,7 +18,7 @@ Please check out to `~/git/ide`.
     - [`days_ago`](#days_ago)
   - [AWS](#aws)
     - [`assume_*`](#assume_)
-    - [`multi_exec` and `multi_exec_layer`](#multi_exec-and-multi_exec_layer)
+    - [`multi_exec*`](#multi_exec)
     - [`layer_instance_exec`](#layer_instance_exec)
     - [`set_default_profile`](#set_default_profile)
     - [`ssh_layer_instances`](#ssh_layer_instances)
@@ -222,7 +222,7 @@ Variables take precedence over the default profile.
 
 To see the currently cached role you can use `pp_role_cache`.
 
-#### `multi_exec` and `multi_exec_layer`
+#### `multi_exec*`
 
 You can run a command on multiple OpsWorks instances using the following
 commands:
@@ -277,6 +277,9 @@ Mon Nov 28 15:44:18 UTC 2016
 kafka1
 Mon Nov 28 15:44:18 UTC 2016
 ```
+
+`multi_exec_global` and `multi_exec_stack` are also provided and do what
+you would expect them to.
 
 #### `layer_instance_exec`
 
