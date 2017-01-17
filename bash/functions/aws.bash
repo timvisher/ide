@@ -661,7 +661,7 @@ configure_aws_profiles() {
     # poweruser
     aws --profile poweruser configure set role_arn 'arn:aws:iam::218546966473:role/poweruser'
     aws --profile poweruser configure set source_profile stitch_dev_keys
-    aws --profile powerusr configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+    aws --profile poweruser configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
     # read_only
     aws --profile read_only configure set role_arn 'arn:aws:iam::218546966473:role/read_only'
