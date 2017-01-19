@@ -93,16 +93,16 @@ new_data_warehouse_service_instance() {
 }
 
 layer_json() {
-    for stack_id in $(stack_ids)
+    while read -r stack_name
     do
-        stack_layers "$stack_id" \
+        stack_layers "$stack_name" \
             | jq '.Layers[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
-    done
+    done < <(stack_names)
 }
 
 layer_custom_recipes() {
-    local stack_id="$1"
-    stack_layers "$stack_id" \
+    local stack_name="$1"
+    stack_layers "$stack_name" \
         | jq '.Layers[]
           | {StackId,
              Name,
