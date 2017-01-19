@@ -323,7 +323,7 @@ again."
 
 (defun github-add-my-public (github-username)
   (interactive "sGitHub username: ")
-  (let ((remote-url (magit-get "remote" (magit-get-remote) "url")))
+  (let ((remote-url (magit-get "remote" (magit-get-remote "master") "url")))
     (save-match-data
       (string-match
        (concat
