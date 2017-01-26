@@ -524,6 +524,8 @@ shell_init_role() {
     if ! grep -qF "[profile $role_name]" ~/.aws/config
     then
         echo "$(tput setaf 1)$(tput bold)# Unable to find AWS profile $role_name.$(tput sgr0)"
+        echo "$(tput setaf 1)$(tput bold)# Run:$(tput sgr0)"
+        echo "$(tput setaf 1)$(tput bold)configure_aws_profiles$(tput sgr0)"
         return 1
     fi
 
@@ -557,15 +559,6 @@ unassume_role() {
     export PS1="$DEFAULT_PS1"
 }
 
-alias assume_dev_admin_global='shell_init_role dev_admin_global'
-alias assume_prod_admin='shell_init_role prod_admin'
-alias assume_prod_admin_global='shell_init_role prod_admin_global'
-alias assume_prod_read_only='shell_init_role prod_read_only'
-alias assume_stitch_dev_read_only='shell_init_role stitch_dev_read_only'
-alias assume_stitch_dev_admin_global='shell_init_role stitch_dev_admin_global'
-alias assume_stitch_prod_read_only='shell_init_role stitch_prod_read_only'
-alias assume_stitch_prod_admin='shell_init_role stitch_prod_admin'
-alias assume_stitch_prod_admin_global='shell_init_role stitch_prod_admin_global'
 alias assume_read_only='shell_init_role read_only'
 alias assume_poweruser='shell_init_role poweruser'
 alias assume_admin_global='shell_init_role admin_global'
@@ -608,64 +601,19 @@ configure_aws_profiles() {
     local user_name
     user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-iam-user-cache)"
 
-    # dev_admin_global
-    aws --profile dev_admin_global configure set role_arn 'arn:aws:iam::718988833002:role/dev_admin_global'
-    aws --profile dev_admin_global configure set source_profile iam
-    aws --profile dev_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # prod_admin
-    aws --profile prod_admin configure set role_arn 'arn:aws:iam::618319395214:role/prod_admin'
-    aws --profile prod_admin configure set source_profile iam
-    aws --profile prod_admin configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # prod_admin_global
-    aws --profile prod_admin_global configure set role_arn 'arn:aws:iam::618319395214:role/prod_admin_global'
-    aws --profile prod_admin_global configure set source_profile iam
-    aws --profile prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # prod_read_only
-    aws --profile prod_read_only configure set role_arn 'arn:aws:iam::618319395214:role/prod_read_only'
-    aws --profile prod_read_only configure set source_profile iam
-    aws --profile prod_read_only configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # stitch_dev_read_only
-    aws --profile stitch_dev_read_only configure set role_arn 'arn:aws:iam::286131424992:role/stitch_dev_read_only'
-    aws --profile stitch_dev_read_only configure set source_profile iam
-    aws --profile stitch_dev_read_only configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # stitch_dev_admin_global
-    aws --profile stitch_dev_admin_global configure set role_arn 'arn:aws:iam::286131424992:role/stitch_dev_admin_global'
-    aws --profile stitch_dev_admin_global configure set source_profile iam
-    aws --profile stitch_dev_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # stitch_prod_read_only
-    aws --profile stitch_prod_read_only configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_read_only'
-    aws --profile stitch_prod_read_only configure set source_profile iam
-    aws --profile stitch_prod_read_only configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # stitch_prod_admin
-    aws --profile stitch_prod_admin configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin'
-    aws --profile stitch_prod_admin configure set source_profile iam
-    aws --profile stitch_prod_admin configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
-    # stitch_prod_admin_global
-    aws --profile stitch_prod_admin_global configure set role_arn 'arn:aws:iam::218546966473:role/stitch_prod_admin_global'
-    aws --profile stitch_prod_admin_global configure set source_profile iam
-    aws --profile stitch_prod_admin_global configure set mfa_serial "arn:aws:iam::240342446256:mfa/$user_name"
-
     # admin_global
     aws --profile admin_global configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
-    aws --profile admin_global configure set source_profile stitch_dev_keys
+    aws --profile admin_global configure set source_profile default
     aws --profile admin_global configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
     # poweruser
     aws --profile poweruser configure set role_arn 'arn:aws:iam::218546966473:role/poweruser'
-    aws --profile poweruser configure set source_profile stitch_dev_keys
+    aws --profile poweruser configure set source_profile default
     aws --profile poweruser configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
     # read_only
     aws --profile read_only configure set role_arn 'arn:aws:iam::218546966473:role/read_only'
-    aws --profile read_only configure set source_profile stitch_dev_keys
+    aws --profile read_only configure set source_profile default
     aws --profile read_only configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
 }
@@ -684,47 +632,4 @@ export_profile_key() {
 
     echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
     echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
-}
-
-configure_stitch_dev_keys() {
-    local my_user="$1"
-
-    if [[ -z $my_user ]]
-    then
-        echo "# Usage:" >&2
-        echo "# configure_stitch_dev_keys <aws username>" >&2
-        return 1
-    fi
-
-    if aws configure get aws_access_key_id --profile stitch_dev_keys >/dev/null 2>&1 && aws configure get aws_secret_access_key --profile stitch_dev_keys >/dev/null 2>&1
-    then
-        tput setaf 2
-        tput bold
-        echo "# You already have a stitch_dev_keys keypair" >&2
-        tput sgr0
-        return 0
-    fi
-
-    if ! aws iam create-access-key --user-name "$my_user" >~/.stitch/access-key-cache
-    then
-        tput setaf 1
-        tput bold
-        echo "# Couldn't create stitch_dev_keys pair for user $my_user"
-        tput sgr0
-        return 1
-    fi
-
-    local access_key="$(jq -r '.AccessKey.AccessKeyId' < ~/.stitch/access-key-cache)"
-    local secret_key="$(jq -r '.AccessKey.SecretAccessKey' < ~/.stitch/access-key-cache)"
-
-    aws --profile stitch_dev_keys configure set aws_access_key_id "$access_key"
-    aws --profile stitch_dev_keys configure set aws_secret_access_key "$secret_key"
-
-    tput setaf 2
-    tput bold
-    echo "Successfully configured the stitch_dev_keys profile." >&2
-    tput sgr0
-
-    echo "AWS_ACCESS_KEY_ID=$(aws --profile stitch_dev_keys configure get aws_access_key_id)"
-    echo "AWS_SECRET_ACCESS_KEY=$(aws --profile stitch_dev_keys configure get aws_secret_access_key)"
 }

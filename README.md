@@ -155,13 +155,9 @@ configure` and your AWS provided key pair and then run
 
 `configure_aws_profiles` will set up the following profiles:
 
-- `dev_admin_global`
-- `prod_admin`
-- `prod_admin_global`
-- `prod_read_only`
-- `stitch_dev_admin_global`
-- `stitch_prod_admin`
-- `stitch_prod_admin_global`
+- `read_only`
+- `poweruser`
+- `admin_global`
 
 You can then use them either by `set_default_profile` or by `assume_*`.
 
@@ -177,11 +173,11 @@ convenience aliases.
 Mon Oct 31 13:42:43
 tvisher@timvisher-rjmetrics.local
 ~/git/ide
-$ assume_stitch_prod_read_only 484610
+$ assume_read_only 484610
 
 Mon Oct 31 13:42:58
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:59m]
+[read_only:59m]
 ~/git/ide
 $
 ```
@@ -199,7 +195,7 @@ $ export_aws_vars
 
 Mon Oct 31 13:51:56
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:51m]
+[read_only:51m]
 ~/git/ide
 $
 ```
@@ -210,11 +206,11 @@ To see your currently cached roles and when they're good till you can run
 ```
 Tue Nov 01 11:24:48
 tvisher@timvisher-rjmetrics.local
-[stitch_dev_admin_global:41m]
+[admin_global:41m]
 ~/git/ide
 $ pp_role_caches
-assume_stitch_dev_admin_global 123456 # 41m
-assume_stitch_prod_admin_global 123456 # 39m
+assume_read_only 123456 # 41m
+assume_admin_global 123456 # 39m
 
 ```
 
@@ -230,7 +226,7 @@ commands:
 ```
 Mon Nov 28 10:36:25
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:26m]
+[read_only:26m]
 ~
 $ layer_instances pipeline kafka | jq -r '.Instances[] | .Hostname'
 kafka4
@@ -241,7 +237,7 @@ kafka5
 
 Mon Nov 28 10:42:52
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:20m]
+[read_only:20m]
 ~
 $ multi_exec_layer pipeline kafka --force date
 # Running `date` on the kafka layer:
@@ -263,7 +259,7 @@ Mon Nov 28 15:44:02 UTC 2016
 
 Mon Nov 28 10:44:02
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:18m]
+[read_only:18m]
 ~
 $ multi_exec pipeline 'kafka[124]' --force date
 # Running `date` on the following hosts?
@@ -289,7 +285,7 @@ non-interactively.
 ```
 Tue Dec 06 10:32:38
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:48m]
+[read_only:48m]
 ~/git/cloudcutter (master *$=)
 $ layer_instance_exec pipeline kafka date
 # Run `date` on kafka1? [y/N] y
@@ -298,7 +294,7 @@ Tue Dec  6 15:39:44 UTC 2016
 
 Tue Dec 06 10:39:44
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:41m]
+[read_only:41m]
 ~/git/cloudcutter (master *$=)
 $ layer_instance_exec pipeline kafka --force date
 # Running `date` on kafka1
@@ -319,11 +315,11 @@ for more details.
 Fri Oct 28 16:31:26
 tvisher@timvisher-rjmetrics.local
 ~
-$ set_default_profile stitch_prod_read_only
+$ set_default_profile read_only
 
 Fri Oct 28 16:31:34
 tvisher@timvisher-rjmetrics.local
-[default profile: stitch_prod_read_only]
+[default profile: read_only]
 ~
 $
 ```
@@ -335,7 +331,7 @@ Use `unassume_role` to unset your default role.
 ```
 Mon Nov 28 10:37:34
 tvisher@timvisher-rjmetrics.local
-[stitch_prod_read_only:25m]
+[read_only:25m]
 ~
 $ ssh_layer_instances pipeline kafka
 ssh '10.2.83.142' # 'kafka4'
