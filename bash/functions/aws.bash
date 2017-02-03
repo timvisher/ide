@@ -579,27 +579,27 @@ unset_default_profile() {
 }
 
 configure_aws_profiles() {
-    if ! aws --profile iam configure get aws_access_key_id > /dev/null 2>&1 || ! aws --profile iam configure get aws_secret_access_key > /dev/null 2>&1
+    if ! aws configure get aws_access_key_id > /dev/null 2>&1 || ! aws configure get aws_secret_access_key > /dev/null 2>&1
     then
-        echo '# Configure your iam profile.' >&2
-        echo 'aws --profile iam configure' >&2
+        echo '# Configure your default (stitch-prod) profile.' >&2
+        echo 'aws configure' >&2
         return 1
     fi
 
-    # good to try to grab the iam user
+    # good to try to grab the default user
 
     mkdir -p ~/.stitch/
 
-    if ! aws --profile iam iam get-user > ~/.stitch/aws-iam-user-cache 2>/dev/null
+    if ! aws iam get-user > ~/.stitch/aws-default-user-cache 2>/dev/null
     then
-        echo '# Unable to retrieve the user associated with the iam profile. Please check your keys.' >&2
+        echo '# Unable to retrieve the user associated with the default profile. Please check your keys.' >&2
         return 1
     fi
 
     # good to generate the template
 
     local user_name
-    user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-iam-user-cache)"
+    user_name="$(jq -r '.User.UserName' < ~/.stitch/aws-default-user-cache)"
 
     # admin_global
     aws --profile admin_global configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
