@@ -149,7 +149,7 @@ Sun Oct 23 09:24:18 EDT 2016
 
 ### AWS
 
-To get started, set up your `iam` profile using `aws --profile iam
+To get started, set up your `default` profile using `aws --profile default
 configure` and your AWS provided key pair and then run
 `configure_aws_profiles`.
 
