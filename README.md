@@ -373,19 +373,14 @@ ssh '10.0.5.171' # 'sourcerer-workers10'
 #### `ssh_instance`
 
 ```
-Wed Mar 01 17:03:37
+Wed Mar 01 17:20:33
 mbilyeu@matts-mbp
-[poweruser:27m]
+[read_only:50m]
 ~
 $ ssh_instance stats
 ssh '10.2.80.88' # 'dogstatsd1'
-
-Wed Mar 01 17:03:50
-mbilyeu@matts-mbp
-[poweruser:27m]
-~
-$ ssh_instance stats-ser
-ssh '10.2.83.143' # 'stats-service1'
+ssh '10.2.83.174' # 'stats-service2'
+ssh '10.2.79.28' # 'stats-service4'
 ```
 
 #### `delete_known_host_line`

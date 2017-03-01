@@ -66,9 +66,8 @@ ssh_instance() {
 
     instance_ips | \
         grep --line-buffered "$layer_pattern" | \
-            head -n 1 |\
-                jq --compact-output --raw-output --monochrome-output \
-                    'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+            jq --compact-output --raw-output --monochrome-output \
+                'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
 layer_instances_ips() {
