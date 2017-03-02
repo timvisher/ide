@@ -61,6 +61,15 @@ ssh_layer_instances() {
            '.Instances[] | select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
+ssh_instance() {
+    local layer_pattern="$1"
+
+    instance_ips | \
+        grep --line-buffered "$layer_pattern" | \
+            jq --compact-output --raw-output --monochrome-output \
+                'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+}
+
 layer_instances_ips() {
     local stack_name="$1"
     local layer_name="$2"

@@ -24,6 +24,7 @@ Please check out to `~/git/ide`.
     - [`ssh_layer_instances`](#ssh_layer_instances)
     - [`ssh_matching_instances`](#ssh_matching_instances)
     - [`ssh_stack_instances`](#ssh_stack_instances)
+    - [`ssh_instance`](#ssh_instance)
     - [`delete_known_host_line`](#delete_known_host_line)
   - [Editing environments](#editing-environments)
     - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
@@ -367,6 +368,19 @@ ssh '10.0.5.82' # 'dbreplicators-service3'
 ssh '10.0.5.50' # 'core-service2'
 …
 ssh '10.0.5.171' # 'sourcerer-workers10'
+```
+
+#### `ssh_instance`
+
+```
+Wed Mar 01 17:20:33
+mbilyeu@matts-mbp
+[read_only:50m]
+~
+$ ssh_instance stats
+ssh '10.2.80.88' # 'dogstatsd1'
+ssh '10.2.83.174' # 'stats-service2'
+ssh '10.2.79.28' # 'stats-service4'
 ```
 
 #### `delete_known_host_line`
