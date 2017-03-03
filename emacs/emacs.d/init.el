@@ -135,7 +135,7 @@ again."
 
 (defun rjmetrics-clone-repo
     (github-username repository)
-  (interactive "sGitHub username: sRepository name: ")
+  (interactive "sGitHub username: \nsRepository name: ")
   (process-file "git"
                 nil
                 nil
