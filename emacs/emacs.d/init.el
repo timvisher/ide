@@ -387,6 +387,17 @@ again."
 
 (global-set-key (kbd "C-c A") 'ag-project)
 
+(global-set-key (kbd "C-c a p") 'ag-project)
+
+(autoload 'ag/read-from-minibuffer "ag")
+
+(defun rjmetrics-ag-code-dir (string)
+  "Runs ag inside the code directory on the VM"
+  (interactive (list (ag/read-from-minibuffer "Search string")))
+  (ag string "/core:/opt/code/"))
+
+(global-set-key (kbd "C-c a c") 'rjmetrics-ag-code-dir)
+
 (global-set-key (kbd "C-c P") 'rjmetrics-find-file)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
