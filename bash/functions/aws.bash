@@ -58,8 +58,60 @@ ssh_layer_instances() {
 
     layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[] | select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+           '.Instances[] | select(.PrivateIp) | @sh "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \(.PrivateIp) # \(.Hostname)"'
 }
+
+# stack: bastion
+alias ssh_bastion_instances='ssh_layer_instances bastion bastion'
+alias ssh_whitelist-tester_instances='ssh_layer_instances bastion whitelist-tester'
+
+# stack: deployment
+alias ssh_jenkins_master_instances='ssh_layer_instances deployment jenkins_master'
+alias ssh_jenkins_build_slave_instances='ssh_layer_instances deployment jenkins_build_slave'
+
+# stack: webservices
+alias ssh_connection_service_instances='ssh_layer_instances webservices connection_service'
+alias ssh_webhook_service_instances='ssh_layer_instances webservices webhook_service'
+alias ssh_billing_service_instances='ssh_layer_instances webservices billing_service'
+alias ssh_api_passthrough_instances='ssh_layer_instances webservices api_passthrough'
+alias ssh_webhookz_instances='ssh_layer_instances webservices webhookz'
+alias ssh_billing_service_scheduler_instances='ssh_layer_instances webservices billing_service_scheduler'
+alias ssh_api_passthrough_staging_instances='ssh_layer_instances webservices api_passthrough_staging'
+alias ssh_app_instances='ssh_layer_instances webservices app'
+alias ssh_app_staging_instances='ssh_layer_instances webservices app_staging'
+alias ssh_spool_service_instances='ssh_layer_instances webservices spool_service'
+alias ssh_gate_instances='ssh_layer_instances webservices gate'
+alias ssh_stats_service_instances='ssh_layer_instances webservices stats_service'
+alias ssh_notification_service_instances='ssh_layer_instances webservices notification_service'
+alias ssh_admin_instances='ssh_layer_instances webservices admin'
+alias ssh_core_service_instances='ssh_layer_instances webservices core_service'
+alias ssh_sourcerer_service_instances='ssh_layer_instances webservices sourcerer_service'
+alias ssh_core_service_scheduler_instances='ssh_layer_instances webservices core_service_scheduler'
+alias ssh_dbreplicators_service_instances='ssh_layer_instances webservices dbreplicators_service'
+alias ssh_sourcerer_scheduler_instances='ssh_layer_instances webservices sourcerer_scheduler'
+alias ssh_menagerie_instances='ssh_layer_instances webservices menagerie'
+alias ssh_core_service_migrations_instances='ssh_layer_instances webservices core_service_migrations'
+
+# stack: replication
+alias ssh_sourcerer_workers_instances='ssh_layer_instances replication sourcerer_workers'
+alias ssh_dbreplicators_workers_instances='ssh_layer_instances replication dbreplicators_workers'
+
+# stack: monitoring
+alias ssh_logstash_forwarder_instances='ssh_layer_instances monitoring logstash_forwarder'
+alias ssh_kibana_instances='ssh_layer_instances monitoring kibana'
+alias ssh_dogstatsd_instances='ssh_layer_instances monitoring dogstatsd'
+
+# stack: pipeline
+alias ssh_kafka_instances='ssh_layer_instances pipeline kafka'
+alias ssh_streamery_instances='ssh_layer_instances pipeline streamery'
+alias ssh_zookeeper_instances='ssh_layer_instances pipeline zookeeper'
+alias ssh_loader_pg_instances='ssh_layer_instances pipeline loader_pg'
+alias ssh_loader_bq_instances='ssh_layer_instances pipeline loader_bq'
+alias ssh_loader_x_instances='ssh_layer_instances pipeline loader_x'
+alias ssh_tracer_instances='ssh_layer_instances pipeline tracer'
+
+# stack: microsites
+alias ssh_microsites_instances='ssh_layer_instances microsites querymongo'
 
 ssh_instance() {
     local layer_pattern="$1"
@@ -154,7 +206,7 @@ layer_instance_exec() {
     shift
     local layer_name="$1"
     shift
-    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '.Instances[1] | {PrivateIp, Hostname}')"
+    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
 
     if [[ --force == $1 ]]
     then
@@ -180,7 +232,7 @@ multi_exec_stack() {
     local stack_instances="$(stack_instances "$stack_name")"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | .Hostname' <<<"$stack_instances" ))
+    hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$stack_instances" ))
 
     if [[ -z $hostnames ]]
     then
@@ -221,7 +273,7 @@ multi_exec_stack() {
 multi_exec_global() {
     global_instances="$(instances)"
 
-    hostnames=($(jq --raw-output '.Hostname' <<<"$global_instances" ))
+    hostnames=($(jq --raw-output 'select("online" == .Status) | .Hostname' <<<"$global_instances" ))
 
     if [[ -z $hostnames ]]
     then
@@ -253,9 +305,9 @@ multi_exec_global() {
         return 0
     fi
 
-    hostips=($(jq --raw-output 'select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
+    hostips=($(jq --raw-output 'select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh -o StrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null 2>/dev/null '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # FIXME refactor this and `multi_exec`
@@ -266,7 +318,7 @@ multi_exec_layer() {
     local layer_instances="$(layer_instances "$stack_name" "$layer_name")"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | .Hostname' <<<"$layer_instances" ))
+    hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$layer_instances" ))
 
     if [[ -z $hostnames ]]
     then
@@ -298,9 +350,9 @@ multi_exec_layer() {
         return 0
     fi
 
-    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
+    hostips=($(jq --raw-output '.Instances[] | select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # FIXME refactor this and `multi_exec_layer`
