@@ -507,6 +507,10 @@ again."
      php-mode)))
  '(projectile-global-mode t)
  '(projectile-mode-line " Projectile")
+ '(safe-local-variable-values
+   (quote
+    ((sh-indent-for-case-alt . ++)
+     (sh-indent-for-case-label . +))))
  '(search-default-mode (quote char-fold-to-regexp))
  '(sentence-end-double-space nil)
  '(whitespace-line-column nil)
