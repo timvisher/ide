@@ -65,10 +65,6 @@ ssh_layer_instances() {
 alias ssh_bastion_instances='ssh_layer_instances bastion bastion'
 alias ssh_whitelist-tester_instances='ssh_layer_instances bastion whitelist-tester'
 
-# stack: deployment
-alias ssh_jenkins_master_instances='ssh_layer_instances deployment jenkins_master'
-alias ssh_jenkins_build_slave_instances='ssh_layer_instances deployment jenkins_build_slave'
-
 # stack: webservices
 alias ssh_connection_service_instances='ssh_layer_instances webservices connection_service'
 alias ssh_webhook_service_instances='ssh_layer_instances webservices webhook_service'
@@ -269,6 +265,13 @@ multi_exec_stack() {
     parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
+alias multi_exec_bastion='multi_exec_stack bastion'
+alias multi_exec_webservices='multi_exec_stack webservices'
+alias multi_exec_replication='multi_exec_stack replication'
+alias multi_exec_monitoring='multi_exec_stack monitoring'
+alias multi_exec_pipeline='multi_exec_stack pipeline'
+alias multi_exec_microsites='multi_exec_stack microsites'
+
 # FIXME refactor this and `multi_exec`
 multi_exec_global() {
     global_instances="$(instances)"
@@ -354,6 +357,54 @@ multi_exec_layer() {
 
     parallel "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
+
+# stack: bastion
+alias multi_exec_bastion='multi_exec_layer bastion bastion'
+alias multi_exec_whitelist_tester='multi_exec_layer bastion whitelist-tester'
+
+# stack: webservices
+alias multi_exec_connection_service='multi_exec_layer webservices connection_service'
+alias multi_exec_webhook_service='multi_exec_layer webservices webhook_service'
+alias multi_exec_billing_service='multi_exec_layer webservices billing_service'
+alias multi_exec_api_passthrough='multi_exec_layer webservices api_passthrough'
+alias multi_exec_webhookz='multi_exec_layer webservices webhookz'
+alias multi_exec_billing_service_scheduler='multi_exec_layer webservices billing_service_scheduler'
+alias multi_exec_api_passthrough_staging='multi_exec_layer webservices api_passthrough_staging'
+alias multi_exec_app='multi_exec_layer webservices app'
+alias multi_exec_app_staging='multi_exec_layer webservices app_staging'
+alias multi_exec_spool_service='multi_exec_layer webservices spool_service'
+alias multi_exec_gate='multi_exec_layer webservices gate'
+alias multi_exec_stats_service='multi_exec_layer webservices stats_service'
+alias multi_exec_notification_service='multi_exec_layer webservices notification_service'
+alias multi_exec_admin='multi_exec_layer webservices admin'
+alias multi_exec_core_service='multi_exec_layer webservices core_service'
+alias multi_exec_sourcerer_service='multi_exec_layer webservices sourcerer_service'
+alias multi_exec_core_service_scheduler='multi_exec_layer webservices core_service_scheduler'
+alias multi_exec_dbreplicators_service='multi_exec_layer webservices dbreplicators_service'
+alias multi_exec_sourcerer_scheduler='multi_exec_layer webservices sourcerer_scheduler'
+alias multi_exec_menagerie='multi_exec_layer webservices menagerie'
+alias multi_exec_core_service_migrations='multi_exec_layer webservices core_service_migrations'
+
+# stack: replication
+alias multi_exec_sourcerer_workers='multi_exec_layer replication sourcerer_workers'
+alias multi_exec_dbreplicators_workers='multi_exec_layer replication dbreplicators_workers'
+
+# stack: monitoring
+alias multi_exec_logstash_forwarder='multi_exec_layer monitoring logstash_forwarder'
+alias multi_exec_kibana='multi_exec_layer monitoring kibana'
+alias multi_exec_dogstatsd='multi_exec_layer monitoring dogstatsd'
+
+# stack: pipeline
+alias multi_exec_kafka='multi_exec_layer pipeline kafka'
+alias multi_exec_streamery='multi_exec_layer pipeline streamery'
+alias multi_exec_zookeeper='multi_exec_layer pipeline zookeeper'
+alias multi_exec_loader_pg='multi_exec_layer pipeline loader_pg'
+alias multi_exec_loader_bq='multi_exec_layer pipeline loader_bq'
+alias multi_exec_loader_x='multi_exec_layer pipeline loader_x'
+alias multi_exec_tracer='multi_exec_layer pipeline tracer'
+
+# stack: microsites
+alias multi_exec_microsites='multi_exec_layer microsites querymongo'
 
 # FIXME refactor this and `multi_exec_layer`
 multi_exec() {
@@ -621,7 +672,6 @@ unassume_role() {
 }
 
 alias assume_read_only='shell_init_role read_only'
-alias assume_poweruser='shell_init_role poweruser'
 alias assume_admin_global='shell_init_role admin_global'
 
 set_default_profile() {
@@ -666,11 +716,6 @@ configure_aws_profiles() {
     aws --profile admin_global configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
     aws --profile admin_global configure set source_profile default
     aws --profile admin_global configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
-
-    # poweruser
-    aws --profile poweruser configure set role_arn 'arn:aws:iam::218546966473:role/poweruser'
-    aws --profile poweruser configure set source_profile default
-    aws --profile poweruser configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
     # read_only
     aws --profile read_only configure set role_arn 'arn:aws:iam::218546966473:role/read_only'

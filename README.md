@@ -24,6 +24,7 @@ Please check out to `~/git/ide`.
     - [`ssh_layer_instances`](#ssh_layer_instances)
     - [`ssh_matching_instances`](#ssh_matching_instances)
     - [`ssh_stack_instances`](#ssh_stack_instances)
+    - [`ssh_*_instances`](#ssh__instances)
     - [`ssh_instance`](#ssh_instance)
     - [`delete_known_host_line`](#delete_known_host_line)
   - [Editing environments](#editing-environments)
@@ -278,6 +279,57 @@ Mon Nov 28 15:44:18 UTC 2016
 `multi_exec_global` and `multi_exec_stack` are also provided and do what
 you would expect them to.
 
+There are oodles of convenience aliases defined for you as well:
+
+```
+Fri Mar 10 15:28:13
+tvisher@timvisher-rjmetrics.local
+[read_only:60m]
+~/git/ide (master *%>)
+$ multi_exec_sourcerer_workers --force uptime
+# Running `uptime` on the sourcerer_workers layer:
+# sourcerer-workers9
+# sourcerer-workers10
+# sourcerer-workers2
+# sourcerer-workers3
+# sourcerer-workers4
+# sourcerer-workers11
+# sourcerer-workers1
+# sourcerer-workers5
+# sourcerer-workers6
+sourcerer-workers10
+ 20:28:18 up 2 days, 22:36,  0 users,  load average: 0.01, 0.03, 0.05
+sourcerer-workers2
+ 20:28:18 up 2 days,  6:05,  0 users,  load average: 0.01, 0.03, 0.05
+sourcerer-workers9
+ 20:28:18 up 2 days, 22:36,  0 users,  load average: 0.00, 0.01, 0.05
+sourcerer-workers3
+ 20:28:18 up 2 days,  6:04,  0 users,  load average: 0.21, 0.13, 0.09
+sourcerer-workers11
+ 20:28:19 up  4:37,  0 users,  load average: 0.00, 0.01, 0.05
+sourcerer-workers4
+ 20:28:19 up 2 days,  6:05,  0 users,  load average: 0.02, 0.04, 0.05
+sourcerer-workers5
+ 20:28:19 up  3:42,  1 user,  load average: 0.42, 0.52, 0.56
+sourcerer-workers1
+ 20:28:19 up  3:41,  0 users,  load average: 0.41, 0.39, 0.41
+sourcerer-workers6
+ 20:28:19 up  3:41,  1 user,  load average: 0.50, 0.52, 0.50
+
+Fri Mar 10 15:28:19
+tvisher@timvisher-rjmetrics.local
+[read_only:59m]
+~/git/ide (master *%>)
+$ multi_exec_menagerie --force uptime
+# Running `uptime` on the menagerie layer:
+# menagerie3
+# menagerie4
+menagerie4
+ 20:28:37 up 50 min,  0 users,  load average: 0.04, 0.03, 0.05
+menagerie3
+ 20:28:37 up 50 min,  0 users,  load average: 0.05, 0.04, 0.05
+```
+
 #### `layer_instance_exec`
 
 Selects an instance from a layer and execs a command on it, possibly
@@ -368,6 +420,28 @@ ssh '10.0.5.82' # 'dbreplicators-service3'
 ssh '10.0.5.50' # 'core-service2'
 …
 ssh '10.0.5.171' # 'sourcerer-workers10'
+```
+
+#### `ssh_*_instances`
+
+There are tons of convenience aliases defined for you as well:
+
+```
+Fri Mar 10 15:28:37
+tvisher@timvisher-rjmetrics.local
+[read_only:59m]
+~/git/ide (master *%>)
+$ ssh_menagerie_instances
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.200' # 'menagerie3'
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.78.180' # 'menagerie4'
+
+Fri Mar 10 15:29:52
+tvisher@timvisher-rjmetrics.local
+[read_only:58m]
+~/git/ide (master *>)
+$ ssh_sourcerer_service_instances
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.137' # 'sourcerer-service2'
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.76.195' # 'sourcerer-service3'
 ```
 
 #### `ssh_instance`
