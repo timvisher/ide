@@ -213,12 +213,15 @@ tvisher@timvisher-rjmetrics.local
 $ pp_role_caches
 assume_read_only 123456 # 41m
 assume_admin_global 123456 # 39m
-
 ```
 
 Variables take precedence over the default profile.
 
 To see the currently cached role you can use `pp_role_cache`.
+
+In the event that you need to uncache a role because it's about to expire
+you think you'll need more time, run `uncache_*` (like
+`uncache_admin_global`).
 
 #### `multi_exec*`
 

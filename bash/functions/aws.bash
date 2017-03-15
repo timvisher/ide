@@ -674,6 +674,24 @@ unassume_role() {
 alias assume_read_only='shell_init_role read_only'
 alias assume_admin_global='shell_init_role admin_global'
 
+uncache_role() {
+    local role_name="$1"
+
+    if [[ -z $role_name ]]
+    then
+        echo "$(tput setaf 1)$(tput bold)# No role name specified"
+        return 1
+    fi
+
+    if [[ -r ~/.stitch/assume-role-cache."$role_name" ]]
+    then
+        rm -v ~/.stitch/assume-role-cache."$role_name"
+    fi
+}
+
+alias uncache_read_only='uncache_role read_only'
+alias uncache_admin_global='uncache_role admin_global'
+
 set_default_profile() {
     if aws --profile "$1" configure get role_arn > /dev/null 2>&1
     then
