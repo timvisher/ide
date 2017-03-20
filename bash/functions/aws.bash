@@ -118,6 +118,10 @@ ssh_instance() {
                 'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
+ssh_jenkins_instance() {
+    ssh ubuntu@"$(aws ec2 describe-instances --instance-id "$(aws autoscaling describe-auto-scaling-instances | jq -r '.AutoScalingInstances[] | select(.AutoScalingGroupName == "jenkins") | .InstanceId')" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress')"
+}
+
 layer_instances_ips() {
     local stack_name="$1"
     local layer_name="$2"

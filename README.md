@@ -397,6 +397,9 @@ ssh '10.2.80.191' # 'kafka1'
 ssh '10.2.76.11' # 'kafka5'
 ```
 
+Anything that will only ever have a single instance will have a command
+like `ssh_jenkins_instance` which just sshes directly there.
+
 #### `ssh_matching_instances`
 
 ```
