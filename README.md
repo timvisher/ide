@@ -184,6 +184,9 @@ tvisher@timvisher-rjmetrics.local
 $
 ```
 
+The `assume_*` aliases are also available in compact forms like `aag` for
+`Assume_Admin_Global` or `aro` for `Assume_Read_Only` etc.
+
 If you've assumed a role and it still hasn't expired you can export it
 into another shell using `export_aws_vars` or just run the corresponding
 `assume_*` command which will read from the cache if it exists and has not

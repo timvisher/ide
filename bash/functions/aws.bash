@@ -676,7 +676,9 @@ unassume_role() {
 }
 
 alias assume_read_only='shell_init_role read_only'
+alias aro=assume_read_only
 alias assume_admin_global='shell_init_role admin_global'
+alias aag=assume_admin_global
 
 uncache_role() {
     local role_name="$1"
