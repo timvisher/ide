@@ -141,7 +141,7 @@ again."
                 nil
                 nil
                 "clone"
-                (format "git@github.com:RJMetrics/%s.git" repository))
+                (format "git@github.com:stitchdata/%s.git" repository))
   (magit-status repository)
   ;; TODO cache github-username for the duration of the session or allow
   ;; it be customizod on a per host basis
