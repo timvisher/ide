@@ -503,7 +503,8 @@ again."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (align-cljlet
+    (hcl-mode
+     align-cljlet
      org
      mediawiki
      coffee-mode

@@ -3,7 +3,7 @@
 ;;; Code:
 (add-to-list 'load-path (directory-file-name (or (file-name-directory #$) (car load-path))))
 
-;;;### (autoloads nil "hcl-mode" "hcl-mode.el" (22511 894 0 0))
+;;;### (autoloads nil "hcl-mode" "hcl-mode.el" (22746 25382 0 0))
 ;;; Generated autoloads from hcl-mode.el
 
 (autoload 'hcl-mode "hcl-mode" "\
@@ -12,6 +12,8 @@ Major mode for editing hcl configuration file
 \(fn)" t nil)
 
 (add-to-list 'auto-mode-alist '("\\.hcl\\'" . hcl-mode))
+
+(add-to-list 'auto-mode-alist '("\\.nomad\\'" . hcl-mode))
 
 ;;;***
 
