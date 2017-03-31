@@ -27,6 +27,10 @@ Please check out to `~/git/ide`.
     - [`ssh_*_instances`](#ssh__instances)
     - [`ssh_instance`](#ssh_instance)
     - [`delete_known_host_line`](#delete_known_host_line)
+  - [Stitch Services](#stitch-services)
+    - [Gate](#gate)
+      - [`gate_dead_letters_count`](#gate_dead_letters_count)
+      - [`gate_dead_letters_report`](#gate_dead_letters_report)
   - [Editing environments](#editing-environments)
     - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
   - [Clojure](#clojure)
@@ -38,10 +42,6 @@ Please check out to `~/git/ide`.
     - [`nt`/`ntmux`](#ntntmux)
   - [VirtualBox](#virtualbox)
     - [`vbox_matching_uuid`](#vbox_matching_uuid)
-- [services](#services)
-  - [Gate](#gate)
-    - [`gate_dead_letters_count`](#gate_dead_letters_count)
-    - [`gate_dead_letters_report`](#gate_dead_letters_report)
 - [emacs](#emacs)
   - [Installation](#installation-2)
   - [General Notes](#general-notes)
@@ -505,6 +505,86 @@ Warning: Permanently added '10.0.5.211' (ECDSA) to the list of known hosts.
 tvisher@loader-pg2:~$
 ```
 
+### Stitch Services
+
+#### Gate
+
+##### `gate_dead_letters_count`
+
+Outputs how many dead letters there currently are.
+
+```
+Fri Mar 31 09:51:44
+tvisher@timvisher-rjmetrics.local
+[read_only:10m]
+~
+$ gate_dead_letters_count
+0
+```
+
+##### `gate_dead_letters_report`
+
+Creates a dead letter report like:
+
+```
+Fri Mar 31 09:41:44
+tvisher@timvisher-rjmetrics.local
+[read_only:20m]
+~
+$ gate_dead_letters_report
+{
+  "Key": "1f1e0d08-de3e-47cb-9643-c4c5e495ddd4-d98a8f55d4c2bc3e8ec1c5c1d24a40b14fc06437-20170331-043551634",
+  "LastModified": "2017-03-31T04:35:52.000Z",
+  "message": "Timeout after waiting for 10000 ms.",
+  "stack-trace": [
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:59)",
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
+    "clojure.lang.Var.invoke(Var.java:383)",
+    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
+    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
+    "liberator.core$decide.invokeStatic(core.clj:81)",
+    "liberator.core$decide.invoke(core.clj:73)"
+  ]
+}
+{
+  "Key": "3c970ef3-1e40-4658-8557-ef0bb79cc13a-93542508c195c12afaccdcb20a8814857a0f3851-20170331-043603988",
+  "LastModified": "2017-03-31T04:36:05.000Z",
+  "message": "Timeout after waiting for 10000 ms.",
+  "stack-trace": [
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:59)",
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
+    "clojure.lang.Var.invoke(Var.java:383)",
+    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
+    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
+    "liberator.core$decide.invokeStatic(core.clj:81)",
+    "liberator.core$decide.invoke(core.clj:73)"
+  ]
+}
+{
+  "Key": "9114a863-eb47-4b4c-9a07-dc2e8d872779-916f664df1d5240bf62016c208d7ff9ac2f3b9d9-20170331-043602385",
+  "LastModified": "2017-03-31T04:36:04.000Z",
+  "message": "org.apache.kafka.common.errors.NetworkException: The server disconnected before a response was received.",
+  "stack-trace": [
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.valueOrError(FutureRecordMetadata.java:65)",
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:60)",
+    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
+    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
+    "clojure.lang.Var.invoke(Var.java:383)",
+    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
+    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
+    "liberator.core$decide.invokeStatic(core.clj:81)"
+  ]
+}
+```
+
+This consumes `gate_sample_dead_letters` which gives you much more of the
+raw objects. It takes every 25th dead letter and makes a json stream out
+of it.
 
 ### Editing environments
 
@@ -726,87 +806,6 @@ $ vbox_matching_uuid boxc
 8fb863f9-5b66-46c5-a9cb-f8b9e5b7695b # boxcutter_core_1476144949883_86068
 0cbf6ed5-ec95-4d88-9ace-9a1bb58812fa # kitchen-boxcutter-default-rjmetrics-os_default_1477621648011_25989
 ```
-
-## services
-
-### Gate
-
-#### `gate_dead_letters_count`
-
-Outputs how many dead letters there currently are.
-
-```
-Fri Mar 31 09:51:44
-tvisher@timvisher-rjmetrics.local
-[read_only:10m]
-~
-$ gate_dead_letters_count
-0
-```
-
-#### `gate_dead_letters_report`
-
-Creates a dead letter report like:
-
-```
-Fri Mar 31 09:41:44
-tvisher@timvisher-rjmetrics.local
-[read_only:20m]
-~
-$ gate_dead_letters_report
-{
-  "Key": "1f1e0d08-de3e-47cb-9643-c4c5e495ddd4-d98a8f55d4c2bc3e8ec1c5c1d24a40b14fc06437-20170331-043551634",
-  "LastModified": "2017-03-31T04:35:52.000Z",
-  "message": "Timeout after waiting for 10000 ms.",
-  "stack-trace": [
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:59)",
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
-    "clojure.lang.Var.invoke(Var.java:383)",
-    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
-    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
-    "liberator.core$decide.invokeStatic(core.clj:81)",
-    "liberator.core$decide.invoke(core.clj:73)"
-  ]
-}
-{
-  "Key": "3c970ef3-1e40-4658-8557-ef0bb79cc13a-93542508c195c12afaccdcb20a8814857a0f3851-20170331-043603988",
-  "LastModified": "2017-03-31T04:36:05.000Z",
-  "message": "Timeout after waiting for 10000 ms.",
-  "stack-trace": [
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:59)",
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
-    "clojure.lang.Var.invoke(Var.java:383)",
-    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
-    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
-    "liberator.core$decide.invokeStatic(core.clj:81)",
-    "liberator.core$decide.invoke(core.clj:73)"
-  ]
-}
-{
-  "Key": "9114a863-eb47-4b4c-9a07-dc2e8d872779-916f664df1d5240bf62016c208d7ff9ac2f3b9d9-20170331-043602385",
-  "LastModified": "2017-03-31T04:36:04.000Z",
-  "message": "org.apache.kafka.common.errors.NetworkException: The server disconnected before a response was received.",
-  "stack-trace": [
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.valueOrError(FutureRecordMetadata.java:65)",
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:60)",
-    "org.apache.kafka.clients.producer.internals.FutureRecordMetadata.get(FutureRecordMetadata.java:25)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invokeStatic(producer.clj:55)",
-    "com.rjmetrics.pipeline.gate.kafka.producer$retrieve_metadata.invoke(producer.clj:49)",
-    "clojure.lang.Var.invoke(Var.java:383)",
-    "com.rjmetrics.pipeline.gate.kafka.persist$mk_batch_persister$fn__24441.invoke(persist.clj:38)",
-    "com.rjmetrics.pipeline.gate.routes.push$insert_batch$fn__24528.invoke(push.clj:72)",
-    "liberator.core$decide.invokeStatic(core.clj:81)"
-  ]
-}
-```
-
-This consumes `gate_sample_dead_letters` which gives you much more of the
-raw objects. It takes every 25th dead letter and makes a json stream out
-of it.
 
 ## emacs
 
