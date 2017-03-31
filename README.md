@@ -31,6 +31,7 @@ Please check out to `~/git/ide`.
     - [Gate](#gate)
       - [`gate_dead_letters_count`](#gate_dead_letters_count)
       - [`gate_dead_letters_report`](#gate_dead_letters_report)
+      - [`gate_dead_letters_replay`](#gate_dead_letters_replay)
   - [Editing environments](#editing-environments)
     - [`edit_frontend_envs_[start|end]`](#edit_frontend_envs_startend)
   - [Clojure](#clojure)
