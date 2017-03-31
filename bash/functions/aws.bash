@@ -226,6 +226,8 @@ layer_instance_exec() {
     ssh -o StrictHostKeyChecking=no "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
 }
 
+alias gate_instance_exec='layer_instance_exec webservices gate'
+
 # FIXME refactor this and `multi_exec`
 multi_exec_stack() {
     local stack_name="$1"
