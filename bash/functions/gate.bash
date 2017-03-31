@@ -29,6 +29,6 @@ gate_dead_letters_report() {
     done < <(gate_sample_dead_letters | jq --slurp -rc '.[]')
 }
 
-gate_replay_dead_letters() {
+gate_dead_letters_replay() {
     gate_instance_exec --force 'source /etc/default/pipeline-gate && java -Xmx1g -cp /opt/deploy/pipeline-gate/pipeline-gate-service-standalone.jar com.rjmetrics.pipeline.gate.tools.replay -b com-stitchdata-prod-gate-dead-letters'
 }

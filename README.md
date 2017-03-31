@@ -586,6 +586,10 @@ This consumes `gate_sample_dead_letters` which gives you much more of the
 raw objects. It takes every 25th dead letter and makes a json stream out
 of it.
 
+##### `gate_dead_letters_replay`
+
+Replays dead letters on a random gate instance.
+
 ### Editing environments
 
 #### `edit_frontend_envs_[start|end]`
