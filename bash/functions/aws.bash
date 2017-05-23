@@ -52,13 +52,22 @@ layer_instances() {
     aws opsworks describe-instances --layer-id "$(layer_id "$stack_name" "$layer_name")"
 }
 
+alias layer_instances_loader_bq='layer_instances pipeline loader_bq'
+
+readonly silent_ssh_options=(
+    -o ConnectTimeout=5
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -q
+)
+
 ssh_layer_instances() {
     local stack_name="$1"
     local layer_name="$2"
 
     layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[] | select(.PrivateIp) | @sh "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \(.PrivateIp) # \(.Hostname)"'
+           '.Instances[] | select(.PrivateIp) | @sh "ssh '"${silent_ssh_options[*]}"' \(.PrivateIp) # \(.Hostname)"'
 }
 
 # stack: bastion
@@ -115,11 +124,11 @@ ssh_instance() {
     instance_ips | \
         grep --line-buffered "$layer_pattern" | \
             jq --compact-output --raw-output --monochrome-output \
-                'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+                'select(.PrivateIp) | @sh "ssh '"${silent_ssh_options[*]}"' \(.PrivateIp) # \(.Hostname)"'
 }
 
 ssh_jenkins_instance() {
-    ssh ubuntu@"$(aws ec2 describe-instances --instance-id "$(aws autoscaling describe-auto-scaling-instances | jq -r '.AutoScalingInstances[] | select(.AutoScalingGroupName == "jenkins") | .InstanceId')" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress')"
+    ssh "${silent_ssh_options[@]}" ubuntu@"$(aws ec2 describe-instances --instance-id "$(aws autoscaling describe-auto-scaling-instances | jq -r '.AutoScalingInstances[] | select(.AutoScalingGroupName == "jenkins") | .InstanceId')" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress')"
 }
 
 layer_instances_ips() {
@@ -186,7 +195,7 @@ ssh_stack_instances() {
     local stack_name="$1"
     aws opsworks describe-instances --stack-id "$(stack_id "$stack_name")" \
         | jq --compact-output --raw-output --monochrome-output \
-             '.Instances[] | select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+             '.Instances[] | select(.PrivateIp) | @sh "ssh ${silent_ssh_options[*]} \(.PrivateIp) # \(.Hostname)"'
 }
 
 stack_instances() {
@@ -223,7 +232,7 @@ layer_instance_exec() {
         return 0
     fi
 
-    ssh -o StrictHostKeyChecking=no "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
+    ssh "${silent_ssh_options[@]}" "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
 }
 
 alias gate_instance_exec='layer_instance_exec webservices gate'
@@ -268,7 +277,7 @@ multi_exec_stack() {
 
     hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh ${silent_ssh_options[*]} '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 alias multi_exec_bastion='multi_exec_stack bastion'
@@ -316,7 +325,7 @@ multi_exec_global() {
 
     hostips=($(jq --raw-output 'select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null 2>/dev/null '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh ${silent_ssh_options[*]} '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # FIXME refactor this and `multi_exec`
@@ -361,7 +370,7 @@ multi_exec_layer() {
 
     hostips=($(jq --raw-output '.Instances[] | select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh ${silent_ssh_options[*]} '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # stack: bastion
@@ -454,7 +463,7 @@ multi_exec() {
 
     hostips=($(jq --raw-output '.Instances[] | select(.Hostname | test("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
 
-    parallel "ssh -o StrictHostKeyChecking=no '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel "ssh ${silent_ssh_options[*]} '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 instance_id() {
