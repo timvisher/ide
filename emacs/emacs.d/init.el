@@ -477,6 +477,7 @@ again."
  ;; If there is more than one, they won't work right.
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch (quote static))
+ '(coffee-tab-width 2)
  '(column-number-mode t)
  '(delete-selection-mode t)
  '(dired-dwim-target t)
