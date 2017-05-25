@@ -185,6 +185,15 @@ layer_custom_recipes() {
                              | flatten)}'
 }
 
+custom_recipes_global() {
+    while read -r sn
+    do
+        while read -r ln
+        do
+            layer_custom_recipes "$sn" "$ln"
+        done < <(layer_names "$sn")
+    done < <(stack_names)
+}
 
 stack_instance_id() {
     local stack_id="$1"
