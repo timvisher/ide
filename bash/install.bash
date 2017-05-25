@@ -44,7 +44,12 @@ then
     do
         echo "$message" >&2
     done
-    exit 1
+    if [[ --force == $1 ]]
+    then
+        echo "# Forcing install" >&2
+    else
+        exit 1
+    fi
 fi
 
 # No errors found.
@@ -53,13 +58,13 @@ for f in !(install.bash|remove.bash|bin)
 do
     if [[ $(readlink ~/".$f") != $HOME/git/ide/bash/"$f" ]]
     then
-        ln -v -s ~/git/ide/bash/"$f" ~/".$f" || { echo "# Couldn't create link for ~/.$f" >&2; exit 1; }
+        ln -v -sf ~/git/ide/bash/"$f" ~/".$f" || { echo "# Couldn't create link for ~/.$f" >&2; exit 1; }
     fi
 done
 
 if [[ $(readlink ~/bin) != $HOME/git/ide/bash/bin ]]
 then
-    ln -v -s ~/git/ide/bash/bin ~/bin || { echo "# Couldn't link ~/bin"; exit 1; }
+    ln -v -sf ~/git/ide/bash/bin ~/bin || { echo "# Couldn't link ~/bin"; exit 1; }
 fi
 
 echo "All good. Please open a new shell for the changes to take effect."
