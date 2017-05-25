@@ -119,12 +119,14 @@ again."
 
 (defvar rjmetrics-find-file-project nil)
 
-(defun rjmetrics-find-file (arg)
+(defun rjmetrics-find-file
+    (arg)
   (interactive "p")
-  (if (not rjmetrics-find-file-project)
+  (if (or (prefix-arg-count-p arg 1) (not rjmetrics-find-file-project))
       (setq rjmetrics-find-file-project (rjmetrics-read-box-project)))
   (let ((default-directory rjmetrics-find-file-project))
-    (projectile-find-file arg)))
+    (projectile-find-file (or (prefix-arg-count-p arg 1)
+                              (prefix-arg-count-p arg 2)))))
 
 (defun rjmetrics-dired-code-dir
     ()
@@ -246,11 +248,10 @@ again."
 
 (defun prefix-arg-count-p
     (arg count)
-  (if (= 1 arg)
-      (= 0 count)
-    (if (= 0 (% arg 4))
-        (= count (/ arg 4))
-      (error "%d not evenly divisible by 4" arg))))
+  (let ((c (log arg 4)))
+    (if (not (= (truncate c) c))
+        (error "%d not a power of 4" arg)
+      (truncate c))))
 
 (defun github-compare
     (arg)
