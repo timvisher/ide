@@ -264,10 +264,10 @@ multi_exec_stack() {
     then
         run_answer=y
         shift
-        echo '# Running `'"$*"'` on the '"$stack_name"' stack:'
+        echo '# Running `'"$*"'` on the '"$stack_name"' stack:' >&2
         for hn in "${hostnames[@]}"
         do
-            echo "# $hn"
+            echo "# $hn" >&2
         done
     else
         echo '# Run `'"$*"'` on the '"$stack_name"' stack?'
@@ -507,6 +507,10 @@ instance_ips() {
     done \
         | sort
 }
+
+##########################################################################
+### aws role management
+##########################################################################
 
 _pp_role_cache_file() {
     local role_cache_file="$1"
