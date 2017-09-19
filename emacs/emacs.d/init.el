@@ -152,6 +152,23 @@ again."
                             github-username
                             repository)))
 
+(defun singer-clone-repo
+    (github-username repository)
+  (interactive "sGitHub username: \nsRepository name: ")
+  (process-file "git"
+                nil
+                nil
+                nil
+                "clone"
+                (format "git@github.com:singer-io/%s.git" repository))
+  (magit-status repository)
+  ;; TODO cache github-username for the duration of the session or allow
+  ;; it be customizod on a per host basis
+  (magit-remote-add github-username
+                    (format "git@github.com:%s/%s.git"
+                            github-username
+                            repository)))
+
 (autoload 'magit-toplevel "magit-git")
 (autoload 'magit-process-file "magit-process")
 
