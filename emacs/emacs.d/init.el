@@ -375,6 +375,27 @@ again."
 
 (global-set-key (kbd "M-Q") 'unfill-paragraph)
 
+(defun stitch-read-box-virtualenv
+    ()
+  (completing-read "virtualenv: "
+                   (directory-files "/core:.virtualenvs")
+                   (lambda (file)
+                     (not
+                      (or (string= "." file)
+                          (string= ".." file))))
+                   t))
+
+(defvar stitch-virtualenv-base-dir nil)
+
+(defun stitch-virtualenv
+    (arg)
+  (interactive "p")
+  (if (or (prefix-arg-count-p arg 1) (not stitch-virtualenv-base-dir))
+      (setq stitch-virtualenv-base-dir (stitch-read-box-virtualenv)))
+  (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" stitch-virtualenv-base-dir)))
+    (setq python-shell-virtualenv-root base-dir)
+    (message "python-shell-virtualenv-root=%s" base-dir)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
