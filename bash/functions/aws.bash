@@ -70,6 +70,16 @@ ssh_layer_instances() {
            '.Instances[] | select(.PrivateIp) | @sh "ssh '"${silent_ssh_options[*]}"' \(.PrivateIp) # \(.Hostname)"'
 }
 
+ssh_layer_instance() {
+    local stack_name="$1"
+    local layer_name="$2"
+    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+
+    ssh "${silent_ssh_options[@]}" "$(jq -r '.PrivateIp' <<<"$instance")"
+}
+
+ssh_connection_service_instance() { ssh_layer_instance webservices connection_service; }
+
 # stack: bastion
 alias ssh_bastion_instances='ssh_layer_instances bastion bastion'
 alias ssh_whitelist-tester_instances='ssh_layer_instances bastion whitelist-tester'
