@@ -265,10 +265,10 @@ again."
 
 (defun prefix-arg-count-p
     (arg count)
-  (let ((c (log arg 4)))
-    (if (not (= (truncate c) c))
-        (error "%d not a power of 4" arg)
-      (truncate c))))
+  (= count (let ((c (log arg 4)))
+             (if (not (= (truncate c) c))
+                 (error "%d not a power of 4" arg)
+               (truncate c)))))
 
 (defun github-compare
     (arg)
