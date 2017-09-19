@@ -787,3 +787,12 @@ export_profile_key() {
     echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
     echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
 }
+
+nrepl_menagerie() {
+    local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+    local ip="$(jq -r '.PrivateIp' <<<"$instance")"
+    local hostname="$(jq -r '.Hostname' <<<"$instance")"
+    command=(ssh ${silent_ssh_options[*]} -L6033:localhost:4033 "$ip")
+    echo "# ${command[*]}" >&2
+    ${command[*]}
+}
