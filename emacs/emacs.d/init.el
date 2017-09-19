@@ -569,6 +569,7 @@ again."
      php-mode)))
  '(projectile-global-mode t)
  '(projectile-mode-line " Projectile")
+ '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
    (quote
     ((sh-indent-for-case-alt . ++)
