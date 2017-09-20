@@ -16,6 +16,9 @@ Host bastion
   # gives us a 10 minute window after the last connection is closed
   # where we can continue to piggyback on it.
   ControlPersist 10m
+  # If your localhost username differs from your bastion username,
+  # add this line
+  User yourbastionusername
 
 # stitch-prod
 Host 10.2.*
@@ -31,4 +34,8 @@ Host 10.2.*
   #
   # This is different than reverse tunneling (i.e. `-L
   # 22:localhost:22`) but I'm not equipped to say how. :)
-  ProxyJump bastion
+  ProxyCommand ssh -W %h:%p bastion
+  ForwardAgent yes
+  # If your localhost username differs from your bastion username,
+  # add this line
+  User yourbastionusername
