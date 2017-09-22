@@ -538,6 +538,7 @@ again."
  '(ido-vertical-mode t)
  '(js-indent-level 2)
  '(org-export-backends (quote (ascii html md)))
+ '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-refile-use-outline-path t)
  '(org-todo-keywords
    (quote
