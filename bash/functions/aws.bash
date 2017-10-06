@@ -255,6 +255,7 @@ layer_instance_exec() {
 }
 
 alias gate_instance_exec='layer_instance_exec webservices gate'
+alias webhookz_instance_exec='layer_instance_exec webservices webhookz'
 
 # FIXME refactor this and `multi_exec`
 multi_exec_stack() {
