@@ -506,6 +506,30 @@ Warning: Permanently added '10.0.5.211' (ECDSA) to the list of known hosts.
 tvisher@loader-pg2:~$
 ```
 
+### k8s
+
+#### `k8s_kubectl_shell`
+
+```
+Mon Dec 04 11:46:06
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%>)
+$ k8s_kubectl_shell
+psantaclara@bastion1:~$ kubectl version --short
+Client Version: v1.6.6
+Server Version: v1.6.2
+```
+
+#### `k8s_proxy`
+
+```
+Mon Dec 04 11:53:02
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%>)
+$ k8s_proxy
+Starting to serve on 127.0.0.1:5018
+```
+
 ### Stitch Services
 
 #### Gate
