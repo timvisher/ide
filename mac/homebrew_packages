@@ -17,7 +17,6 @@ mobile-shell
 packer
 parallel
 pup
-reattach-to-user-namespace
 rlwrap
 shellcheck
 the_silver_searcher

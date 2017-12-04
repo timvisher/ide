@@ -11,7 +11,7 @@ function new_tmux_session {
 
     local base_dir=$2
 
-    local default_command="which reattach-to-user-namespace > /dev/null 2>&1 && reattach-to-user-namespace -l bash || bash"
+    local default_command="bash"
 
     (
         cd $base_dir
