@@ -720,7 +720,7 @@ uncache_role() {
 
     if [[ -z $role_name ]]
     then
-        echo "$(tput setaf 1)$(tput bold)# No role name specified"
+        echo "$(tput setaf 1)$(tput bold)# No role name specified$(tput sgr0)"
         return 1
     fi
 
