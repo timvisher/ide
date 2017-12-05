@@ -807,3 +807,78 @@ nrepl_menagerie() {
     echo "# ${command[*]}" >&2
     ${command[*]}
 }
+
+##########################################################################
+### Deployment Monitoring
+##########################################################################
+
+aws_stack_status() {
+    local stack_name=$1
+
+    stack_instances "$stack_name" | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"'
+}
+
+aws_stack_status_monitoring() { aws_stack_status monitoring; }
+aws_stack_status_bastion() { aws_stack_status bastion; }
+aws_stack_status_webservices() { aws_stack_status webservices; }
+aws_stack_status_replication() { aws_stack_status replication; }
+aws_stack_status_monitoring() { aws_stack_status monitoring; }
+aws_stack_status_pipeline() { aws_stack_status pipeline; }
+aws_stack_status_microsites() { aws_stack_status microsites; }
+aws_stack_status_deployment() { aws_stack_status deployment; }
+
+##########################################################################
+### aws_layer_status
+###
+### Useful for watching a deploy like:
+###
+### Quotes Necessary!
+### watch -d -n 10 'bash -lc "aws_layer_status foo bar"'
+##########################################################################
+aws_layer_status() {
+    local stack_name=$1
+    local layer_name=$2
+
+    layer_instances "$stack_name" "$layer_name" | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"'
+}
+
+aws_layer_status_admin() { aws_layer_status webservices admin; }
+aws_layer_status_api_passthrough() { aws_layer_status webservices api_passthrough; }
+aws_layer_status_api_passthrough_staging() { aws_layer_status webservices api_passthrough_staging; }
+aws_layer_status_bastion() { aws_layer_status bastion bastion; }
+aws_layer_status_billing_service() { aws_layer_status webservices billing_service; }
+aws_layer_status_billing_service_scheduler() { aws_layer_status webservices billing_service_scheduler; }
+aws_layer_status_connection_service() { aws_layer_status webservices connection_service; }
+aws_layer_status_core_service() { aws_layer_status webservices core_service; }
+aws_layer_status_core_service_migrations() { aws_layer_status webservices core_service_migrations; }
+aws_layer_status_core_service_scheduler() { aws_layer_status webservices core_service_scheduler; }
+aws_layer_status_dbreplicators_service() { aws_layer_status webservices dbreplicators_service; }
+aws_layer_status_dbreplicators_workers() { aws_layer_status replication dbreplicators_workers; }
+aws_layer_status_dogstatsd() { aws_layer_status monitoring dogstatsd; }
+aws_layer_status_elastalert() { aws_layer_status monitoring elastalert; }
+aws_layer_status_elasticsearch_forwarder() { aws_layer_status monitoring elasticsearch_forwarder; }
+aws_layer_status_front_end_app() { aws_layer_status webservices front_end_app; }
+aws_layer_status_front_end_app_staging() { aws_layer_status webservices front_end_app_staging; }
+aws_layer_status_gate() { aws_layer_status webservices gate; }
+aws_layer_status_jenkins_master() { aws_layer_status deployment jenkins_master; }
+aws_layer_status_kafka() { aws_layer_status pipeline kafka; }
+aws_layer_status_kibana() { aws_layer_status monitoring kibana; }
+aws_layer_status_loader_bq() { aws_layer_status pipeline loader_bq; }
+aws_layer_status_loader_pg() { aws_layer_status pipeline loader_pg; }
+aws_layer_status_loader_snow() { aws_layer_status pipeline loader_snow; }
+aws_layer_status_loader_x() { aws_layer_status pipeline loader_x; }
+aws_layer_status_logstash_forwarder() { aws_layer_status monitoring logstash_forwarder; }
+aws_layer_status_menagerie() { aws_layer_status webservices menagerie; }
+aws_layer_status_notification_service() { aws_layer_status webservices notification_service; }
+aws_layer_status_querymongo() { aws_layer_status microsites querymongo; }
+aws_layer_status_sourcerer_scheduler() { aws_layer_status webservices sourcerer_scheduler; }
+aws_layer_status_sourcerer_service() { aws_layer_status webservices sourcerer_service; }
+aws_layer_status_sourcerer_workers() { aws_layer_status replication sourcerer_workers; }
+aws_layer_status_spool_service() { aws_layer_status webservices spool_service; }
+aws_layer_status_stats_service() { aws_layer_status webservices stats_service; }
+aws_layer_status_streamery() { aws_layer_status pipeline streamery; }
+aws_layer_status_tracer() { aws_layer_status pipeline tracer; }
+aws_layer_status_webhook_service() { aws_layer_status webservices webhook_service; }
+aws_layer_status_webhookz() { aws_layer_status webservices webhookz; }
+aws_layer_status_whitelist-tester() { aws_layer_status bastion whitelist-tester; }
+aws_layer_status_zookeeper() { aws_layer_status pipeline zookeeper; }

@@ -27,6 +27,8 @@ Please check out to `~/git/ide`.
     - [`ssh_*_instances`](#ssh__instances)
     - [`ssh_instance`](#ssh_instance)
     - [`delete_known_host_line`](#delete_known_host_line)
+    - [Deployment Monitoring](#deployment-monitoring)
+      - [`aws_layer_status(_*)`](#aws_layer_status_)
   - [k8s](#k8s)
     - [`k8s_kubectl_shell`](#k8s_kubectl_shell)
     - [`k8s_proxy`](#k8s_proxy)
@@ -187,7 +189,6 @@ $ assume_read_only 484610
 
 Mon Oct 31 13:42:58
 tvisher@timvisher-rjmetrics.local
-[read_only:59m]
 ~/git/ide
 $
 ```
@@ -208,7 +209,6 @@ $ export_aws_vars
 
 Mon Oct 31 13:51:56
 tvisher@timvisher-rjmetrics.local
-[read_only:51m]
 ~/git/ide
 $
 ```
@@ -219,7 +219,6 @@ To see your currently cached roles and when they're good till you can run
 ```
 Tue Nov 01 11:24:48
 tvisher@timvisher-rjmetrics.local
-[admin_global:41m]
 ~/git/ide
 $ pp_role_caches
 assume_read_only 123456 # 41m
@@ -242,7 +241,6 @@ commands:
 ```
 Mon Nov 28 10:36:25
 tvisher@timvisher-rjmetrics.local
-[read_only:26m]
 ~
 $ layer_instances pipeline kafka | jq -r '.Instances[] | .Hostname'
 kafka4
@@ -253,7 +251,6 @@ kafka5
 
 Mon Nov 28 10:42:52
 tvisher@timvisher-rjmetrics.local
-[read_only:20m]
 ~
 $ multi_exec_layer pipeline kafka --force date
 # Running `date` on the kafka layer:
@@ -275,7 +272,6 @@ Mon Nov 28 15:44:02 UTC 2016
 
 Mon Nov 28 10:44:02
 tvisher@timvisher-rjmetrics.local
-[read_only:18m]
 ~
 $ multi_exec pipeline 'kafka[124]' --force date
 # Running `date` on the following hosts?
@@ -298,7 +294,6 @@ There are oodles of convenience aliases defined for you as well:
 ```
 Fri Mar 10 15:28:13
 tvisher@timvisher-rjmetrics.local
-[read_only:60m]
 ~/git/ide (master *%>)
 $ multi_exec_sourcerer_workers --force uptime
 # Running `uptime` on the sourcerer_workers layer:
@@ -332,7 +327,6 @@ sourcerer-workers6
 
 Fri Mar 10 15:28:19
 tvisher@timvisher-rjmetrics.local
-[read_only:59m]
 ~/git/ide (master *%>)
 $ multi_exec_menagerie --force uptime
 # Running `uptime` on the menagerie layer:
@@ -352,7 +346,6 @@ non-interactively.
 ```
 Tue Dec 06 10:32:38
 tvisher@timvisher-rjmetrics.local
-[read_only:48m]
 ~/git/cloudcutter (master *$=)
 $ layer_instance_exec pipeline kafka date
 # Run `date` on kafka1? [y/N] y
@@ -361,7 +354,6 @@ Tue Dec  6 15:39:44 UTC 2016
 
 Tue Dec 06 10:39:44
 tvisher@timvisher-rjmetrics.local
-[read_only:41m]
 ~/git/cloudcutter (master *$=)
 $ layer_instance_exec pipeline kafka --force date
 # Running `date` on kafka1
@@ -398,7 +390,6 @@ Use `unassume_role` to unset your default role.
 ```
 Mon Nov 28 10:37:34
 tvisher@timvisher-rjmetrics.local
-[read_only:25m]
 ~
 $ ssh_layer_instances pipeline kafka
 ssh '10.2.83.142' # 'kafka4'
@@ -446,7 +437,6 @@ There are tons of convenience aliases defined for you as well:
 ```
 Fri Mar 10 15:28:37
 tvisher@timvisher-rjmetrics.local
-[read_only:59m]
 ~/git/ide (master *%>)
 $ ssh_menagerie_instances
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.200' # 'menagerie3'
@@ -454,7 +444,6 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.78.180'
 
 Fri Mar 10 15:29:52
 tvisher@timvisher-rjmetrics.local
-[read_only:58m]
 ~/git/ide (master *>)
 $ ssh_sourcerer_service_instances
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.137' # 'sourcerer-service2'
@@ -466,7 +455,6 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.76.195'
 ```
 Wed Mar 01 17:20:33
 mbilyeu@matts-mbp
-[read_only:50m]
 ~
 $ ssh_instance stats
 ssh '10.2.80.88' # 'dogstatsd1'
@@ -509,6 +497,42 @@ Warning: Permanently added '10.0.5.211' (ECDSA) to the list of known hosts.
 tvisher@loader-pg2:~$
 ```
 
+#### Deployment Monitoring
+
+##### `aws_layer_status(_*)`
+
+```
+Tue Dec 05 09:34:31
+tvisher@timvisher-rjmetrics.local
+~
+$ aws_layer_status monitoring logstash_forwarder
+logstash-forwarder2 (10.2.77.154): online
+logstash-forwarder1 (10.2.81.85): online
+logstash-forwarder4 (10.2.82.72): online
+logstash-forwarder3 (10.2.84.117): online
+
+Tue Dec 05 09:34:47
+tvisher@timvisher-rjmetrics.local
+~
+$ aws_layer_status_logstash_forwarder
+logstash-forwarder2 (10.2.77.154): online
+logstash-forwarder1 (10.2.81.85): online
+logstash-forwarder4 (10.2.82.72): online
+logstash-forwarder3 (10.2.84.117): online
+
+Tue Dec 05 09:35:00
+tvisher@timvisher-rjmetrics.local
+~
+$ watch -d -n 10 "bash -lc 'aws_layer_status_logstash_forwarder'"
+# in ncurses
+Every 10.0s: bash -lc 'aws_layer_status_logstash_forwarder'  Tue Dec  5 09:35:16 2017
+
+logstash-forwarder2 (10.2.77.154): online
+logstash-forwarder1 (10.2.81.85): online
+logstash-forwarder4 (10.2.82.72): online
+logstash-forwarder3 (10.2.84.117): online
+```
+
 ### k8s
 
 #### `k8s_kubectl_shell`
@@ -544,7 +568,6 @@ Outputs how many dead letters there currently are.
 ```
 Fri Mar 31 09:51:44
 tvisher@timvisher-rjmetrics.local
-[read_only:10m]
 ~
 $ gate_dead_letters_count
 0
@@ -557,7 +580,6 @@ Creates a dead letter report like:
 ```
 Fri Mar 31 09:41:44
 tvisher@timvisher-rjmetrics.local
-[read_only:20m]
 ~
 $ gate_dead_letters_report
 {
