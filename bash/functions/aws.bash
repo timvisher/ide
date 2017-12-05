@@ -815,7 +815,9 @@ nrepl_menagerie() {
 aws_stack_status() {
     local stack_name=$1
 
-    stack_instances "$stack_name" | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"'
+    stack_instances "$stack_name" \
+        | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"' \
+        | sort -n
 }
 
 aws_stack_status_monitoring() { aws_stack_status monitoring; }
@@ -839,7 +841,9 @@ aws_layer_status() {
     local stack_name=$1
     local layer_name=$2
 
-    layer_instances "$stack_name" "$layer_name" | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"'
+    layer_instances "$stack_name" "$layer_name" \
+        | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"' \
+        | sort -n
 }
 
 aws_layer_status_admin() { aws_layer_status webservices admin; }
