@@ -887,5 +887,5 @@ aws_layer_status_streamery() { aws_layer_status pipeline streamery; }
 aws_layer_status_tracer() { aws_layer_status pipeline tracer; }
 aws_layer_status_webhook_service() { aws_layer_status webservices webhook_service; }
 aws_layer_status_webhookz() { aws_layer_status webservices webhookz; }
-aws_layer_status_whitelist-tester() { aws_layer_status bastion whitelist-tester; }
+aws_layer_status_whitelist_tester() { aws_layer_status bastion whitelist-tester; }
 aws_layer_status_zookeeper() { aws_layer_status pipeline zookeeper; }
