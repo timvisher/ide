@@ -54,12 +54,15 @@ layer_instances() {
 
 alias layer_instances_loader_bq='layer_instances pipeline loader_bq'
 
-readonly silent_ssh_options=(
-    -o ConnectTimeout=5
-    -o StrictHostKeyChecking=no
-    -o UserKnownHostsFile=/dev/null
-    -q
-)
+if [[ -z $silent_ssh_options ]]
+then
+    readonly silent_ssh_options=(
+        -o ConnectTimeout=5
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -q
+    )
+fi
 
 ssh_layer_instances() {
     local stack_name="$1"
