@@ -29,6 +29,7 @@ Please check out to `~/git/ide`.
     - [`delete_known_host_line`](#delete_known_host_line)
     - [Deployment Monitoring](#deployment-monitoring)
       - [`aws_layer_status(_*)`](#aws_layer_status_)
+      - [`aws_elb_instance_health(_*)`](#aws_elb_instance_health_)
   - [k8s](#k8s)
     - [`k8s_kubectl_shell`](#k8s_kubectl_shell)
     - [`k8s_proxy`](#k8s_proxy)
