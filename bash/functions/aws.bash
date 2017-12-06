@@ -889,3 +889,90 @@ aws_layer_status_webhook_service() { aws_layer_status webservices webhook_servic
 aws_layer_status_webhookz() { aws_layer_status webservices webhookz; }
 aws_layer_status_whitelist_tester() { aws_layer_status bastion whitelist-tester; }
 aws_layer_status_zookeeper() { aws_layer_status pipeline zookeeper; }
+
+# ELB
+
+aws_elb_names() {
+    aws elb describe-load-balancers \
+        | jq -r '.LoadBalancerDescriptions[] | .LoadBalancerName'
+}
+
+_aws_elb_describe() {
+    local -a elb_names=("$@")
+
+    aws elb describe-load-balancers --load-balancer-names "${elb_names[@]}" \
+        | jq -r '.LoadBalancerDescriptions[]'
+}
+
+_aws_elb_instance_ids() {
+    local -a elb_names=("$@")
+
+    local aws_elb_json="$(_aws_elb_describe "${elb_names[@]}")"
+
+    jq -r '.Instances[] | .InstanceId' <<< "$aws_elb_json"
+}
+
+_aws_ec2_describe_instances() {
+    local -a ec2_instance_ids=("$@")
+
+    aws ec2 describe-instances --instance-ids "${ec2_instance_ids[@]}" \
+        | jq -r '.Reservations[] | .Instances[]'
+}
+
+_aws_elb_describe_instances() {
+    local -a elb_names=("$@")
+
+    _aws_ec2_describe_instances $(_aws_elb_instance_ids "${elb_names[@]}")
+}
+
+_aws_elb_describe_instance_health() {
+    local -a elb_names=("$@")
+
+    local elb_name
+    for elb_name in "${elb_names[@]}"
+    do
+        aws elb describe-instance-health --load-balancer-name "$elb_name" \
+            | jq -r '.InstanceStates[]'
+    done
+}
+
+aws_elb_instance_health() {
+    local -a elb_names=("$@")
+
+    local instances_json=$(_aws_elb_describe_instances "${elb_names[@]}")
+    local -a instance_ids=($(_aws_elb_instance_ids "${elb_names[@]}"))
+    local health_json=$(_aws_elb_describe_instance_health "${elb_names[@]}")
+
+    for instance_id in "${instance_ids[@]}"
+    do
+        local hostname="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
+                                 | .Tags[]
+                                 |  select("opsworks:instance" == .Key)
+                                 | .Value' <<< "$instances_json")"
+        local health="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
+                               | .State' <<< "$health_json")"
+        echo "$hostname: $health"
+    done
+}
+
+aws_elb_instance_health_admin() { aws_elb_instance_health admin; }
+aws_elb_instance_health_api_passthrough() { aws_elb_instance_health api-passthrough; }
+aws_elb_instance_health_api_passthrough_staging() { aws_elb_instance_health api-passthrough-staging; }
+aws_elb_instance_health_billing_service() { aws_elb_instance_health billing-service; }
+aws_elb_instance_health_connection_service() { aws_elb_instance_health connection-service; }
+aws_elb_instance_health_core_service() { aws_elb_instance_health core-service; }
+aws_elb_instance_health_dbreplicators_service() { aws_elb_instance_health dbreplicators-service; }
+aws_elb_instance_health_elasticsearch_forwarder() { aws_elb_instance_health elasticsearch-forwarder; }
+aws_elb_instance_health_front_end_app() { aws_elb_instance_health front-end-app; }
+aws_elb_instance_health_front_end_app_staging() { aws_elb_instance_health front-end-app-staging; }
+aws_elb_instance_health_gate() { aws_elb_instance_health gate; }
+aws_elb_instance_health_jenkins_stitchdata_com() { aws_elb_instance_health jenkins-stitchdata-com; }
+aws_elb_instance_health_kibana() { aws_elb_instance_health kibana; }
+aws_elb_instance_health_logstash_forwarder() { aws_elb_instance_health logstash-forwarder; }
+aws_elb_instance_health_menagerie() { aws_elb_instance_health menagerie; }
+aws_elb_instance_health_notification_service() { aws_elb_instance_health notification-service; }
+aws_elb_instance_health_querymongo() { aws_elb_instance_health querymongo; }
+aws_elb_instance_health_sourcerer_service() { aws_elb_instance_health sourcerer-service; }
+aws_elb_instance_health_spool_service() { aws_elb_instance_health spool-service; }
+aws_elb_instance_health_stats_service() { aws_elb_instance_health stats-service; }
+aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }

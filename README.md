@@ -533,6 +533,48 @@ logstash-forwarder4 (10.2.82.72): online
 logstash-forwarder3 (10.2.84.117): online
 ```
 
+##### `aws_elb_instance_health(_*)`
+
+```
+# One Arg
+Wed Dec 06 09:52:19
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%=)
+$ aws_elb_instance_health logstash-forwarder
+logstash-forwarder2: InService
+logstash-forwarder1: InService
+
+# Multiple Args
+Wed Dec 06 09:54:48
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%>)
+$ aws_elb_instance_health logstash-forwarder webhookz
+logstash-forwarder2: InService
+logstash-forwarder1: InService
+webhookz4: InService
+webhookz8: InService
+webhookz7: InService
+webhookz12: InService
+webhookz3: InService
+webhookz5: InService
+
+Wed Dec 06 09:55:29
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%>)
+$ watch -n 10 -d "bash -lc 'aws_elb_instance_health logstash-forwarder webhookz'"
+# in ncurses
+Every 10.0s: bash -lc 'aws_elb_instance_health logstash-forwarder webhookz'               Wed Dec  6 09:55:33 2017
+
+logstash-forwarder2: InService
+logstash-forwarder1: InService
+webhookz4: InService
+webhookz8: InService
+webhookz7: InService
+webhookz12: InService
+webhookz3: InService
+webhookz5: InService
+```
+
 ### k8s
 
 #### `k8s_kubectl_shell`
