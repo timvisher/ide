@@ -52,7 +52,7 @@ layer_instances() {
     aws opsworks describe-instances --layer-id "$(layer_id "$stack_name" "$layer_name")"
 }
 
-alias layer_instances_loader_bq='layer_instances pipeline loader_bq'
+layer_instances_loader_bq() { layer_instances pipeline loader_bq; }
 
 if [[ -z $silent_ssh_options ]]
 then
@@ -84,52 +84,52 @@ ssh_layer_instance() {
 ssh_connection_service_instance() { ssh_layer_instance webservices connection_service; }
 
 # stack: bastion
-alias ssh_bastion_instances='ssh_layer_instances bastion bastion'
-alias ssh_whitelist-tester_instances='ssh_layer_instances bastion whitelist-tester'
+ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
+ssh_whitelist_tester_instances() { ssh_layer_instances bastion whitelist-tester; }
 
 # stack: webservices
-alias ssh_connection_service_instances='ssh_layer_instances webservices connection_service'
-alias ssh_webhook_service_instances='ssh_layer_instances webservices webhook_service'
-alias ssh_billing_service_instances='ssh_layer_instances webservices billing_service'
-alias ssh_api_passthrough_instances='ssh_layer_instances webservices api_passthrough'
-alias ssh_webhookz_instances='ssh_layer_instances webservices webhookz'
-alias ssh_billing_service_scheduler_instances='ssh_layer_instances webservices billing_service_scheduler'
-alias ssh_api_passthrough_staging_instances='ssh_layer_instances webservices api_passthrough_staging'
-alias ssh_app_instances='ssh_layer_instances webservices app'
-alias ssh_app_staging_instances='ssh_layer_instances webservices app_staging'
-alias ssh_spool_service_instances='ssh_layer_instances webservices spool_service'
-alias ssh_gate_instances='ssh_layer_instances webservices gate'
-alias ssh_stats_service_instances='ssh_layer_instances webservices stats_service'
-alias ssh_notification_service_instances='ssh_layer_instances webservices notification_service'
-alias ssh_admin_instances='ssh_layer_instances webservices admin'
-alias ssh_core_service_instances='ssh_layer_instances webservices core_service'
-alias ssh_sourcerer_service_instances='ssh_layer_instances webservices sourcerer_service'
-alias ssh_core_service_scheduler_instances='ssh_layer_instances webservices core_service_scheduler'
-alias ssh_dbreplicators_service_instances='ssh_layer_instances webservices dbreplicators_service'
-alias ssh_sourcerer_scheduler_instances='ssh_layer_instances webservices sourcerer_scheduler'
-alias ssh_menagerie_instances='ssh_layer_instances webservices menagerie'
-alias ssh_core_service_migrations_instances='ssh_layer_instances webservices core_service_migrations'
+ssh_connection_service_instances() { ssh_layer_instances webservices connection_service; }
+ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_service; }
+ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
+ssh_api_passthrough_instances() { ssh_layer_instances webservices api_passthrough; }
+ssh_webhookz_instances() { ssh_layer_instances webservices webhookz; }
+ssh_billing_service_scheduler_instances() { ssh_layer_instances webservices billing_service_scheduler; }
+ssh_api_passthrough_staging_instances() { ssh_layer_instances webservices api_passthrough_staging; }
+ssh_app_instances() { ssh_layer_instances webservices app; }
+ssh_app_staging_instances() { ssh_layer_instances webservices app_staging; }
+ssh_spool_service_instances() { ssh_layer_instances webservices spool_service; }
+ssh_gate_instances() { ssh_layer_instances webservices gate; }
+ssh_stats_service_instances() { ssh_layer_instances webservices stats_service; }
+ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
+ssh_admin_instances() { ssh_layer_instances webservices admin; }
+ssh_core_service_instances() { ssh_layer_instances webservices core_service; }
+ssh_sourcerer_service_instances() { ssh_layer_instances webservices sourcerer_service; }
+ssh_core_service_scheduler_instances() { ssh_layer_instances webservices core_service_scheduler; }
+ssh_dbreplicators_service_instances() { ssh_layer_instances webservices dbreplicators_service; }
+ssh_sourcerer_scheduler_instances() { ssh_layer_instances webservices sourcerer_scheduler; }
+ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
+ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_service_migrations; }
 
 # stack: replication
-alias ssh_sourcerer_workers_instances='ssh_layer_instances replication sourcerer_workers'
-alias ssh_dbreplicators_workers_instances='ssh_layer_instances replication dbreplicators_workers'
+ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
+ssh_dbreplicators_workers_instances() { ssh_layer_instances replication dbreplicators_workers; }
 
 # stack: monitoring
-alias ssh_logstash_forwarder_instances='ssh_layer_instances monitoring logstash_forwarder'
-alias ssh_kibana_instances='ssh_layer_instances monitoring kibana'
-alias ssh_dogstatsd_instances='ssh_layer_instances monitoring dogstatsd'
+ssh_logstash_forwarder_instances() { ssh_layer_instances monitoring logstash_forwarder; }
+ssh_kibana_instances() { ssh_layer_instances monitoring kibana; }
+ssh_dogstatsd_instances() { ssh_layer_instances monitoring dogstatsd; }
 
 # stack: pipeline
-alias ssh_kafka_instances='ssh_layer_instances pipeline kafka'
-alias ssh_streamery_instances='ssh_layer_instances pipeline streamery'
-alias ssh_zookeeper_instances='ssh_layer_instances pipeline zookeeper'
-alias ssh_loader_pg_instances='ssh_layer_instances pipeline loader_pg'
-alias ssh_loader_bq_instances='ssh_layer_instances pipeline loader_bq'
-alias ssh_loader_x_instances='ssh_layer_instances pipeline loader_x'
-alias ssh_tracer_instances='ssh_layer_instances pipeline tracer'
+ssh_kafka_instances() { ssh_layer_instances pipeline kafka; }
+ssh_streamery_instances() { ssh_layer_instances pipeline streamery; }
+ssh_zookeeper_instances() { ssh_layer_instances pipeline zookeeper; }
+ssh_loader_pg_instances() { ssh_layer_instances pipeline loader_pg; }
+ssh_loader_bq_instances() { ssh_layer_instances pipeline loader_bq; }
+ssh_loader_x_instances() { ssh_layer_instances pipeline loader_x; }
+ssh_tracer_instances() { ssh_layer_instances pipeline tracer; }
 
 # stack: microsites
-alias ssh_microsites_instances='ssh_layer_instances microsites querymongo'
+ssh_microsites_instances() { ssh_layer_instances microsites querymongo; }
 
 ssh_instance() {
     local layer_pattern="$1"
@@ -257,8 +257,8 @@ layer_instance_exec() {
     ssh "${silent_ssh_options[@]}" "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
 }
 
-alias gate_instance_exec='layer_instance_exec webservices gate'
-alias webhookz_instance_exec='layer_instance_exec webservices webhookz'
+gate_instance_exec() { layer_instance_exec webservices gate; }
+webhookz_instance_exec() { layer_instance_exec webservices webhookz; }
 
 # FIXME refactor this and `multi_exec`
 multi_exec_stack() {
@@ -303,12 +303,12 @@ multi_exec_stack() {
     parallel "ssh ${silent_ssh_options[*]} '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
-alias multi_exec_bastion='multi_exec_stack bastion'
-alias multi_exec_webservices='multi_exec_stack webservices'
-alias multi_exec_replication='multi_exec_stack replication'
-alias multi_exec_monitoring='multi_exec_stack monitoring'
-alias multi_exec_pipeline='multi_exec_stack pipeline'
-alias multi_exec_microsites='multi_exec_stack microsites'
+multi_exec_bastion() { multi_exec_stack bastion; }
+multi_exec_webservices() { multi_exec_stack webservices; }
+multi_exec_replication() { multi_exec_stack replication; }
+multi_exec_monitoring() { multi_exec_stack monitoring; }
+multi_exec_pipeline() { multi_exec_stack pipeline; }
+multi_exec_microsites() { multi_exec_stack microsites; }
 
 # FIXME refactor this and `multi_exec`
 multi_exec_global() {
@@ -397,52 +397,52 @@ multi_exec_layer() {
 }
 
 # stack: bastion
-alias multi_exec_bastion='multi_exec_layer bastion bastion'
-alias multi_exec_whitelist_tester='multi_exec_layer bastion whitelist-tester'
+multi_exec_bastion() { multi_exec_layer bastion bastion; }
+multi_exec_whitelist_tester() { multi_exec_layer bastion whitelist-tester; }
 
 # stack: webservices
-alias multi_exec_connection_service='multi_exec_layer webservices connection_service'
-alias multi_exec_webhook_service='multi_exec_layer webservices webhook_service'
-alias multi_exec_billing_service='multi_exec_layer webservices billing_service'
-alias multi_exec_api_passthrough='multi_exec_layer webservices api_passthrough'
-alias multi_exec_webhookz='multi_exec_layer webservices webhookz'
-alias multi_exec_billing_service_scheduler='multi_exec_layer webservices billing_service_scheduler'
-alias multi_exec_api_passthrough_staging='multi_exec_layer webservices api_passthrough_staging'
-alias multi_exec_app='multi_exec_layer webservices app'
-alias multi_exec_app_staging='multi_exec_layer webservices app_staging'
-alias multi_exec_spool_service='multi_exec_layer webservices spool_service'
-alias multi_exec_gate='multi_exec_layer webservices gate'
-alias multi_exec_stats_service='multi_exec_layer webservices stats_service'
-alias multi_exec_notification_service='multi_exec_layer webservices notification_service'
-alias multi_exec_admin='multi_exec_layer webservices admin'
-alias multi_exec_core_service='multi_exec_layer webservices core_service'
-alias multi_exec_sourcerer_service='multi_exec_layer webservices sourcerer_service'
-alias multi_exec_core_service_scheduler='multi_exec_layer webservices core_service_scheduler'
-alias multi_exec_dbreplicators_service='multi_exec_layer webservices dbreplicators_service'
-alias multi_exec_sourcerer_scheduler='multi_exec_layer webservices sourcerer_scheduler'
-alias multi_exec_menagerie='multi_exec_layer webservices menagerie'
-alias multi_exec_core_service_migrations='multi_exec_layer webservices core_service_migrations'
+multi_exec_connection_service() { multi_exec_layer webservices connection_service; }
+multi_exec_webhook_service() { multi_exec_layer webservices webhook_service; }
+multi_exec_billing_service() { multi_exec_layer webservices billing_service; }
+multi_exec_api_passthrough() { multi_exec_layer webservices api_passthrough; }
+multi_exec_webhookz() { multi_exec_layer webservices webhookz; }
+multi_exec_billing_service_scheduler() { multi_exec_layer webservices billing_service_scheduler; }
+multi_exec_api_passthrough_staging() { multi_exec_layer webservices api_passthrough_staging; }
+multi_exec_app() { multi_exec_layer webservices app; }
+multi_exec_app_staging() { multi_exec_layer webservices app_staging; }
+multi_exec_spool_service() { multi_exec_layer webservices spool_service; }
+multi_exec_gate() { multi_exec_layer webservices gate; }
+multi_exec_stats_service() { multi_exec_layer webservices stats_service; }
+multi_exec_notification_service() { multi_exec_layer webservices notification_service; }
+multi_exec_admin() { multi_exec_layer webservices admin; }
+multi_exec_core_service() { multi_exec_layer webservices core_service; }
+multi_exec_sourcerer_service() { multi_exec_layer webservices sourcerer_service; }
+multi_exec_core_service_scheduler() { multi_exec_layer webservices core_service_scheduler; }
+multi_exec_dbreplicators_service() { multi_exec_layer webservices dbreplicators_service; }
+multi_exec_sourcerer_scheduler() { multi_exec_layer webservices sourcerer_scheduler; }
+multi_exec_menagerie() { multi_exec_layer webservices menagerie; }
+multi_exec_core_service_migrations() { multi_exec_layer webservices core_service_migrations; }
 
 # stack: replication
-alias multi_exec_sourcerer_workers='multi_exec_layer replication sourcerer_workers'
-alias multi_exec_dbreplicators_workers='multi_exec_layer replication dbreplicators_workers'
+multi_exec_sourcerer_workers() { multi_exec_layer replication sourcerer_workers; }
+multi_exec_dbreplicators_workers() { multi_exec_layer replication dbreplicators_workers; }
 
 # stack: monitoring
-alias multi_exec_logstash_forwarder='multi_exec_layer monitoring logstash_forwarder'
-alias multi_exec_kibana='multi_exec_layer monitoring kibana'
-alias multi_exec_dogstatsd='multi_exec_layer monitoring dogstatsd'
+multi_exec_logstash_forwarder() { multi_exec_layer monitoring logstash_forwarder; }
+multi_exec_kibana() { multi_exec_layer monitoring kibana; }
+multi_exec_dogstatsd() { multi_exec_layer monitoring dogstatsd; }
 
 # stack: pipeline
-alias multi_exec_kafka='multi_exec_layer pipeline kafka'
-alias multi_exec_streamery='multi_exec_layer pipeline streamery'
-alias multi_exec_zookeeper='multi_exec_layer pipeline zookeeper'
-alias multi_exec_loader_pg='multi_exec_layer pipeline loader_pg'
-alias multi_exec_loader_bq='multi_exec_layer pipeline loader_bq'
-alias multi_exec_loader_x='multi_exec_layer pipeline loader_x'
-alias multi_exec_tracer='multi_exec_layer pipeline tracer'
+multi_exec_kafka() { multi_exec_layer pipeline kafka; }
+multi_exec_streamery() { multi_exec_layer pipeline streamery; }
+multi_exec_zookeeper() { multi_exec_layer pipeline zookeeper; }
+multi_exec_loader_pg() { multi_exec_layer pipeline loader_pg; }
+multi_exec_loader_bq() { multi_exec_layer pipeline loader_bq; }
+multi_exec_loader_x() { multi_exec_layer pipeline loader_x; }
+multi_exec_tracer() { multi_exec_layer pipeline tracer; }
 
 # stack: microsites
-alias multi_exec_microsites='multi_exec_layer microsites querymongo'
+multi_exec_microsites() { multi_exec_layer microsites querymongo; }
 
 # FIXME refactor this and `multi_exec_layer`
 multi_exec() {
@@ -713,10 +713,10 @@ unassume_role() {
     export PS1="$DEFAULT_PS1"
 }
 
-alias assume_read_only='shell_init_role read_only'
-alias aro=assume_read_only
-alias assume_admin_global='shell_init_role admin_global'
-alias aag=assume_admin_global
+assume_read_only() { shell_init_role read_only; }
+aro() { assume_read_only; }
+assume_admin_global() { shell_init_role admin_global; }
+aag() { assume_admin_global; }
 
 uncache_role() {
     local role_name="$1"
@@ -733,8 +733,8 @@ uncache_role() {
     fi
 }
 
-alias uncache_read_only='uncache_role read_only'
-alias uncache_admin_global='uncache_role admin_global'
+uncache_read_only() { uncache_role read_only; }
+uncache_admin_global() { uncache_role admin_global; }
 
 set_default_profile() {
     if aws --profile "$1" configure get role_arn > /dev/null 2>&1
