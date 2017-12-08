@@ -713,10 +713,10 @@ unassume_role() {
     export PS1="$DEFAULT_PS1"
 }
 
-assume_read_only() { shell_init_role read_only; }
-aro() { assume_read_only; }
-assume_admin_global() { shell_init_role admin_global; }
-aag() { assume_admin_global; }
+assume_read_only() { shell_init_role read_only "$@"; }
+aro() { assume_read_only "$@"; }
+assume_admin_global() { shell_init_role admin_global "$@"; }
+aag() { assume_admin_global "$@"; }
 
 uncache_role() {
     local role_name="$1"
