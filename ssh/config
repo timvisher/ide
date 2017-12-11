@@ -5,10 +5,6 @@ Host bastion
   # Any time we establish a connection to this host (echo), so long as
   # that connection is live, reuse it instead of establishing a new
   # one.
-  #
-  # This is primarily useful in that you don't need to repeat the
-  # security handshake each time, and thus you only need to enter your
-  # MFA once per session.
   ControlMaster auto
   ControlPath /tmp/ssh_mux_%h_%p_%r
   # By default, ControlMaster will terminate the shared connection as
@@ -18,7 +14,7 @@ Host bastion
   ControlPersist 10m
   # If your localhost username differs from your bastion username,
   # add this line
-  User yourbastionusername
+  # User <yourbastionusername> (like `tvisher`)
 
 # stitch-prod
 Host 10.2.*
@@ -31,11 +27,18 @@ Host 10.2.*
   #
   # The long and short it being that we can 'directly' connect to the
   # hosts that `echo` protects by using echo to tunnel the traffic.
-  #
-  # This is different than reverse tunneling (i.e. `-L
-  # 22:localhost:22`) but I'm not equipped to say how. :)
   ProxyCommand ssh -W %h:%p bastion
+  # forward your agent up to interact with git and ssh past the bastion.
   ForwardAgent yes
+  # Don't wait around for awhile
+  ConnectTimeout 5
+  # These boxes change all the time and we don't care
+  StrictHostKeyChecking no
+  CheckHostIP no
+  UpdateHostKeys no
+  UserKnownHostsFile /dev/null
+  # I never want to hear about your problems, ssh, until I do.
+  LogLevel QUIET
   # If your localhost username differs from your bastion username,
   # add this line
-  User yourbastionusername
+  # User <yourbastionusername> (like `tvisher`)
