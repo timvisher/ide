@@ -30,3 +30,8 @@ pair_unpair() {
     pair_show
 }
 
+# hub is awesome! https://github.com/github/hub
+if command -v hub >/dev/null 2>&1
+then
+    eval "$(hub alias -s)"
+fi
