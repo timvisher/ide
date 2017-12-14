@@ -397,49 +397,49 @@ multi_exec_layer() {
 }
 
 # stack: bastion
-multi_exec_bastion() { multi_exec_layer bastion bastion; }
-multi_exec_whitelist_tester() { multi_exec_layer bastion whitelist-tester; }
+multi_exec_bastion() { multi_exec_layer bastion bastion "$@"; }
+multi_exec_whitelist_tester() { multi_exec_layer bastion whitelist-tester "$@"; }
 
 # stack: webservices
-multi_exec_connection_service() { multi_exec_layer webservices connection_service; }
-multi_exec_webhook_service() { multi_exec_layer webservices webhook_service; }
-multi_exec_billing_service() { multi_exec_layer webservices billing_service; }
-multi_exec_api_passthrough() { multi_exec_layer webservices api_passthrough; }
-multi_exec_webhookz() { multi_exec_layer webservices webhookz; }
-multi_exec_billing_service_scheduler() { multi_exec_layer webservices billing_service_scheduler; }
-multi_exec_api_passthrough_staging() { multi_exec_layer webservices api_passthrough_staging; }
-multi_exec_app() { multi_exec_layer webservices app; }
-multi_exec_app_staging() { multi_exec_layer webservices app_staging; }
-multi_exec_spool_service() { multi_exec_layer webservices spool_service; }
-multi_exec_gate() { multi_exec_layer webservices gate; }
-multi_exec_stats_service() { multi_exec_layer webservices stats_service; }
-multi_exec_notification_service() { multi_exec_layer webservices notification_service; }
-multi_exec_admin() { multi_exec_layer webservices admin; }
-multi_exec_core_service() { multi_exec_layer webservices core_service; }
-multi_exec_sourcerer_service() { multi_exec_layer webservices sourcerer_service; }
-multi_exec_core_service_scheduler() { multi_exec_layer webservices core_service_scheduler; }
-multi_exec_dbreplicators_service() { multi_exec_layer webservices dbreplicators_service; }
-multi_exec_sourcerer_scheduler() { multi_exec_layer webservices sourcerer_scheduler; }
-multi_exec_menagerie() { multi_exec_layer webservices menagerie; }
-multi_exec_core_service_migrations() { multi_exec_layer webservices core_service_migrations; }
+multi_exec_connection_service() { multi_exec_layer webservices connection_service "$@"; }
+multi_exec_webhook_service() { multi_exec_layer webservices webhook_service "$@"; }
+multi_exec_billing_service() { multi_exec_layer webservices billing_service "$@"; }
+multi_exec_api_passthrough() { multi_exec_layer webservices api_passthrough "$@"; }
+multi_exec_webhookz() { multi_exec_layer webservices webhookz "$@"; }
+multi_exec_billing_service_scheduler() { multi_exec_layer webservices billing_service_scheduler "$@"; }
+multi_exec_api_passthrough_staging() { multi_exec_layer webservices api_passthrough_staging "$@"; }
+multi_exec_app() { multi_exec_layer webservices app "$@"; }
+multi_exec_app_staging() { multi_exec_layer webservices app_staging "$@"; }
+multi_exec_spool_service() { multi_exec_layer webservices spool_service "$@"; }
+multi_exec_gate() { multi_exec_layer webservices gate "$@"; }
+multi_exec_stats_service() { multi_exec_layer webservices stats_service "$@"; }
+multi_exec_notification_service() { multi_exec_layer webservices notification_service "$@"; }
+multi_exec_admin() { multi_exec_layer webservices admin "$@"; }
+multi_exec_core_service() { multi_exec_layer webservices core_service "$@"; }
+multi_exec_sourcerer_service() { multi_exec_layer webservices sourcerer_service "$@"; }
+multi_exec_core_service_scheduler() { multi_exec_layer webservices core_service_scheduler "$@"; }
+multi_exec_dbreplicators_service() { multi_exec_layer webservices dbreplicators_service "$@"; }
+multi_exec_sourcerer_scheduler() { multi_exec_layer webservices sourcerer_scheduler "$@"; }
+multi_exec_menagerie() { multi_exec_layer webservices menagerie "$@"; }
+multi_exec_core_service_migrations() { multi_exec_layer webservices core_service_migrations "$@"; }
 
 # stack: replication
-multi_exec_sourcerer_workers() { multi_exec_layer replication sourcerer_workers; }
-multi_exec_dbreplicators_workers() { multi_exec_layer replication dbreplicators_workers; }
+multi_exec_sourcerer_workers() { multi_exec_layer replication sourcerer_workers "$@"; }
+multi_exec_dbreplicators_workers() { multi_exec_layer replication dbreplicators_workers "$@"; }
 
 # stack: monitoring
-multi_exec_logstash_forwarder() { multi_exec_layer monitoring logstash_forwarder; }
-multi_exec_kibana() { multi_exec_layer monitoring kibana; }
-multi_exec_dogstatsd() { multi_exec_layer monitoring dogstatsd; }
+multi_exec_logstash_forwarder() { multi_exec_layer monitoring logstash_forwarder "$@"; }
+multi_exec_kibana() { multi_exec_layer monitoring kibana "$@"; }
+multi_exec_dogstatsd() { multi_exec_layer monitoring dogstatsd "$@"; }
 
 # stack: pipeline
-multi_exec_kafka() { multi_exec_layer pipeline kafka; }
-multi_exec_streamery() { multi_exec_layer pipeline streamery; }
-multi_exec_zookeeper() { multi_exec_layer pipeline zookeeper; }
-multi_exec_loader_pg() { multi_exec_layer pipeline loader_pg; }
-multi_exec_loader_bq() { multi_exec_layer pipeline loader_bq; }
-multi_exec_loader_x() { multi_exec_layer pipeline loader_x; }
-multi_exec_tracer() { multi_exec_layer pipeline tracer; }
+multi_exec_kafka() { multi_exec_layer pipeline kafka "$@"; }
+multi_exec_streamery() { multi_exec_layer pipeline streamery "$@"; }
+multi_exec_zookeeper() { multi_exec_layer pipeline zookeeper "$@"; }
+multi_exec_loader_pg() { multi_exec_layer pipeline loader_pg "$@"; }
+multi_exec_loader_bq() { multi_exec_layer pipeline loader_bq "$@"; }
+multi_exec_loader_x() { multi_exec_layer pipeline loader_x "@"; }
+multi_exec_tracer() { multi_exec_layer pipeline tracer "$@"; }
 
 # stack: microsites
 multi_exec_microsites() { multi_exec_layer microsites querymongo; }
