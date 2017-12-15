@@ -438,7 +438,7 @@ multi_exec_streamery() { multi_exec_layer pipeline streamery "$@"; }
 multi_exec_zookeeper() { multi_exec_layer pipeline zookeeper "$@"; }
 multi_exec_loader_pg() { multi_exec_layer pipeline loader_pg "$@"; }
 multi_exec_loader_bq() { multi_exec_layer pipeline loader_bq "$@"; }
-multi_exec_loader_x() { multi_exec_layer pipeline loader_x "@"; }
+multi_exec_loader_x() { multi_exec_layer pipeline loader_x "$@"; }
 multi_exec_tracer() { multi_exec_layer pipeline tracer "$@"; }
 
 # stack: microsites
