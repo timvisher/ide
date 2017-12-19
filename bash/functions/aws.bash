@@ -977,3 +977,25 @@ aws_elb_instance_health_sourcerer_service() { aws_elb_instance_health sourcerer-
 aws_elb_instance_health_spool_service() { aws_elb_instance_health spool-service; }
 aws_elb_instance_health_stats_service() { aws_elb_instance_health stats-service; }
 aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }
+
+##########################################################################
+### autoscaling
+##########################################################################
+
+_aws_as_describe_groups() {
+    # FIXME does this handle no arg?
+    aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "${group_names[@]}" | jq '.AutoScalingGroups[]'
+}
+
+_aws_as_describe_groups_instances() {
+    local group_names=("$@")
+
+    _aws_ec2_describe_instances $(aws autoscaling \
+                                      describe-auto-scaling-instances \
+                                      --instance-ids $(_aws_as_describe_groups "${group_names[@]}" | jq -r '.Instances[] | .InstanceId') \
+                                      | jq -r '.AutoScalingInstances[] | .InstanceId')
+}
+
+ssh_k8s_instances() {
+    _aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' | jq -r '"ssh admin@\(.PrivateIpAddress)"'
+}
