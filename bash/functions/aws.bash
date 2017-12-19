@@ -147,7 +147,7 @@ ssh_instance() {
 }
 
 ssh_jenkins_instance() {
-    ssh ubuntu@"$(aws ec2 describe-instances --instance-id "$(aws autoscaling describe-auto-scaling-instances | jq -r '.AutoScalingInstances[] | select(.AutoScalingGroupName == "jenkins") | .InstanceId')" | jq -r '.Reservations[0].Instances[0].PrivateIpAddress')"
+    eval "$(ssh_layer_instances deployment jenkins_master)"
 }
 
 layer_instances_ips() {
