@@ -88,6 +88,7 @@ ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
 ssh_whitelist_tester_instances() { ssh_layer_instances bastion whitelist-tester; }
 
 # stack: webservices
+ssh_bastion1() { echo ssh "$(layer_instances bastion bastion | jq -r '.Instances[0] | select(.Hostname == "bastion1") | .PublicIp')" '# bastion1'; }
 ssh_connection_service_instances() { ssh_layer_instances webservices connection_service; }
 ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_service; }
 ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
