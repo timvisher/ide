@@ -1004,6 +1004,3 @@ _aws_as_describe_groups_instances() {
                                       | jq -r '.AutoScalingInstances[] | .InstanceId')
 }
 
-ssh_k8s_instances() {
-    _aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' | jq -r '"ssh admin@\(.PrivateIpAddress)"'
-}
