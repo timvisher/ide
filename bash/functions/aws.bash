@@ -1008,3 +1008,10 @@ _aws_as_describe_groups_instances() {
                                       | jq -r '.AutoScalingInstances[] | .InstanceId')
 }
 
+##########################################################################
+### security groups
+##########################################################################
+
+aws_sg_list() {
+    aws_sg_list | jq -r '[.SecurityGroups[] | [.GroupName,.GroupId]] | sort_by(0)[] | @tsv' | column -t -s $'\t'
+}
