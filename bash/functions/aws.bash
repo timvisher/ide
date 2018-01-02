@@ -147,6 +147,10 @@ ssh_instance() {
                 'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
+aws_jenkins_ip() {
+    layer_instances_ips deployment jenkins_master
+}
+
 ssh_jenkins_instance() {
     eval "$(ssh_layer_instances deployment jenkins_master)"
 }
