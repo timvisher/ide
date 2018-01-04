@@ -243,48 +243,51 @@ commands:
 Mon Nov 28 10:36:25
 tvisher@timvisher-rjmetrics.local
 ~
-$ layer_instances pipeline kafka | jq -r '.Instances[] | .Hostname'
-kafka4
-kafka3
-kafka2
-kafka1
-kafka5
+$ layer_instances pipeline kafka_blue | jq -r '.Instances[] | .Hostname'
+kafka-blue4
+kafka-blue3
+kafka-blue2
+kafka-blue1
+kafka-blue5
 
 Mon Nov 28 10:42:52
 tvisher@timvisher-rjmetrics.local
 ~
-$ multi_exec_layer pipeline kafka --force date
-# Running `date` on the kafka layer:
-# kafka4
-# kafka3
-# kafka2
-# kafka1
-# kafka5
-kafka2
-Mon Nov 28 15:44:02 UTC 2016
-kafka3
-Mon Nov 28 15:44:02 UTC 2016
-kafka4
-Mon Nov 28 15:44:02 UTC 2016
-kafka1
-Mon Nov 28 15:44:02 UTC 2016
-kafka5
-Mon Nov 28 15:44:02 UTC 2016
+$ multi_exec_layer pipeline kafka_blue --force date
+# Running `date` on the kafka_blue layer:
+# kafka-blue4
+# kafka-blue6
+# kafka-blue3
+# kafka-blue1
+# kafka-blue5
+# kafka-blue2
+kafka-blue6
+Thu Jan  4 18:46:21 UTC 2018
+kafka-blue4
+Thu Jan  4 18:46:21 UTC 2018
+kafka-blue3
+Thu Jan  4 18:46:21 UTC 2018
+kafka-blue1
+Thu Jan  4 18:46:21 UTC 2018
+kafka-blue5
+Thu Jan  4 18:46:22 UTC 2018
+kafka-blue2
+Thu Jan  4 18:46:22 UTC 2018
 
 Mon Nov 28 10:44:02
 tvisher@timvisher-rjmetrics.local
 ~
-$ multi_exec pipeline 'kafka[124]' --force date
+$ multi_exec pipeline 'kafka-blue[124]' --force date
 # Running `date` on the following hosts?
-# kafka4
-# kafka2
-# kafka1
-kafka2
-Mon Nov 28 15:44:18 UTC 2016
-kafka4
-Mon Nov 28 15:44:18 UTC 2016
-kafka1
-Mon Nov 28 15:44:18 UTC 2016
+# kafka-blue4
+# kafka-blue1
+# kafka-blue2
+kafka-blue4
+Thu Jan  4 18:50:43 UTC 2018
+kafka-blue1
+Thu Jan  4 18:50:43 UTC 2018
+kafka-blue2
+Thu Jan  4 18:50:43 UTC 2018
 ```
 
 `multi_exec_global` and `multi_exec_stack` are also provided and do what
@@ -348,17 +351,17 @@ non-interactively.
 Tue Dec 06 10:32:38
 tvisher@timvisher-rjmetrics.local
 ~/git/cloudcutter (master *$=)
-$ layer_instance_exec pipeline kafka date
-# Run `date` on kafka1? [y/N] y
-kafka1
+$ layer_instance_exec pipeline kafka_blue date
+# Run `date` on kafka-blue1? [y/N] y
+kafka-blue1
 Tue Dec  6 15:39:44 UTC 2016
 
 Tue Dec 06 10:39:44
 tvisher@timvisher-rjmetrics.local
 ~/git/cloudcutter (master *$=)
-$ layer_instance_exec pipeline kafka --force date
-# Running `date` on kafka1
-kafka1
+$ layer_instance_exec pipeline kafka_blue --force date
+# Running `date` on kafka-blue1
+kafka-blue1
 Tue Dec  6 15:39:50 UTC 2016
 ```
 
@@ -392,12 +395,12 @@ Use `unassume_role` to unset your default role.
 Mon Nov 28 10:37:34
 tvisher@timvisher-rjmetrics.local
 ~
-$ ssh_layer_instances pipeline kafka
-ssh '10.2.83.142' # 'kafka4'
-ssh '10.2.86.58' # 'kafka3'
-ssh '10.2.79.194' # 'kafka2'
-ssh '10.2.80.191' # 'kafka1'
-ssh '10.2.76.11' # 'kafka5'
+$ ssh_layer_instances pipeline kafka_blue
+ssh '10.2.83.142' # 'kafka-blue4'
+ssh '10.2.86.58' # 'kafka-blue3'
+ssh '10.2.79.194' # 'kafka-blue2'
+ssh '10.2.80.191' # 'kafka-blue1'
+ssh '10.2.76.11' # 'kafka-blue5'
 ```
 
 Anything that will only ever have a single instance will have a command

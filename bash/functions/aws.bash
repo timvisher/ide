@@ -126,7 +126,8 @@ ssh_kibana_instances() { ssh_layer_instances monitoring kibana; }
 ssh_dogstatsd_instances() { ssh_layer_instances monitoring dogstatsd; }
 
 # stack: pipeline
-ssh_kafka_instances() { ssh_layer_instances pipeline kafka; }
+ssh_kafka_blue_instances() { ssh_layer_instances pipeline kafka_blue; }
+ssh_kafka_green_instances() { ssh_layer_instances pipeline kafka_green; }
 ssh_streamery_instances() { ssh_layer_instances pipeline streamery; }
 ssh_zookeeper_instances() { ssh_layer_instances pipeline zookeeper; }
 ssh_loader_pg_instances() { ssh_layer_instances pipeline loader_pg; }
@@ -439,7 +440,8 @@ multi_exec_kibana() { multi_exec_layer monitoring kibana "$@"; }
 multi_exec_dogstatsd() { multi_exec_layer monitoring dogstatsd "$@"; }
 
 # stack: pipeline
-multi_exec_kafka() { multi_exec_layer pipeline kafka "$@"; }
+multi_exec_kafka_blue() { multi_exec_layer pipeline kafka_blue "$@"; }
+multi_exec_kafka_green() { multi_exec_layer pipeline kafka_green "$@"; }
 multi_exec_streamery() { multi_exec_layer pipeline streamery "$@"; }
 multi_exec_zookeeper() { multi_exec_layer pipeline zookeeper "$@"; }
 multi_exec_loader_pg() { multi_exec_layer pipeline loader_pg "$@"; }
@@ -874,7 +876,8 @@ aws_layer_status_front_end_app() { aws_layer_status webservices front_end_app; }
 aws_layer_status_front_end_app_staging() { aws_layer_status webservices front_end_app_staging; }
 aws_layer_status_gate() { aws_layer_status webservices gate; }
 aws_layer_status_jenkins_master() { aws_layer_status deployment jenkins_master; }
-aws_layer_status_kafka() { aws_layer_status pipeline kafka; }
+aws_layer_status_kafka_blue() { aws_layer_status pipeline kafka_blue; }
+aws_layer_status_kafka_green() { aws_layer_status pipeline kafka_green; }
 aws_layer_status_kibana() { aws_layer_status monitoring kibana; }
 aws_layer_status_loader_bq() { aws_layer_status pipeline loader_bq; }
 aws_layer_status_loader_pg() { aws_layer_status pipeline loader_pg; }
