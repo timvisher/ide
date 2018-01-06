@@ -13,6 +13,9 @@ Please check out to `~/git/ide`.
 - [`bash`](#bash)
   - [Installation](#installation-1)
   - [General](#general)
+    - [`PS1`](#ps1)
+      - [Rationale](#rationale)
+      - [Documentation](#documentation)
     - [`backup`](#backup)
     - [`cd`](#cd)
     - [`days_ago`](#days_ago)
@@ -64,7 +67,7 @@ Please check out to `~/git/ide`.
   - [`M-x github-add-my-public`](#m-x-github-add-my-public)
   - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
 - [`ssh`](#ssh)
-- [Rationale](#rationale)
+- [Rationale](#rationale-1)
 - [Compatibility](#compatibility)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
