@@ -184,7 +184,7 @@ tvisher@timvisher-rjmetrics.local
 $
 ```
 
-If you've assumed an AWS role (only trough the IDE provided functions):
+If you've assumed an AWS role (only through the IDE provided functions):
 
 ```
 2018-01-03T13:37:18
