@@ -110,6 +110,88 @@ installed.
 
 ### General
 
+#### `PS1`
+
+The bash portion of IDE has an opinionated `PS1`.
+
+##### Rationale
+
+A `PS1` should be optimized for:
+
+1. context (generally)
+
+   i.e. How much general information is conveyed ambiently by the prompt?
+
+1. uniformity (specifically)
+
+   i.e. How surpising is your prompt to the people you regularly show it
+   to and how easily can you find the command?
+
+1. speed (generally)
+
+   i.e. Does your prompt take noticably long to render.
+
+The Stitch `PS1` obeys the above by:
+
+1. Providing a recognizable format for the date the prompt was rendered.
+
+1. Showing the username and host.
+
+1. Showing the full working directory.
+
+1. Showing the current git branch and any status cookies, if any.
+
+1. Showing the curretly assumed role, if any.
+
+1. Placing a root or not `$` on its own line under everything else so that
+   you're always entering your command from the same place.
+
+You should be able to paste the output from a terminal session anywhere
+and people should have to wonder very little about any of the context of
+what you were doing.
+
+The slowest portion of this is `__git_ps1`. Without that the prompt prints
+instantly.
+
+##### Documentation
+
+```
+# The date the prompt was rendered is iso8601
+#
+# Note this may not be the timestamp the command was run if the terminal
+# it was run from printed the prompt some time before. It's good if
+# you're trying to get a fresh terminal log to print a new prompt before
+# running the commands.
+2018-01-03T13:31:49
+# username and host
+tvisher@timvisher-rjmetrics.local
+# Full working directory (with compact $HOME)
+~/git/ide
+# $ or #, depending on whether you're root or not.
+$
+```
+
+If you're in a git directory:
+
+```
+2018-01-03T13:37:18
+tvisher@timvisher-rjmetrics.local
+# current branch and status cookies (see `git_prompt_help`)
+~/git/ide (master *%>)
+$
+```
+
+If you've assumed an AWS role (only trough the IDE provided functions):
+
+```
+2018-01-03T13:37:18
+tvisher@timvisher-rjmetrics.local
+# role name and remaining lease time
+[admin_global:35m]
+~/git/ide
+$
+```
+
 #### `backup`
 
 Created a dated backup of a file.
