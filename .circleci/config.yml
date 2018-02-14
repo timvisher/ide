@@ -9,7 +9,7 @@ jobs:
           name: Install prerequisites
           command: |
             sudo apt update
-            sudo apt install --asume-yes curl
+            sudo apt install --assume-yes curl
             curl -sL https://deb.nodesource.com/setup_4.x | sudo -E bash -
             sudo apt install --assume-yes nodejs shellcheck
       - run:
