@@ -9,8 +9,9 @@ jobs:
           name: Install prerequisites
           command: |
             sudo apt update
+            sudo apt install --asume-yes curl
             curl -sL https://deb.nodesource.com/setup_4.x | sudo -E bash -
-            sudo apt-get install --assume-yes nodejs shellcheck
+            sudo apt install --assume-yes nodejs shellcheck
       - run:
           name: Run Tests
           command: make -k
