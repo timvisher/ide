@@ -1,5 +1,3 @@
-# shellcheck shell=bash
-
 stack_names() {
     aws opsworks describe-stacks | jq --compact-output --raw-output --monochrome-output '.Stacks[] | .Name'
 }

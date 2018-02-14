@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 function new_tmux_session {
     local session_name="$1"
 
@@ -14,10 +12,14 @@ function new_tmux_session {
     local default_command="bash"
 
     (
-        cd $base_dir
+        if ! cd "$base_dir"
+        then
+            echo "# $base_dir does not exist." >&2
+            return 1
+        fi
 
-        # tmux -vvvv new-session -d -s $session_name -n editor "$default_command" # for debugging
-        tmux new-session -d -s $session_name -n editor "$default_command"
+        # tmux -vvvv new-session -d -s "$session_name" -n editor "$default_command" # for debugging
+        tmux new-session -d -s "$session_name" -n editor "$default_command"
         if [[ Darwin = $(uname) ]]
         then
             tmux send-keys 'emacs' 'C-m'
@@ -25,15 +27,15 @@ function new_tmux_session {
             tmux send-keys 'TERM=xterm-256color emacs' 'C-m'
         fi
         tmux set-option -g default-command "$default_command"
-        tmux new-window -t $session_name -n admin
-        tmux new-window -t $session_name -n services
-        tmux new-window -t $session_name -n db
-        tmux new-window -t $session_name -n tests
+        tmux new-window -t "$session_name" -n admin
+        tmux new-window -t "$session_name" -n services
+        tmux new-window -t "$session_name" -n db
+        tmux new-window -t "$session_name" -n tests
         tmux select-window -t 1
         tmux select-window -t 0
     )
 
-    tmux attach -t $session_name
+    tmux attach -t "$session_name"
 }
 
 function matching_git_project() {
@@ -119,6 +121,7 @@ function ntmux {
         new_tmux_session "$session_name" "$base_dir"
     elif matching_in_current_dir "$session_name" > /dev/null
     then
+        # shellcheck disable=SC2155
         local session_and_dir_name="$(matching_in_current_dir "$session_name")"
         new_tmux_session "$session_and_dir_name"  "$session_and_dir_name"
     elif matching_git_project "$session_name"

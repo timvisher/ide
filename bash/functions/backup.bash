@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 backup() {
     if [[ -d "$1" ]]
     then

@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 pair_show() {
     git config --global user.name
     git config --global user.email

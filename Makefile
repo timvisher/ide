@@ -1,9 +1,11 @@
+.DEFAULT_GOAL := test
+
 install:
 	npm install
 
-readme:
+readme: install
 	./node_modules/.bin/doctoc README.md
 
 test: readme
 	git --no-pager diff --exit-code README.md >/dev/null 2>&1
-	shellcheck bash/functions/aws.bash
+	make -C bash/functions

@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 webhookz_dead_letters_count() {
     dead_letters=$(aws s3api list-objects --bucket com-stitchdata-prod-webhookz-dead-letters)
     if [[ -n $dead_letters ]]

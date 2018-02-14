@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-
 gate_dead_letters_count() {
     dead_letters=$(aws s3api list-objects --bucket com-stitchdata-prod-gate-dead-letters)
     if [[ -n $dead_letters ]]
