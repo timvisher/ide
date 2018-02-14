@@ -14,6 +14,8 @@ jobs:
             apt install --assume-yes curl
             curl -sL https://deb.nodesource.com/setup_4.x | bash -
             apt install --assume-yes nodejs build-essential shellcheck
+            shellcheck -V
+            node -v
       - run:
           name: Run Tests
           command: make -k

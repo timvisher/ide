@@ -7,5 +7,6 @@ readme: install
 	./node_modules/.bin/doctoc README.md
 
 test: readme
+	bash -c '[[ $$(shellcheck -V) == *0.4.6* ]]'
 	git --no-pager diff --exit-code README.md >/dev/null 2>&1
 	make -C bash/functions
