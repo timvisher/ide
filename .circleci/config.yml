@@ -1,10 +1,13 @@
 version: 2
 jobs:
-  build:
+  test:
     docker:
       - image: ubuntu:14.04
     steps:
       - checkout
+      - run:
+          name: Install prerequisites
+          command: sudo apt install build-essential nodejs npm
       - run:
           name: Run Tests
           command: make -k
