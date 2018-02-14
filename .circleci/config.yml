@@ -6,14 +6,14 @@ jobs:
     steps:
       - run:
           name: Install git
-          command: sudo apt update && sudo apt install --assume-yes git
+          command: apt update && apt install --assume-yes git
       - checkout
       - run:
           name: Install prerequisites
           command: |
-            sudo apt install --assume-yes curl
-            curl -sL https://deb.nodesource.com/setup_4.x | sudo -E bash -
-            sudo apt install --assume-yes nodejs build-essential shellcheck
+            apt install --assume-yes curl
+            curl -sL https://deb.nodesource.com/setup_4.x | bash -
+            apt install --assume-yes nodejs build-essential shellcheck
       - run:
           name: Run Tests
           command: make -k
