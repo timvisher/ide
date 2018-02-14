@@ -9,7 +9,7 @@ jobs:
           name: Install prerequisites
           command: |
             sudo apt update
-            sudo apt install --force-yes build-essential nodejs npm shellcheck
+            sudo apt-get install --force-yes build-essential nodejs npm shellcheck
       - run:
           name: Run Tests
           command: make -k
