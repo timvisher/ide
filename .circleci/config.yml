@@ -7,7 +7,9 @@ jobs:
       - checkout
       - run:
           name: Install prerequisites
-          command: sudo apt install build-essential nodejs npm
+          command: |
+            sudo apt update
+            sudo apt install build-essential nodejs npm
       - run:
           name: Run Tests
           command: make -k
