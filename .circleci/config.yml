@@ -4,11 +4,13 @@ jobs:
     docker:
       - image: ubuntu:14.04
     steps:
+      - run:
+          name: Install git
+          command: sudo apt update && sudo apt install --assume-yes git
       - checkout
       - run:
           name: Install prerequisites
           command: |
-            sudo apt update
             sudo apt install --assume-yes curl
             curl -sL https://deb.nodesource.com/setup_4.x | sudo -E bash -
             sudo apt install --assume-yes nodejs build-essential shellcheck
