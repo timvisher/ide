@@ -55,9 +55,9 @@ layer_instances_loader_bq() { layer_instances pipeline loader_bq; }
 if [[ -z $silent_ssh_options ]]
 then
     readonly silent_ssh_options=(
-        -o ConnectTimeout=5
-        -o StrictHostKeyChecking=no
-        -o UserKnownHostsFile=/dev/null
+        -o 'ConnectTimeout=5'
+        -o 'StrictHostKeyChecking=no'
+        -o 'UserKnownHostsFile=/dev/null'
         -q
     )
 fi

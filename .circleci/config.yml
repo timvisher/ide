@@ -13,7 +13,7 @@ jobs:
           command: |
             apt install --assume-yes curl
             curl -sL https://deb.nodesource.com/setup_4.x | bash -
-            apt install --assume-yes nodejs build-essential shellcheck
+            apt install --assume-yes nodejs npm build-essential shellcheck
             shellcheck -V
             node -v
       - run:
