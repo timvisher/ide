@@ -76,6 +76,7 @@ ssh_layer_instances() {
 ssh_layer_instance() {
     local stack_name="$1"
     local layer_name="$2"
+    # shellcheck disable=SC2155
     local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
 
     ssh "$(jq -r '.PrivateIp' <<<"$instance")"
@@ -248,9 +249,10 @@ layer_instance_exec() {
     shift
     local layer_name="$1"
     shift
+    # shellcheck disable=SC2155
     local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
 
-    if [[ --force == $1 ]]
+    if [[ --force == "$1" ]]
     then
         shift
         run_on_ip_answer=y
@@ -259,12 +261,13 @@ layer_instance_exec() {
         read -rp '# Run `'"$*"'` on '"$(jq -r '.Hostname' <<<"$instance")? [y/N] " run_on_ip_answer
     fi
 
-    if [[ y != $run_on_ip_answer ]]
+    if [[ y != "$run_on_ip_answer" ]]
     then
         echo '# Exiting at user request'
         return 0
     fi
 
+    # shellcheck disable=SC2029
     ssh "$(jq -r '.PrivateIp' <<<"$instance")" "hostname; $*"
 }
 
@@ -274,18 +277,19 @@ webhookz_instance_exec() { layer_instance_exec webservices webhookz; }
 # FIXME refactor this and `multi_exec`
 multi_exec_stack() {
     local stack_name="$1"
+    # shellcheck disable=SC2155
     local stack_instances="$(stack_instances "$stack_name")"
     shift
 
     hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$stack_instances" ))
 
-    if [[ -z $hostnames ]]
+    if (( 0 == "${#hostnames[@]}" ))
     then
         echo '# No hostnames available for '"$stack_name"'. Check your creds.' >&2
         return 1
     fi
 
-    if [[ --force == $1 ]]
+    if [[ --force == "$1" ]]
     then
         run_answer=y
         shift
@@ -327,28 +331,28 @@ multi_exec_global() {
 
     hostnames=($(jq --raw-output 'select("online" == .Status) | .Hostname' <<<"$global_instances" ))
 
-    if [[ -z $hostnames ]]
+    if (( 0 == "${#hostnames[@]}" ))
     then
-        echo '# No hostnames available for '"$global_name"'. Check your creds.' >&2
+        echo '# No hostnames available globally. Check your creds.' >&2
         return 1
     fi
 
-    if [[ --force == $1 ]]
+    if [[ --force == "$1" ]]
     then
         run_answer=y
         shift
-        echo '# Running `'"$*"'` on the '"$global_name"' global:'
+        echo '# Running `'"$*"'` globally on:'
         for hn in "${hostnames[@]}"
         do
             echo "# $hn"
         done
     else
-        echo '# Run `'"$*"'` on the '"$global_name"' global?'
+        echo '# Run `'"$*"'` globally on:'
         for hn in "${hostnames[@]}"
         do
             echo "# $hn"
         done
-        read -rp "# [y/N] " run_answer
+        read -rp "# ? [y/N] " run_answer
     fi
 
     if [[ $run_answer != "y" ]]
@@ -367,18 +371,19 @@ multi_exec_layer() {
     local stack_name="$1"
     shift
     local layer_name="$1"
+    # shellcheck disable=SC2155
     local layer_instances="$(layer_instances "$stack_name" "$layer_name")"
     shift
 
     hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$layer_instances" ))
 
-    if [[ -z $hostnames ]]
+    if (( 0 == "${#hostnames[@]}" ))
     then
         echo '# No hostnames available for '"$layer_name"'. Check your creds.' >&2
         return 1
     fi
 
-    if [[ --force == $1 ]]
+    if [[ --force == "$1" ]]
     then
         run_answer=y
         shift
@@ -459,6 +464,7 @@ multi_exec_microsites() { multi_exec_layer microsites querymongo; }
 # FIXME refactor this and `multi_exec_layer`
 multi_exec() {
     local stack_name="$1"
+    # shellcheck disable=SC2155
     local stack_instances="$(stack_instances "$stack_name")"
     shift
     local pattern="$1"
@@ -466,13 +472,13 @@ multi_exec() {
 
     hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(test("'"$pattern"'"))' <<<"$stack_instances"))
 
-    if [[ -z $hostnames ]]
+    if (( 0 == "${#hostnames[@]}" ))
     then
         echo '# No hostnames available for '"$pattern"'. Check your creds.' >&2
         return 1
     fi
 
-    if [[ --force == $1 ]]
+    if [[ --force == "$1" ]]
     then
         run_answer=y
         shift
@@ -807,7 +813,9 @@ export_profile_key() {
         return 1
     fi
 
+    # shellcheck disable=SC2155
     export AWS_ACCESS_KEY_ID="$(aws configure get aws_access_key_id --profile "$profile_name")"
+    # shellcheck disable=SC2155
     export AWS_SECRET_ACCESS_KEY="$(aws configure get aws_secret_access_key --profile "$profile_name")"
 
     echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
@@ -815,8 +823,11 @@ export_profile_key() {
 }
 
 nrepl_menagerie() {
+    # shellcheck disable=SC2155
     local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+    # shellcheck disable=SC2155
     local ip="$(jq -r '.PrivateIp' <<<"$instance")"
+    # shellcheck disable=SC2155
     local hostname="$(jq -r '.Hostname' <<<"$instance")"
     command=(ssh -L6033:localhost:4033 "$ip")
     echo "# ${command[*]}" >&2
@@ -920,6 +931,7 @@ _aws_elb_describe() {
 _aws_elb_instance_ids() {
     local -a elb_names=("$@")
 
+    # shellcheck disable=SC2155
     local aws_elb_json="$(_aws_elb_describe "${elb_names[@]}")"
 
     jq -r '.Instances[] | .InstanceId' <<< "$aws_elb_json"
@@ -935,6 +947,8 @@ _aws_ec2_describe_instances() {
 _aws_elb_describe_instances() {
     local -a elb_names=("$@")
 
+    # word splitting is desirable here
+    # shellcheck disable=SC2046
     _aws_ec2_describe_instances $(_aws_elb_instance_ids "${elb_names[@]}")
 }
 
@@ -952,16 +966,21 @@ _aws_elb_describe_instance_health() {
 aws_elb_instance_health() {
     local -a elb_names=("$@")
 
+    # shellcheck disable=SC2155
     local instances_json=$(_aws_elb_describe_instances "${elb_names[@]}")
+    # shellcheck disable=SC2155
     local -a instance_ids=($(_aws_elb_instance_ids "${elb_names[@]}"))
+    # shellcheck disable=SC2155
     local health_json=$(_aws_elb_describe_instance_health "${elb_names[@]}")
 
     for instance_id in "${instance_ids[@]}"
     do
+        # shellcheck disable=SC2155
         local hostname="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
                                  | .Tags[]
                                  |  select("opsworks:instance" == .Key)
                                  | .Value' <<< "$instances_json")"
+        # shellcheck disable=SC2155
         local health="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
                                | .State' <<< "$health_json")"
         echo "$hostname: $health"
@@ -990,6 +1009,9 @@ aws_elb_instance_health_spool_service() { aws_elb_instance_health spool-service;
 aws_elb_instance_health_stats_service() { aws_elb_instance_health stats-service; }
 aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }
 
+# FIXME provide a way to detect age of boxes and force restart
+# while read -r stack_id; do aws opsworks describe-instances --stack-id "$stack_id"; done < <(stack_ids) | jq '.Instances[]' | jq --slurp --compact-output 'sort_by(.CreatedAt)[] | {Hostname, CreatedAt}'
+
 ##########################################################################
 ### autoscaling
 ##########################################################################
@@ -1002,8 +1024,12 @@ _aws_as_describe_groups() {
 _aws_as_describe_groups_instances() {
     local group_names=("$@")
 
+    # word splitting is desirable here
+    # shellcheck disable=SC2046
     _aws_ec2_describe_instances $(aws autoscaling \
                                       describe-auto-scaling-instances \
+                                      # word splitting is desirable here
+                                      # shellcheck disable=SC2046
                                       --instance-ids $(_aws_as_describe_groups "${group_names[@]}" | jq -r '.Instances[] | .InstanceId') \
                                       | jq -r '.AutoScalingInstances[] | .InstanceId')
 }
