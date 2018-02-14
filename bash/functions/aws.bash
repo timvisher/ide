@@ -311,7 +311,7 @@ multi_exec_stack() {
 
     hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
 
-    parallel "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 multi_exec_bastion() { multi_exec_stack bastion; }
@@ -359,7 +359,7 @@ multi_exec_global() {
 
     hostips=($(jq --raw-output 'select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
 
-    parallel "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # FIXME refactor this and `multi_exec`
@@ -404,7 +404,7 @@ multi_exec_layer() {
 
     hostips=($(jq --raw-output '.Instances[] | select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
 
-    parallel "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # stack: bastion
@@ -498,7 +498,7 @@ multi_exec() {
 
     hostips=($(jq --raw-output '.Instances[] | select(.Hostname | test("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
 
-    parallel "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
+    parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 instance_id() {
