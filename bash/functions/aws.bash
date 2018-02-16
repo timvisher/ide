@@ -1016,7 +1016,8 @@ aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }
 
 _aws_as_describe_groups() {
     # FIXME does this handle no arg?
-    aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "${group_names[@]}" | jq '.AutoScalingGroups[]'
+    aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "${group_names[@]}" \
+        | jq '.AutoScalingGroups[]'
 }
 
 _aws_as_describe_groups_instances() {
@@ -1026,9 +1027,8 @@ _aws_as_describe_groups_instances() {
     # shellcheck disable=SC2046
     _aws_ec2_describe_instances $(aws autoscaling \
                                       describe-auto-scaling-instances \
-                                      # word splitting is desirable here
-                                      # shellcheck disable=SC2046
-                                      --instance-ids $(_aws_as_describe_groups "${group_names[@]}" | jq -r '.Instances[] | .InstanceId') \
+                                      --instance-ids $(_aws_as_describe_groups "${group_names[@]}" \
+                                                           | jq -r '.Instances[] | .InstanceId') \
                                       | jq -r '.AutoScalingInstances[] | .InstanceId')
 }
 
