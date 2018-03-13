@@ -52,6 +52,9 @@ Please check out to `~/git/ide`.
     - [`nt`/`ntmux`](#ntntmux)
   - [VirtualBox](#virtualbox)
     - [`vbox_matching_uuid`](#vbox_matching_uuid)
+  - [Environments](#environments)
+    - [`ide_environments_ls vm|prod`](#ide_environments_ls-vmprod)
+    - [`ide_environments_cat vm|prod <environment_name>`](#ide_environments_cat-vmprod-environment_name)
 - [emacs](#emacs)
   - [Installation](#installation-2)
   - [General Notes](#general-notes)
@@ -990,6 +993,32 @@ tvisher@timvisher-rjmetrics.local
 $ vbox_matching_uuid boxc
 8fb863f9-5b66-46c5-a9cb-f8b9e5b7695b # boxcutter_core_1476144949883_86068
 0cbf6ed5-ec95-4d88-9ace-9a1bb58812fa # kitchen-boxcutter-default-rjmetrics-os_default_1477621648011_25989
+```
+
+### Environments
+
+#### `ide_environments_ls vm|prod`
+
+```
+2018-03-13T15:00:59
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%=)
+$ ide_environments_ls prod | head -n5
+app
+billing-service
+connections-service
+core-services
+dashboard-service
+```
+
+#### `ide_environments_cat vm|prod <environment_name>`
+
+```
+2018-03-13T15:01:37
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%=)
+$ ide_environments_cat prod billing-service | wc -l
+     100
 ```
 
 ## emacs
