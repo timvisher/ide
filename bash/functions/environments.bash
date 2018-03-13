@@ -49,7 +49,7 @@ _ide_environments_get_environment_bucket() {
 
     _ide_environments_assert_preconditions "$environment" || return 1
 
-    if [[ vm == $environment ]]
+    if [[ vm == "$environment" ]]
     then
         echo com-stitchdata-dev-deployment-assets
     else
@@ -62,6 +62,7 @@ ide_environments_ls() {
 
     _ide_environments_assert_preconditions "$environment" || return 1
 
+    # shellcheck disable=SC2155
     local bucket=$(_ide_environments_get_environment_bucket "$environment")
 
     aws s3api \
