@@ -1019,6 +1019,24 @@ tvisher@timvisher-rjmetrics.local
 ~/git/ide (master *%=)
 $ ide_environments_cat prod billing-service | wc -l
      100
+
+2018-03-14T13:20:22
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *+%=)
+$ ide_environments_cat sandbox connections-service | wc -l
+     134
+
+2018-03-14T13:20:25
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *+%=)
+$ ide_environments_cat sandbox connections-service bash | wc -l
+     134
+
+2018-03-14T13:20:36
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *+%=)
+$ ide_environments_cat sandbox connections-service json | jq '.' | wc -l
+     100
 ```
 
 ## emacs

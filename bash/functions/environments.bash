@@ -1,6 +1,6 @@
 _ide_environments_cat_show_help() {
     cat <<EOF
-ide_environments_cat vm|prod <environment_name>
+ide_environments_cat vm|sandbox|prod <environment_name> [bash|json]
 EOF
 }
 
@@ -11,7 +11,7 @@ _ide_environments_assert_preconditions() {
         return 1
     fi
 
-    if [[ $environment != @(vm|prod) ]]
+    if [[ $environment != @(vm|sandbox|prod) ]]
     then
         _ide_environments_cat_show_help
         return 1
@@ -30,6 +30,7 @@ _ide_environments_exists() {
 ide_environments_cat() {
     local environment=$1
     local service=$2
+    local format=${3:-bash}
 
     _ide_environments_assert_preconditions "$environment" || return 1
     if ! _ide_environments_exists "$environment" "$service"
@@ -39,8 +40,21 @@ ide_environments_cat() {
         return 1
     fi
 
+    if [[ $format != +(bash|json) ]]
+    then
+        ide_environments_cat_show_help
+        return 1
+    fi
+
+    bucket=$(_ide_environments_get_environment_bucket "$environment")
+    case $format in
+         json)
+             environment="${environment}.json"
+             ;;
+    esac
+
     aws s3 cp \
-        s3://"$(_ide_environments_get_environment_bucket "$environment")"/environments/"$service"/"$environment" \
+        s3://"$bucket"/environments/"$service"/"$environment" \
         -
 }
 
@@ -49,7 +63,7 @@ _ide_environments_get_environment_bucket() {
 
     _ide_environments_assert_preconditions "$environment" || return 1
 
-    if [[ vm == "$environment" ]]
+    if [[ $environment == +(vm|sandbox) ]]
     then
         echo com-stitchdata-dev-deployment-assets
     else
