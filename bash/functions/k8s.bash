@@ -7,9 +7,72 @@ k8s_kubectl_shell() {
 }
 
 k8s_ssh_node_instances() {
-    _aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' | jq -r '"ssh admin@\(.PrivateIpAddress)"'
+    aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' | jq -r '"ssh admin@\(.PrivateIpAddress) # \(.InstanceId)"'
 }
 
-ssh_k8s_instances() {
+ssh_k8s_node_instances() {
     k8s_ssh_node_instances
+}
+
+k8s_ssh_instance() {
+    local instance_id=$1
+    shift
+
+    local instance
+    instance=$(aws_as_describe_instances "$instance_id")
+    if (( 0 != $? ))
+    then
+        echo blah >&2
+        return 1
+    fi
+
+    ssh admin@"$(jq -r '.PrivateIpAddress' <<<"$instance")" "$@"
+}
+
+ssh_k8s_instance() {
+    k8s_ssh_instance "$@"
+}
+
+_k8s_terminate_instance_show_help() {
+    cat <<EOF
+# as admin_global
+k8s_terminate_instance i-xxxxxxxxxx
+EOF
+}
+
+k8s_terminate_instance() {
+    local instance_id=$1
+
+    if (( 1 < $# ))
+    then
+        _k8s_terminate_instance_show_help
+        return 1
+    fi
+
+    if ! assert_admin_global
+    then
+        _k8s_terminate_instance_show_help
+        return 1
+    fi
+
+    local instance
+    instance=$(aws_as_describe_instances "$instance_id")
+    if (( 0 != $? ))
+    then
+        return 1
+    fi
+    local instance_group=$(jq -r '.Tags[] | select(.Key == "aws:autoscaling:groupName") | .Value' <<<"$instance")
+    local instance_az=$(jq -r '.Placement.AvailabilityZone' <<<"$instance")
+    ssh_k8s_instance "$instance_id" "echo -n '${instance_id} '; hostname; df -h"
+    local termination_answer
+    read -r \
+         -p "Terminate ${instance_id} (${instance_group}/${instance_az})? [y/N] " \
+         termination_answer
+
+    if [[ y == $termination_answer ]]
+    then
+        aws_as_terminate_instance "$instance_id"
+    else
+        echo "Not terminating ${instance_id}" >&2
+    fi
 }

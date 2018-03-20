@@ -36,6 +36,8 @@ Please check out to `~/git/ide`.
   - [k8s](#k8s)
     - [`k8s_kubectl_shell`](#k8s_kubectl_shell)
     - [`k8s_proxy`](#k8s_proxy)
+    - [`k8s_ssh_node_instances`](#k8s_ssh_node_instances)
+    - [`k8s_terminate_instance`](#k8s_terminate_instance)
   - [Stitch Services](#stitch-services)
     - [Gate](#gate)
       - [`gate_dead_letters_count`](#gate_dead_letters_count)
@@ -689,6 +691,54 @@ tvisher@timvisher-rjmetrics.local
 ~/git/ide (master *%>)
 $ k8s_proxy
 Starting to serve on 127.0.0.1:5018
+```
+
+#### `k8s_ssh_node_instances`
+
+```
+2018-03-20T10:50:38
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%>)
+$ k8s_ssh_node_instances | head -n 5
+ssh admin@10.2.79.3 # i-033b041508f13c191
+ssh admin@10.2.81.237 # i-060970bb19a96137a
+ssh admin@10.2.76.14 # i-0c61b4f09f73da41a
+ssh admin@10.2.86.78 # i-06720fff4478d88d1
+ssh admin@10.2.82.58 # i-07140c2e376d47dd7
+
+```
+
+#### `k8s_terminate_instance`
+
+```
+2018-03-20T10:37:56
+tvisher@timvisher-rjmetrics.local
+~/git/ide (master *%=)
+$ source ~/.bashrc && k8s_terminate_instance i-06634bf7347abebdc
+i-06634bf7347abebdc ip-10-2-80-123
+Filesystem      Size  Used Avail Use% Mounted on
+udev             10M     0   10M   0% /dev
+tmpfs           1.6G  1.7M  1.6G   1% /run
+/dev/xvda1       19G  5.6G   13G  32% /
+tmpfs           3.9G     0  3.9G   0% /dev/shm
+tmpfs           5.0M     0  5.0M   0% /run/lock
+tmpfs           3.9G     0  3.9G   0% /sys/fs/cgroup
+/dev/xvdc        19G   18G  484M  98% /var/lib/docker
+/dev/xvdb        79G  161M   75G   1% /var/lib/kubelet
+Terminate i-06634bf7347abebdc (nodes.kube.stitchdata.com/us-east-1b)? [y/N] y
+{
+    "Activity": {
+        "ActivityId": "c3e5890f-6226-b986-f363-497b1fc06525",
+        "AutoScalingGroupName": "nodes.kube.stitchdata.com",
+        "Description": "Terminating EC2 instance: i-06634bf7347abebdc",
+        "Cause": "At 2018-03-20T14:38:07Z instance i-06634bf7347abebdc was taken out of service in response to a user request.",
+        "StartTime": "2018-03-20T14:38:07.278Z",
+        "StatusCode": "InProgress",
+        "Progress": 0,
+        "Details": "{\"Subnet ID\":\"subnet-879566aa\",\"Availability Zone\":\"us-east-1b\"}"
+    }
+}
+Terminated i-06634bf7347abebdc
 ```
 
 ### Stitch Services

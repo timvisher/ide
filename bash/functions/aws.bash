@@ -1060,7 +1060,7 @@ _aws_as_describe_groups() {
         | jq '.AutoScalingGroups[]'
 }
 
-_aws_as_describe_groups_instances() {
+aws_as_describe_groups_instances() {
     local group_names=("$@")
 
     # word splitting is desirable here
@@ -1070,6 +1070,35 @@ _aws_as_describe_groups_instances() {
                                       --instance-ids $(_aws_as_describe_groups "${group_names[@]}" \
                                                            | jq -r '.Instances[] | .InstanceId') \
                                       | jq -r '.AutoScalingInstances[] | .InstanceId')
+}
+
+aws_as_describe_instances() {
+    local instance_ids=("${@}")
+
+    # word splitting is desirable here
+    # shellcheck disable=SC2046
+    local as_instances=$(aws autoscaling describe-auto-scaling-instances --instance-ids "${instance_ids[@]}" \
+                             | jq -r '.AutoScalingInstances[] | .InstanceId')
+    if [[ -z $as_instances ]]
+    then
+        echo "# No matching instances for ids: ${instance_ids[@]}" >&2
+        return 1
+    fi
+    _aws_ec2_describe_instances $as_instances
+}
+
+aws_as_terminate_instance() {
+    local instance_id=$1
+
+    if aws autoscaling terminate-instance-in-auto-scaling-group \
+           --instance-id "$instance_id" \
+           --no-should-decrement-desired-capacity
+    then
+        echo "Terminated ${instance_id}"
+    else
+        echo "Failed to terminate ${instance_id}"
+        return 1
+    fi
 }
 
 ##########################################################################
