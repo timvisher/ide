@@ -820,6 +820,46 @@ export_profile_key() {
     echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
 }
 
+_assert_role_show_help() {
+    cat <<EOF
+assert_role <admin_global|read_only>
+EOF
+}
+
+assert_role() {
+    local role_name=$1
+
+    if [[ $role_name != +(admin_global|read_only) ]]
+    then
+        _assert_role_show_help
+        return 1
+    fi
+
+    if [[ $role_name != $AWS_ROLE_NAME ]]
+    then
+        echo "${role_name} != \$AWS_ROLE_NAME (${AWS_ROLE_NAME:-<unset>})" >&2
+        return 1
+    fi
+    local expiration=$(mins_until_expired "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}")
+    if (( $expiration <= 0 ))
+    then
+        echo "${expiration} <= 0"
+        return 1
+    fi
+}
+
+assert_admin_global() {
+    assert_role admin_global
+}
+
+assert_read_only() {
+    assert_role read_only
+}
+
+##########################################################################
+### nrepl
+##########################################################################
+
 nrepl_menagerie() {
     # shellcheck disable=SC2155
     local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
