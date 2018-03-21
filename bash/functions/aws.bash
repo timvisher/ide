@@ -838,13 +838,14 @@ assert_role() {
         return 1
     fi
 
-    if [[ $role_name != $AWS_ROLE_NAME ]]
+    if [[ $role_name != "$AWS_ROLE_NAME" ]]
     then
         echo "${role_name} != \$AWS_ROLE_NAME (${AWS_ROLE_NAME:-<unset>})" >&2
         return 1
     fi
-    local expiration=$(mins_until_expired "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}")
-    if (( $expiration <= 0 ))
+    local expiration
+    expiration=$(mins_until_expired "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}")
+    if (( expiration <= 0 ))
     then
         echo "${expiration} <= 0"
         return 1
@@ -1080,13 +1081,15 @@ aws_as_describe_instances() {
 
     # word splitting is desirable here
     # shellcheck disable=SC2046
-    local as_instances=$(aws autoscaling describe-auto-scaling-instances --instance-ids "${instance_ids[@]}" \
-                             | jq -r '.AutoScalingInstances[] | .InstanceId')
+    local as_instances
+    as_instances=$(aws autoscaling describe-auto-scaling-instances --instance-ids "${instance_ids[@]}" \
+                       | jq -r '.AutoScalingInstances[] | .InstanceId')
     if [[ -z $as_instances ]]
     then
-        echo "# No matching instances for ids: ${instance_ids[@]}" >&2
+        echo "# No matching instances for ids: " "${instance_ids[@]}" >&2
         return 1
     fi
+    # shellcheck disable=SC2086
     _aws_ec2_describe_instances $as_instances
 }
 

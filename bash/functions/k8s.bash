@@ -19,13 +19,13 @@ k8s_ssh_instance() {
     shift
 
     local instance
-    instance=$(aws_as_describe_instances "$instance_id")
-    if (( 0 != $? ))
+    if ! instance=$(aws_as_describe_instances "$instance_id")
     then
-        echo blah >&2
+        echo "No instance: ${instance_id}" >&2
         return 1
     fi
 
+    # shellcheck disable=SC2029
     ssh admin@"$(jq -r '.PrivateIpAddress' <<<"$instance")" "$@"
 }
 
@@ -56,20 +56,21 @@ k8s_terminate_instance() {
     fi
 
     local instance
-    instance=$(aws_as_describe_instances "$instance_id")
-    if (( 0 != $? ))
+    if ! instance=$(aws_as_describe_instances "$instance_id")
     then
         return 1
     fi
-    local instance_group=$(jq -r '.Tags[] | select(.Key == "aws:autoscaling:groupName") | .Value' <<<"$instance")
-    local instance_az=$(jq -r '.Placement.AvailabilityZone' <<<"$instance")
+    local instance_group
+    instance_group=$(jq -r '.Tags[] | select(.Key == "aws:autoscaling:groupName") | .Value' <<<"$instance")
+    local instance_az
+    instance_az=$(jq -r '.Placement.AvailabilityZone' <<<"$instance")
     ssh_k8s_instance "$instance_id" "echo -n '${instance_id} '; hostname; df -h"
     local termination_answer
     read -r \
          -p "Terminate ${instance_id} (${instance_group}/${instance_az})? [y/N] " \
          termination_answer
 
-    if [[ y == $termination_answer ]]
+    if [[ y == "$termination_answer" ]]
     then
         aws_as_terminate_instance "$instance_id"
     else
