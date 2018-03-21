@@ -114,6 +114,7 @@ ssh_dbreplicators_service_instances() { ssh_layer_instances webservices dbreplic
 ssh_sourcerer_scheduler_instances() { ssh_layer_instances webservices sourcerer_scheduler; }
 ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
 ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_service_migrations; }
+ssh_reckoner_instances() { ssh_layer_instances webservices reckoner; }
 
 # stack: replication
 ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
