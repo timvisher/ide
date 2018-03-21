@@ -129,6 +129,8 @@ ssh_kafka_blue_instances() { ssh_layer_instances pipeline kafka_blue; }
 ssh_kafka_green_instances() { ssh_layer_instances pipeline kafka_green; }
 ssh_streamery_instances() { ssh_layer_instances pipeline streamery; }
 ssh_zookeeper_instances() { ssh_layer_instances pipeline zookeeper; }
+ssh_loader_snow_instances() { ssh_layer_instances pipeline loader_snow; }
+ssh_loader_s3_instances() { ssh_layer_instances pipeline loader_s3; }
 ssh_loader_pg_instances() { ssh_layer_instances pipeline loader_pg; }
 ssh_loader_bq_instances() { ssh_layer_instances pipeline loader_bq; }
 ssh_loader_x_instances() { ssh_layer_instances pipeline loader_x; }
