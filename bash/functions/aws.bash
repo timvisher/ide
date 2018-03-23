@@ -979,11 +979,29 @@ _aws_elb_instance_ids() {
     jq -r '.Instances[] | .InstanceId' <<< "$aws_elb_json"
 }
 
-_aws_ec2_describe_instances() {
+aws_ec2_describe_instances() {
     local -a ec2_instance_ids=("$@")
 
     aws ec2 describe-instances --instance-ids "${ec2_instance_ids[@]}" \
         | jq -r '.Reservations[] | .Instances[]'
+}
+
+aws_ec2_terminate_instance_show_help() {
+    cat <<EOF
+aws_ec2_terminate_instance i-xxxxxxx
+EOF
+}
+
+aws_ec2_terminate_instance() {
+    local ec2_instance_id=$1
+
+    if (( 1 != $# ))
+    then
+        aws_ec2_terminate_instance_show_help
+        return 1
+    fi
+
+    aws ec2 terminate-instances --instance-ids "$ec2_instance_id"
 }
 
 _aws_elb_describe_instances() {
@@ -991,7 +1009,7 @@ _aws_elb_describe_instances() {
 
     # word splitting is desirable here
     # shellcheck disable=SC2046
-    _aws_ec2_describe_instances $(_aws_elb_instance_ids "${elb_names[@]}")
+    aws_ec2_describe_instances $(_aws_elb_instance_ids "${elb_names[@]}")
 }
 
 _aws_elb_describe_instance_health() {
@@ -1069,7 +1087,7 @@ aws_as_describe_groups_instances() {
 
     # word splitting is desirable here
     # shellcheck disable=SC2046
-    _aws_ec2_describe_instances $(aws autoscaling \
+    aws_ec2_describe_instances $(aws autoscaling \
                                       describe-auto-scaling-instances \
                                       --instance-ids $(_aws_as_describe_groups "${group_names[@]}" \
                                                            | jq -r '.Instances[] | .InstanceId') \
@@ -1090,7 +1108,7 @@ aws_as_describe_instances() {
         return 1
     fi
     # shellcheck disable=SC2086
-    _aws_ec2_describe_instances $as_instances
+    aws_ec2_describe_instances $as_instances
 }
 
 aws_as_terminate_instance() {
