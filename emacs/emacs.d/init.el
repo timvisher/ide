@@ -233,9 +233,11 @@ again."
                        (magit-file-relative-name)
                        starting-line)))
     (message
-     (if (/= starting-line ending-line)
-         (format "%s-L%d" link ending-line)
-       link))))
+     "%s"
+     (url-encode-url
+      (if (/= starting-line ending-line)
+          (format "%s-L%d" link ending-line)
+        link)))))
 
 (defun github-parse-remote-and-branch
     (remote-and-branch-str)
