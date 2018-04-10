@@ -42,3 +42,8 @@ Host 10.2.*
   # If your localhost username differs from your bastion username,
   # add this line
   # User <yourbastionusername> (like `tvisher`)
+
+# sandbox machine
+Host sandbox-app
+  HostName sandbox-bastion-2103608998.us-east-1.elb.amazonaws.com
+  ServerAliveInterval 50
