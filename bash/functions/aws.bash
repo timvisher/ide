@@ -73,14 +73,19 @@ ssh_layer_instances() {
 
 ssh_layer_instance() {
     local stack_name="$1"
-    local layer_name="$2"
+    shift
+    local layer_name="$1"
+    shift
     # shellcheck disable=SC2155
     local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
 
-    ssh "$(jq -r '.PrivateIp' <<<"$instance")"
+    # We need this expanded clientside
+    # shellcheck disable=SC2029
+    ssh "$(jq -r '.PrivateIp' <<<"$instance")" "$@"
 }
 
-ssh_connection_service_instance() { ssh_layer_instance webservices connection_service; }
+ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }
+ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
 
 # stack: bastion
 ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
