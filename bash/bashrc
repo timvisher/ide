@@ -43,6 +43,17 @@ else
     echo "# Can't find bash-completion. You should install it." >&2
 fi
 
+# set up the ssh agent if we can't connect to it
+if ! ssh-add -l > /dev/null 2>&1
+then
+    [[ -r ~/.agent.env ]] && source ~/.agent.env >/dev/null 2>&1
+    if ! ssh-add -l > /dev/null 2>&1
+    then
+        echo "# Can't connect to the ssh-agent or source it from ~/.agent.env."
+    fi
+fi
+
+# set up git ps1
 if ! command -v __git_ps1 > /dev/null 2>&1
 then
     echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
