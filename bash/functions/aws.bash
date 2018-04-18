@@ -86,7 +86,7 @@ ssh_layer_instance() {
 
 ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }
 ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
-ssh_stats_service_instance() { ssh_layer_instance webservices stats_service.bash "$@"; }
+ssh_stats_service_instance() { ssh_layer_instance webservices stats_service "$@"; }
 
 # stack: bastion
 ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
