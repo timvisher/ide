@@ -84,10 +84,6 @@ ssh_layer_instance() {
     ssh "$(jq -r '.PrivateIp' <<<"$instance")" "$@"
 }
 
-ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }
-ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
-ssh_stats_service_instance() { ssh_layer_instance webservices stats_service "$@"; }
-
 # stack: bastion
 ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
 ssh_whitelist_tester_instances() { ssh_layer_instances bastion whitelist-tester; }
@@ -98,33 +94,37 @@ aws_bastion1_ip() {
 }
 
 # stack: webservices
-ssh_bastion1() { echo ssh "$(aws_bastion1_ip)" '# bastion1'; }
-ssh_connection_service_instances() { ssh_layer_instances webservices connection_service; }
-ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_service; }
-ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
+ssh_admin_instances() { ssh_layer_instances webservices admin; }
 ssh_api_passthrough_instances() { ssh_layer_instances webservices api_passthrough; }
-ssh_webhookz_instances() { ssh_layer_instances webservices webhookz; }
-ssh_billing_service_scheduler_instances() { ssh_layer_instances webservices billing_service_scheduler; }
 ssh_api_passthrough_staging_instances() { ssh_layer_instances webservices api_passthrough_staging; }
 ssh_app_instances() { ssh_layer_instances webservices app; }
 ssh_app_staging_instances() { ssh_layer_instances webservices app_staging; }
-ssh_spool_service_instances() { ssh_layer_instances webservices spool_service; }
-ssh_gate_instances() { ssh_layer_instances webservices gate; }
-ssh_stats_service_instances() { ssh_layer_instances webservices stats_service; }
-ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
-ssh_admin_instances() { ssh_layer_instances webservices admin; }
+ssh_bastion1() { echo ssh "$(aws_bastion1_ip)" '# bastion1'; }
+ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
+ssh_billing_service_scheduler_instances() { ssh_layer_instances webservices billing_service_scheduler; }
+ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }
+ssh_connection_service_instances() { ssh_layer_instances webservices connection_service; }
 ssh_core_service_instances() { ssh_layer_instances webservices core_service; }
-ssh_sourcerer_service_instances() { ssh_layer_instances webservices sourcerer_service; }
+ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_service_migrations; }
 ssh_core_service_scheduler_instances() { ssh_layer_instances webservices core_service_scheduler; }
 ssh_dbreplicators_service_instances() { ssh_layer_instances webservices dbreplicators_service; }
-ssh_sourcerer_scheduler_instances() { ssh_layer_instances webservices sourcerer_scheduler; }
+ssh_gate_instances() { ssh_layer_instances webservices gate; }
+ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
 ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
-ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_service_migrations; }
+ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
 ssh_reckoner_instances() { ssh_layer_instances webservices reckoner; }
+ssh_sourcerer_scheduler_instances() { ssh_layer_instances webservices sourcerer_scheduler; }
+ssh_sourcerer_service_instances() { ssh_layer_instances webservices sourcerer_service; }
+ssh_spool_service_instances() { ssh_layer_instances webservices spool_service; }
+ssh_stats_service_instance() { ssh_layer_instance webservices stats_service "$@"; }
+ssh_stats_service_instances() { ssh_layer_instances webservices stats_service; }
+ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_service; }
+ssh_webhookz_instances() { ssh_layer_instances webservices webhookz; }
 
 # stack: replication
-ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
+ssh_dbreplicators_workers_instance() { ssh_layer_instance replication dbreplicators_workers "@"; }
 ssh_dbreplicators_workers_instances() { ssh_layer_instances replication dbreplicators_workers; }
+ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
 
 # stack: monitoring
 ssh_logstash_forwarder_instances() { ssh_layer_instances monitoring logstash_forwarder; }
