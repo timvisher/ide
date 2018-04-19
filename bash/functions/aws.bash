@@ -122,7 +122,7 @@ ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_servic
 ssh_webhookz_instances() { ssh_layer_instances webservices webhookz; }
 
 # stack: replication
-ssh_dbreplicators_workers_instance() { ssh_layer_instance replication dbreplicators_workers "@"; }
+ssh_dbreplicators_workers_instance() { ssh_layer_instance replication dbreplicators_workers "$@"; }
 ssh_dbreplicators_workers_instances() { ssh_layer_instances replication dbreplicators_workers; }
 ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
 
