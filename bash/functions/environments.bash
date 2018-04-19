@@ -13,7 +13,6 @@ _ide_environments_assert_preconditions() {
 
     if [[ $environment != @(vm|sandbox|prod) ]]
     then
-        _ide_environments_cat_show_help
         return 1
     fi
 }
@@ -32,7 +31,7 @@ ide_environments_cat() {
     local service=$2
     local format=${3:-bash}
 
-    _ide_environments_assert_preconditions "$environment" || return 1
+    _ide_environments_assert_preconditions "$environment" || { _ide_environments_cat_show_help; return 1; }
     if ! _ide_environments_exists "$environment" "$service"
     then
         echo "# ERROR: $service does not exist in $environment" >&2
@@ -71,10 +70,16 @@ _ide_environments_get_environment_bucket() {
     fi
 }
 
+_ide_environments_ls_show_help() {
+    cat <<EOF
+ide_environments_ls <vm|sandbox|prod>
+EOF
+}
+
 ide_environments_ls() {
     local environment=$1
 
-    _ide_environments_assert_preconditions "$environment" || return 1
+    _ide_environments_assert_preconditions "$environment" || { _ide_environments_ls_show_help; return 1; }
 
     # shellcheck disable=SC2155
     local bucket=$(_ide_environments_get_environment_bucket "$environment")
