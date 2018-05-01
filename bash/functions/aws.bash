@@ -77,7 +77,7 @@ ssh_layer_instance() {
     local layer_name="$1"
     shift
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
 
     # We need this expanded clientside
     # shellcheck disable=SC2029
@@ -257,7 +257,7 @@ layer_instance_exec() {
     local layer_name="$1"
     shift
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
 
     if [[ --force == "$1" ]]
     then
@@ -872,7 +872,7 @@ assert_read_only() {
 
 nrepl_menagerie() {
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][1] | {PrivateIp, Hostname}')"
+    local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
     # shellcheck disable=SC2155
     local ip="$(jq -r '.PrivateIp' <<<"$instance")"
     # shellcheck disable=SC2155
