@@ -109,6 +109,8 @@ ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_s
 ssh_core_service_scheduler_instances() { ssh_layer_instances webservices core_service_scheduler; }
 ssh_dbreplicators_service_instances() { ssh_layer_instances webservices dbreplicators_service; }
 ssh_gate_instances() { ssh_layer_instances webservices gate; }
+ssh_maestro_instance() { ssh_layer_instance webservices maestro "$@"; }
+ssh_maestro_instances() { ssh_layer_instances webservices maestro; }
 ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
 ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
 ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
