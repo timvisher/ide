@@ -2,6 +2,13 @@ Host bastion
   HostName bastion.stitchdata.com
   # Always forward my agent
   ForwardAgent yes
+  # Don't wait around for awhile
+  ConnectTimeout 5
+  # These boxes change all the time and we don't care
+  StrictHostKeyChecking no
+  CheckHostIP no
+  UpdateHostKeys no
+  UserKnownHostsFile /dev/null
   # Any time we establish a connection to this host (echo), so long as
   # that connection is live, reuse it instead of establishing a new
   # one.
