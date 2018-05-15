@@ -43,7 +43,16 @@ layer_id() {
         | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
+_ide_deprecated() {
+    echo "DEPRECATED. Use $1 instead." >&2
+}
+
 layer_instances() {
+    _ide_deprecated ide_aws_opsworks_layer_instances
+    ide_aws_opsworks_layer_instances "$@"
+}
+
+ide_aws_opsworks_layer_instances() {
     local stack_name="$1"
     local layer_name="$2"
 
@@ -72,12 +81,21 @@ ssh_layer_instances() {
 }
 
 ssh_layer_instance() {
+    _ide_deprecated ide_aws_opsworks_ssh_layer_instance
+    ide_aws_opsworks_ssh_layer_instance "$@"
+}
+
+ide_aws_opsworks_ssh_layer_instance() {
     local stack_name="$1"
     shift
     local layer_name="$1"
     shift
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
+    local instance=$(ide_aws_opsworks_layer_instances \
+                         "$stack_name" "$layer_name" \
+                         | jq -r '[.Instances[]
+                                   | select("online" == .Status)][0]
+                                   | {PrivateIp, Hostname}')
 
     # We need this expanded clientside
     # shellcheck disable=SC2029
@@ -85,6 +103,8 @@ ssh_layer_instance() {
 }
 
 # stack: bastion
+# DEPRECATED
+# Use service files instead
 ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
 ssh_whitelist_tester_instances() { ssh_layer_instances bastion whitelist-tester; }
 
@@ -94,6 +114,8 @@ aws_bastion1_ip() {
 }
 
 # stack: webservices
+# DEPRECATED
+# Use service files instead
 ssh_admin_instances() { ssh_layer_instances webservices admin; }
 ssh_api_passthrough_instances() { ssh_layer_instances webservices api_passthrough; }
 ssh_api_passthrough_staging_instances() { ssh_layer_instances webservices api_passthrough_staging; }
@@ -111,7 +133,6 @@ ssh_dbreplicators_service_instances() { ssh_layer_instances webservices dbreplic
 ssh_gate_instances() { ssh_layer_instances webservices gate; }
 ssh_maestro_instance() { ssh_layer_instance webservices maestro "$@"; }
 ssh_maestro_instances() { ssh_layer_instances webservices maestro; }
-ssh_menagerie_instance() { ssh_layer_instance webservices menagerie "$@"; }
 ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
 ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
 ssh_reckoner_instances() { ssh_layer_instances webservices reckoner; }
@@ -124,16 +145,22 @@ ssh_webhook_service_instances() { ssh_layer_instances webservices webhook_servic
 ssh_webhookz_instances() { ssh_layer_instances webservices webhookz; }
 
 # stack: replication
+# DEPRECATED
+# Use service files instead
 ssh_dbreplicators_workers_instance() { ssh_layer_instance replication dbreplicators_workers "$@"; }
 ssh_dbreplicators_workers_instances() { ssh_layer_instances replication dbreplicators_workers; }
 ssh_sourcerer_workers_instances() { ssh_layer_instances replication sourcerer_workers; }
 
 # stack: monitoring
+# DEPRECATED
+# Use service files instead
 ssh_logstash_forwarder_instances() { ssh_layer_instances monitoring logstash_forwarder; }
 ssh_kibana_instances() { ssh_layer_instances monitoring kibana; }
 ssh_dogstatsd_instances() { ssh_layer_instances monitoring dogstatsd; }
 
 # stack: pipeline
+# DEPRECATED
+# Use service files instead
 ssh_kafka_blue_instances() { ssh_layer_instances pipeline kafka_blue; }
 ssh_kafka_green_instances() { ssh_layer_instances pipeline kafka_green; }
 ssh_streamery_instances() { ssh_layer_instances pipeline streamery; }
@@ -146,6 +173,8 @@ ssh_loader_x_instances() { ssh_layer_instances pipeline loader_x; }
 ssh_tracer_instances() { ssh_layer_instances pipeline tracer; }
 
 # stack: microsites
+# DEPRECATED
+# Use service files instead
 ssh_microsites_instances() { ssh_layer_instances microsites querymongo; }
 
 ssh_instance() {
