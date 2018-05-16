@@ -16,6 +16,6 @@ jobs:
             apt install --assume-yes nodejs npm build-essential shellcheck
             shellcheck -V
             node -v
-      - run:
-          name: Run Tests
-          command: true
+      # - run:
+      #     name: Run Tests
+      #     command: true
