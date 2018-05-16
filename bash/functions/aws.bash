@@ -319,7 +319,15 @@ multi_exec_stack() {
     local stack_instances="$(stack_instances "$stack_name")"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$stack_instances" ))
+    local -a hostnames=
+    local hostname=
+    while read -r hostname
+    do
+        hostnames+=("$hostname")
+    done < <(jq --raw-output \
+                '.Instances[]
+                 | select("online" == .Status)
+                 | .Hostname' <<<"$stack_instances")
 
     if (( 0 == "${#hostnames[@]}" ))
     then
@@ -351,7 +359,16 @@ multi_exec_stack() {
         return 0
     fi
 
-    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
+    hostips=
+    while read -r hostip
+    do
+        hostips+=("$hostip")
+    done < <(jq --raw-output \
+                '.Instances[]
+                 | select(.Hostname
+                          | contains("'"$pattern"'"))
+                          | select(.PrivateIp)
+                          | .PrivateIp' <<<"$stack_instances")
 
     parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
@@ -367,7 +384,14 @@ multi_exec_microsites() { multi_exec_stack microsites; }
 multi_exec_global() {
     global_instances="$(instances)"
 
-    hostnames=($(jq --raw-output 'select("online" == .Status) | .Hostname' <<<"$global_instances" ))
+    local -a hostnames=()
+    local hostname=
+    while read -r hostname
+    do
+        hostnames+=("$hostname")
+    done < <(jq --raw-output \
+                'select("online" == .Status)
+                 | .Hostname' <<<"$global_instances")
 
     if (( 0 == "${#hostnames[@]}" ))
     then
@@ -399,7 +423,16 @@ multi_exec_global() {
         return 0
     fi
 
-    hostips=($(jq --raw-output 'select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$global_instances"))
+    local hostips
+    while read -r hostip
+    do
+        hostips+=("$hostip")
+    done < <(jq --raw-output \
+                'select("online" == .Status)
+                 | select(.Hostname
+                          | contains("'"$pattern"'"))
+                          | select(.PrivateIp)
+                          | .PrivateIp' <<<"$global_instances")
 
     parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
@@ -413,7 +446,15 @@ multi_exec_layer() {
     local layer_instances="$(layer_instances "$stack_name" "$layer_name")"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | select("online" == .Status) | .Hostname' <<<"$layer_instances" ))
+    local -a hostnames=()
+    local hostname=
+    while read -r hostname
+    do
+        hostnames+=("$hostname")
+    done < <(jq --raw-output \
+                '.Instances[]
+                 | select("online" == .Status)
+                 | .Hostname' <<<"$layer_instances" )
 
     if (( 0 == "${#hostnames[@]}" ))
     then
@@ -445,7 +486,18 @@ multi_exec_layer() {
         return 0
     fi
 
-    hostips=($(jq --raw-output '.Instances[] | select("online" == .Status) | select(.Hostname | contains("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$layer_instances"))
+    local -a hostips=()
+    local hostip=
+    while read -r hostip
+    do
+        hostips+=("$hostip")
+    done < <(jq --raw-output \
+                '.Instances[]
+                 | select("online" == .Status)
+                 | select(.Hostname
+                          | contains("'"$pattern"'"))
+                          | select(.PrivateIp)
+                          | .PrivateIp' <<<"$layer_instances")
 
     parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
@@ -508,7 +560,12 @@ multi_exec() {
     local pattern="$1"
     shift
 
-    hostnames=($(jq --raw-output '.Instances[] | .Hostname | select(test("'"$pattern"'"))' <<<"$stack_instances"))
+    local -a hostnames=()
+    local hostname=
+    while read -r hostname
+    do
+        hostnames+=("$hostname")
+    done < <(jq --raw-output '.Instances[] | .Hostname | select(test("'"$pattern"'"))' <<<"$stack_instances")
 
     if (( 0 == "${#hostnames[@]}" ))
     then
@@ -540,7 +597,17 @@ multi_exec() {
         return 0
     fi
 
-    hostips=($(jq --raw-output '.Instances[] | select(.Hostname | test("'"$pattern"'")) | select(.PrivateIp) | .PrivateIp' <<<"$stack_instances"))
+    local -a hostips=()
+    local hostip=
+    while read -r hostip
+    do
+        hostips+=("$hostip")
+    done < <(jq --raw-output \
+                '.Instances[]
+                 | select(.Hostname
+                          | test("'"$pattern"'"))
+                          | select(.PrivateIp)
+                          | .PrivateIp' <<<"$stack_instances")
 
     parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
@@ -1063,10 +1130,14 @@ _aws_elb_describe_instance_health() {
 aws_elb_instance_health() {
     local -a elb_names=("$@")
 
-    # shellcheck disable=SC2155
-    local instances_json=$(_aws_elb_describe_instances "${elb_names[@]}")
-    # shellcheck disable=SC2155
-    local -a instance_ids=($(_aws_elb_instance_ids "${elb_names[@]}"))
+    local instances_json=
+    instances_json=$(_aws_elb_describe_instances "${elb_names[@]}")
+    local -a instance_ids=
+    local instance_id=
+    while read -r instance_id
+    do
+        instance_ids+=("$instance_id")
+    done < <(_aws_elb_instance_ids "${elb_names[@]}")
     # shellcheck disable=SC2155
     local health_json=$(_aws_elb_describe_instance_health "${elb_names[@]}")
 
