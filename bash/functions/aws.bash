@@ -1,3 +1,6 @@
+# shellcheck source=_deprecation.bash
+source ~/git/ide/bash/functions/_deprecation.bash
+
 stack_names() {
     aws opsworks describe-stacks | jq --compact-output --raw-output --monochrome-output '.Stacks[] | .Name'
 }
@@ -43,13 +46,8 @@ layer_id() {
         | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
-_ide_deprecated() {
-    echo "DEPRECATED. Use $1 instead." >&2
-}
-
 layer_instances() {
-    _ide_deprecated ide_aws_opsworks_layer_instances
-    ide_aws_opsworks_layer_instances "$@"
+    _ide_deprecated ide_aws_opsworks_layer_instances "$@"
 }
 
 ide_aws_opsworks_layer_instances() {
@@ -81,8 +79,7 @@ ssh_layer_instances() {
 }
 
 ssh_layer_instance() {
-    _ide_deprecated ide_aws_opsworks_ssh_layer_instance
-    ide_aws_opsworks_ssh_layer_instance "$@"
+    _ide_deprecated ide_aws_opsworks_ssh_layer_instance "$@"
 }
 
 ide_aws_opsworks_ssh_layer_instance() {
