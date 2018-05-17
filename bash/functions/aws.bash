@@ -105,9 +105,9 @@ ide_aws_opsworks_ssh_layer_instance() {
 ssh_bastion_instances() { ssh_layer_instances bastion bastion; }
 ssh_whitelist_tester_instances() { ssh_layer_instances bastion whitelist-tester; }
 
-aws_bastion1_ip() {
+aws_bastion_ip() {
     layer_instances bastion bastion \
-        | jq -r '.Instances[] | select("bastion1" == .Hostname) | .PublicIp'
+        | jq -r '.Instances[0].PublicIp'
 }
 
 # stack: webservices
@@ -118,7 +118,7 @@ ssh_api_passthrough_instances() { ssh_layer_instances webservices api_passthroug
 ssh_api_passthrough_staging_instances() { ssh_layer_instances webservices api_passthrough_staging; }
 ssh_app_instances() { ssh_layer_instances webservices app; }
 ssh_app_staging_instances() { ssh_layer_instances webservices app_staging; }
-ssh_bastion1() { echo ssh "$(aws_bastion1_ip)" '# bastion1'; }
+ssh_bastion() { echo ssh "$(aws_bastion_ip)" '# bastion'; }
 ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
 ssh_billing_service_scheduler_instances() { ssh_layer_instances webservices billing_service_scheduler; }
 ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }

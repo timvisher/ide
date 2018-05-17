@@ -671,16 +671,13 @@ webhookz5: InService
 
 ### k8s
 
-#### `k8s_kubectl_shell`
+#### `ide_k8s_kubectl_shell`
 
 ```
-Mon Dec 04 11:46:06
-tvisher@timvisher-rjmetrics.local
-~/git/ide (master *%>)
-$ k8s_kubectl_shell
-psantaclara@bastion1:~$ kubectl version --short
-Client Version: v1.6.6
-Server Version: v1.6.2
+alex@alex-desktop:~/git/ide$ ide_k8s_kubectl_shell
+asmith@menagerie4:~$ kubectl version --short
+Client Version: v1.10.2
+Server Version: v1.9.0
 ```
 
 #### `k8s_proxy`
