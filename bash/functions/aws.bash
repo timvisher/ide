@@ -46,15 +46,13 @@ layer_id() {
         | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
-layer_instances() {
-    _ide_deprecated ide_aws_opsworks_layer_instances "$@"
-}
-
+layer_instances() { _ide_deprecated ide_aws_opsworks_layer_instances "$@"; }
 ide_aws_opsworks_layer_instances() {
     local stack_name="$1"
     local layer_name="$2"
 
-    aws opsworks describe-instances --layer-id "$(layer_id "$stack_name" "$layer_name")"
+    aws opsworks describe-instances --layer-id \
+        "$(layer_id "$stack_name" "$layer_name")"
 }
 
 layer_instances_loader_bq() { layer_instances pipeline loader_bq; }
@@ -70,12 +68,18 @@ then
 fi
 
 ssh_layer_instances() {
+    _ide_deprecated ide_aws_opsworks_layer_ssh "$@"
+}
+
+ide_aws_opsworks_layer_ssh() {
     local stack_name="$1"
     local layer_name="$2"
 
-    layer_instances "$stack_name" "$layer_name" | \
+    ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[] | select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+           '.Instances[]
+            | select(.PrivateIp)
+            | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
 ssh_layer_instance() {
@@ -183,21 +187,17 @@ ssh_instance() {
                 'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
-aws_jenkins_ip() {
-    layer_instances_ips deployment jenkins_master
-}
-
-ssh_jenkins_instance() {
-    eval "$(ssh_layer_instances deployment jenkins_master)"
-}
-
-layer_instances_ips() {
+ide_aws_opsworks_layer_instances_ips() {
     local stack_name="$1"
     local layer_name="$2"
 
-    layer_instances "$stack_name" "$layer_name" | \
+    ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
            '.Instances[] | select(.PrivateIp) | .PrivateIp'
+}
+
+layer_instances_ips() {
+    _ide_deprecated ide_aws_opsworks_layer_instances_ips "$@"
 }
 
 create_and_start_instance() {
@@ -1033,7 +1033,6 @@ aws_layer_status_elasticsearch_forwarder() { aws_layer_status monitoring elastic
 aws_layer_status_front_end_app() { aws_layer_status webservices front_end_app; }
 aws_layer_status_front_end_app_staging() { aws_layer_status webservices front_end_app_staging; }
 aws_layer_status_gate() { aws_layer_status webservices gate; }
-aws_layer_status_jenkins_master() { aws_layer_status deployment jenkins_master; }
 aws_layer_status_kafka_blue() { aws_layer_status pipeline kafka_blue; }
 aws_layer_status_kafka_green() { aws_layer_status pipeline kafka_green; }
 aws_layer_status_kibana() { aws_layer_status monitoring kibana; }
@@ -1124,7 +1123,8 @@ _aws_elb_describe_instance_health() {
     done
 }
 
-aws_elb_instance_health() {
+aws_elb_instance_health() { _ide_deprecated ide_aws_elb_instance_health "$@"; }
+ide_aws_elb_instance_health() {
     local -a elb_names=("$@")
 
     local instances_json=
@@ -1163,7 +1163,6 @@ aws_elb_instance_health_elasticsearch_forwarder() { aws_elb_instance_health elas
 aws_elb_instance_health_front_end_app() { aws_elb_instance_health front-end-app; }
 aws_elb_instance_health_front_end_app_staging() { aws_elb_instance_health front-end-app-staging; }
 aws_elb_instance_health_gate() { aws_elb_instance_health gate; }
-aws_elb_instance_health_jenkins_stitchdata_com() { aws_elb_instance_health jenkins-stitchdata-com; }
 aws_elb_instance_health_kibana() { aws_elb_instance_health kibana; }
 aws_elb_instance_health_logstash_forwarder() { aws_elb_instance_health logstash-forwarder; }
 aws_elb_instance_health_menagerie() { aws_elb_instance_health menagerie; }
