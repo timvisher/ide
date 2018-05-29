@@ -7,7 +7,7 @@ ssh_jenkins_instance() { _ide_deprecated ide_jenkins_ssh_instance "$@"; }
 ide_jenkins_ssh_instance() {
     eval "$(ide_aws_opsworks_layer_ssh deployment jenkins_master "$@")"
 }
-ide_ssh_jenkins_instance() { ide_jenkins_ssh_instance; }
+ide_ssh_jenkins_instance() { ide_jenkins_ssh_instance "$@"; }
 
 aws_layer_status_jenkins_master() {
     _ide_deprecated ide_jenkins_layer_status "$@";
