@@ -13,6 +13,9 @@
 (add-to-list 'package-archives
              '("marmalade" . "https://marmalade-repo.org/packages/")
              t)
+(add-to-list 'package-archives
+             '("org" . "https://orgmode.org/elpa/")
+             t)
 
 (autoload 'package-pinned-packages "package")
 
@@ -397,6 +400,43 @@ again."
   (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" stitch-virtualenv-base-dir)))
     (setq python-shell-virtualenv-root base-dir)
     (message "python-shell-virtualenv-root=%s" base-dir)))
+
+(defun ide-get-org-timestamp-string
+    ()
+  (format-time-string "<%F %a %H:%M>"))
+
+(defun ide-org-set-mtime
+    (&optional mtime)
+  (interactive)
+  (let ((mtime (if (not mtime)
+                   (ide-get-org-timestamp-string)
+                 mtime)))
+   (if (org-entry-get (point) "MODIFIED_AT")
+       (let ((current-mtime (org-entry-get (point) "MODIFIED_AT")))
+         (org-entry-put (point)
+                        "MODIFIED_AT"
+                        mtime)
+         (message "Changed entry MODIFIED_AT from %s → %s"
+                  current-mtime
+                  mtime))
+     (progn
+       (org-entry-put (point)
+                      "MODIFIED_AT"
+                      mtime)
+       (message "Set entry MODIFIED_AT to %s"
+                mtime)))))
+
+(defun ide-org-set-ctime
+    ()
+  (interactive)
+  (if (org-entry-get (point) "CREATED_AT")
+      (message "Entry already has CREATED_AT: %s"
+               (org-entry-get (point) "CREATED_AT"))
+    (let ((ctime (format-time-string "<%F %a %H:%M>")))
+      (org-entry-put (point)
+                     "CREATED_AT"
+                     ctime)
+      (ide-org-set-mtime ctime))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
