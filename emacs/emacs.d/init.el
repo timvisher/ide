@@ -564,6 +564,9 @@ again."
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
+ '(ag-arguments
+   (quote
+    ("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--")))
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch (quote static))
  '(coffee-tab-width 2)
