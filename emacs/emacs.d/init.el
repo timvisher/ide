@@ -131,6 +131,13 @@ again."
     (projectile-find-file (or (prefix-arg-count-p arg 1)
                               (prefix-arg-count-p arg 2)))))
 
+(defun rjmetrics-magit-project
+    (arg)
+  (interactive "p")
+  (if (or (prefix-arg-count-p arg 1) (not rjmetrics-find-file-project))
+      (setq rjmetrics-find-file-project (rjmetrics-read-box-project)))
+  (magit-status rjmetrics-find-file-project))
+
 (defun rjmetrics-dired-code-dir
     ()
   (interactive)
@@ -480,6 +487,8 @@ again."
 (global-set-key (kbd "C-c a c") 'rjmetrics-ag-code-dir)
 
 (global-set-key (kbd "C-c P") 'rjmetrics-find-file)
+
+(global-set-key (kbd "C-c G") 'rjmetrics-magit-project)
 
 (global-set-key (kbd "C-c C-j") 'imenu)
 
