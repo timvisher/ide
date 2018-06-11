@@ -125,8 +125,6 @@ ssh_app_staging_instances() { ssh_layer_instances webservices app_staging; }
 ssh_bastion() { echo ssh "$(aws_bastion_ip)" '# bastion'; }
 ssh_billing_service_instances() { ssh_layer_instances webservices billing_service; }
 ssh_billing_service_scheduler_instances() { ssh_layer_instances webservices billing_service_scheduler; }
-ssh_connection_service_instance() { ssh_layer_instance webservices connection_service "$@"; }
-ssh_connection_service_instances() { ssh_layer_instances webservices connection_service; }
 ssh_core_service_instances() { ssh_layer_instances webservices core_service; }
 ssh_core_service_migrations_instances() { ssh_layer_instances webservices core_service_migrations; }
 ssh_core_service_scheduler_instances() { ssh_layer_instances webservices core_service_scheduler; }
@@ -504,7 +502,6 @@ multi_exec_bastion() { multi_exec_layer bastion bastion "$@"; }
 multi_exec_whitelist_tester() { multi_exec_layer bastion whitelist-tester "$@"; }
 
 # stack: webservices
-multi_exec_connection_service() { multi_exec_layer webservices connection_service "$@"; }
 multi_exec_webhook_service() { multi_exec_layer webservices webhook_service "$@"; }
 multi_exec_billing_service() { multi_exec_layer webservices billing_service "$@"; }
 multi_exec_api_passthrough() { multi_exec_layer webservices api_passthrough "$@"; }
@@ -1021,7 +1018,6 @@ aws_layer_status_api_passthrough_staging() { aws_layer_status webservices api_pa
 aws_layer_status_bastion() { aws_layer_status bastion bastion; }
 aws_layer_status_billing_service() { aws_layer_status webservices billing_service; }
 aws_layer_status_billing_service_scheduler() { aws_layer_status webservices billing_service_scheduler; }
-aws_layer_status_connection_service() { aws_layer_status webservices connection_service; }
 aws_layer_status_core_service() { aws_layer_status webservices core_service; }
 aws_layer_status_core_service_migrations() { aws_layer_status webservices core_service_migrations; }
 aws_layer_status_core_service_scheduler() { aws_layer_status webservices core_service_scheduler; }
@@ -1156,7 +1152,6 @@ aws_elb_instance_health_admin() { aws_elb_instance_health admin; }
 aws_elb_instance_health_api_passthrough() { aws_elb_instance_health api-passthrough; }
 aws_elb_instance_health_api_passthrough_staging() { aws_elb_instance_health api-passthrough-staging; }
 aws_elb_instance_health_billing_service() { aws_elb_instance_health billing-service; }
-aws_elb_instance_health_connection_service() { aws_elb_instance_health connection-service; }
 aws_elb_instance_health_core_service() { aws_elb_instance_health core-service; }
 aws_elb_instance_health_dbreplicators_service() { aws_elb_instance_health dbreplicators-service; }
 aws_elb_instance_health_elasticsearch_forwarder() { aws_elb_instance_health elasticsearch-forwarder; }
