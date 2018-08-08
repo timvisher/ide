@@ -50,7 +50,7 @@ then
     ssh-add -A >/dev/null 2>&1
     if ! ssh-add -l > /dev/null 2>&1
     then
-        echo "# Can't connect to the ssh-agent or source it from ~/.agent.env."
+        echo "# Can't connect to the ssh-agent or source it from ~/.agent.env." >&2
     fi
 fi
 
