@@ -412,38 +412,41 @@ again."
     ()
   (format-time-string "<%F %a %H:%M>"))
 
-(defun ide-org-set-mtime
-    (&optional mtime)
-  (interactive)
-  (let ((mtime (if (not mtime)
-                   (ide-get-org-timestamp-string)
-                 mtime)))
-   (if (org-entry-get (point) "MODIFIED_AT")
-       (let ((current-mtime (org-entry-get (point) "MODIFIED_AT")))
-         (org-entry-put (point)
-                        "MODIFIED_AT"
-                        mtime)
-         (message "Changed entry MODIFIED_AT from %s → %s"
-                  current-mtime
-                  mtime))
-     (progn
-       (org-entry-put (point)
-                      "MODIFIED_AT"
-                      mtime)
-       (message "Set entry MODIFIED_AT to %s"
-                mtime)))))
-
 (defun ide-org-set-ctime
+    (&optional ctime)
+  (interactive)
+  (let ((ctime (if (not ctime)
+                   (ide-get-org-timestamp-string)
+                 ctime)))
+    (if (org-entry-get (point) "CREATED_AT")
+        (message "Entry already has CREATED_AT: %s"
+                 (org-entry-get (point) "CREATED_AT"))
+      (progn
+        (org-entry-put (point)
+                       "CREATED_AT"
+                       ctime)
+        (message "Set entry CREATED_AT to %s"
+                 ctime)))))
+
+(defun ide-org-set-mtime
     ()
   (interactive)
-  (if (org-entry-get (point) "CREATED_AT")
-      (message "Entry already has CREATED_AT: %s"
-               (org-entry-get (point) "CREATED_AT"))
-    (let ((ctime (format-time-string "<%F %a %H:%M>")))
-      (org-entry-put (point)
-                     "CREATED_AT"
-                     ctime)
-      (ide-org-set-mtime ctime))))
+  (let ((mtime (ide-get-org-timestamp-string)))
+    (ide-org-set-ctime mtime)
+    (if (org-entry-get (point) "MODIFIED_AT")
+        (let ((current-mtime (org-entry-get (point) "MODIFIED_AT")))
+          (org-entry-put (point)
+                         "MODIFIED_AT"
+                         mtime)
+          (message "Changed entry MODIFIED_AT from %s → %s"
+                   current-mtime
+                   mtime))
+      (progn
+        (org-entry-put (point)
+                       "MODIFIED_AT"
+                       mtime)
+        (message "Set entry MODIFIED_AT to %s"
+                 mtime)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
