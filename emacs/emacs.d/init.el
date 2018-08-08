@@ -569,6 +569,7 @@ again."
     ("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--")))
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch (quote static))
+ '(clojure-defun-indents (quote (fact facts for-all)))
  '(coffee-tab-width 2)
  '(column-number-mode t)
  '(delete-selection-mode t)
