@@ -761,7 +761,10 @@ export_aws_vars() {
     fi
 
     # FIXME we need a way to generate a PS1 template
-    export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w$(__git_ps1)\n\$ '
+    if [[ -n $DEFAULT_PS1 ]]
+    then
+        export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w$(__git_ps1)\n\$ '
+    fi
 }
 
 alias unexport_aws_vars=unassume_role
@@ -830,7 +833,10 @@ unassume_role() {
     unset AWS_SESSION_TOKEN
     unset AWS_ROLE_EXPIRATION
     unset AWS_ROLE_NAME
-    export PS1="$DEFAULT_PS1"
+    if [[ -n $DEFAULT_PS1 ]]
+    then
+        export PS1="$DEFAULT_PS1"
+    fi
 }
 
 assume_read_only() { shell_init_role read_only "$@"; }
@@ -860,7 +866,10 @@ set_default_profile() {
     if aws --profile "$1" configure get role_arn > /dev/null 2>&1
     then
         export AWS_DEFAULT_PROFILE="$1"
-        export PS1='\n\d \t\n\u@\H\n[default profile: $AWS_DEFAULT_PROFILE]\n\w$(__git_ps1)\n\$ '
+        if [[ -n $DEFAULT_PS1 ]]
+        then
+           export PS1='\n\d \t\n\u@\H\n[default profile: $AWS_DEFAULT_PROFILE]\n\w$(__git_ps1)\n\$ '
+        fi
     else
         echo "# Profile $1 is not configured" >&2
     fi
@@ -868,7 +877,10 @@ set_default_profile() {
 
 unset_default_profile() {
     unset AWS_DEFAULT_PROFILE
-    export PS1="$DEFAULT_PS1"
+    if [[ -n $DEFAULT_PS1 ]]
+    then
+        export PS1="$DEFAULT_PS1"
+    fi
 }
 
 configure_aws_profiles() {
