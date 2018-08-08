@@ -191,7 +191,10 @@ ide_aws_opsworks_layer_instances_ips() {
 
     ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[] | select(.PrivateIp) | .PrivateIp'
+           '.Instances[]
+            | select(.PrivateIp)
+            | select(.Status == "online")
+            | .PrivateIp'
 }
 
 layer_instances_ips() {
