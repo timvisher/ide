@@ -48,9 +48,14 @@ if ! ssh-add -l > /dev/null 2>&1
 then
     [[ -r ~/.agent.env ]] && source ~/.agent.env >/dev/null 2>&1
     ssh-add -A >/dev/null 2>&1
-    if ! ssh-add -l > /dev/null 2>&1
+    ssh-add -l >/dev/null 2>&1
+    ssh_add_status=$?
+    if (( 2 == ssh_add_status ))
     then
-        echo "# Can't connect to the ssh-agent or source it from ~/.agent.env." >&2
+        echo "# The ssh-agent is unavailable" >&2
+    elif (( 1 == ssh_add_status ))
+    then
+        echo "# The ssh-agent has no identities" >&2
     fi
 fi
 
