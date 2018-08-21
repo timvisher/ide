@@ -441,7 +441,9 @@ multi_exec_layer() {
     shift
     local layer_name="$1"
     # shellcheck disable=SC2155
-    local layer_instances="$(layer_instances "$stack_name" "$layer_name")"
+    local layer_instances=$(ide_aws_opsworks_layer_instances \
+                                "$stack_name" \
+                                "$layer_name")
     shift
 
     local -a hostnames=()
