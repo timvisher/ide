@@ -595,8 +595,8 @@ again."
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
  '(js-indent-level 2)
- '(org-export-backends (quote (ascii html md)))
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
+ '(org-export-backends (quote (ascii html md)))
  '(org-refile-use-outline-path t)
  '(org-todo-keywords
    (quote
@@ -604,7 +604,8 @@ again."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (hcl-mode
+    (htmlize
+     hcl-mode
      align-cljlet
      org
      mediawiki
