@@ -1248,3 +1248,34 @@ aws_as_terminate_instance() {
 aws_sg_list() {
     aws_sg_list | jq -r '[.SecurityGroups[] | [.GroupName,.GroupId]] | sort_by(0)[] | @tsv' | column -t -s $'\t'
 }
+
+##########################################################################
+### SSH
+##########################################################################
+
+_ide_ssh_define_common_service_functions() {
+    local stack_name
+    stack_name=$1
+    local layer_name
+    layer_name=$2
+
+    eval 'ide_'"${layer_name}"'_ssh_instance() {
+        ide_aws_opsworks_ssh_layer_instance '"${stack_name}"' '"${layer_name}"' "$@"
+    }'
+
+    eval 'ide_'"${layer_name}"'_ssh_instances() {
+        ide_aws_opsworks_layer_ssh '"${stack_name}"' '"${layer_name}"' "$@"
+    }'
+
+    eval 'ide_'"${layer_name}"'_multi_exec() {
+        multi_exec_layer '"${stack_name}"' '"${layer_name}"' "$@"
+    }'
+
+    eval 'ide_'"${layer_name}"'_connect_db() {
+        ide_'"${layer_name}"'_ssh_instance -t connect-db
+    }'
+
+    eval 'ide_'"${layer_name}"'_layer_status() {
+        aws_layer_status '"${stack_name}"' '"${layer_name}"'
+    }'
+}
