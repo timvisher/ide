@@ -1,10 +1,12 @@
 ;;; git-commit-autoloads.el --- automatically extracted autoloads
 ;;
 ;;; Code:
-(add-to-list 'load-path (directory-file-name (or (file-name-directory #$) (car load-path))))
+
+(add-to-list 'load-path (directory-file-name
+                         (or (file-name-directory #$) (car load-path))))
+
 
-;;;### (autoloads nil "git-commit" "git-commit.el" (22509 47677 0
-;;;;;;  0))
+;;;### (autoloads nil "git-commit" "git-commit.el" (0 0 0 0))
 ;;; Generated autoloads from git-commit.el
 
 (defvar global-git-commit-mode t "\
@@ -26,11 +28,26 @@ provide such a commit message.
 
 \(fn &optional ARG)" t nil)
 
+(defconst git-commit-filename-regexp "/\\(\\(\\(COMMIT\\|NOTES\\|PULLREQ\\|TAG\\)_EDIT\\|MERGE_\\|\\)MSG\\|\\(BRANCH\\|EDIT\\)_DESCRIPTION\\)\\'")
+
+(autoload 'git-commit-setup-check-buffer "git-commit" "\
+
+
+\(fn)" nil nil)
+
+(autoload 'git-commit-setup "git-commit" "\
+
+
+\(fn)" nil nil)
+
+(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "git-commit" '("git-commit-")))
+
 ;;;***
 
 ;; Local Variables:
 ;; version-control: never
 ;; no-byte-compile: t
 ;; no-update-autoloads: t
+;; coding: utf-8
 ;; End:
 ;;; git-commit-autoloads.el ends here
