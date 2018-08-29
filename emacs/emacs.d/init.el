@@ -180,6 +180,7 @@ again."
                             repository)))
 
 (autoload 'magit-toplevel "magit-git")
+(autoload 'magit-get "magit-git")
 (autoload 'magit-process-file "magit-process")
 
 (defun todo-frame-bounce
