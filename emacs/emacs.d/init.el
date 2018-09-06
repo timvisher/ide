@@ -102,7 +102,7 @@ again."
   (pbpaste))
 
 (defun rjmetrics-read-box-project ()
-  (let* ((directory "/core:/opt/code")
+  (let* ((directory "/ssh:core:/opt/code")
          (files (directory-files directory))
          (project (completing-read "Project: "
                                    files
@@ -141,7 +141,7 @@ again."
 (defun rjmetrics-dired-code-dir
     ()
   (interactive)
-  (dired "/core:/opt/code"))
+  (dired "/ssh:core:/opt/code"))
 
 (global-set-key (kbd "C-c C") 'rjmetrics-dired-code-dir)
 
@@ -391,7 +391,7 @@ again."
 (defun stitch-read-box-virtualenv
     ()
   (completing-read "virtualenv: "
-                   (directory-files "/core:.virtualenvs")
+                   (directory-files "/ssh:core:.virtualenvs")
                    (lambda (file)
                      (not
                       (or (string= "." file)
@@ -486,7 +486,7 @@ again."
 (defun rjmetrics-ag-code-dir (string)
   "Runs ag inside the code directory on the VM"
   (interactive (list (ag/read-from-minibuffer "Search string")))
-  (ag string "/core:/opt/code/"))
+  (ag string "/ssh:core:/opt/code/"))
 
 (global-set-key (kbd "C-c a c") 'rjmetrics-ag-code-dir)
 
