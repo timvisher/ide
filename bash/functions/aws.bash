@@ -1198,16 +1198,27 @@ _aws_as_describe_groups() {
         | jq '.AutoScalingGroups[]'
 }
 
+_aws_as_describe_instances() {
+    local instance_ids=("$@")
+    while (( 0 < ${#instance_ids[@]} ))
+    do
+        aws autoscaling describe-auto-scaling-instances \
+            --instance-ids "${instance_ids[@]:0:50}"
+        instance_ids=("${instance_ids[@]:50}")
+    done
+}
+
 aws_as_describe_groups_instances() {
     local group_names=("$@")
 
+    local instance_id
     # word splitting is desirable here
     # shellcheck disable=SC2046
-    aws_ec2_describe_instances $(aws autoscaling \
-                                      describe-auto-scaling-instances \
-                                      --instance-ids $(_aws_as_describe_groups "${group_names[@]}" \
-                                                           | jq -r '.Instances[] | .InstanceId') \
-                                      | jq -r '.AutoScalingInstances[] | .InstanceId')
+    aws_ec2_describe_instances $(
+       _aws_as_describe_instances $(_aws_as_describe_groups "${group_names[@]}" \
+                                        | jq -r '.Instances[] | .InstanceId') \
+           | jq -r '.AutoScalingInstances[] | .InstanceId'
+        )
 }
 
 aws_as_describe_instances() {
