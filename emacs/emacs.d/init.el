@@ -580,7 +580,6 @@ again."
  '(dired-dwim-target t)
  '(dired-recursive-copies (quote always))
  '(fill-column 74)
- '(frame-background-mode (quote dark))
  '(global-hl-line-mode t)
  '(global-whitespace-mode nil)
  '(hippie-expand-try-functions-list
