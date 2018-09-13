@@ -449,6 +449,16 @@ again."
         (message "Set entry MODIFIED_AT to %s"
                  mtime)))))
 
+(defun ide-swap-light-and-dark
+    ()
+  (interactive)
+  (if (eq 'light frame-background-mode)
+      (setq frame-background-mode 'dark)
+    (setq frame-background-mode 'light))
+  (frame-set-background-mode nil)
+  (message "Set frame-background-mode to %s"
+           frame-background-mode))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
