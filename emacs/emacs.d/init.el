@@ -456,8 +456,7 @@ again."
       (setq frame-background-mode 'dark)
     (setq frame-background-mode 'light))
   (frame-set-background-mode nil)
-  (message "Set frame-background-mode to %s"
-           frame-background-mode))
+  (message "Set frame-background-mode to %s" frame-background-mode))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
