@@ -101,7 +101,7 @@ again."
   (org-meta-return)
   (pbpaste))
 
-(defun rjmetrics-read-box-project ()
+(defun ide-read-box-project ()
   (let* ((directory "/ssh:core:/opt/code")
          (files (directory-files directory))
          (project (completing-read "Project: "
@@ -115,37 +115,37 @@ again."
 
 (defun jump-to-project ()
   (interactive)
-  (let* ((project (rjmetrics-read-box-project)))
+  (let* ((project (ide-read-box-project)))
     (if project
         (dired (format "%s/%s" directory project))
       (message "No project chosen"))))
 
-(defvar rjmetrics-find-file-project nil)
+(defvar ide-find-file-project nil)
 
-(defun rjmetrics-find-file
+(defun ide-find-file
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not rjmetrics-find-file-project))
-      (setq rjmetrics-find-file-project (rjmetrics-read-box-project)))
-  (let ((default-directory rjmetrics-find-file-project))
+  (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
+      (setq ide-find-file-project (ide-read-box-project)))
+  (let ((default-directory ide-find-file-project))
     (projectile-find-file (or (prefix-arg-count-p arg 1)
                               (prefix-arg-count-p arg 2)))))
 
-(defun rjmetrics-magit-project
+(defun ide-magit-project
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not rjmetrics-find-file-project))
-      (setq rjmetrics-find-file-project (rjmetrics-read-box-project)))
-  (magit-status rjmetrics-find-file-project))
+  (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
+      (setq ide-find-file-project (ide-read-box-project)))
+  (magit-status ide-find-file-project))
 
-(defun rjmetrics-dired-code-dir
+(defun ide-dired-code-dir
     ()
   (interactive)
   (dired "/ssh:core:/opt/code"))
 
-(global-set-key (kbd "C-c C") 'rjmetrics-dired-code-dir)
+(global-set-key (kbd "C-c C") 'ide-dired-code-dir)
 
-(defun rjmetrics-clone-repo
+(defun ide-clone-repo
     (github-username repository)
   (interactive "sGitHub username: \nsRepository name: ")
   (process-file "git"
@@ -388,7 +388,7 @@ again."
 
 (global-set-key (kbd "M-Q") 'unfill-paragraph)
 
-(defun stitch-read-box-virtualenv
+(defun ide-read-box-virtualenv
     ()
   (completing-read "virtualenv: "
                    (directory-files "/ssh:core:.virtualenvs")
@@ -398,14 +398,14 @@ again."
                           (string= ".." file))))
                    t))
 
-(defvar stitch-virtualenv-base-dir nil)
+(defvar ide-virtualenv-base-dir nil)
 
-(defun stitch-virtualenv
+(defun ide-virtualenv
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not stitch-virtualenv-base-dir))
-      (setq stitch-virtualenv-base-dir (stitch-read-box-virtualenv)))
-  (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" stitch-virtualenv-base-dir)))
+  (if (or (prefix-arg-count-p arg 1) (not ide-virtualenv-base-dir))
+      (setq ide-virtualenv-base-dir (ide-read-box-virtualenv)))
+  (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" ide-virtualenv-base-dir)))
     (setq python-shell-virtualenv-root base-dir)
     (message "python-shell-virtualenv-root=%s" base-dir)))
 
@@ -492,16 +492,16 @@ again."
 
 (autoload 'ag/read-from-minibuffer "ag")
 
-(defun rjmetrics-ag-code-dir (string)
+(defun ide-ag-code-dir (string)
   "Runs ag inside the code directory on the VM"
   (interactive (list (ag/read-from-minibuffer "Search string")))
   (ag string "/ssh:core:/opt/code/"))
 
-(global-set-key (kbd "C-c a c") 'rjmetrics-ag-code-dir)
+(global-set-key (kbd "C-c a c") 'ide-ag-code-dir)
 
-(global-set-key (kbd "C-c P") 'rjmetrics-find-file)
+(global-set-key (kbd "C-c P") 'ide-find-file)
 
-(global-set-key (kbd "C-c G") 'rjmetrics-magit-project)
+(global-set-key (kbd "C-c G") 'ide-magit-project)
 
 (global-set-key (kbd "C-c C-j") 'imenu)
 
