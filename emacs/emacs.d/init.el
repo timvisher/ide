@@ -279,6 +279,24 @@ again."
           (format "%s-L%d" link ending-line)
         link)))))
 
+(defun github-commit-link
+    ()
+  (interactive)
+  (let* ((remote-url (magit-get "remote" (magit-get-remote) "url"))
+         (parsed (github-parse-remote-url remote-url))
+         (user (car (alist-get 'user parsed)))
+         (repo (car (alist-get 'repo parsed)))
+         (commit-hash (magit-rev-parse "HEAD"))
+         ;; https://github.com/stitchdata/ide/commit/43f4a9aae4254e197e175bc03629e386f504d2aa
+         (link (format "https://github.com/%s/%s/commit/%s"
+                       user
+                       repo
+                       commit-hash)))
+    (message
+     "%s"
+     (url-encode-url
+      link))))
+
 (defun github-parse-remote-and-branch
     (remote-and-branch-str)
   (save-match-data
