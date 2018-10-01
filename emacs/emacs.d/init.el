@@ -101,8 +101,35 @@ again."
   (org-meta-return)
   (pbpaste))
 
-(defun ide-read-box-project ()
-  (let* ((directory "/ssh:core:/opt/code")
+(defvar ide-target-vm
+  nil
+  "The selected development VM for this emacs instance")
+
+(defun ide-read-target-vm
+  ()
+  (completing-read "Target VM: "
+                   '("core" "taps")))
+
+(defun ide-get-target-vm
+    (arg)
+  (if (or (prefix-arg-count-p arg 1) (not ide-target-vm))
+      (setq ide-target-vm (ide-read-target-vm)))
+  ide-target-vm)
+
+(defun prefix-arg
+    (count)
+  (expt 4 count))
+
+(defun ide-set-target-vm
+    ()
+  (interactive)
+  (message "Using %s as ide-target-vm"
+           (ide-get-target-vm (prefix-arg 1))))
+
+(defun ide-read-box-project
+    (arg)
+  (let* ((directory (format "/ssh:%s:/opt/code"
+                            (ide-get-target-vm arg)))
          (files (directory-files directory))
          (project (completing-read "Project: "
                                    files
@@ -113,9 +140,10 @@ again."
                                    t)))
     (format "%s/%s" directory project)))
 
-(defun jump-to-project ()
-  (interactive)
-  (let* ((project (ide-read-box-project)))
+(defun jump-to-project
+    (arg)
+  (interactive "p")
+  (let* ((project (ide-read-box-project arg)))
     (if project
         (dired (format "%s/%s" directory project))
       (message "No project chosen"))))
@@ -126,7 +154,7 @@ again."
     (arg)
   (interactive "p")
   (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
-      (setq ide-find-file-project (ide-read-box-project)))
+      (setq ide-find-file-project (ide-read-box-project arg)))
   (let ((default-directory ide-find-file-project))
     (projectile-find-file (or (prefix-arg-count-p arg 1)
                               (prefix-arg-count-p arg 2)))))
@@ -135,13 +163,14 @@ again."
     (arg)
   (interactive "p")
   (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
-      (setq ide-find-file-project (ide-read-box-project)))
+      (setq ide-find-file-project (ide-read-box-project arg)))
   (magit-status ide-find-file-project))
 
 (defun ide-dired-code-dir
-    ()
-  (interactive)
-  (dired "/ssh:core:/opt/code"))
+    (arg)
+  (interactive "p")
+  (dired (format "/ssh:%s:/opt/code"
+                 (ide-get-target-vm arg))))
 
 (global-set-key (kbd "C-c C") 'ide-dired-code-dir)
 
@@ -389,9 +418,10 @@ again."
 (global-set-key (kbd "M-Q") 'unfill-paragraph)
 
 (defun ide-read-box-virtualenv
-    ()
+    (arg)
   (completing-read "virtualenv: "
-                   (directory-files "/ssh:core:.virtualenvs")
+                   (directory-files (format "/ssh:%s:.virtualenvs"
+                                            (ide-get-target-vm arg)))
                    (lambda (file)
                      (not
                       (or (string= "." file)
@@ -404,7 +434,7 @@ again."
     (arg)
   (interactive "p")
   (if (or (prefix-arg-count-p arg 1) (not ide-virtualenv-base-dir))
-      (setq ide-virtualenv-base-dir (ide-read-box-virtualenv)))
+      (setq ide-virtualenv-base-dir (ide-read-box-virtualenv arg)))
   (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" ide-virtualenv-base-dir)))
     (setq python-shell-virtualenv-root base-dir)
     (message "python-shell-virtualenv-root=%s" base-dir)))
@@ -492,10 +522,12 @@ again."
 
 (autoload 'ag/read-from-minibuffer "ag")
 
-(defun ide-ag-code-dir (string)
+(defun ide-ag-code-dir (arg string)
   "Runs ag inside the code directory on the VM"
-  (interactive (list (ag/read-from-minibuffer "Search string")))
-  (ag string "/ssh:core:/opt/code/"))
+  (interactive (list (prefix-numeric-value current-prefix-arg)
+                     (ag/read-from-minibuffer "Search string")))
+  (ag string (format "/ssh:%s:/opt/code/"
+                     (ide-get-target-vm arg))))
 
 (global-set-key (kbd "C-c a c") 'ide-ag-code-dir)
 
