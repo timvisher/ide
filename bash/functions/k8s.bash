@@ -27,8 +27,6 @@ ide_k8s_ssh_node_instances() {
 }
 
 ide_k8s_nodes_multi_exec() {
-    local instances=$(aws_as_describe_groups_instances 'nodes.kube.stitchdata.com')
-
     local instance_ips=()
 
     while read -r ip
@@ -37,7 +35,8 @@ ide_k8s_nodes_multi_exec() {
         then
             instance_ips+=("$ip")
         fi
-    done < <(jq -r '.PrivateIpAddress' <<<"${instances}")
+    done < <(aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' \
+                 | jq -r '.PrivateIpAddress')
 
     parallel -j 0 "ssh admin@'{}' 'hostname; $*'" ::: "${instance_ips[@]}"
 }
