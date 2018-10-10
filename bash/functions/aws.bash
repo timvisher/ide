@@ -57,16 +57,6 @@ ide_aws_opsworks_layer_instances() {
 
 layer_instances_loader_bq() { layer_instances pipeline loader_bq; }
 
-if [[ -z $silent_ssh_options ]]
-then
-    readonly silent_ssh_options=(
-        -o 'ConnectTimeout=5'
-        -o 'StrictHostKeyChecking=no'
-        -o 'UserKnownHostsFile=/dev/null'
-        -q
-    )
-fi
-
 ssh_layer_instances() {
     _ide_deprecated ide_aws_opsworks_layer_ssh "$@"
 }
@@ -1095,7 +1085,7 @@ _aws_elb_instance_ids() {
 aws_ec2_describe_instances() {
     local -a ec2_instance_ids=("$@")
 
-    aws ec2 describe-instances --instance-ids "${ec2_instance_ids[@]}" \
+    parallel -n 50 aws ec2 describe-instances --instance-ids ::: "${ec2_instance_ids[@]}" \
         | jq -r '.Reservations[] | .Instances[]'
 }
 

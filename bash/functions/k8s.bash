@@ -26,6 +26,22 @@ ide_k8s_ssh_node_instances() {
         | jq -r '"ssh admin@\(.PrivateIpAddress) # \(.InstanceId)"'
 }
 
+ide_k8s_nodes_multi_exec() {
+    local instances=$(aws_as_describe_groups_instances 'nodes.kube.stitchdata.com')
+
+    local instance_ips=()
+
+    while read -r ip
+    do
+        if [[ -n "$ip" ]]
+        then
+            instance_ips+=("$ip")
+        fi
+    done < <(jq -r '.PrivateIpAddress' <<<"${instances}")
+
+    parallel -j 0 "ssh admin@'{}' 'hostname; $*'" ::: "${instance_ips[@]}"
+}
+
 ssh_k8s_node_instances() {
     _ide_deprecated ide_ssh_k8s_node_instances
 }
