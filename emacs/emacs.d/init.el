@@ -257,6 +257,25 @@ again."
             (list (list 'repo
                         (match-string-no-properties 2 remote-url))))))
 
+(defun github-browse-file-url
+    ()
+  (interactive)
+  (let* ((file-path (magit-file-relative-name))
+         (remote-url (magit-get "remote" (magit-get-remote) "url"))
+         (parsed (github-parse-remote-url remote-url))
+         (user (car (alist-get 'user parsed)))
+         (repo (car (alist-get 'repo parsed)))
+         (commit-hash (magit-rev-parse "HEAD"))
+         ;; https://github.com/stitchdata/cloudcutter/blob/6d41fe1460b6e10ccebdf7c98021ac0f3db9bd2b/README.md
+         (file-url (format "https://github.com/%s/%s/blob/%s/%s"
+                           user
+                           repo
+                           commit-hash
+                           file-path)))
+    (message
+     "%s"
+     (url-encode-url file-url))))
+
 (defun github-source-link
     ()
   (interactive)
