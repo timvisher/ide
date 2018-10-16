@@ -1273,6 +1273,11 @@ _ide_ssh_define_common_service_functions() {
     }'
 
     eval 'ide_'"${layer_name}"'_connect_db() {
+        echo "DEPRECATED: Use ide_'"${layer_name}"'_db" >&2
+        ide_'"${layer_name}"'_db
+    }'
+
+    eval 'ide_'"${layer_name}"'_db() {
         ide_'"${layer_name}"'_ssh_instance -t connect-db
     }'
 
