@@ -383,7 +383,8 @@ again."
     (arg)
   (interactive "p")
   (let* ((remote-name (github-branch-to-remote-name
-                       (magit-get-push-branch)))
+                       (or (magit-get-push-branch)
+                           (magit-get-current-branch))))
          (remote-url (magit-get "remote" remote-name "url"))
          (project-name (github-url-to-repo-name remote-url))
          (github-user (github-url-to-user-name remote-url))
