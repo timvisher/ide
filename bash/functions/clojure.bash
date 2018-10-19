@@ -14,6 +14,8 @@ _rebl_translate_lein_dep() {
 _rebl_assert_preconditions() {
     if ! [[ $(type -t clojure) == file ]]
     then
+        # I like backticks as a string convention
+        # shellcheck disable=SC2016
         echo '`clojure` not installed.' \
              'https://clojure.org/guides/getting_started' >&2
         return 1
@@ -27,7 +29,7 @@ rebl() {
     do
         read -r line < <(_rebl_translate_lein_dep "$1")
         shift
-        deps+=($line)
+        deps+=("$line")
     done
     clojure -Sdeps '{:deps {com.bhauman/rebel-readline {:mvn/version "0.1.4"} '"${deps[*]}"'}}' \
             -m rebel-readline.main
