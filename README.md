@@ -1089,7 +1089,7 @@ $ ide_environments_cat sandbox connections-service json | jq '.' | wc -l
 ## emacs
 
 It is assumed that you're running at least the latest stable version of
-emacs, 25.1. You may need to install that from source depending on your
+emacs, 26.1. You may need to install that from source depending on your
 package manager.
 
 ### Installation
