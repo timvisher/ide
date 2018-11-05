@@ -55,6 +55,14 @@
 ;;; Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun ide-schema-blank ()
+  "Insert a barebones schema"
+  (interactive)
+  (insert "{
+  \"type\": \"object\",
+  \"properties\": {},
+}"))
+
 (defun header-comment (comment)
   "Insert a header COMMENT
 
