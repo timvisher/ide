@@ -55,6 +55,13 @@
 ;;; Functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun ide-python-insert-ipdb ()
+  "Insert an ipdb breakpoint"
+  (interactive)
+  (insert "import ipdb; ipdb.set_trace()")
+  (newline 1 t)
+  (insert "1+1"))
+
 (defun ide-schema-blank ()
   "Insert a barebones schema"
   (interactive)
