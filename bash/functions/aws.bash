@@ -125,6 +125,7 @@ ssh_maestro_instances() { ssh_layer_instances webservices maestro; }
 ssh_menagerie_instances() { ssh_layer_instances webservices menagerie; }
 ssh_notification_service_instances() { ssh_layer_instances webservices notification_service; }
 ssh_reckoner_instances() { ssh_layer_instances webservices reckoner; }
+ssh_scheduler_instances() { ssh_layer_instances webservices scheduler; }
 ssh_sourcerer_scheduler_instances() { ssh_layer_instances webservices sourcerer_scheduler; }
 ssh_sourcerer_service_instances() { ssh_layer_instances webservices sourcerer_service; }
 ssh_spool_service_instances() { ssh_layer_instances webservices spool_service; }
