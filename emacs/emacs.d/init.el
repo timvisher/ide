@@ -682,6 +682,7 @@ again."
  '(js-indent-level 2)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-export-backends (quote (ascii html md)))
+ '(org-refile-targets (quote ((nil :maxlevel . 3))))
  '(org-refile-use-outline-path t)
  '(org-todo-keywords
    (quote
