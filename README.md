@@ -60,8 +60,8 @@ Please check out to `~/git/ide`.
 - [emacs](#emacs)
   - [Installation](#installation-2)
   - [General Notes](#general-notes)
-  - [Active repositories](#active-repositories)
-  - [Selected Packages](#selected-packages)
+  - [Active Repositories and Packages](#active-repositories-and-packages)
+  - [system-extension Files](#system-extension-files)
   - [`M-x header-comment`](#m-x-header-comment)
   - [`C-c C`/`M-x rjmetrics-dired-code-dir`](#c-c-cm-x-rjmetrics-dired-code-dir)
   - [`M-x rjmetrics-clone-repo`](#m-x-rjmetrics-clone-repo)
@@ -1127,35 +1127,20 @@ will replace that region (like it does in most other editors).
 
 `winner-mode` is turned on.
 
-### Active repositories
+### Active Repositories and Packages
 
-- gnu
-- marmalade
-- melpa
-- melpa-stable
+See the top of
+[init.el](https://github.com/stitchdata/ide/blob/master/emacs/emacs.d/init.el).
 
-### Selected Packages
+### system-extension Files
 
-- ag
-- align-cljlet
-- bats-mode
-- better-defaults
-- cider
-- coffee-mode
-- expand-region
-- fixme-mode
-- ido-ubiquitous
-- ido-vertical-mode
-- magit
-- markdown-mode
-- mediawiki
-- org
-- paredit
-- php-mode
-- projectile
-- smex
-- terraform-mode
-- yaml-mode
+The spirit of IDE intends to be a uniform config for everyone using it.
+That said, there are certain light-weight changes that should be
+considered permissible and possible. These can be placed in a
+system-extension file, editable on whatever system you're using with `M-x
+edit-system-extension-file`. See the
+[notes](https://github.com/stitchdata/ide/blob/master/emacs/emacs.d/host-extensions/000-notes.txt)
+for details.
 
 ### `M-x header-comment`
 
