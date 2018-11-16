@@ -739,6 +739,7 @@ again."
      (sh-indent-for-case-label . +))))
  '(search-default-mode (quote char-fold-to-regexp))
  '(sentence-end-double-space nil)
+ '(sh-basic-offset 2)
  '(whitespace-line-column nil)
  '(whitespace-style
    (quote
