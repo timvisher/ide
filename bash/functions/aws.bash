@@ -1258,31 +1258,32 @@ aws_sg_list() {
 _ide_ssh_define_common_service_functions() {
     local stack_name
     stack_name=$1
-    local layer_name
-    layer_name=$2
+    local function_name
+    function_name=$2
+    local layer_name=${3:-$function_name}
 
-    eval 'ide_'"${layer_name}"'_ssh_instance() {
+    eval 'ide_'"${function_name}"'_ssh_instance() {
         ide_aws_opsworks_ssh_layer_instance '"${stack_name}"' '"${layer_name}"' "$@"
     }'
 
-    eval 'ide_'"${layer_name}"'_ssh_instances() {
+    eval 'ide_'"${function_name}"'_ssh_instances() {
         ide_aws_opsworks_layer_ssh '"${stack_name}"' '"${layer_name}"' "$@"
     }'
 
-    eval 'ide_'"${layer_name}"'_multi_exec() {
+    eval 'ide_'"${function_name}"'_multi_exec() {
         multi_exec_layer '"${stack_name}"' '"${layer_name}"' "$@"
     }'
 
-    eval 'ide_'"${layer_name}"'_connect_db() {
+    eval 'ide_'"${function_name}"'_connect_db() {
         echo "DEPRECATED: Use ide_'"${layer_name}"'_db" >&2
-        ide_'"${layer_name}"'_db
+        ide_'"${function_name}"'_db
     }'
 
-    eval 'ide_'"${layer_name}"'_db() {
-        ide_'"${layer_name}"'_ssh_instance -t connect-db
+    eval 'ide_'"${function_name}"'_db() {
+        ide_'"${function_name}"'_ssh_instance -t connect-db
     }'
 
-    eval 'ide_'"${layer_name}"'_layer_status() {
+    eval 'ide_'"${function_name}"'_layer_status() {
         aws_layer_status '"${stack_name}"' '"${layer_name}"'
     }'
 }

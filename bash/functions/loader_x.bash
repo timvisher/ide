@@ -1,1 +1,1 @@
-_ide_ssh_define_common_service_functions pipeline loader_x
+_ide_ssh_define_common_service_functions pipeline loader_x loader_x2
