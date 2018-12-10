@@ -153,7 +153,7 @@ again."
 
 (defun ide-read-box-project
     (arg)
-  (let* ((directory (format "/ssh:%s:/opt/code"
+  (let* ((directory (format "/scp:%s:/opt/code"
                             (ide-get-target-vm arg)))
          (files (directory-files directory))
          (project (completing-read "Project: "
@@ -194,7 +194,7 @@ again."
 (defun ide-dired-code-dir
     (arg)
   (interactive "p")
-  (dired (format "/ssh:%s:/opt/code"
+  (dired (format "/scp:%s:/opt/code"
                  (ide-get-target-vm arg))))
 
 (global-set-key (kbd "C-c C") 'ide-dired-code-dir)
@@ -474,7 +474,7 @@ again."
 (defun ide-read-box-virtualenv
     (arg)
   (completing-read "virtualenv: "
-                   (directory-files (format "/ssh:%s:.virtualenvs"
+                   (directory-files (format "/scp:%s:.virtualenvs"
                                             (ide-get-target-vm arg)))
                    (lambda (file)
                      (not
@@ -580,7 +580,7 @@ again."
   "Runs ag inside the code directory on the VM"
   (interactive (list (prefix-numeric-value current-prefix-arg)
                      (ag/read-from-minibuffer "Search string")))
-  (ag string (format "/ssh:%s:/opt/code/"
+  (ag string (format "/scp:%s:/opt/code/"
                      (ide-get-target-vm arg))))
 
 (global-set-key (kbd "C-c a c") 'ide-ag-code-dir)
