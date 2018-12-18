@@ -145,51 +145,69 @@ again."
     (count)
   (expt 4 count))
 
-(defun ide-set-target-vm
-    ()
-  (interactive)
-  (message "Using %s as ide-target-vm"
-           (ide-get-target-vm (prefix-arg 1))))
-
 (defun ide-read-box-project
-    (arg)
-  (let* ((directory (format "/scp:%s:/opt/code"
-                            (ide-get-target-vm arg)))
-         (files (directory-files directory))
+    ()
+  (let* ((core-files
+          (seq-mapcat
+           (lambda (f)
+             (list (list (format "core/%s" f) (list "core" f))))
+           (seq-filter (lambda (f)
+                         (not (string-match "^..?$" f)))
+                       (directory-files "/scp:core:/opt/code"))))
+         (taps-files
+          (seq-mapcat
+           (lambda (f)
+             (list (list (format "taps/%s" f) (list "taps" f))))
+           (seq-filter (lambda (f)
+                         (not (string-match "^..?$" f)))
+                       (directory-files "/scp:taps:/opt/code"))))
+         (box-files (append core-files taps-files))
+         (files (sort (seq-map #'car box-files) 'string-lessp))
          (project (completing-read "Project: "
                                    files
                                    (lambda (file)
                                      (not
                                       (or (string= "." file)
                                           (string= ".." file))))
-                                   t)))
-    (format "%s/%s" directory project)))
+                                   t))
+         (project-file (cadr (assoc project box-files))))
+    ;; Should only be here temporarily while we migrate away from the
+    ;; target vm concept
+    (setq ide-target-vm (car project-file))
+    (format "/scp:%s:/opt/code/%s"
+            (car project-file)
+            (cadr project-file))))
+
+(defvar ide-read-box-project-cache nil)
+
+(defun ide-read-box-project-or-cache
+    (arg &optional var)
+  (let ((var (or var 'ide-read-box-project-cache)))
+    (if (or (prefix-arg-count-p arg 1) (not (symbol-value var)))
+        (set var (ide-read-box-project))
+      (symbol-value var))))
+
+(defvar jump-to-project-cache nil)
 
 (defun jump-to-project
     (arg)
   (interactive "p")
-  (let* ((project (ide-read-box-project arg)))
+  (let* ((project (ide-read-box-project-or-cache arg)))
     (if project
-        (dired (format "%s/%s" directory project))
+        (dired project)
       (message "No project chosen"))))
-
-(defvar ide-find-file-project nil)
 
 (defun ide-find-file
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
-      (setq ide-find-file-project (ide-read-box-project arg)))
-  (let ((default-directory ide-find-file-project))
+  (let ((default-directory (ide-read-box-project-or-cache arg)))
     (projectile-find-file (or (prefix-arg-count-p arg 1)
                               (prefix-arg-count-p arg 2)))))
 
 (defun ide-magit-project
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not ide-find-file-project))
-      (setq ide-find-file-project (ide-read-box-project arg)))
-  (magit-status ide-find-file-project))
+  (magit-status (ide-read-box-project-or-cache arg)))
 
 (defun ide-dired-code-dir
     (arg)
