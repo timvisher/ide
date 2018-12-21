@@ -107,6 +107,27 @@ again."
       (pbcopy-refilled-copy-refilled-from-temp-buffer)
     (error "pbcopy-refilled must have an active region")))
 
+(defun pbcopy-unfilled-copy-from-temp-buffer
+    ()
+  (let ((text (buffer-substring-no-properties (region-beginning)
+                                              (region-end))))
+    (with-temp-buffer
+      (insert text)
+      (mark-whole-buffer)
+      (unfill-paragraph t)
+      (let ((text (buffer-substring-no-properties (point-min)
+                                                  (point-max))))
+        (if (shell-command-on-region (point-min) (point-max) "pbcopy")
+            (message "Sent to clipboard: %s" text)
+          (error "Failed to send to clipobard: %s" text))))))
+
+(defun pbcopy-unfilled
+    ()
+  (interactive)
+  (when (not (region-active-p))
+    (error "pbcopy-unfilled must have an active region"))
+  (pbcopy-unfilled-copy-from-temp-buffer))
+
 (defun edit-init-file ()
   (interactive)
   (find-file (concat (getenv "HOME") "/.emacs.d/init.el")))
