@@ -1,10 +1,7 @@
 .DEFAULT_GOAL := test
 
-install:
-	npm install
-
-readme: install
-	./node_modules/.bin/doctoc README.md
+readme:
+	docker run -v "$$PWD":/mnt mozilla/node-doctoc bash -c 'cd /mnt && doctoc --title "**Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*" README.md'
 
 test: readme
 	bash -c '[[ $$(docker run koalaman/shellcheck:v0.4.7 -V) == *0.4.7* ]]'
