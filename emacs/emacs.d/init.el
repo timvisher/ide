@@ -151,10 +151,29 @@ again."
   nil
   "The selected development VM for this emacs instance")
 
+(setq ide-vms ["core" "taps" "stitch_services"])
+
+(setq ide-reachable-vms nil)
+
+(defun ide--vm-host-is-reachable-p
+    (host)
+  "Test whether HOST can be reached via ssh"
+  (if (= 0 (process-file-shell-command
+            (format "ssh -o ConnectTimeout=10 -Tq %s true"
+                    host)))
+      t
+    (message (format "%s is unreachable"
+                     host))))
+
+(defun ide--get-reachable-vms
+    ()
+  (unless ide-reachable-vms
+    (setq ide-reachable-vms (seq-filter 'ide--vm-host-is-reachable-p ide-vms)))
+  ide-reachable-vms)
+
 (defun ide-read-target-vm
-  ()
-  (completing-read "Target VM: "
-                   '("core" "taps")))
+    ()
+  (completing-read "Target VM: " (ide--get-reachable-vms)))
 
 (defun ide-get-target-vm
     (arg)
@@ -168,21 +187,16 @@ again."
 
 (defun ide-read-box-project
     ()
-  (let* ((core-files
-          (seq-mapcat
-           (lambda (f)
-             (list (list (format "core/%s" f) (list "core" f))))
-           (seq-filter (lambda (f)
-                         (not (string-match "^..?$" f)))
-                       (directory-files "/scp:core:/opt/code"))))
-         (taps-files
-          (seq-mapcat
-           (lambda (f)
-             (list (list (format "taps/%s" f) (list "taps" f))))
-           (seq-filter (lambda (f)
-                         (not (string-match "^..?$" f)))
-                       (directory-files "/scp:taps:/opt/code"))))
-         (box-files (append core-files taps-files))
+  (let* ((box-files (seq-mapcat
+                     (lambda (host)
+                       (seq-mapcat
+                        (lambda (f)
+                          (list (list (format "%s/%s" host f) (list host f))))
+                        (seq-filter (lambda (f)
+                                      (not (string-match "^..?$" f)))
+                                    (directory-files (format "/scp:%s:/opt/code"
+                                                             host)))))
+                     (ide--get-reachable-vms)))
          (files (sort (seq-map #'car box-files) 'string-lessp))
          (project (completing-read "Project: "
                                    files
