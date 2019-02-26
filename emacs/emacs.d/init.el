@@ -132,7 +132,7 @@ again."
   (interactive)
   (find-file (concat (getenv "HOME") "/.emacs.d/init.el")))
 
-(defun -ide-system-extension-file-name ()
+(defun ide--system-extension-file-name ()
   (concat (getenv "HOME")
           "/.emacs.d/host-extensions/"
           system-name
@@ -140,7 +140,7 @@ again."
 
 (defun ide-edit-system-extension-file ()
   (interactive)
-  (find-file (-ide-system-extension-file-name)))
+  (find-file (ide--system-extension-file-name)))
 
 (defun paste-todo ()
   (interactive)
@@ -711,8 +711,8 @@ again."
 ;;; Load system extensions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(when (file-exists-p (-ide-system-extension-file-name))
-  (load (-ide-system-extension-file-name)))
+(when (file-exists-p (ide--system-extension-file-name))
+  (load (ide--system-extension-file-name)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Customize
