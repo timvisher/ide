@@ -162,8 +162,10 @@ again."
             (format "ssh -o ConnectTimeout=10 -Tq %s true"
                     host)))
       t
-    (message (format "%s is unreachable"
-                     host))))
+    (progn
+      (message (format "%s is unreachable"
+                       host))
+      nil)))
 
 (defun ide--get-reachable-vms
     ()
