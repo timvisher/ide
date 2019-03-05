@@ -35,35 +35,36 @@ export HISTSIZE=500000
 # Load in bash_completion if we can find it.
 if [[ -r /usr/local/etc/bash_completion ]]
 then
-    source /usr/local/etc/bash_completion
+  source /usr/local/etc/bash_completion
 elif [[ -r /usr/share/bash-completion/bash_completion ]]
 then
-    source /usr/share/bash-completion/bash_completion
+  source /usr/share/bash-completion/bash_completion
 else
-    echo "# Can't find bash-completion. You should install it." >&2
+  echo "# Can't find bash-completion. You should install it." >&2
 fi
 
 # set up the ssh agent if we can't connect to it
 if ! ssh-add -l > /dev/null 2>&1
 then
-    [[ -r ~/.agent.env ]] && source ~/.agent.env >/dev/null 2>&1
-    ssh-add -A >/dev/null 2>&1
-    ssh-add -l >/dev/null 2>&1
-    ssh_add_status=$?
-    if (( 2 == ssh_add_status ))
-    then
-        echo "# The ssh-agent is unavailable" >&2
-    elif (( 1 == ssh_add_status ))
-    then
-        echo "# The ssh-agent has no identities" >&2
-    fi
+  echo '# Initializing the ssh-agent' >&2
+  [[ -r ~/.agent.env ]] && source ~/.agent.env >/dev/null 2>&1
+  ssh-add -A >/dev/null 2>&1
+  ssh-add -l >/dev/null 2>&1
+  ssh_add_status=$?
+  if (( 2 == ssh_add_status ))
+  then
+    echo "# The ssh-agent is unavailable" >&2
+  elif (( 1 == ssh_add_status ))
+  then
+    echo "# The ssh-agent has no identities" >&2
+  fi
 fi
 
 # set up git ps1
 if ! command -v __git_ps1 > /dev/null 2>&1
 then
-    echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
-    __git_ps1() { return 0; }
+  echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
+  __git_ps1() { return 0; }
 fi
 
 # only works if using __git_ps1 as a PROMPT_COMMAND
@@ -74,7 +75,7 @@ export GIT_PS1_SHOWUNTRACKEDFILES=1
 export GIT_PS1_SHOWUPSTREAM=auto
 
 git_prompt_help() {
-    column -t -s $'\t' <<EOF
+  column -t -s $'\t' <<EOF
 *	unstaged changes
 +	staged changes
 $	stashes
@@ -121,9 +122,9 @@ done
 # display file type hints and colorize the output of ls
 if ls --version > /dev/null 2>&1
 then
-    alias ls='ls --color -Fh'
+  alias ls='ls --color -Fh'
 else
-    alias ls='ls -FGh'
+  alias ls='ls -FGh'
 fi
 
 alias ll='ls -l'
@@ -157,13 +158,13 @@ alias ag='ag --pager "less -R"'
 
 if [[ -d ~/.config/stitch/ide/bash ]]
 then
-    shopt -s nullglob
-    for f in ~/.config/stitch/ide/bash/*.bash
-    do
-        if [[ -f $f ]]
-        then
-            source "$f"
-        fi
-    done
-    shopt -u nullglob
+  shopt -s nullglob
+  for f in ~/.config/stitch/ide/bash/*.bash
+  do
+    if [[ -f $f ]]
+    then
+      source "$f"
+    fi
+  done
+  shopt -u nullglob
 fi
