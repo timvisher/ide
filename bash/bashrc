@@ -168,3 +168,7 @@ then
   done
   shopt -u nullglob
 fi
+
+# Local Variables:
+# sh-basic-offset: 2
+# End:
