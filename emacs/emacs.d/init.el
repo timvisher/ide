@@ -421,6 +421,22 @@ again."
 
 (defun github-compare
     (arg)
+  "Displays a github comparison link based on context.
+
+When called from a file in a git project, it will find github
+user associated with the current push branch and the github user
+associated with the current upstream branch and display a link
+comparing the two branches with the forks correctly
+configured (like
+https://github.com/stitchdata/boxcutter/compare/master...timvisher:master?expand=1).
+
+When called with an active commit range in any magit buffer, it
+will display a compare link based on the current push branch's
+fork and branch (like
+https://github.com/stitchdata/boxcutter/compare/88147f03..80873a45?expand=1),
+assuming that the commits have all been pushed.
+
+Any other context has undefined behavior."
   (interactive "p")
   (let* ((base-remote (github-branch-to-remote-name
                        (magit-get-upstream-branch)))
@@ -436,6 +452,21 @@ again."
          (our-user (github-url-to-user-name our-remote-url))
          (our-branch (github-branch-to-branch-name
                       (magit-get-push-branch)))
+         (maybe-range (magit-diff--dwim))
+         (comparison-component (if (stringp maybe-range)
+                                   maybe-range
+                                 (format
+                                  ;; Base Branch like: master
+                                  (concat "%s..."
+                                          ;; Our github user like:
+                                          ;; timvisher
+                                          "%s:"
+                                          ;; Our branch like:
+                                          ;; feature/support-sierra
+                                          "%s")
+                                  base-branch
+                                  our-user
+                                  our-branch)))
          (compare-link (format
                         (concat "https://github.com/"
                                 ;; Base User like: RJMetrics
@@ -443,17 +474,15 @@ again."
                                 ;; Project name like: boxcutter
                                 "%s/"
                                 "compare/"
-                                ;; Base Branch like: master
-                                "%s..."
-                                ;; our user like: timvisher
-                                "%s:"
-                                ;; our branch like: feature/support-sierra
+                                ;; Comparison component like:
+                                ;; 12341234...134124 or
+                                ;; master...timvisher/feature/support-sierra
                                 "%s?expand=1")
-                        base-user
+                        (if (stringp maybe-range)
+                            our-user
+                          base-user)
                         project-name
-                        base-branch
-                        our-user
-                        our-branch)))
+                        comparison-component)))
     ;; like https://github.com/RJMetrics/boxcutter/compare/master...timvisher:feature/support-sierra?expand=1
     (message compare-link)
     (when (prefix-arg-count-p arg 1)
