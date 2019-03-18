@@ -151,7 +151,7 @@ again."
   nil
   "The selected development VM for this emacs instance")
 
-(setq ide-vms ["core" "taps" "stitch_services"])
+(setq ide-vms ["core" "taps"])
 
 (setq ide-reachable-vms nil)
 
