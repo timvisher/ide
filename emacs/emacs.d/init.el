@@ -626,6 +626,11 @@ Any other context has undefined behavior."
   (frame-set-background-mode nil)
   (message "Set frame-background-mode to %s" frame-background-mode))
 
+
+(defun zap-up-to-char-reverse
+    (char)
+  (interactive "cZap up to char (reverse): ")
+  (zap-up-to-char -1 char))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -675,6 +680,7 @@ Any other context has undefined behavior."
 
 (global-set-key (kbd "C-c C-j") 'imenu)
 
+(global-set-key (kbd "M-Z") 'zap-up-to-char-reverse)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Aliases
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
