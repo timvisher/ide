@@ -770,14 +770,7 @@ Any other context has undefined behavior."
  '(global-whitespace-mode nil)
  '(hippie-expand-try-functions-list
    (quote
-    (try-complete-file-name-partially
-     try-complete-file-name
-     try-expand-all-abbrevs
-     try-expand-dabbrev
-     try-expand-dabbrev-all-buffers
-     try-expand-dabbrev-from-kill
-     try-complete-lisp-symbol-partially
-     try-complete-lisp-symbol)))
+    (try-complete-file-name-partially try-complete-file-name try-expand-all-abbrevs try-expand-dabbrev try-expand-dabbrev-all-buffers try-expand-dabbrev-from-kill try-complete-lisp-symbol-partially try-complete-lisp-symbol)))
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
  '(js-indent-level 2)
@@ -791,31 +784,8 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (htmlize
-     hcl-mode
-     align-cljlet
-     org
-     mediawiki
-     coffee-mode
-     yaml-mode
-     smex
-     projectile
-     paredit
-     markdown-mode
-     magit
-     ido-vertical-mode
-     ido-ubiquitous
-     fixme-mode
-     expand-region
-     cider
-     better-defaults
-     bats-mode
-     ag
-     terraform-mode
-     coffee-mode
-     php-mode)))
- '(projectile-global-mode t)
- '(projectile-mode-line " Projectile")
+    (htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+ '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
    (quote
@@ -827,14 +797,7 @@ Any other context has undefined behavior."
  '(whitespace-line-column nil)
  '(whitespace-style
    (quote
-    (face
-     trailing
-     tabs
-     newline
-     empty
-     space-after-tab
-     space-before-tab
-     tab-mark)))
+    (face trailing tabs newline empty space-after-tab space-before-tab tab-mark)))
  '(winner-mode t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
