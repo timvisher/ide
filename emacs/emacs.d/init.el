@@ -681,6 +681,11 @@ Any other context has undefined behavior."
 (global-set-key (kbd "C-c C-j") 'imenu)
 
 (global-set-key (kbd "M-Z") 'zap-up-to-char-reverse)
+
+(eval-after-load 'projectile
+  '(progn
+     (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Aliases
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
