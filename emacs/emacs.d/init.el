@@ -357,34 +357,45 @@ again."
      (url-encode-url file-url))))
 
 (defun github-source-link
-    ()
-  (interactive)
-  (if (string-suffix-p ".md" (magit-file-relative-name))
-      (error "GitHub does not support linking to Markdown Files like `%s`"
-             (magit-file-relative-name))
-      (let* ((remote-url (magit-get "remote" (magit-get-remote) "url"))
-             (parsed (github-parse-remote-url remote-url))
-             (user (car (alist-get 'user parsed)))
-             (repo (car (alist-get 'repo parsed)))
-             (commit-hash (magit-rev-parse "HEAD"))
-             (starting-line (line-number-at-pos (if (region-active-p)
-                                                    (region-beginning)
-                                                  (point))))
-             (ending-line (line-number-at-pos (if (region-active-p)
-                                                  (region-end)
-                                                (point))))
-             (link (format "https://github.com/%s/%s/blob/%s/%s#L%d"
+    (arg)
+  "Displays a link to the currently highlighted source code in github.
+
+The link defaults to the current commit's link for stability.
+
+With a single prefix arg, the link will use the current branch
+rather than the current commit's hash."
+  (interactive "p")
+  (let* ((remote-url (magit-get "remote" (magit-get-remote) "url"))
+         (parsed (github-parse-remote-url remote-url))
+         (user (car (alist-get 'user parsed)))
+         (repo (car (alist-get 'repo parsed)))
+         (commit-hash (if (prefix-arg-count-p arg 1)
+                          (magit-get-current-branch)
+                          (magit-rev-parse "HEAD")))
+         (starting-line (line-number-at-pos (if (region-active-p)
+                                                (region-beginning)
+                                              (point))))
+         (ending-line (line-number-at-pos (if (region-active-p)
+                                              (region-end)
+                                            (point))))
+         (link (if (string-suffix-p ".md" (magit-file-relative-name))
+                   (format "https://github.com/%s/%s/blob/%s/%s"
                            user
                            repo
                            commit-hash
-                           (magit-file-relative-name)
-                           starting-line)))
-        (message
-         "%s"
-         (url-encode-url
-          (if (/= starting-line ending-line)
-              (format "%s-L%d" link ending-line)
-            link))))))
+                           (magit-file-relative-name))
+                 (format "https://github.com/%s/%s/blob/%s/%s#L%d"
+                         user
+                         repo
+                         commit-hash
+                         (magit-file-relative-name)
+                         starting-line))))
+    (message
+     "%s"
+     (url-encode-url
+      (if (/= starting-line ending-line)
+          (format "%s-L%d" link ending-line)
+        link)))))
 
 (defun github-parse-remote-and-branch
     (remote-and-branch-str)
