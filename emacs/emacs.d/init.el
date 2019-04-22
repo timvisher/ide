@@ -463,7 +463,10 @@ Any other context has undefined behavior."
          (our-user (github-url-to-user-name our-remote-url))
          (our-branch (github-branch-to-branch-name
                       (magit-get-push-branch)))
-         (maybe-range (magit-diff--dwim))
+         (maybe-range (let ((maybe-range (magit-diff--dwim)))
+                        (if (and (stringp maybe-range)
+                                 (not (string-suffix-p ".." maybe-range)))
+                            maybe-range)))
          (comparison-component (if (stringp maybe-range)
                                    maybe-range
                                  (format
