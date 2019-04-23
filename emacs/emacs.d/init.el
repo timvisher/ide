@@ -168,19 +168,21 @@ again."
       nil)))
 
 (defun ide--get-reachable-vms
-    ()
+    (arg)
+  (when (prefix-arg-count-p arg 1)
+    (setq ide-reachable-vms nil))
   (unless ide-reachable-vms
     (setq ide-reachable-vms (seq-filter 'ide--vm-host-is-reachable-p ide-vms)))
   ide-reachable-vms)
 
 (defun ide-read-target-vm
-    ()
-  (completing-read "Target VM: " (ide--get-reachable-vms)))
+    (arg)
+  (completing-read "Target VM: " (ide--get-reachable-vms arg)))
 
 (defun ide-get-target-vm
     (arg)
   (if (or (prefix-arg-count-p arg 1) (not ide-target-vm))
-      (setq ide-target-vm (ide-read-target-vm)))
+      (setq ide-target-vm (ide-read-target-vm arg)))
   ide-target-vm)
 
 (defun prefix-arg
@@ -188,7 +190,7 @@ again."
   (expt 4 count))
 
 (defun ide-read-box-project
-    ()
+    (arg)
   (let* ((box-files (seq-mapcat
                      (lambda (host)
                        (seq-mapcat
@@ -198,7 +200,7 @@ again."
                                       (not (string-match "^..?$" f)))
                                     (directory-files (format "/scp:%s:/opt/code"
                                                              host)))))
-                     (ide--get-reachable-vms)))
+                     (ide--get-reachable-vms arg)))
          (files (sort (seq-map #'car box-files) 'string-lessp))
          (project (completing-read "Project: "
                                    files
@@ -221,7 +223,7 @@ again."
     (arg &optional var)
   (let ((var (or var 'ide-read-box-project-cache)))
     (if (or (prefix-arg-count-p arg 1) (not (symbol-value var)))
-        (set var (ide-read-box-project))
+        (set var (ide-read-box-project arg))
       (symbol-value var))))
 
 (defvar jump-to-project-cache nil)
