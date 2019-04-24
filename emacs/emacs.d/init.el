@@ -243,16 +243,34 @@ again."
     (projectile-find-file (or (prefix-arg-count-p arg 1)
                               (prefix-arg-count-p arg 2)))))
 
+(defun ide-find-alternative-file
+    (arg)
+  (interactive "p")
+  (let ((default-directory (ide-read-box-project arg)))
+    (projectile-find-file (or (prefix-arg-count-p arg 1)
+                              (prefix-arg-count-p arg 2)))))
+
 (defun ide-magit-project
     (arg)
   (interactive "p")
   (magit-status (ide-read-box-project-or-cache arg)))
+
+(defun ide-magit-alternative-project
+    (arg)
+  (interactive "p")
+  (magit-status (ide-read-box-project arg)))
 
 (defun ide-dired-code-dir
     (arg)
   (interactive "p")
   (dired (format "/scp:%s:/opt/code"
                  (ide-get-target-vm arg))))
+
+(defun ide-dired-alternative-code-dir
+    (arg)
+  (interactive "p")
+  (dired (format "/scp:%s:/opt/code"
+                 (ide-read-target-vm arg))))
 
 (global-set-key (kbd "C-c C") 'ide-dired-code-dir)
 
