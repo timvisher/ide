@@ -161,7 +161,10 @@ again."
   (if (= 0 (process-file-shell-command
             (format "ssh -o ConnectTimeout=10 -Tq %s true"
                     host)))
-      t
+      (progn
+        (message (format "%s is reachable"
+                         host))
+        t)
     (progn
       (message (format "%s is unreachable"
                        host))
@@ -443,12 +446,33 @@ rather than the current commit's hash."
     (branch)
   (car (alist-get 'branch (github-parse-remote-and-branch branch))))
 
-(defun prefix-arg-count-p
-    (arg count)
-  (= count (let ((c (log arg 4)))
-             (if (not (= (truncate c) c))
-                 (error "%d not a power of 4" arg)
-               (truncate c)))))
+(defun ide--prefix-arg-count
+    (prefix-arg)
+  (let ((c (log prefix-arg 4)))
+    (if (not (= (truncate c) c))
+        (error "%d not a power of 4" prefix-arg)
+      (truncate c))))
+
+(defun ide--prefix-
+    (prefix-arg count)
+  "Subtract COUNT prefixes from prefix-arg
+
+Errors if prefix-arg is not a power of 4 or if there aren't
+enough prefix args to subtract."
+  (let ((arg-count (ide--prefix-arg-count prefix-arg)))
+    (when (< arg-count count)
+      (error "Not enough prefix args (%d) to subtract %d"
+             arg-count
+             count))
+    (expt 4 (- arg-count count))))
+
+(defun ide--prefix-arg-count-p
+    (prefix-arg count)
+  "Predicate returns true if raw PREFIX-ARG matches COUNT"
+  (= count (ide--prefix-arg-count prefix-arg)))
+
+(defalias 'prefix-arg-count-p 'ide--prefix-arg-count-p)
+(make-obsolete 'prefix-arg-count-p 'ide--prefix-arg-count-p "2019-04-24T12:42:23")
 
 (defun github-compare
     (arg)
@@ -521,7 +545,7 @@ Any other context has undefined behavior."
     ;; like https://github.com/RJMetrics/boxcutter/compare/master...timvisher:feature/support-sierra?expand=1
     (kill-new compare-link)
     (message "Saved %s to the kill ring" compare-link)
-    (when (prefix-arg-count-p arg 1)
+    (when (ide--prefix-arg-count-p arg 1)
       (browse-url compare-link))))
 
 (defun github-commit-link
@@ -554,7 +578,7 @@ Any other context has undefined behavior."
         ;; like: https://github.com/stitchdata/ide/commit/b9b11cc05baaf8383b2cc7968990a4fbf966c4a0
         (kill-new commit-link)
         (message "Saved %s to the kill ring" commit-link)
-        (when (prefix-arg-count-p arg 1)
+        (when (ide--prefix-arg-count-p arg 1)
           (browse-url commit-link))))))
 
 (defun github-add-my-public (github-username)
@@ -609,7 +633,7 @@ Any other context has undefined behavior."
 (defun ide-virtualenv
     (arg)
   (interactive "p")
-  (if (or (prefix-arg-count-p arg 1) (not ide-virtualenv-base-dir))
+  (if (or (ide--prefix-arg-count-p arg 1) (not ide-virtualenv-base-dir))
       (setq ide-virtualenv-base-dir (ide-read-box-virtualenv arg)))
   (let ((base-dir (format "/home/vagrant/.virtualenvs/%s" ide-virtualenv-base-dir)))
     (setq python-shell-virtualenv-root base-dir)
@@ -669,6 +693,32 @@ Any other context has undefined behavior."
     (char)
   (interactive "cZap up to char (reverse): ")
   (zap-up-to-char -1 char))
+
+(defun ide-ag-project
+    (arg)
+  (interactive "p")
+  (let ((default-directory (ide-read-box-project-or-cache arg)))
+    (call-interactively 'ag-project)))
+
+(defun ide-ag-alternative-project
+    (arg)
+  (interactive "p")
+  (let ((ag-project-root-function (lambda (_)
+                                    (ide-read-box-project arg))))
+    (call-interactively 'ag-project)))
+
+(defun ide-ag-code-dir
+    (arg string)
+  "Runs ag inside the code directory on the VM"
+  (interactive (list (prefix-numeric-value current-prefix-arg)
+                     (ag/read-from-minibuffer "Search string")))
+  (let ((target-vm (if (< 0 (ide--prefix-arg-count arg))
+                       (ide-get-target-vm 4)
+                     (ide-get-target-vm 1)))
+        (current-prefix-arg (ide--prefix-arg-count-p arg 2)))
+    (ag string (format "/scp:%s:/opt/code/"
+                       target-vm))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -697,18 +747,11 @@ Any other context has undefined behavior."
 (autoload 'er/mark-outside-pairs "expand-region")
 (global-set-key (kbd "C-c r o p") 'er/mark-outside-pairs)
 
-(global-set-key (kbd "C-c A") 'ag-project)
+(global-set-key (kbd "C-c A") 'ide-ag-project)
 
-(global-set-key (kbd "C-c a p") 'ag-project)
+(global-set-key (kbd "C-c a p") 'ide-ag-project)
 
 (autoload 'ag/read-from-minibuffer "ag")
-
-(defun ide-ag-code-dir (arg string)
-  "Runs ag inside the code directory on the VM"
-  (interactive (list (prefix-numeric-value current-prefix-arg)
-                     (ag/read-from-minibuffer "Search string")))
-  (ag string (format "/scp:%s:/opt/code/"
-                     (ide-get-target-vm arg))))
 
 (global-set-key (kbd "C-c a c") 'ide-ag-code-dir)
 
