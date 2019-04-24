@@ -835,7 +835,7 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+    (xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
