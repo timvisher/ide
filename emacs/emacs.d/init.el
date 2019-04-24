@@ -517,8 +517,10 @@ Any other context has undefined behavior."
                           base-user)
                         project-name
                         comparison-component)))
+
     ;; like https://github.com/RJMetrics/boxcutter/compare/master...timvisher:feature/support-sierra?expand=1
-    (message compare-link)
+    (kill-new compare-link)
+    (message "Saved %s to the kill ring" compare-link)
     (when (prefix-arg-count-p arg 1)
       (browse-url compare-link))))
 
@@ -548,10 +550,12 @@ Any other context has undefined behavior."
                        commit-hash)))
     (if (not commit-hash)
         (error "No commit at point!")
-      ;; like: https://github.com/stitchdata/ide/commit/b9b11cc05baaf8383b2cc7968990a4fbf966c4a0
-      (message commit-link)
-      (when (prefix-arg-count-p arg 1)
-        (browse-url commit-link)))))
+      (progn
+        ;; like: https://github.com/stitchdata/ide/commit/b9b11cc05baaf8383b2cc7968990a4fbf966c4a0
+        (kill-new commit-link)
+        (message "Saved %s to the kill ring" commit-link)
+        (when (prefix-arg-count-p arg 1)
+          (browse-url commit-link))))))
 
 (defun github-add-my-public (github-username)
   (interactive "sGitHub username: ")
