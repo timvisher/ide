@@ -258,7 +258,7 @@ again."
 
 (defun ide-clone-repo
     (github-username repository)
-  (interactive "sGitHub username: \nsRepository name: ")
+  (interactive "sYour GitHub username: \nsRepository name: ")
   (process-file "git"
                 nil
                 nil
