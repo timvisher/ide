@@ -412,13 +412,14 @@ rather than the current commit's hash."
                          repo
                          commit-hash
                          (magit-file-relative-name)
-                         starting-line))))
-    (message
-     "%s"
-     (url-encode-url
-      (if (/= starting-line ending-line)
-          (format "%s-L%d" link ending-line)
-        link)))))
+                         starting-line)))
+         (encoded-link (url-encode-url
+                        (if (/= starting-line ending-line)
+                            (format "%s-L%d" link ending-line)
+                          link))))
+    (kill-new encoded-link)
+    (message "Saved %s to the kill ring"
+             encoded-link)))
 
 (defun github-parse-remote-and-branch
     (remote-and-branch-str)
