@@ -10,3 +10,15 @@ ide_stitch_task_clone_connection() {
               "$client_id" "$connection_id") -s" \
         | jq -r '@sh "./run-it check \(.id)"'
 }
+
+ide_stitch_task_connection_info() {
+  local client_id connection_id
+
+  client_id="$1"
+  connection_id="$2"
+
+  ide_connection_service_ssh_instance \
+    stitch_task connection_info \
+    --connection_id "$connection_id" \
+    "$client_id"
+}
