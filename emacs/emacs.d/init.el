@@ -203,27 +203,32 @@ again."
     (arg)
   (let* ((box-files (seq-mapcat
                      (lambda (host)
-                       (seq-mapcat
-                        (lambda (f)
-                          (list (list (format "%s/%s" host f) (list host f))))
-                        (seq-filter (lambda (f)
-                                      (not (string-match "^..?$" f)))
-                                    (directory-files (format "/scp:%s:/opt/code"
-                                                             host)))))
+                       (let ((host-base-directory
+                              (format "/scp:%s:/opt/code"
+                                      host)))
+                         (seq-map
+                          (lambda (f)
+                            (list (format "%s/%s" host f)
+                                  (list host-base-directory f)))
+                          (directory-files host-base-directory
+                                           nil
+                                           "^[^.]"))))
                      (ide--get-reachable-vms arg)))
-         (files (sort (seq-map #'car box-files) 'string-lessp))
+         (host-files (seq-map (lambda (directory-file)
+                                (list (format "~/git/%s" directory-file)
+                                      (list "~/git" directory-file)))
+                              (directory-files "~/git" nil "^[^.]")))
+         (all-files (seq-concatenate 'list box-files host-files))
+         (files (sort (seq-map #'car all-files) 'string-lessp))
          (project (completing-read "Project: "
                                    files
-                                   (lambda (file)
-                                     (not
-                                      (or (string= "." file)
-                                          (string= ".." file))))
+                                   nil
                                    t))
-         (project-file (cadr (assoc project box-files))))
+         (project-file (cadr (assoc project all-files))))
     ;; Should only be here temporarily while we migrate away from the
     ;; target vm concept
     (setq ide-target-vm (car project-file))
-    (format "/scp:%s:/opt/code/%s"
+    (format "%s/%s"
             (car project-file)
             (cadr project-file))))
 
@@ -711,8 +716,7 @@ Any other context has undefined behavior."
 (defun ide-ag-alternative-project
     (arg)
   (interactive "p")
-  (let ((ag-project-root-function (lambda (_)
-                                    (ide-read-box-project arg))))
+  (let ((ag-project-root-function (apply-partially #'ide-read-box-project arg)))
     (call-interactively 'ag-project)))
 
 (defun ide-ag-code-dir
