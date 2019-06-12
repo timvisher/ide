@@ -2,20 +2,16 @@ version: 2
 jobs:
   build:
     docker:
-      - image: ubuntu:artful
+      - image: koalaman/shellcheck-alpine:v0.4.6
     steps:
       - run:
+          name: Update apk
+          command: apk update
+      - run:
           name: Install git
-          command: apt update && apt install --assume-yes git
+          command: apk add git
       - checkout
       - run:
-          name: Install prerequisites
+          name: Check Scripts
           command: |
-            apt install --assume-yes curl
-            curl -sL https://deb.nodesource.com/setup_4.x | bash -
-            apt install --assume-yes nodejs npm build-essential shellcheck
-            shellcheck -V
-            node -v
-      # - run:
-      #     name: Run Tests
-      #     command: true
+            find '.' -type f -name '*.bash' -exec shellcheck --shell=bash '{}' \+

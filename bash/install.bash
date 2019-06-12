@@ -16,7 +16,7 @@ found_error() {
     errors=("${errors[@]}" "# $1")
 }
 
-cd ~/git/ide/bash
+cd ~/git/ide/bash || exit
 
 for f in !(install.bash|bin)
 do
@@ -24,7 +24,7 @@ do
     then
         if [[ $(readlink ~/".$f") != $HOME/git/ide/bash/$f ]]
         then
-            found_error "~/.$f exists and doesn't point to $HOME/git/ide/bash/$f"
+            found_error "$HOME/.$f exists and doesn't point to $HOME/git/ide/bash/$f"
         fi
     fi
 done
@@ -33,18 +33,18 @@ if [[ -e ~/bin ]]
 then
     if [[ $(readlink ~/bin) != $HOME/git/ide/bash/bin ]]
     then
-        found_error "~/bin exists and doesn't point to $HOME/git/ide/bash/$f"
+        found_error "$HOME/bin exists and doesn't point to $HOME/git/ide/bash/$f"
     fi
 fi
 
-if [[ -n "${errors[@]}" ]]
+if (( 0 < ${#errors[@]} ))
 then
     echo '# Errors found' >&2
     for message in "${errors[@]}"
     do
         echo "$message" >&2
     done
-    if [[ --force == $1 ]]
+    if [[ $1 == --force ]]
     then
         echo "# Forcing install" >&2
     else

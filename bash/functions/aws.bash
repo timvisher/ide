@@ -1,4 +1,4 @@
-# shellcheck source=_deprecation.bash
+# shellcheck source=bash/functions/_deprecation.bash
 source ~/git/ide/bash/functions/_deprecation.bash
 
 stack_names() {
