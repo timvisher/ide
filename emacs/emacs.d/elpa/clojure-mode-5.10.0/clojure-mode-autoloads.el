@@ -93,7 +93,8 @@ Change a surrounding when to when-not, or vice-versa.
 
 (autoload 'clojure-let-backward-slurp-sexp "clojure-mode" "\
 Slurp the s-expression before the let form into the let form.
-With a numberic prefix argument slurp the previous N s-expression into the let form.
+With a numberic prefix argument slurp the previous N s-expression
+into the let form.
 
 \(fn &optional N)" t nil)
 
