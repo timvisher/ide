@@ -880,6 +880,7 @@ Any other context has undefined behavior."
  '(ag-arguments
    (quote
     ("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--")))
+ '(auto-hscroll-mode (quote current-line))
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch (quote static))
  '(clojure-defun-indents (quote (fact facts for-all)))
