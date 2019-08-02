@@ -26,6 +26,12 @@ ide_k8s_ssh_node_instances() {
         | jq -r '"ssh admin@\(.PrivateIpAddress) # \(.InstanceId)"'
 }
 
+ide_k8s_ssh_node_instance() {
+  eval "$(aws_as_describe_groups_instances 'nodes.kube.stitchdata.com' \
+           | jq -sr '.[0]
+                     | @sh "ssh admin@\(.PrivateIpAddress) # \(.InstanceId)"')"
+}
+
 ide_k8s_nodes_multi_exec() {
     local instance_ips=()
 
