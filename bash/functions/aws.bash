@@ -1,7 +1,8 @@
 # shellcheck source=bash/functions/_deprecation.bash
 source ~/git/ide/bash/functions/_deprecation.bash
 
-stack_names() {
+stack_names() { _ide_deprecated ide_aws_opsworks_stack_names "$@"; }
+ide_aws_opsworks_stack_names() {
     aws opsworks describe-stacks | jq --compact-output --raw-output --monochrome-output '.Stacks[] | .Name'
 }
 
@@ -33,7 +34,8 @@ stack_layers() {
     aws opsworks describe-layers --stack-id "$stack_id"
 }
 
-layer_names() {
+layer_names() { _ide_deprecated ide_aws_opsworks_layer_names "$@"; }
+ide_aws_opsworks_layer_names() {
     local stack_name="$1"
 
     stack_layers "$stack_name" | jq --raw-output '.Layers[] | .Name'
@@ -219,7 +221,7 @@ layer_json() {
     do
         stack_layers "$stack_name" \
             | jq '.Layers[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
-    done < <(stack_names)
+    done < <(ide_aws_opsworks_stack_names)
 }
 
 layer_custom_recipes() {
@@ -243,8 +245,8 @@ custom_recipes_global() {
         while read -r ln
         do
             layer_custom_recipes "$sn" "$ln"
-        done < <(layer_names "$sn")
-    done < <(stack_names)
+        done < <(ide_aws_opsworks_layer_names "$sn")
+    done < <(ide_aws_opsworks_stack_names)
 }
 
 stack_instance_id() {
