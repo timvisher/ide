@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
-export PATH=~/bin:$PATH
+export PATH=~/bin:~/.local/bin:$PATH
 
 source ~/.bashrc
