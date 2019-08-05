@@ -201,36 +201,39 @@ again."
 
 (defun ide-read-box-project
     (arg)
-  (let* ((box-files (seq-mapcat
-                     (lambda (host)
-                       (let ((host-base-directory
-                              (format "/scp:%s:/opt/code"
-                                      host)))
-                         (seq-map
-                          (lambda (f)
-                            (list (format "%s/%s" host f)
-                                  (list host-base-directory f)))
-                          (directory-files host-base-directory
-                                           nil
-                                           "^[^.]"))))
-                     (ide--get-reachable-vms arg)))
-         (host-files (seq-map (lambda (directory-file)
-                                (list (format "~/git/%s" directory-file)
-                                      (list "~/git" directory-file)))
-                              (directory-files "~/git" nil "^[^.]")))
-         (all-files (seq-concatenate 'list box-files host-files))
-         (files (sort (seq-map #'car all-files) 'string-lessp))
-         (project (completing-read "Project: "
-                                   files
-                                   nil
-                                   t))
-         (project-file (cadr (assoc project all-files))))
-    ;; Should only be here temporarily while we migrate away from the
-    ;; target vm concept
-    (setq ide-target-vm (car project-file))
-    (format "%s/%s"
-            (car project-file)
-            (cadr project-file))))
+  (if (and (projectile-ensure-project (projectile-project-root))
+           (yes-or-no-p (format "Use %s?" (abbreviate-file-name (projectile-project-root)))))
+      (projectile-project-root)
+    (let* ((box-files (seq-mapcat
+                       (lambda (host)
+                         (let ((host-base-directory
+                                (format "/scp:%s:/opt/code"
+                                        host)))
+                           (seq-map
+                            (lambda (f)
+                              (list (format "%s/%s" host f)
+                                    (list host-base-directory f)))
+                            (directory-files host-base-directory
+                                             nil
+                                             "^[^.]"))))
+                       (ide--get-reachable-vms arg)))
+           (host-files (seq-map (lambda (directory-file)
+                                  (list (format "~/git/%s" directory-file)
+                                        (list "~/git" directory-file)))
+                                (directory-files "~/git" nil "^[^.]")))
+           (all-files (seq-concatenate 'list box-files host-files))
+           (files (sort (seq-map #'car all-files) 'string-lessp))
+           (project (completing-read "Project: "
+                                     files
+                                     nil
+                                     t))
+           (project-file (cadr (assoc project all-files))))
+      ;; Should only be here temporarily while we migrate away from the
+      ;; target vm concept
+      (setq ide-target-vm (car project-file))
+      (format "%s/%s"
+              (car project-file)
+              (cadr project-file)))))
 
 (defvar ide-read-box-project-cache nil)
 
