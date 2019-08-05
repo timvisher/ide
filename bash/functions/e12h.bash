@@ -116,3 +116,5 @@ e12h_cat_indices() {
 e12h_cat_shards() {
     _e12h_get '_cat/shards?v&s=store' | column -t
 }
+
+_ide_ssh_define_common_service_functions monitoring elasticsearch_forwarder
