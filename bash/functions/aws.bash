@@ -17,8 +17,22 @@ stack_id() {
         | jq --monochrome-output --raw-output '.Stacks[] | select(.Name == "'"$name"'") | .StackId'
 }
 
-stack_ids() {
+stack_ids() { _ide_deprecated ide_aws_opsworks_stack_ids "$@"; }
+ide_aws_opsworks_stack_ids() {
+  local stack_names_arg
+  stack_names_arg=("$@")
+  if (( 0 == "$#" ))
+  then
     aws opsworks describe-stacks | jq --monochrome-output --raw-output '.Stacks[] | .StackId'
+  else
+    local quoted_stack_names
+    quoted_stack_names=()
+    for stack_name in "${stack_names_arg[@]}"
+    do
+      quoted_stack_names+=("\"$stack_name\"")
+    done
+    aws opsworks describe-stacks | jq --monochrome-output --raw-output '.Stacks[] | select([.Name] | inside(['"$(IFS=,; echo "${quoted_stack_names[*]}")"'])) | .StackId'
+  fi
 }
 
 stack_json() {
@@ -26,26 +40,26 @@ stack_json() {
         | jq '.Stacks[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
 }
 
-stack_layers() {
-    local stack_name="$1"
-    # shellcheck disable=SC2155
-    local stack_id="$(stack_id "$stack_name")"
+stack_layers() { _ide_deprecated ide_aws_opsworks_describe_layers "$@"; }
+ide_aws_opsworks_describe_layers() {
+  local stack_names=("$@")
 
-    aws opsworks describe-layers --stack-id "$stack_id"
+  parallel -j 0 'aws opsworks describe-layers --stack-id={}' ::: $(ide_aws_opsworks_stack_ids "${stack_names[@]}") \
+    | jq '.Layers[]'
 }
 
 layer_names() { _ide_deprecated ide_aws_opsworks_layer_names "$@"; }
 ide_aws_opsworks_layer_names() {
     local stack_name="$1"
 
-    stack_layers "$stack_name" | jq --raw-output '.Layers[] | .Name'
+    ide_aws_opsworks_describe_layers "$stack_name" | jq --raw-output '.Layers[] | .Name'
 }
 
 layer_id() {
     local stack_name="$1"
     local layer_name="$2"
-    stack_layers "$stack_name" \
-        | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
+    ide_aws_opsworks_describe_layers "$stack_name" \
+      | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
 layer_instances() { _ide_deprecated ide_aws_opsworks_layer_instances "$@"; }
@@ -219,24 +233,27 @@ new_data_warehouse_service_instance() {
 layer_json() {
     while read -r stack_name
     do
-        stack_layers "$stack_name" \
-            | jq '.Layers[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
+        ide_aws_opsworks_describe_layers "$stack_name" \
+          | jq '.Layers[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
     done < <(ide_aws_opsworks_stack_names)
 }
 
 layer_custom_recipes() {
     local stack_name="$1"
-    stack_layers "$stack_name" \
-        | jq '.Layers[]
-          | {StackId,
-             Name,
-             CustomRecipes: (.CustomRecipes
-                             | [.Undeploy,
-                                .Setup,
-                                .Configure,
-                                .Shutdown,
-                                .Deploy]
-                             | flatten)}'
+    ide_aws_opsworks_describe_layers "$stack_name" \
+      | jq '.Layers[]
+            | {
+                StackId, Name,
+
+                CustomRecipes:
+                (.CustomRecipes
+                 | [.Undeploy,
+                    .Setup,
+                    .Configure,
+                    .Shutdown,
+                    .Deploy]
+                 | flatten)
+              }'
 }
 
 custom_recipes_global() {
@@ -621,20 +638,26 @@ stop_instance() {
     aws opsworks stop-instance --instance-id "$instance_id"
 }
 
-instances() {
-    while read -r stack_id
-    do
-        aws opsworks describe-instances --stack-id="$stack_id" | jq '.Instances[]'
-    done < <(stack_ids)
+errorf() {
+  printf "ERROR: $1" "$@" >&2
 }
 
-instance_ips() {
-    for stack_id in $(stack_ids)
-    do
-        aws opsworks describe-instances --stack-id="$stack_id" \
-            | jq --compact-output '.Instances[] | select(.PrivateIp) | {Hostname, PrivateIp, StackId, Ec2InstanceId}'
-    done \
-        | sort
+instances() { _ide_deprecated ide_aws_opsworks_describe_instances "$@"; }
+ide_aws_opsworks_describe_instances() {
+  if (( 0 < ${#@} ))
+  then
+    errorf "Cannot process args: %s" "$*"
+    return 1
+  fi
+
+  parallel -j 0 'aws opsworks describe-instances --stack-id={}' ::: $(ide_aws_opsworks_stack_ids) \
+    | jq '.Instances[]'
+}
+
+instance_ips() { _ide_deprecated ide_aws_opsworks_instance_ips "$@"; }
+ide_aws_opsworks_instance_ips() {
+    ide_aws_opsworks_describe_instances \
+      | jq --compact-output 'select(.PrivateIp)'
 }
 
 ##########################################################################
@@ -1179,7 +1202,7 @@ aws_elb_instance_health_stats_service() { aws_elb_instance_health stats-service;
 aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }
 
 # FIXME provide a way to detect age of boxes and force restart
-# while read -r stack_id; do aws opsworks describe-instances --stack-id "$stack_id"; done < <(stack_ids) | jq '.Instances[]' | jq --slurp --compact-output 'sort_by(.CreatedAt)[] | {Hostname, CreatedAt}'
+# while read -r stack_id; do aws opsworks describe-instances --stack-id "$stack_id"; done < <(ide_aws_opsworks_stack_ids) | jq '.Instances[]' | jq --slurp --compact-output 'sort_by(.CreatedAt)[] | {Hostname, CreatedAt}'
 
 ##########################################################################
 ### autoscaling
