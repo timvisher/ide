@@ -201,36 +201,39 @@ again."
 
 (defun ide-read-box-project
     (arg)
-  (let* ((box-files (seq-mapcat
-                     (lambda (host)
-                       (let ((host-base-directory
-                              (format "/scp:%s:/opt/code"
-                                      host)))
-                         (seq-map
-                          (lambda (f)
-                            (list (format "%s/%s" host f)
-                                  (list host-base-directory f)))
-                          (directory-files host-base-directory
-                                           nil
-                                           "^[^.]"))))
-                     (ide--get-reachable-vms arg)))
-         (host-files (seq-map (lambda (directory-file)
-                                (list (format "~/git/%s" directory-file)
-                                      (list "~/git" directory-file)))
-                              (directory-files "~/git" nil "^[^.]")))
-         (all-files (seq-concatenate 'list box-files host-files))
-         (files (sort (seq-map #'car all-files) 'string-lessp))
-         (project (completing-read "Project: "
-                                   files
-                                   nil
-                                   t))
-         (project-file (cadr (assoc project all-files))))
-    ;; Should only be here temporarily while we migrate away from the
-    ;; target vm concept
-    (setq ide-target-vm (car project-file))
-    (format "%s/%s"
-            (car project-file)
-            (cadr project-file))))
+  (if (and (projectile-ensure-project (projectile-project-root))
+           (yes-or-no-p (format "Use %s?" (abbreviate-file-name (projectile-project-root)))))
+      (projectile-project-root)
+    (let* ((box-files (seq-mapcat
+                       (lambda (host)
+                         (let ((host-base-directory
+                                (format "/scp:%s:/opt/code"
+                                        host)))
+                           (seq-map
+                            (lambda (f)
+                              (list (format "%s/%s" host f)
+                                    (list host-base-directory f)))
+                            (directory-files host-base-directory
+                                             nil
+                                             "^[^.]"))))
+                       (ide--get-reachable-vms arg)))
+           (host-files (seq-map (lambda (directory-file)
+                                  (list (format "~/git/%s" directory-file)
+                                        (list "~/git" directory-file)))
+                                (directory-files "~/git" nil "^[^.]")))
+           (all-files (seq-concatenate 'list box-files host-files))
+           (files (sort (seq-map #'car all-files) 'string-lessp))
+           (project (completing-read "Project: "
+                                     files
+                                     nil
+                                     t))
+           (project-file (cadr (assoc project all-files))))
+      ;; Should only be here temporarily while we migrate away from the
+      ;; target vm concept
+      (setq ide-target-vm (car project-file))
+      (format "%s/%s"
+              (car project-file)
+              (cadr project-file)))))
 
 (defvar ide-read-box-project-cache nil)
 
@@ -881,6 +884,7 @@ Any other context has undefined behavior."
    (quote
     ("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--")))
  '(auto-hscroll-mode (quote current-line))
+ '(cider-jack-in-auto-inject-clojure "1.9.0")
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch (quote static))
  '(clojure-defun-indents (quote (fact facts for-all)))
@@ -899,7 +903,7 @@ Any other context has undefined behavior."
  '(ido-vertical-mode t)
  '(js-indent-level 2)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
- '(org-export-backends (quote (ascii html md)))
+ '(org-export-backends (quote (ascii html icalendar latex md odt)))
  '(org-refile-targets (quote ((nil :maxlevel . 3))))
  '(org-refile-use-outline-path t)
  '(org-todo-keywords
@@ -908,7 +912,7 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
  '(package-selected-packages
    (quote
-    (xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+    (clojure-mode htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
