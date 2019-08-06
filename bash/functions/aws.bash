@@ -44,6 +44,8 @@ stack_layers() { _ide_deprecated ide_aws_opsworks_describe_layers "$@"; }
 ide_aws_opsworks_describe_layers() {
   local stack_names=("$@")
 
+  # word splitting is desirable here
+  # shellcheck disable=SC2046
   parallel -j 0 'aws opsworks describe-layers --stack-id={}' ::: $(ide_aws_opsworks_stack_ids "${stack_names[@]}") \
     | jq '.Layers[]'
 }
@@ -188,7 +190,9 @@ ssh_microsites_instances() { ssh_layer_instances microsites querymongo; }
 ssh_instance() {
     local layer_pattern="$1"
 
-    instance_ips | \
+    # We want to call the noarg ide_aws_opsworks_instance_ips
+    # shellcheck disable=SC2119
+    ide_aws_opsworks_instance_ips | \
         grep --line-buffered "$layer_pattern" | \
             jq --compact-output --raw-output --monochrome-output \
                 'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
@@ -391,59 +395,61 @@ multi_exec_microsites() { multi_exec_stack microsites; }
 
 # FIXME refactor this and `multi_exec`
 multi_exec_global() {
-    global_instances="$(instances)"
+  # We want the noarg ide_aws_opsworks_describe_instances
+  # shellcheck disable=SC2119
+  global_instances="$(ide_aws_opsworks_describe_instances)"
 
-    local -a hostnames=()
-    local hostname=
-    while read -r hostname
-    do
-        hostnames+=("$hostname")
-    done < <(jq --raw-output \
-                'select("online" == .Status)
+  local -a hostnames=()
+  local hostname=
+  while read -r hostname
+  do
+    hostnames+=("$hostname")
+  done < <(jq --raw-output \
+              'select("online" == .Status)
                  | .Hostname' <<<"$global_instances")
 
-    if (( 0 == "${#hostnames[@]}" ))
-    then
-        echo '# No hostnames available globally. Check your creds.' >&2
-        return 1
-    fi
+  if (( 0 == "${#hostnames[@]}" ))
+  then
+    echo '# No hostnames available globally. Check your creds.' >&2
+    return 1
+  fi
 
-    if [[ --force == "$1" ]]
-    then
-        run_answer=y
-        shift
-        echo '# Running `'"$*"'` globally on:'
-        for hn in "${hostnames[@]}"
-        do
-            echo "# $hn"
-        done
-    else
-        echo '# Run `'"$*"'` globally on:'
-        for hn in "${hostnames[@]}"
-        do
-            echo "# $hn"
-        done
-        read -rp "# ? [y/N] " run_answer
-    fi
-
-    if [[ $run_answer != "y" ]]
-    then
-        echo '# Not running'
-        return 0
-    fi
-
-    local hostips
-    while read -r hostip
+  if [[ --force == "$1" ]]
+  then
+    run_answer=y
+    shift
+    echo '# Running `'"$*"'` globally on:'
+    for hn in "${hostnames[@]}"
     do
-        hostips+=("$hostip")
-    done < <(jq --raw-output \
-                'select("online" == .Status)
+      echo "# $hn"
+    done
+  else
+    echo '# Run `'"$*"'` globally on:'
+    for hn in "${hostnames[@]}"
+    do
+      echo "# $hn"
+    done
+    read -rp "# ? [y/N] " run_answer
+  fi
+
+  if [[ $run_answer != "y" ]]
+  then
+    echo '# Not running'
+    return 0
+  fi
+
+  local hostips
+  while read -r hostip
+  do
+    hostips+=("$hostip")
+  done < <(jq --raw-output \
+              'select("online" == .Status)
                  | select(.Hostname
                           | contains("'"$pattern"'"))
                           | select(.PrivateIp)
                           | .PrivateIp' <<<"$global_instances")
 
-    parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
+  parallel -j 0 "ssh '{}' 'hostname; $*'" ::: "${hostips[@]}"
 }
 
 # FIXME refactor this and `multi_exec`
@@ -639,26 +645,28 @@ stop_instance() {
     aws opsworks stop-instance --instance-id "$instance_id"
 }
 
-errorf() {
-  printf "ERROR: $1" "$@" >&2
-}
-
 instances() { _ide_deprecated ide_aws_opsworks_describe_instances "$@"; }
+# We're explicitly defending against args being passed
+# shellcheck disable=SC2120
 ide_aws_opsworks_describe_instances() {
   if (( 0 < ${#@} ))
   then
-    errorf "Cannot process args: %s" "$*"
+    printf "ERROR: Cannot process args: %s" "$*" >&2
     return 1
   fi
 
+  # We want word splitting
+  # shellcheck disable=SC2046
   parallel -j 0 'aws opsworks describe-instances --stack-id={}' ::: $(ide_aws_opsworks_stack_ids) \
     | jq '.Instances[]'
 }
 
 instance_ips() { _ide_deprecated ide_aws_opsworks_instance_ips "$@"; }
 ide_aws_opsworks_instance_ips() {
-    ide_aws_opsworks_describe_instances \
-      | jq --compact-output 'select(.PrivateIp)'
+  # We want the noarg ide_aws_opsworks_describe_instances
+  # shellcheck disable=SC2119
+  ide_aws_opsworks_describe_instances \
+    | jq --compact-output 'select(.PrivateIp)'
 }
 
 ##########################################################################
