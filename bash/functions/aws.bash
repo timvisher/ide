@@ -52,14 +52,15 @@ layer_names() { _ide_deprecated ide_aws_opsworks_layer_names "$@"; }
 ide_aws_opsworks_layer_names() {
     local stack_name="$1"
 
-    ide_aws_opsworks_describe_layers "$stack_name" | jq --raw-output '.Layers[] | .Name'
+    ide_aws_opsworks_describe_layers "$stack_name" \
+      | jq --raw-output '.Name'
 }
 
 layer_id() {
     local stack_name="$1"
     local layer_name="$2"
     ide_aws_opsworks_describe_layers "$stack_name" \
-      | jq -r '.Layers[] | select(.Name == "'"$layer_name"'") | .LayerId'
+      | jq -r 'select(.Name == "'"$layer_name"'") | .LayerId'
 }
 
 layer_instances() { _ide_deprecated ide_aws_opsworks_layer_instances "$@"; }
@@ -68,7 +69,8 @@ ide_aws_opsworks_layer_instances() {
     local layer_name="$2"
 
     aws opsworks describe-instances --layer-id \
-        "$(layer_id "$stack_name" "$layer_name")"
+        "$(layer_id "$stack_name" "$layer_name")" \
+      | jq '.Instances[]'
 }
 
 layer_instances_loader_bq() { layer_instances pipeline loader_bq; }
@@ -234,26 +236,25 @@ layer_json() {
     while read -r stack_name
     do
         ide_aws_opsworks_describe_layers "$stack_name" \
-          | jq '.Layers[] | select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
+          | jq 'select(.CustomJson) | {StackId, Name, CustomJson: (.CustomJson | fromjson)}'
     done < <(ide_aws_opsworks_stack_names)
 }
 
 layer_custom_recipes() {
     local stack_name="$1"
     ide_aws_opsworks_describe_layers "$stack_name" \
-      | jq '.Layers[]
-            | {
-                StackId, Name,
+      | jq '{
+              StackId, Name,
 
-                CustomRecipes:
-                (.CustomRecipes
-                 | [.Undeploy,
-                    .Setup,
-                    .Configure,
-                    .Shutdown,
-                    .Deploy]
-                 | flatten)
-              }'
+              CustomRecipes:
+              (.CustomRecipes
+               | [.Undeploy,
+                  .Setup,
+                  .Configure,
+                  .Shutdown,
+                  .Deploy]
+               | flatten)
+            }'
 }
 
 custom_recipes_global() {
