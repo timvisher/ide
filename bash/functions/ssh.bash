@@ -30,7 +30,7 @@ ide_ssh_regenerate_stitch_opsworks_layer_instance_config() {
                   }
                 # Must remove bastion to prevent infinite ProxyJump loop
                 | select(.layer != "bastion")
-                | "Host \(.layer | gsub("_"; "-")) stitch-\(.layer | gsub("_"; "-"))\n  HostName \(.PrivateIp)\n"' \
+                | "Host stitch-\(.layer | gsub("_"; "-"))\n  HostName \(.PrivateIp)\n"' \
     | tee ~/.ssh/config.d/stitch_opsworks_layer_instance
 }
 
