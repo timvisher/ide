@@ -1233,19 +1233,6 @@ _aws_as_describe_instances() {
     done
 }
 
-aws_as_describe_groups_instances() {
-    local group_names=("$@")
-
-    local instance_id
-    # word splitting is desirable here
-    # shellcheck disable=SC2046
-    aws_ec2_describe_instances $(
-       _aws_as_describe_instances $(_aws_as_describe_groups "${group_names[@]}" \
-                                        | jq -r '.Instances[] | .InstanceId') \
-           | jq -r '.AutoScalingInstances[] | .InstanceId'
-        )
-}
-
 aws_as_describe_instances() {
     local instance_ids=("${@}")
 
@@ -1261,6 +1248,14 @@ aws_as_describe_instances() {
     fi
     # shellcheck disable=SC2086
     aws_ec2_describe_instances $as_instances
+}
+
+aws_as_describe_groups_instances() {
+    local group_names=("$@")
+
+    aws ec2 describe-instances \
+        --filters "Name=tag:aws:autoscaling:groupName,Values=$(IFS=,; echo "${group_names[*]}")" \
+        | jq '.Reservations[].Instances[]'
 }
 
 aws_as_terminate_instance() {
