@@ -218,9 +218,10 @@ again."
                                              "^[^.]"))))
                        (ide--get-reachable-vms arg)))
            (host-files (seq-map (lambda (directory-file)
-                                  (list (format "~/git/%s" directory-file)
-                                        (list "~/git" directory-file)))
-                                (directory-files "~/git" nil "^[^.]")))
+                                  (let ((git-dir (substring-no-properties directory-file 0 -5)))
+                                    (list (abbreviate-file-name git-dir)
+                                          (list "~/git" (file-relative-name git-dir "~/git")))))
+                                (directory-files-recursively "~/git" "^\\.git$" t)))
            (all-files (seq-concatenate 'list box-files host-files))
            (files (sort (seq-map #'car all-files) 'string-lessp))
            (project (completing-read "Project: "
