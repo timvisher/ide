@@ -201,7 +201,7 @@ again."
 
 (defun ide-read-box-project
     (arg)
-  (if (and (projectile-ensure-project (projectile-project-root))
+  (if (and (projectile-project-p)
            (yes-or-no-p (format "Use %s?" (abbreviate-file-name (projectile-project-root)))))
       (projectile-project-root)
     (let* ((box-files (seq-mapcat
