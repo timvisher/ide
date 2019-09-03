@@ -207,7 +207,7 @@ again."
     (let* ((box-files (seq-mapcat
                        (lambda (host)
                          (let ((host-base-directory
-                                (format "/scp:%s:/opt/code"
+                                (format "/sshx:%s:/opt/code"
                                         host)))
                            (seq-map
                             (lambda (f)
@@ -282,13 +282,13 @@ again."
 (defun ide-dired-code-dir
     (arg)
   (interactive "p")
-  (dired (format "/scp:%s:/opt/code"
+  (dired (format "/sshx:%s:/opt/code"
                  (ide-get-target-vm arg))))
 
 (defun ide-dired-alternative-code-dir
     (arg)
   (interactive "p")
-  (dired (format "/scp:%s:/opt/code"
+  (dired (format "/sshx:%s:/opt/code"
                  (ide-read-target-vm arg))))
 
 (global-set-key (kbd "C-c C") 'ide-dired-code-dir)
@@ -637,7 +637,7 @@ Any other context has undefined behavior."
 (defun ide-read-box-virtualenv
     (arg)
   (completing-read "virtualenv: "
-                   (directory-files (format "/scp:%s:.virtualenvs"
+                   (directory-files (format "/sshx:%s:.virtualenvs"
                                             (ide-get-target-vm arg)))
                    (lambda (file)
                      (not
@@ -732,7 +732,7 @@ Any other context has undefined behavior."
                        (ide-get-target-vm 4)
                      (ide-get-target-vm 1)))
         (current-prefix-arg (ide--prefix-arg-count-p arg 2)))
-    (ag string (format "/scp:%s:/opt/code/"
+    (ag string (format "/sshx:%s:/opt/code/"
                        target-vm))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
