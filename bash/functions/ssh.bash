@@ -50,6 +50,10 @@ Match host stitch-nodes*
 
 Host staging-kube-bastion
   HostName bastion.staging-kube.stitchdata.com
+  StrictHostKeyChecking no
+  LogLevel QUIET
+  UpdateHostKeys no
+  UserKnownHostsFile /dev/null
   ServerAliveInterval 50
   User admin
 
