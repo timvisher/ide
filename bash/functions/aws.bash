@@ -1218,7 +1218,7 @@ aws_elb_instance_health_webhookz() { aws_elb_instance_health webhookz; }
 ##########################################################################
 
 _aws_as_describe_groups() {
-    # FIXME does this handle no arg?
+    # This properly handles the no arg case
     aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "${group_names[@]}" \
         | jq '.AutoScalingGroups[]'
 }
