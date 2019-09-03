@@ -182,7 +182,7 @@ again."
   (when (prefix-arg-count-p arg 1)
     (setq ide-reachable-vms nil))
   (unless ide-reachable-vms
-    (setq ide-reachable-vms (seq-filter 'ide--vm-host-is-reachable-p ide-vms)))
+    (setq ide-reachable-vms (or (seq-filter 'ide--vm-host-is-reachable-p ide-vms) [])))
   ide-reachable-vms)
 
 (defun ide-read-target-vm
