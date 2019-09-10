@@ -32,6 +32,12 @@ export HISTCONTROL="ignoredups"
 export HISTFILESIZE=500000
 export HISTSIZE=500000
 
+# Prepend history entries with timestamps
+export HISTTIMEFORMAT='%FT%T%z '
+
+# Store multi-line commands on a single history line, using semi-colons
+shopt -s cmdhist
+
 # Load in bash_completion if we can find it.
 if [[ -r /usr/local/etc/bash_completion ]]
 then
