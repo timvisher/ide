@@ -5,6 +5,9 @@ jobs:
       - image: koalaman/shellcheck-alpine:v0.4.6
     steps:
       - run:
+          name: Faile
+          command: false
+      - run:
           name: Update apk
           command: apk update
       - run:
