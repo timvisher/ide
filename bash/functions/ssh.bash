@@ -100,7 +100,8 @@ EOF
 
   aws_as_describe_groups_instances "${node_groups[@]}" \
     | jq -r '
-{
+select(.PrivateIpAddress)
+| {
   PrivateIpAddress,
   Name: "\(.Tags|from_entries|.Name|gsub("[\\._]"; "-"))-\(.PrivateIpAddress|gsub("\\."; "-"))"
 }
@@ -132,7 +133,8 @@ ide_hosts_k8s_nodes_entries() {
 
   aws_as_describe_groups_instances "${node_groups[@]}" \
     | jq -r '
-{
+select(.PrivateIpAddress)
+| {
   PrivateIpAddress,
   Name: "\(.Tags|from_entries|.Name|gsub("[\\._]"; "-"))-\(.PrivateIpAddress|gsub("\\."; "-"))"
 }
