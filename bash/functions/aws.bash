@@ -87,8 +87,7 @@ ide_aws_opsworks_layer_ssh() {
 
     ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[]
-            | select(.PrivateIp)
+           'select(.PrivateIp)
             | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
@@ -104,9 +103,9 @@ ide_aws_opsworks_ssh_layer_instance() {
     # shellcheck disable=SC2155
     local instance=$(ide_aws_opsworks_layer_instances \
                          "$stack_name" "$layer_name" \
-                         | jq -r '[.Instances[]
-                                   | select("online" == .Status)][0]
-                                   | {PrivateIp, Hostname}')
+                         | jq -rs '[.[]
+                                    | select("online" == .Status)][0]
+                                    | {PrivateIp, Hostname}')
 
     # We need this expanded clientside
     # shellcheck disable=SC2029
@@ -204,8 +203,7 @@ ide_aws_opsworks_layer_instances_ips() {
 
     ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" | \
         jq --compact-output --raw-output --monochrome-output \
-           '.Instances[]
-            | select(.PrivateIp)
+           'select(.PrivateIp)
             | select(.Status == "online")
             | .PrivateIp'
 }
@@ -301,7 +299,8 @@ layer_instance_exec() {
     local layer_name="$1"
     shift
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "$stack_name" "$layer_name" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
+    local instance="$(ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" |
+                        jq -rs '[.[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
 
     if [[ --force == "$1" ]]
     then
@@ -469,8 +468,7 @@ multi_exec_layer() {
     do
         hostnames+=("$hostname")
     done < <(jq --raw-output \
-                '.Instances[]
-                 | select("online" == .Status)
+                'select("online" == .Status)
                  | .Hostname' <<<"$layer_instances" )
 
     if (( 0 == "${#hostnames[@]}" ))
@@ -509,8 +507,7 @@ multi_exec_layer() {
     do
         hostips+=("$hostip")
     done < <(jq --raw-output \
-                '.Instances[]
-                 | select("online" == .Status)
+                'select("online" == .Status)
                  | select(.Hostname
                           | contains("'"$pattern"'"))
                           | select(.PrivateIp)
@@ -1006,7 +1003,8 @@ assert_read_only() {
 
 nrepl_menagerie() {
     # shellcheck disable=SC2155
-    local instance="$(layer_instances "webservices" "menagerie" | jq -r '[.Instances[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
+    local instance="$(ide_aws_opsworks_layer_instances "webservices" "menagerie" |
+                        jq -rs '[.[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
     # shellcheck disable=SC2155
     local ip="$(jq -r '.PrivateIp' <<<"$instance")"
     # shellcheck disable=SC2155
@@ -1049,8 +1047,8 @@ aws_layer_status() {
     local stack_name=$1
     local layer_name=$2
 
-    layer_instances "$stack_name" "$layer_name" \
-        | jq -r '.Instances[] | "\(.Hostname) (\(.PrivateIp)): \(.Status)"' \
+    ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" \
+        | jq -r '"\(.Hostname) (\(.PrivateIp)): \(.Status)"' \
         | sort -n
 }
 
