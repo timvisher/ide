@@ -66,7 +66,7 @@ Please check out to `~/git/ide`.
   - [`M-x github-add-my-public`](#m-x-github-add-my-public)
   - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
 - [`ssh`](#ssh)
-  - [\*\*Experimental\*\* Generate native ssh config and hosts entries](#%5C%5Cexperimental%5C%5C-generate-native-ssh-config-and-hosts-entries)
+  - [((Experimental)) native ssh config and hosts entries](#experimental-native-ssh-config-and-hosts-entries)
 - [Rationale](#rationale-1)
 - [Compatibility](#compatibility)
 
@@ -1104,7 +1104,7 @@ you add the contents of
 [`ssh/config`](https://github.com/stitchdata/ide/blob/master/ssh/config)
 to your `~/.ssh/config` file.
 
-### \*\*Experimental\*\* Generate native ssh config and hosts entries
+### ((Experimental)) native ssh config and hosts entries
 
 ```
 _ideEXP_ssh_config_all | tee ~/.ssh/config.d/stitch.conf &&
