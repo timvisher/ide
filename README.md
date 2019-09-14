@@ -24,11 +24,6 @@ Please check out to `~/git/ide`.
     - [`multi_exec*`](#multi_exec)
     - [`layer_instance_exec`](#layer_instance_exec)
     - [`set_default_profile`](#set_default_profile)
-    - [`ssh_layer_instances`](#ssh_layer_instances)
-    - [`ssh_matching_instances`](#ssh_matching_instances)
-    - [`ssh_stack_instances`](#ssh_stack_instances)
-    - [`ssh_*_instances`](#ssh__instances)
-    - [`ssh_instance`](#ssh_instance)
     - [`delete_known_host_line`](#delete_known_host_line)
     - [Deployment Monitoring](#deployment-monitoring)
       - [`aws_layer_status(_*)`](#aws_layer_status_)
@@ -36,7 +31,6 @@ Please check out to `~/git/ide`.
   - [k8s](#k8s)
     - [`ide_k8s_kubectl_shell`](#ide_k8s_kubectl_shell)
     - [`k8s_proxy`](#k8s_proxy)
-    - [`k8s_ssh_node_instances`](#k8s_ssh_node_instances)
     - [`k8s_terminate_instance`](#k8s_terminate_instance)
   - [Stitch Services](#stitch-services)
     - [Gate](#gate)
@@ -72,6 +66,7 @@ Please check out to `~/git/ide`.
   - [`M-x github-add-my-public`](#m-x-github-add-my-public)
   - [`M-Q`/`M-x unfill-paragraph`](#m-qm-x-unfill-paragraph)
 - [`ssh`](#ssh)
+  - [**Experimental** Generate native ssh config and hosts entries](#experimental-generate-native-ssh-config-and-hosts-entries)
 - [Rationale](#rationale-1)
 - [Compatibility](#compatibility)
 
@@ -479,83 +474,6 @@ $
 
 Use `unassume_role` to unset your default role.
 
-#### `ssh_layer_instances`
-
-```
-Mon Nov 28 10:37:34
-tvisher@timvisher-rjmetrics.local
-~
-$ ssh_layer_instances pipeline kafka_blue
-ssh '10.2.83.142' # 'kafka-blue4'
-ssh '10.2.86.58' # 'kafka-blue3'
-ssh '10.2.79.194' # 'kafka-blue2'
-ssh '10.2.80.191' # 'kafka-blue1'
-ssh '10.2.76.11' # 'kafka-blue5'
-```
-
-Anything that will only ever have a single instance will have a command
-like `ssh_jenkins_instance` which just sshes directly there.
-
-#### `ssh_matching_instances`
-
-```
-Fri Oct 28 12:01:36
-tvisher@timvisher-rjmetrics.local
-~
-$ ssh_matching_instances pipeline dbrepl
-ssh '10.0.86.126' # 'dbreplicators-workers1'
-ssh '10.0.85.54' # 'dbreplicators-workers2'
-ssh '10.0.84.254' # 'dbreplicators-workers3'
-ssh '10.0.85.14' # 'dbreplicators-workers4'
-ssh '10.0.87.33' # 'dbreplicators-workers5'
-ssh '10.0.86.82' # 'dbreplicators-workers6'
-```
-
-#### `ssh_stack_instances`
-
-```
-Fri Oct 28 11:55:46
-tvisher@timvisher-rjmetrics.local
-~
-$ ssh_stack_instances primary
-ssh '10.0.5.82' # 'dbreplicators-service3'
-ssh '10.0.5.50' # 'core-service2'
-…
-ssh '10.0.5.171' # 'sourcerer-workers10'
-```
-
-#### `ssh_*_instances`
-
-There are tons of convenience aliases defined for you as well:
-
-```
-Fri Mar 10 15:28:37
-tvisher@timvisher-rjmetrics.local
-~/git/ide (master *%>)
-$ ssh_menagerie_instances
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.200' # 'menagerie3'
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.78.180' # 'menagerie4'
-
-Fri Mar 10 15:29:52
-tvisher@timvisher-rjmetrics.local
-~/git/ide (master *>)
-$ ssh_sourcerer_service_instances
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.82.137' # 'sourcerer-service2'
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q '10.2.76.195' # 'sourcerer-service3'
-```
-
-#### `ssh_instance`
-
-```
-Wed Mar 01 17:20:33
-mbilyeu@matts-mbp
-~
-$ ssh_instance stats
-ssh '10.2.80.88' # 'dogstatsd1'
-ssh '10.2.83.174' # 'stats-service2'
-ssh '10.2.79.28' # 'stats-service4'
-```
-
 #### `delete_known_host_line`
 
 Allows you to delete a line from your known_hosts file.
@@ -688,21 +606,6 @@ tvisher@timvisher-rjmetrics.local
 ~/git/ide (master *%>)
 $ k8s_proxy
 Starting to serve on 127.0.0.1:5018
-```
-
-#### `k8s_ssh_node_instances`
-
-```
-2018-03-20T10:50:38
-tvisher@timvisher-rjmetrics.local
-~/git/ide (master *%>)
-$ k8s_ssh_node_instances | head -n 5
-ssh admin@10.2.79.3 # i-033b041508f13c191
-ssh admin@10.2.81.237 # i-060970bb19a96137a
-ssh admin@10.2.76.14 # i-0c61b4f09f73da41a
-ssh admin@10.2.86.78 # i-06720fff4478d88d1
-ssh admin@10.2.82.58 # i-07140c2e376d47dd7
-
 ```
 
 #### `k8s_terminate_instance`
@@ -1200,6 +1103,16 @@ In order to make interacting with prod easier it's highly recommended that
 you add the contents of
 [`ssh/config`](https://github.com/stitchdata/ide/blob/master/ssh/config)
 to your `~/.ssh/config` file.
+
+### **Experimental** Generate native ssh config and hosts entries
+
+```
+_ideEXP_ssh_config_all | tee ~/.ssh/config.d/stitch.conf &&
+  sudo sed -i.bak $'
+    /# BEGIN Stitch Hosts inserted by ide/,/# END Stitch Hosts inserted by ide/c\\\n# BEGIN Stitch Hosts inserted by ide\\\n'"$(
+      _ideEXP_hosts_file_all | sed 's/$/\\/'
+    )"$'\n# END Stitch Hosts inserted by ide' /etc/hosts && grep -F -- stitch- /etc/hosts
+```
 
 ## Rationale
 

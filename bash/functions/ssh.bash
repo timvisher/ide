@@ -2,7 +2,7 @@ delete_known_host_line () {
     sed -i".bak$(date -u '+%FT%TZ')" "$1"'d' ~/.ssh/known_hosts
 }
 
-ide_ssh_config_bastion() {
+_ideEXP_ssh_config_bastion() {
   cat <<'EOF'
 Host stitch-bastion
   HostName bastion.stitchdata.com
@@ -49,7 +49,7 @@ Match host 10.2.*,stitch-*
 EOF
 }
 
-ide_ssh_config_sandbox_instances() {
+_ideEXP_ssh_config_sandbox_instances() {
 cat <<EOF
 Host stitch-sandbox-app
   HostName sandbox-bastion-2103608998.us-east-1.elb.amazonaws.com
@@ -73,17 +73,17 @@ Host stitch-tap-tester-sandbox-app
 EOF
 }
 
-ide_ssh_config_opsworks_instances() {
+_ideEXP_ssh_config_opsworks_instances() {
   ide_aws_opsworks_instance_ips |
     jq -r '"Host stitch-\(.Hostname | gsub("_"; "-"))\n  HostName \(.PrivateIp)\n"'
 }
 
-ide_hosts_file_opsworks_instances() {
+_ideEXP_hosts_file_opsworks_instances() {
   ide_aws_opsworks_instance_ips |
     jq -r '"\(.PrivateIp) stitch-\(.Hostname)"'
 }
 
-ide_ssh_config_opsworks_layers() {
+_ideEXP_ssh_config_opsworks_layers() {
   local layer_names_by_id
   layer_names_by_id=$(ide_aws_opsworks_describe_layers |
                         jq -s 'map({(.LayerId): .Name})
@@ -104,7 +104,7 @@ ide_ssh_config_opsworks_layers() {
               | "Host stitch-\(.layer | gsub("_"; "-"))\n  HostName \(.PrivateIp)\n"'
 }
 
-ide_hosts_file_opsworks_layers() {
+_ideEXP_hosts_file_opsworks_layers() {
   local layer_names_by_id
   layer_names_by_id=$(ide_aws_opsworks_describe_layers |
                         jq -s 'map({(.LayerId): .Name})
@@ -125,7 +125,7 @@ ide_hosts_file_opsworks_layers() {
               | "\(.PrivateIp) stitch-\(.layer | gsub("_"; "-"))"'
 }
 
-ide_ssh_config_k8s_nodes() {
+_ideEXP_ssh_config_k8s_nodes() {
   cat <<EOF
 Match host stitch-nodes*,stitch-*-eks*
   ForwardAgent yes
@@ -180,7 +180,7 @@ EOF
             | "Host \(.Name)\n  HostName \(.PrivateIpAddress)\n"'
 }
 
-ide_hosts_file_k8s_nodes() {
+_ideEXP_hosts_file_k8s_nodes() {
   local node_groups=(
     'nodes.kube.stitchdata.com'
     'nodes.staging-kube.stitchdata.com'
@@ -212,10 +212,10 @@ ide_hosts_file_k8s_nodes() {
             | "\(.PrivateIpAddress) stitch-\(.Name)"'
 }
 
-ide_ssh_config_all() {
-  eval "$(compgen -A function ide_ssh_config_ | grep -v '_all$')"
+_ideEXP_ssh_config_all() {
+  eval "$(compgen -A function _ideEXP_ssh_config_ | grep -v '_all$')"
 }
 
-ide_hosts_file_all() {
-  eval "$(compgen -A function ide_hosts_file_ | grep -v '_all$')"
+_ideEXP_hosts_file_all() {
+  eval "$(compgen -A function _ideEXP_hosts_file_ | grep -v '_all$')"
 }
