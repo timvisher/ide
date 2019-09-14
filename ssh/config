@@ -9,7 +9,7 @@ Host bastion
   CheckHostIP no
   UpdateHostKeys no
   UserKnownHostsFile /dev/null
-  # Any time we establish a connection to this host (echo), so long as
+  # Any time we establish a connection to this host (bastion), so long as
   # that connection is live, reuse it instead of establishing a new
   # one.
   ControlMaster auto
@@ -19,21 +19,23 @@ Host bastion
   # gives us a 10 minute window after the last connection is closed
   # where we can continue to piggyback on it.
   ControlPersist 10m
+  # I never want to hear about your problems, ssh, until I do.
+  LogLevel QUIET
   # If your localhost username differs from your bastion username,
   # add this line
   # User <yourbastionusername> (like `tvisher`)
 
-# stitch-prod
-Host 10.2.*
+# stitch-prod AWS Primary VPC
+Match host 10.2.*
   # Magic!
   #
   # This means that to access any of the above servers, you must
   # actually first ssh to a different server. A quick and dirty way of
-  # accomplishing this is to `ssh echo ssh ds224` etc. but that's
+  # accomplishing this is to `ssh bastion ssh ds224` etc. but that's
   # somewhat expensive compared to the version below.
   #
   # The long and short it being that we can 'directly' connect to the
-  # hosts that `echo` protects by using echo to tunnel the traffic.
+  # hosts that `bastion` protects by using bastion to tunnel the traffic.
   ProxyCommand ssh -W %h:%p bastion
   # forward your agent up to interact with git and ssh past the bastion.
   ForwardAgent yes
