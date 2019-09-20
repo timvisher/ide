@@ -4,6 +4,13 @@ delete_known_host_line () {
 
 _ideEXP_ssh_config_bastion() {
   cat <<'EOF'
+# If your local username doesn't match your username in production, you
+# can either change your local username or add a section like the
+# following to ~/.ssh/config
+#
+# Match host stitch-*,*.stitchdata.com,10.2.*
+#   User <your production username> # like `User tvisher`
+
 Host stitch-bastion
   HostName bastion.stitchdata.com
   # Always forward my agent
