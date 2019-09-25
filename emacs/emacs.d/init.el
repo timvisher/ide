@@ -720,7 +720,7 @@ Any other context has undefined behavior."
 (defun ide-ag-alternative-project
     (arg)
   (interactive "p")
-  (let ((ag-project-root-function (apply-partially #'ide-read-box-project arg)))
+  (let ((default-directory (ide-read-box-project arg)))
     (call-interactively 'ag-project)))
 
 (defun ide-ag-code-dir
