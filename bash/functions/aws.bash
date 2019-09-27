@@ -663,7 +663,7 @@ ide_aws_opsworks_instance_ips() {
   # We want the noarg ide_aws_opsworks_describe_instances
   # shellcheck disable=SC2119
   ide_aws_opsworks_describe_instances \
-    | jq --compact-output 'select(.PrivateIp)'
+    | jq --compact-output 'select(.PrivateIp)|select(.Status == "online")'
 }
 
 ##########################################################################

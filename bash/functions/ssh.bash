@@ -97,7 +97,8 @@ _ideEXP_ssh_config_opsworks_layers() {
                                | add'
                      )
   ide_aws_opsworks_describe_instances |
-    jq -r -s 'map(select(.PrivateIp))
+    jq -r -s 'map(select(.PrivateIp)
+                  | select(.Status == "online"))
               | group_by(.LayerIds[0])[]
               | .[0]
               | {
