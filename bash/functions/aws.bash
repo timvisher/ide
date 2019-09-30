@@ -717,19 +717,20 @@ bsd_date_command() {
 }
 
 determine_date_flavor() {
-    if [[ -n $date_flavor ]]
+    if [[ -z $date_flavor ]]
     then
-        return 0
-    elif bsd_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
-    then
-        date_flavor=bsd
-    elif gnu_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
-    then
-        date_flavor=gnu
+        if bsd_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
+        then
+            date_flavor=bsd
+        elif gnu_date_command "${AWS_ROLE_EXPIRATION:-2016-11-01T11:23:13Z}" > /dev/null 2>&1
+        then
+            date_flavor=gnu
+        fi
     fi
+    printf '%s\n' "$date_flavor"
 }
 
-mins_until_expired() {
+_mins_until_expired_orig() {
     local input_date="$1"
     determine_date_flavor
 
@@ -749,6 +750,55 @@ mins_until_expired() {
     # shellcheck disable=SC2155
     local now="$(date '+%s')"
     echo "$(((target - now)/60))"
+}
+
+_mins_until_expired_new() {
+    if (( 0 != $# ))
+    then
+        cat >&2 <<EOF
+mins_until_expired
+
+Discovers expiration date based on value of AWS_PROFILE
+(‘${AWS_PROFILE}’). Don't call with an argument.
+
+unset IDE_AWS_ROLE_FUNCTION to revert to original behavior.
+EOF
+        return 1
+    fi
+
+    local assumed_role_prefix=$(
+        <<<"$(aws --profile ro configure get role_arn)" IFS=: read -r _ _ _ _ account_id role _
+        printf "arn:aws:sts::%s:assumed-%s" "$account_id" "$role"
+          )
+    local role_date="$(jq -r 'select(.AssumedRoleUser.Arn
+                              | startswith("'"${assumed_role_prefix}"'"))
+                              |.Credentials.Expiration' ~/.aws/cli/cache/*.json)"
+
+    case $(determine_date_flavor) in
+        bsd)
+            # shellcheck disable=SC2155
+            local target="$(bsd_date_command "$role_date")";;
+        gnu)
+            # shellcheck disable=SC2155
+            local target="$(gnu_date_command "$role_date")";;
+        *)
+            echo '# Unable to determine your date flavor.' >&2
+            return 1
+            ;;
+    esac
+
+    # shellcheck disable=SC2155
+    local now="$(date '+%s')"
+    echo "$(((target - now)/60))"
+}
+
+mins_until_expired() {
+    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    then
+        _mins_until_expired_new
+    else
+        _mins_until_expired_orig "$1"
+    fi
 }
 
 export_aws_vars() {
@@ -793,10 +843,6 @@ export_aws_vars() {
 
 alias unexport_aws_vars=unassume_role
 
-shell_init_usage() {
-    echo '# Usage: shell_init_role role_name mfa_token' >&2
-}
-
 role_expired() {
     local role_name="$1"
     # role cache doesn't exist so we're 'expired'
@@ -812,13 +858,15 @@ role_expired() {
     fi
 }
 
-shell_init_role() {
+_shell_init_role_orig() {
     local role_name="$1"
     local mfa_token="$2"
 
     if [[ -z $role_name || -z $mfa_token ]]
     then
-        shell_init_usage
+        cat <<EOF >&2
+# Usage: shell_init_role role_name mfa_token
+EOF
         return 1
     fi
 
@@ -851,7 +899,45 @@ shell_init_role() {
     export_aws_vars "$role_name"
 }
 
-unassume_role() {
+_shell_init_role_new() {
+    if (( 1 != $# ))
+    then
+        cat >&2 <<EOF
+shell_init_role <role_name>
+
+Sets AWS_PROFILE to role_name. Relies on proper aws cli configuration.
+
+unset IDE_AWS_ROLE_FUNCTION to use original behavior
+EOF
+        return
+    fi
+
+    if ! aws --profile "$1" configure get role_arn > /dev/null 2>&1
+    then
+        cat >&2 <<EOF
+‘$1’ is not a configured role_name:
+$(sed -n '/^\[profile/ s/\[profile \([^]]*\)]/\1/p' ~/.aws/config)
+EOF
+        return 1
+    fi
+
+    export AWS_PROFILE=$1
+    if [[ -n $DEFAULT_PS1 ]]
+    then
+        export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)m]\n\w$(__git_ps1)\n\$ '
+    fi
+}
+
+shell_init_role() {
+    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    then
+        _shell_init_role_new "$1"
+    else
+        _shell_init_role_orig "$1"
+    fi
+}
+
+_unassume_role_orig() {
     unset AWS_ACCESS_KEY_ID
     unset AWS_SECRET_ACCESS_KEY
     unset AWS_SESSION_TOKEN
@@ -863,10 +949,46 @@ unassume_role() {
     fi
 }
 
+_unassume_role_new() {
+    unset AWS_PROFILE
+    if [[ -n $DEFAULT_PS1 ]]
+    then
+        export PS1="$DEFAULT_PS1"
+    fi
+}
+
+unassume_role() {
+    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    then
+        _unassume_role_new
+    else
+        _unassume_role_orig
+    fi
+}
+
 assume_read_only() { shell_init_role read_only "$@"; }
 aro() { assume_read_only "$@"; }
 assume_admin_global() { shell_init_role admin_global "$@"; }
 aag() { assume_admin_global "$@"; }
+
+_uncache_role_orig() {
+    local role_name="$1"
+
+    if [[ -z $role_name ]]
+    then
+        echo "$(tput setaf 1)$(tput bold)# No role name specified$(tput sgr0)"
+        return 1
+    fi
+
+    if [[ -r ~/.stitch/assume-role-cache."$role_name" ]]
+    then
+        rm -v ~/.stitch/assume-role-cache."$role_name"
+    fi
+}
+
+_uncache_role_new() {
+    grep -lZF "role/$role_name" ~/.aws/cli/cache/* | xargs -0 rm -v
+}
 
 uncache_role() {
     local role_name="$1"
@@ -907,7 +1029,7 @@ unset_default_profile() {
     fi
 }
 
-configure_aws_profiles() {
+_configure_aws_profiles_orig() {
     if ! aws configure get aws_access_key_id > /dev/null 2>&1 || ! aws configure get aws_secret_access_key > /dev/null 2>&1
     then
         echo '# Configure your default (stitch-prod) profile.' >&2
@@ -940,6 +1062,59 @@ configure_aws_profiles() {
     aws --profile read_only configure set source_profile default
     aws --profile read_only configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
 
+}
+
+_configure_aws_profiles_new() {
+    if ! aws configure get aws_access_key_id > /dev/null 2>&1 || ! aws configure get aws_secret_access_key > /dev/null 2>&1
+    then
+        cat >&2 <<EOF
+# Configure your default (stitch-prod) profile.
+aws configure
+EOF
+        return 1
+    fi
+
+    aws --profile default configure set region us-east-1
+    aws --profile default configure set output json
+
+    # good to generate the template
+
+    local user_name
+    user_name="$(<<<"$(aws --profile default iam get-user)" jq -r '.User.UserName')"
+
+    # admin_global
+    aws --profile admin_global configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
+    aws --profile admin_global configure set source_profile default
+    aws --profile admin_global configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+    aws --profile admin_global configure set region us-east-1
+    aws --profile admin_global configure set output json
+    aws --profile ag configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
+    aws --profile ag configure set source_profile default
+    aws --profile ag configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+    aws --profile ag configure set region us-east-1
+    aws --profile ag configure set output json
+
+    # read_only
+    aws --profile read_only configure set role_arn 'arn:aws:iam::218546966473:role/read_only'
+    aws --profile read_only configure set source_profile default
+    aws --profile read_only configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+    aws --profile read_only configure set region us-east-1
+    aws --profile read_only configure set output json
+    aws --profile ro configure set role_arn 'arn:aws:iam::218546966473:role/admin_global'
+    aws --profile ro configure set source_profile default
+    aws --profile ro configure set mfa_serial "arn:aws:iam::218546966473:mfa/$user_name"
+    aws --profile ro configure set region us-east-1
+    aws --profile ro configure set output json
+
+}
+
+configure_aws_profiles() {
+    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    then
+        _configure_aws_profiles_new
+    else
+        _configure_aws_profiles_old
+    fi
 }
 
 export_profile_key() {
