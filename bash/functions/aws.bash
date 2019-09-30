@@ -1314,3 +1314,7 @@ _ide_ssh_define_common_service_functions() {
         aws_layer_status '"${stack_name}"' '"${layer_name}"'
     }'
 }
+
+# Local Variables:
+# sh-basic-offset: 4
+# End:
