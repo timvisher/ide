@@ -770,9 +770,19 @@ EOF
         <<<"$(aws --profile ro configure get role_arn)" IFS=: read -r _ _ _ _ account_id role _
         printf "arn:aws:sts::%s:assumed-%s" "$account_id" "$role"
           )
-    local role_date="$(jq -r 'select(.AssumedRoleUser.Arn
-                              | startswith("'"${assumed_role_prefix}"'"))
-                              |.Credentials.Expiration' ~/.aws/cli/cache/*.json)"
+    local role_date=$(
+        if compgen -G ~/.aws/cli/cache/*.json >/dev/null
+        then
+            jq -r 'select(.AssumedRoleUser.Arn
+                          | startswith("'"${assumed_role_prefix}"'"))
+                          |.Credentials.Expiration' ~/.aws/cli/cache/*.json
+        fi
+          )
+
+    if [[ -z role_date ]]
+    then
+        echo "N/A"
+    fi
 
     case $(determine_date_flavor) in
         bsd)
@@ -795,7 +805,7 @@ EOF
 mins_until_expired() {
     if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
     then
-        _mins_until_expired_new
+        time -p _mins_until_expired_new
     else
         _mins_until_expired_orig "$1"
     fi
@@ -922,6 +932,7 @@ EOF
     fi
 
     export AWS_PROFILE=$1
+    echo "# export AWS_PROFILE=${1}"
     if [[ -n $DEFAULT_PS1 ]]
     then
         export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)m]\n\w$(__git_ps1)\n\$ '
@@ -950,7 +961,12 @@ _unassume_role_orig() {
 }
 
 _unassume_role_new() {
-    unset AWS_PROFILE
+    local var
+    for var in $(compgen -A variable AWS_)
+    do
+        unset "$var"
+        echo "# Cleared ${var}" >&2
+    done
     if [[ -n $DEFAULT_PS1 ]]
     then
         export PS1="$DEFAULT_PS1"
@@ -991,17 +1007,11 @@ _uncache_role_new() {
 }
 
 uncache_role() {
-    local role_name="$1"
-
-    if [[ -z $role_name ]]
+    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
     then
-        echo "$(tput setaf 1)$(tput bold)# No role name specified$(tput sgr0)"
-        return 1
-    fi
-
-    if [[ -r ~/.stitch/assume-role-cache."$role_name" ]]
-    then
-        rm -v ~/.stitch/assume-role-cache."$role_name"
+        _uncache_role_new
+    else
+        _uncache_role_orig "$1"
     fi
 }
 
