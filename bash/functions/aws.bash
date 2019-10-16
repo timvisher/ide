@@ -732,20 +732,19 @@ determine_date_flavor() {
 
 _mins_until_expired_orig() {
     local input_date="$1"
-    determine_date_flavor
 
-    if [[ $date_flavor == bsd ]]
-    then
-        # shellcheck disable=SC2155
-        local target="$(bsd_date_command "$input_date")"
-    elif [[ $date_flavor == gnu ]]
-    then
-        # shellcheck disable=SC2155
-        local target="$(gnu_date_command "$input_date")"
-    else
-        echo '# Unable to determine your date flavor.' >&2
-        return 1
-    fi
+    case $(determine_date_flavor) in
+        bsd)
+            # shellcheck disable=SC2155
+            local target="$(bsd_date_command "$input_date")";;
+        gnu)
+            # shellcheck disable=SC2155
+            local target="$(gnu_date_command "$input_date")";;
+        *)
+            echo '# Unable to determine your date flavor.' >&2
+            return 1
+            ;;
+    esac
 
     # shellcheck disable=SC2155
     local now="$(date '+%s')"
@@ -944,7 +943,7 @@ shell_init_role() {
     then
         _shell_init_role_new "$1"
     else
-        _shell_init_role_orig "$1"
+        _shell_init_role_orig "$@"
     fi
 }
 
