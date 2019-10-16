@@ -765,20 +765,22 @@ EOF
         return 1
     fi
 
-    local assumed_role_prefix=$(
+    local assumed_role_prefix
+    assumed_role_prefix=$(
         <<<"$(aws --profile ro configure get role_arn)" IFS=: read -r _ _ _ _ account_id role _
         printf "arn:aws:sts::%s:assumed-%s" "$account_id" "$role"
-          )
-    local role_date=$(
+                       )
+    local role_date
+    role_date=$(
         if compgen -G ~/.aws/cli/cache/*.json >/dev/null
         then
             jq -r 'select(.AssumedRoleUser.Arn
                           | startswith("'"${assumed_role_prefix}"'"))
                           |.Credentials.Expiration' ~/.aws/cli/cache/*.json
         fi
-          )
+             )
 
-    if [[ -z role_date ]]
+    if [[ -z $role_date ]]
     then
         echo "N/A"
     fi
