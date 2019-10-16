@@ -191,7 +191,9 @@ again."
 
 (defun ide-get-target-vm
     (arg)
-  (if (or (prefix-arg-count-p arg 1) (not ide-target-vm))
+  (if (or (prefix-arg-count-p arg 1)
+          (not ide-target-vm)
+          (not (seq-contains ide-vms ide-target-vm)))
       (setq ide-target-vm (ide-read-target-vm arg)))
   ide-target-vm)
 
@@ -203,7 +205,14 @@ again."
     (arg)
   (if (and (projectile-project-p)
            (yes-or-no-p (format "Use %s?" (abbreviate-file-name (projectile-project-root)))))
-      (projectile-project-root)
+      ;; Should only be here temporarily while we migrate away from the
+      ;; target vm concept
+      (let* ((project-file (projectile-project-root))
+             (remote-component (file-remote-p project-file)))
+        (if remote-component
+            (setq ide-target-vm (tramp-file-name-host (tramp-dissect-file-name remote-component)))
+          nil)
+        project-file)
     (let* ((box-files (seq-mapcat
                        (lambda (host)
                          (let ((host-base-directory
@@ -231,7 +240,11 @@ again."
            (project-file (cadr (assoc project all-files))))
       ;; Should only be here temporarily while we migrate away from the
       ;; target vm concept
-      (setq ide-target-vm (car project-file))
+      (let* ((project-dir (car project-file))
+             (remote-component (file-remote-p project-dir)))
+        (if remote-component
+            (setq ide-target-vm (tramp-file-name-host (tramp-dissect-file-name remote-component)))
+          nil))
       (format "%s/%s"
               (car project-file)
               (cadr project-file)))))
