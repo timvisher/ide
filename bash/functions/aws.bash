@@ -100,12 +100,12 @@ ide_aws_opsworks_ssh_layer_instance() {
     shift
     local layer_name="$1"
     shift
-    # shellcheck disable=SC2155
-    local instance=$(ide_aws_opsworks_layer_instances \
-                         "$stack_name" "$layer_name" \
-                         | jq -rs '[.[]
-                                    | select("online" == .Status)][0]
-                                    | {PrivateIp, Hostname}')
+    local instance
+    instance=$(
+        ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" |
+            jq -rs 'map(select("online" == .Status))[0]
+                    | {PrivateIp, Hostname}'
+            )
 
     # We need this expanded clientside
     # shellcheck disable=SC2029
@@ -214,8 +214,8 @@ layer_instances_ips() {
 
 create_and_start_instance() {
     local stack_name="$1"
-    # shellcheck disable=SC2155
-    local stack_id="$(stack_id "$stack_name")"
+    local stack_id
+    stack_id="$(stack_id "$stack_name")"
     local layer_name="$2"
     local instance_type="$3"
 
@@ -294,13 +294,19 @@ ssh_matching_instances() {
 }
 
 layer_instance_exec() {
+    _ide_deprecated ide_aws_opsworks_layer_instance_exec "$@"
+}
+ide_aws_opsworks_layer_instance_exec() {
     local stack_name="$1"
     shift
     local layer_name="$1"
     shift
-    # shellcheck disable=SC2155
-    local instance="$(ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" |
-                        jq -rs '[.[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
+    local instance
+    instance=$(
+        ide_aws_opsworks_layer_instances "$stack_name" "$layer_name" |
+            jq -rs 'map(select("online" == .Status))[0]
+                    | {PrivateIp, Hostname}'
+            )
 
     if [[ --force == "$1" ]]
     then
@@ -327,8 +333,8 @@ webhookz_instance_exec() { layer_instance_exec webservices webhookz; }
 # FIXME refactor this and `multi_exec`
 multi_exec_stack() {
     local stack_name="$1"
-    # shellcheck disable=SC2155
-    local stack_instances="$(stack_instances "$stack_name")"
+    local stack_instances
+    stack_instances="$(stack_instances "$stack_name")"
     shift
 
     local -a hostnames=
@@ -456,10 +462,10 @@ multi_exec_layer() {
     local stack_name="$1"
     shift
     local layer_name="$1"
-    # shellcheck disable=SC2155
-    local layer_instances=$(ide_aws_opsworks_layer_instances \
-                                "$stack_name" \
-                                "$layer_name")
+    local layer_instances
+    layer_instances=$(
+        ide_aws_opsworks_layer_instances "$stack_name" "$layer_name"
+                   )
     shift
 
     local -a hostnames=()
@@ -567,8 +573,8 @@ multi_exec_microsites() { multi_exec_layer microsites querymongo; }
 # FIXME refactor this and `multi_exec_layer`
 multi_exec() {
     local stack_name="$1"
-    # shellcheck disable=SC2155
-    local stack_instances="$(stack_instances "$stack_name")"
+    local stack_instances
+    stack_instances="$(stack_instances "$stack_name")"
     shift
     local pattern="$1"
     shift
@@ -634,10 +640,10 @@ instance_id() {
 }
 
 stop_instance() {
-    # shellcheck disable=SC2155
-    local stack_id="$(stack_id "$1")"
-    # shellcheck disable=SC2155
-    local instance_id="$(instance_id "$stack_id" "$2")"
+    local stack_id
+    stack_id="$(stack_id "$1")"
+    local instance_id
+    instance_id="$(instance_id "$stack_id" "$2")"
 
     aws opsworks stop-instance --instance-id "$instance_id"
 }
@@ -735,19 +741,19 @@ _mins_until_expired_orig() {
 
     case $(determine_date_flavor) in
         bsd)
-            # shellcheck disable=SC2155
-            local target="$(bsd_date_command "$input_date")";;
+            local target
+            target="$(bsd_date_command "$input_date")";;
         gnu)
-            # shellcheck disable=SC2155
-            local target="$(gnu_date_command "$input_date")";;
+            local target
+            target="$(gnu_date_command "$input_date")";;
         *)
             echo '# Unable to determine your date flavor.' >&2
             return 1
             ;;
     esac
 
-    # shellcheck disable=SC2155
-    local now="$(date '+%s')"
+    local now
+    now="$(date '+%s')"
     echo "$(((target - now)/60))"
 }
 
@@ -787,19 +793,19 @@ EOF
 
     case $(determine_date_flavor) in
         bsd)
-            # shellcheck disable=SC2155
-            local target="$(bsd_date_command "$role_date")";;
+            local target
+            target="$(bsd_date_command "$role_date")";;
         gnu)
-            # shellcheck disable=SC2155
-            local target="$(gnu_date_command "$role_date")";;
+            local target
+            target="$(gnu_date_command "$role_date")";;
         *)
             echo '# Unable to determine your date flavor.' >&2
             return 1
             ;;
     esac
 
-    # shellcheck disable=SC2155
-    local now="$(date '+%s')"
+    local now
+    now="$(date '+%s')"
     echo "$(((target - now)/60))"
 }
 
@@ -827,16 +833,16 @@ export_aws_vars() {
         return 1
     fi
 
-    # shellcheck disable=SC2155
-    export AWS_ROLE_NAME="$role_name"
-    # shellcheck disable=SC2155
-    export AWS_ACCESS_KEY_ID="$(jq -r '.Credentials.AccessKeyId' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
-    # shellcheck disable=SC2155
-    export AWS_SECRET_ACCESS_KEY="$(jq -r '.Credentials.SecretAccessKey' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
-    # shellcheck disable=SC2155
-    export AWS_SESSION_TOKEN="$(jq -r '.Credentials.SessionToken' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
-    # shellcheck disable=SC2155
-    export AWS_ROLE_EXPIRATION="$(jq -r '.Credentials.Expiration' < ~/.stitch/assume-role-cache."$AWS_ROLE_NAME")"
+    source <(
+        < /home/tvisher/.stitch/assume-role-cache.read_only \
+          jq -r '@sh "
+export AWS_ROLE_NAME='"${role_name}"'
+export AWS_ACCESS_KEY_ID=\(.Credentials.AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=\(.Credentials.SecretAccessKey)
+export AWS_SESSION_TOKEN=\(.Credentials.SessionToken)
+export AWS_ROLE_EXPLORATION=\(.Credentials.Expiration)
+"'
+    )
 
     if ! mins_until_expired "$AWS_ROLE_EXPIRATION" > /dev/null 2>&1
     then
@@ -1137,10 +1143,14 @@ export_profile_key() {
         return 1
     fi
 
-    # shellcheck disable=SC2155
-    export AWS_ACCESS_KEY_ID="$(aws configure get aws_access_key_id --profile "$profile_name")"
-    # shellcheck disable=SC2155
-    export AWS_SECRET_ACCESS_KEY="$(aws configure get aws_secret_access_key --profile "$profile_name")"
+    AWS_ACCESS_KEY_ID=$(
+        aws configure get aws_access_key_id --profile "$profile_name"
+           )
+    export AWS_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY=$(
+        aws configure get aws_secret_access_key --profile "$profile_name"
+           )
+    export AWS_SECRET_ACCESS_KEY
 
     echo "# AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
     echo "# AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
@@ -1188,13 +1198,16 @@ assert_read_only() {
 ##########################################################################
 
 nrepl_menagerie() {
-    # shellcheck disable=SC2155
-    local instance="$(ide_aws_opsworks_layer_instances "webservices" "menagerie" |
-                        jq -rs '[.[] | select("online" == .Status)][0] | {PrivateIp, Hostname}')"
-    # shellcheck disable=SC2155
-    local ip="$(jq -r '.PrivateIp' <<<"$instance")"
-    # shellcheck disable=SC2155
-    local hostname="$(jq -r '.Hostname' <<<"$instance")"
+    local instance
+    instance=$(
+        ide_aws_opsworks_layer_instances "webservices" "menagerie" |
+            jq -rs '[map(select("online" == .Status))[0]
+                     | {PrivateIp, Hostname}'
+            )
+    local ip
+    ip="$(jq -r '.PrivateIp' <<<"$instance")"
+    local hostname
+    hostname="$(jq -r '.Hostname' <<<"$instance")"
     command=(ssh -L6033:localhost:4033 "$ip")
     echo "# ${command[*]}" >&2
     ${command[*]}
@@ -1295,8 +1308,8 @@ _aws_elb_describe() {
 _aws_elb_instance_ids() {
     local -a elb_names=("$@")
 
-    # shellcheck disable=SC2155
-    local aws_elb_json="$(_aws_elb_describe "${elb_names[@]}")"
+    local aws_elb_json
+    aws_elb_json="$(_aws_elb_describe "${elb_names[@]}")"
 
     jq -r '.Instances[] | .InstanceId' <<< "$aws_elb_json"
 }
@@ -1357,19 +1370,23 @@ ide_aws_elb_instance_health() {
     do
         instance_ids+=("$instance_id")
     done < <(_aws_elb_instance_ids "${elb_names[@]}")
-    # shellcheck disable=SC2155
-    local health_json=$(_aws_elb_describe_instance_health "${elb_names[@]}")
+    local health_json
+    health_json=$(_aws_elb_describe_instance_health "${elb_names[@]}")
 
     for instance_id in "${instance_ids[@]}"
     do
-        # shellcheck disable=SC2155
-        local hostname="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
-                                 | .Tags[]
-                                 |  select("opsworks:instance" == .Key)
-                                 | .Value' <<< "$instances_json")"
-        # shellcheck disable=SC2155
-        local health="$(jq -r 'select("'"$instance_id"'" == .InstanceId)
-                               | .State' <<< "$health_json")"
+        local hostname
+        hostname=$(
+            jq -r 'select("'"$instance_id"'" == .InstanceId)
+                   | .Tags[]
+                   |  select("opsworks:instance" == .Key)
+                   | .Value' <<< "$instances_json"
+                )
+        local health
+        health=$(
+            jq -r 'select("'"$instance_id"'" == .InstanceId)
+                   | .State' <<< "$health_json"
+              )
         echo "$hostname: $health"
     done
 }
