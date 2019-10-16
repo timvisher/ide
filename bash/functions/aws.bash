@@ -754,7 +754,7 @@ _mins_until_expired_orig() {
 
     local now
     now="$(date '+%s')"
-    echo "$(((target - now)/60))"
+    echo "$(((target - now)/60))m"
 }
 
 _mins_until_expired_new() {
@@ -766,29 +766,26 @@ mins_until_expired
 Discovers expiration date based on value of AWS_PROFILE
 (‘${AWS_PROFILE}’). Don't call with an argument.
 
-unset IDE_AWS_ROLE_FUNCTION to revert to original behavior.
+unset ide_aws_role_function to revert to original behavior.
 EOF
         return 1
     fi
 
-    local assumed_role_prefix
-    assumed_role_prefix=$(
-        <<<"$(aws --profile ro configure get role_arn)" IFS=: read -r _ _ _ _ account_id role _
-        printf "arn:aws:sts::%s:assumed-%s" "$account_id" "$role"
-                       )
     local role_date
     role_date=$(
         if compgen -G ~/.aws/cli/cache/*.json >/dev/null
         then
             jq -r 'select(.AssumedRoleUser.Arn
-                          | startswith("'"${assumed_role_prefix}"'"))
-                          |.Credentials.Expiration' ~/.aws/cli/cache/*.json
+                   # _ide_aws_profile_assumed_role_prefix gets set when shell_init_role is called
+                   | startswith("'"${_ide_aws_profile_assumed_role_prefix}"'"))
+                   |.Credentials.Expiration' ~/.aws/cli/cache/*.json
         fi
              )
 
     if [[ -z $role_date ]]
     then
         echo "N/A"
+        return
     fi
 
     case $(determine_date_flavor) in
@@ -806,13 +803,15 @@ EOF
 
     local now
     now="$(date '+%s')"
-    echo "$(((target - now)/60))"
+    echo "$(((target - now)/60))m"
 }
 
+ide_aws_role_function=
+
 mins_until_expired() {
-    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    if [[ $ide_aws_role_function == new ]]
     then
-        time -p _mins_until_expired_new
+        _mins_until_expired_new
     else
         _mins_until_expired_orig "$1"
     fi
@@ -854,7 +853,7 @@ export AWS_ROLE_EXPLORATION=\(.Credentials.Expiration)
     # FIXME we need a way to generate a PS1 template
     if [[ -n $DEFAULT_PS1 ]]
     then
-        export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w$(__git_ps1)\n\$ '
+        export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")]\n\w$(__git_ps1)\n\$ '
     fi
 }
 
@@ -924,7 +923,7 @@ shell_init_role <role_name>
 
 Sets AWS_PROFILE to role_name. Relies on proper aws cli configuration.
 
-unset IDE_AWS_ROLE_FUNCTION to use original behavior
+unset ide_aws_role_function to use original behavior
 EOF
         return
     fi
@@ -942,17 +941,25 @@ EOF
     echo "# export AWS_PROFILE=${1}"
     if [[ -n $DEFAULT_PS1 ]]
     then
-        export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)m]\n\w$(__git_ps1)\n\$ '
+        export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)]\n\w$(__git_ps1)\n\$ '
     fi
 }
 
 shell_init_role() {
-    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    if [[ $ide_aws_role_function == new ]]
     then
         _shell_init_role_new "$1"
     else
         _shell_init_role_orig "$@"
     fi
+
+    _ide_aws_profile_assumed_role_prefix=$(
+        if [[ -n $AWS_PROFILE ]]
+        then
+            <<<"$(aws configure get role_arn)" IFS=: read -r _ _ _ _ account_id role _
+            printf "arn:aws:sts::%s:assumed-%s" "$account_id" "$role"
+        fi
+                                        )
 }
 
 _unassume_role_orig() {
@@ -981,7 +988,7 @@ _unassume_role_new() {
 }
 
 unassume_role() {
-    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    if [[ $ide_aws_role_function == new ]]
     then
         _unassume_role_new
     else
@@ -1014,7 +1021,7 @@ _uncache_role_new() {
 }
 
 uncache_role() {
-    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    if [[ $ide_aws_role_function == new ]]
     then
         _uncache_role_new
     else
@@ -1126,7 +1133,7 @@ EOF
 }
 
 configure_aws_profiles() {
-    if [[ $IDE_AWS_ROLE_FUNCTION == new ]]
+    if [[ $ide_aws_role_function == new ]]
     then
         _configure_aws_profiles_new
     else
