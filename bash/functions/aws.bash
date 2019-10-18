@@ -754,7 +754,7 @@ _mins_until_expired_orig() {
 
     local now
     now="$(date '+%s')"
-    echo "$(((target - now)/60))m"
+    echo "$(((target - now)/60))"
 }
 
 _mins_until_expired_new() {
@@ -803,12 +803,14 @@ EOF
 
     local now
     now="$(date '+%s')"
-    echo "$(((target - now)/60))m"
+    echo "$(((target - now)/60))"
 }
 
 ide_aws_role_function=
 
 mins_until_expired() {
+    # This function must return an integer because it's used in both user
+    # facing contexts and conditionals.
     if [[ $ide_aws_role_function == new ]]
     then
         _mins_until_expired_new
@@ -832,16 +834,16 @@ export_aws_vars() {
         return 1
     fi
 
-    source <(
-        < /home/tvisher/.stitch/assume-role-cache.read_only \
+    eval "$(
+        < ~/.stitch/assume-role-cache."$role_name" \
           jq -r '@sh "
 export AWS_ROLE_NAME='"${role_name}"'
 export AWS_ACCESS_KEY_ID=\(.Credentials.AccessKeyId)
 export AWS_SECRET_ACCESS_KEY=\(.Credentials.SecretAccessKey)
 export AWS_SESSION_TOKEN=\(.Credentials.SessionToken)
-export AWS_ROLE_EXPLORATION=\(.Credentials.Expiration)
+export AWS_ROLE_EXPIRATION=\(.Credentials.Expiration)
 "'
-    )
+    )"
 
     if ! mins_until_expired "$AWS_ROLE_EXPIRATION" > /dev/null 2>&1
     then
@@ -853,7 +855,7 @@ export AWS_ROLE_EXPLORATION=\(.Credentials.Expiration)
     # FIXME we need a way to generate a PS1 template
     if [[ -n $DEFAULT_PS1 ]]
     then
-        export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")]\n\w$(__git_ps1)\n\$ '
+        export PS1='\n\d \t\n\u@\H\n[$AWS_ROLE_NAME:$(mins_until_expired "$AWS_ROLE_EXPIRATION")m]\n\w$(__git_ps1)\n\$ '
     fi
 }
 
@@ -941,7 +943,7 @@ EOF
     echo "# export AWS_PROFILE=${1}"
     if [[ -n $DEFAULT_PS1 ]]
     then
-        export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)]\n\w$(__git_ps1)\n\$ '
+        export PS1='\n\d \t\n\u@\H\n[${AWS_PROFILE}:$(mins_until_expired)m]\n\w$(__git_ps1)\n\$ '
     fi
 }
 
