@@ -739,12 +739,11 @@ determine_date_flavor() {
 _mins_until_expired_orig() {
     local input_date="$1"
 
+    local target
     case $(determine_date_flavor) in
         bsd)
-            local target
             target="$(bsd_date_command "$input_date")";;
         gnu)
-            local target
             target="$(gnu_date_command "$input_date")";;
         *)
             echo '# Unable to determine your date flavor.' >&2
