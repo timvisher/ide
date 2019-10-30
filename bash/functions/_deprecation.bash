@@ -4,3 +4,7 @@ _ide_deprecated() {
     shift
     "$command" "$@"
 }
+
+_ide_broken() {
+  echo "BROKEN. Fix if you wish" >&2
+}

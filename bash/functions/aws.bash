@@ -187,14 +187,16 @@ ssh_tracer_instances() { ssh_layer_instances pipeline tracer; }
 ssh_microsites_instances() { ssh_layer_instances microsites querymongo; }
 
 ssh_instance() {
-    local layer_pattern="$1"
+    _ide_broken; return 1
 
-    # We want to call the noarg ide_aws_opsworks_instance_ips
-    # shellcheck disable=SC2119
-    ide_aws_opsworks_instance_ips | \
-        grep --line-buffered "$layer_pattern" | \
-            jq --compact-output --raw-output --monochrome-output \
-                'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
+    # local layer_pattern="$1"
+
+    # # We want to call the noarg ide_aws_opsworks_instance_ips
+    # # shellcheck disable=SC2119
+    # ide_aws_opsworks_instance_ips | \
+    #     grep --line-buffered "$layer_pattern" | \
+    #         jq --compact-output --raw-output --monochrome-output \
+    #             'select(.PrivateIp) | @sh "ssh \(.PrivateIp) # \(.Hostname)"'
 }
 
 ide_aws_opsworks_layer_instances_ips() {
@@ -652,16 +654,18 @@ instances() { _ide_deprecated ide_aws_opsworks_describe_instances "$@"; }
 # We're explicitly defending against args being passed
 # shellcheck disable=SC2120
 ide_aws_opsworks_describe_instances() {
-  if (( 0 < ${#@} ))
-  then
-    printf "ERROR: Cannot process args: %s" "$*" >&2
-    return 1
-  fi
+    # This conditional is what triggers SC2120 and SC2119. Is there a
+    # better way to warn about passed args?
+    if (( 0 < ${#@} ))
+    then
+        printf 'WARN: Ignoring arg: %s\n' "$@" >&2
+        return 1
+    fi
 
-  # We want word splitting
-  # shellcheck disable=SC2046
-  parallel -j 0 'aws opsworks describe-instances --stack-id={}' ::: $(ide_aws_opsworks_stack_ids) \
-    | jq '.Instances[]'
+    # We want word splitting
+    # shellcheck disable=SC2046
+    parallel -j 0 'aws opsworks describe-instances --stack-id={}' ::: $(ide_aws_opsworks_stack_ids) \
+        | jq '.Instances[]'
 }
 
 instance_ips() { _ide_deprecated ide_aws_opsworks_instance_ips "$@"; }
@@ -669,7 +673,7 @@ ide_aws_opsworks_instance_ips() {
   # We want the noarg ide_aws_opsworks_describe_instances
   # shellcheck disable=SC2119
   ide_aws_opsworks_describe_instances \
-    | jq --compact-output 'select(.PrivateIp)|select(.Status == "online")'
+    | jq -r --compact-output 'select(.PrivateIp)|select(.Status == "online")|.PrivateIp'
 }
 
 ##########################################################################
