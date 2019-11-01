@@ -865,26 +865,6 @@ Any other context has undefined behavior."
 
 (require 'org-tempo)
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Load system extensions
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(when (file-accessible-directory-p (ide--system-extension-theme-directory-name))
-  (seq-doseq (directory-file (directory-files (ide--system-extension-theme-directory-name)
-                                              nil
-                                              "[^.]+"))
-    (add-to-list 'custom-theme-load-path
-                 (concat (ide--system-extension-theme-directory-name)
-                         "/"
-                         directory-file))
-    (add-to-list 'load-path
-                 (concat (ide--system-extension-theme-directory-name)
-                         "/"
-                         directory-file))))
-
-(when (file-exists-p (ide--system-extension-file-name))
-  (load (ide--system-extension-file-name)))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Customize
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -948,3 +928,24 @@ Any other context has undefined behavior."
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Load system extensions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(when (file-accessible-directory-p (ide--system-extension-theme-directory-name))
+  (seq-doseq (directory-file (directory-files (ide--system-extension-theme-directory-name)
+                                              nil
+                                              "[^.]+"))
+    (add-to-list 'custom-theme-load-path
+                 (concat (ide--system-extension-theme-directory-name)
+                         "/"
+                         directory-file))
+    (add-to-list 'load-path
+                 (concat (ide--system-extension-theme-directory-name)
+                         "/"
+                         directory-file))))
+
+(when (file-exists-p (ide--system-extension-file-name))
+  (load (ide--system-extension-file-name)))
+
