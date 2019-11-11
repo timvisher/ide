@@ -344,28 +344,34 @@ again."
 (autoload 'magit-get "magit-git")
 (autoload 'magit-process-file "magit-process")
 
-(defun todo-frame-bounce
+(defun ide-frame-bounce-todo
     ()
   (interactive)
   ;; create the todo frame if it doesn't exist
-  (unless (boundp 'todo-frame-bounce-todo-frame)
-    (setq todo-frame-bounce-todo-frame (make-frame)))
-  (if (not (eq (tty-top-frame) todo-frame-bounce-todo-frame))
+  (unless (boundp '-ide-frame-bounce-todo-frame)
+    (setq -ide-frame-bounce-todo-frame (make-frame)))
+  (unless (boundp '-ide-frame-bounce-special-frames)
+    (setq -ide-frame-bounce-special-frames '()))
+  (add-to-list '-ide-frame-bounce-special-frames
+               -ide-frame-bounce-todo-frame)
+  (if (not (eq (tty-top-frame) -ide-frame-bounce-todo-frame))
       ;; raise the proper frame
       (progn
-        (setq todo-frame-bounce-prior-frame (tty-top-frame))
+        (unless (memq (tty-top-frame) -ide-frame-bounce-special-frames)
+          (setq -ide-frame-bounce-prior-frame (tty-top-frame)))
+        (raise-frame -ide-frame-bounce-todo-frame)
         (let ((todo-file (format "%s/%s"
                                  (or (magit-toplevel)
                                      (file-name-directory
                                       (buffer-file-name)))
                                  "todo.org")))
-          (raise-frame todo-frame-bounce-todo-frame)
-          (find-file todo-file)
-          (delete-other-windows)))
+          (find-file todo-file))
+        (delete-other-windows))
     ;; go back to the other one
-    (raise-frame todo-frame-bounce-prior-frame)))
+    (raise-frame -ide-frame-bounce-prior-frame)))
+(define-obsolete-function-alias 'todo-frame-bounce 'ide-frame-bounce-todo)
 
-(global-set-key (kbd "<f5>") 'todo-frame-bounce)
+(global-set-key (kbd "<f5>") 'ide-frame-bounce-todo)
 
 (defun github-parse-remote-url
     (remote-url)
