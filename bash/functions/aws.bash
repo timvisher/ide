@@ -1003,8 +1003,10 @@ unassume_role() {
 
 assume_read_only() { shell_init_role read_only "$@"; }
 aro() { assume_read_only "$@"; }
+raro() { uncache_read_only; aro "$1"; }
 assume_admin_global() { shell_init_role admin_global "$@"; }
 aag() { assume_admin_global "$@"; }
+raag() { uncache_admin_global; aag "$1"; }
 
 _uncache_role_orig() {
     local role_name="$1"
