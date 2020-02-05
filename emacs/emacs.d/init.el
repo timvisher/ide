@@ -387,7 +387,7 @@ again."
 
                  "\\([-A-Za-z0-9_]+\\)"
                  "/"
-                 "\\([-A-Za-z0-9_]+\\)"
+                 "\\([-A-Za-z0-9_.]+\\)"
                  ".git")
          remote-url)
       (error (format "%s is not on github.com" (buffer-file-name))))
