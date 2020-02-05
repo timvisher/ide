@@ -453,7 +453,7 @@ Mark current source block.
 
 ;;;***
 
-;;;### (autoloads nil "ob-lob" "ob-lob.el" (0 0 0 0))
+;;;### (autoloads nil "ob-lob" "ob-lob.el" "6d57273b1605eda4687aec918974697a")
 ;;; Generated autoloads from ob-lob.el
 
 (autoload 'org-babel-lob-execute-maybe "ob-lob" "\
@@ -473,8 +473,6 @@ a list compatible with `org-babel-get-src-block-info', which
 see.
 
 \(fn &optional DATUM)" nil nil)
-
-(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ob-lob" '("org-babel-")))
 
 ;;;***
 
@@ -1039,7 +1037,7 @@ This command is set with the variable `org-archive-default-command'.
 
 ;;;***
 
-;;;### (autoloads nil "org-attach" "org-attach.el" "6571ad3471b5b19700e2187c3a8875a1")
+;;;### (autoloads nil "org-attach" "org-attach.el" "615f9751ee146d0bc438026f3fbc667a")
 ;;; Generated autoloads from org-attach.el
 
 (autoload 'org-attach "org-attach" "\
@@ -1135,7 +1133,7 @@ Set `org-capture-templates' to be similar to `org-remember-templates'.
 
 ;;;***
 
-;;;### (autoloads nil "org-clock" "org-clock.el" "eb7dcac30e5ee869a0a17d10fa6744c8")
+;;;### (autoloads nil "org-clock" "org-clock.el" "8c8b1bb5031994b56517e9f4b4d375a3")
 ;;; Generated autoloads from org-clock.el
 
 (autoload 'org-resolve-clocks "org-clock" "\
@@ -1928,7 +1926,7 @@ line directly before or after the table.
 
 ;;;***
 
-;;;### (autoloads nil "org-table" "org-table.el" "af0351b12f157700c254ac5230eee895")
+;;;### (autoloads nil "org-table" "org-table.el" "e03bdb677af1e59dd1f88412075b97a5")
 ;;; Generated autoloads from org-table.el
 
 (autoload 'org-table-create-with-table\.el "org-table" "\
@@ -3737,7 +3735,7 @@ Return output file name.
 
 ;;;***
 
-;;;### (autoloads nil "ox-md" "ox-md.el" (0 0 0 0))
+;;;### (autoloads nil "ox-md" "ox-md.el" "4ab99e949dbf6e3155ba97413135a505")
 ;;; Generated autoloads from ox-md.el
 
 (autoload 'org-md-export-as-markdown "ox-md" "\
@@ -3807,11 +3805,9 @@ Return output file name.
 
 \(fn PLIST FILENAME PUB-DIR)" nil nil)
 
-(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ox-md" '("org-md-")))
-
 ;;;***
 
-;;;### (autoloads nil "ox-odt" "ox-odt.el" "f93435c1ea4d02b23b8bb4fabbeaba8e")
+;;;### (autoloads nil "ox-odt" "ox-odt.el" "32287546c7bcd83afbd3574f88226286")
 ;;; Generated autoloads from ox-odt.el
 
 (put 'org-odt-preferred-output-format 'safe-local-variable 'stringp)
@@ -3873,7 +3869,7 @@ is non-nil then the newly converted file is opened using
 
 ;;;***
 
-;;;### (autoloads nil "ox-org" "ox-org.el" (0 0 0 0))
+;;;### (autoloads nil "ox-org" "ox-org.el" "80543be9a4dc90f660e5cdded24f4ce7")
 ;;; Generated autoloads from ox-org.el
 
 (autoload 'org-org-export-as-org "ox-org" "\
@@ -3948,8 +3944,6 @@ publishing directory.
 Return output file name.
 
 \(fn PLIST FILENAME PUB-DIR)" nil nil)
-
-(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ox-org" '("org-org-")))
 
 ;;;***
 

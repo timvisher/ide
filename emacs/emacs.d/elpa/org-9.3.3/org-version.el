@@ -5,13 +5,13 @@
 (defun org-release ()
   "The release version of Org.
 Inserted by installing Org mode or when a release is made."
-   (let ((org-release "9.3.2"))
+   (let ((org-release "9.3.3"))
      org-release))
 ;;;###autoload
 (defun org-git-version ()
   "The Git version of Org mode.
 Inserted by installing Org or when a release is made."
-   (let ((org-git-version "9.3.2-1-g1d426e-elpa"))
+   (let ((org-git-version "9.3.3-elpa"))
      org-git-version))
 
 (provide 'org-version)

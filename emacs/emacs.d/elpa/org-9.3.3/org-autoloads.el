@@ -231,6 +231,14 @@
 
 ;;;***
 
+;;;### (autoloads "actual autoloads are elsewhere" "ob-lob" "ob-lob.el"
+;;;;;;  (0 0 0 0))
+;;; Generated autoloads from ob-lob.el
+
+(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ob-lob" '("org-babel-")))
+
+;;;***
+
 ;;;### (autoloads nil "ob-lua" "ob-lua.el" (0 0 0 0))
 ;;; Generated autoloads from ob-lua.el
 
@@ -1676,11 +1684,27 @@ Inserted by installing Org or when a release is made.
 
 ;;;***
 
+;;;### (autoloads "actual autoloads are elsewhere" "ox-md" "ox-md.el"
+;;;;;;  (0 0 0 0))
+;;; Generated autoloads from ox-md.el
+
+(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ox-md" '("org-md-")))
+
+;;;***
+
 ;;;### (autoloads "actual autoloads are elsewhere" "ox-odt" "ox-odt.el"
 ;;;;;;  (0 0 0 0))
 ;;; Generated autoloads from ox-odt.el
 
 (if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ox-odt" '("org-odt-")))
+
+;;;***
+
+;;;### (autoloads "actual autoloads are elsewhere" "ox-org" "ox-org.el"
+;;;;;;  (0 0 0 0))
+;;; Generated autoloads from ox-org.el
+
+(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "ox-org" '("org-org-")))
 
 ;;;***
 
