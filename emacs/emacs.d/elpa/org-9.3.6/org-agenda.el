@@ -9584,7 +9584,7 @@ Called with a universal prefix arg, show the priority instead of setting it."
 	   (list 'display (org-add-props stamp nil
 			    'face '(secondary-selection default))))
 	  (beginning-of-line 1))
-	(org-agenda-previous-line)))))
+	(beginning-of-line 0)))))
 
 (defun org-agenda-date-prompt (arg)
   "Change the date of this item.  Date is prompted for, with default today.
@@ -10098,13 +10098,13 @@ When ARG is greater than one mark ARG lines."
       (goto-char (point-min))
       (goto-char (next-single-property-change (point) 'org-hd-marker))
       (while (and (re-search-forward regexp nil t)
-		  (setq txt-at-point (get-text-property (point) 'txt)))
+		  (setq txt-at-point
+			(get-text-property (match-beginning 0) 'txt)))
 	(if (get-char-property (point) 'invisible)
 	    (beginning-of-line 2)
-	  (when (string-match regexp txt-at-point)
+	  (when (string-match-p regexp txt-at-point)
 	    (setq entries-marked (1+ entries-marked))
 	    (call-interactively 'org-agenda-bulk-mark)))))
-
     (unless entries-marked
       (message "No entry matching this regexp."))))
 

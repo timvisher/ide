@@ -7,7 +7,7 @@
 ;; Maintainer: Bastien Guerry <bzg@gnu.org>
 ;; Keywords: outlines, hypermedia, calendar, wp
 ;; Homepage: https://orgmode.org
-;; Version: 9.3.3
+;; Version: 9.3.6
 ;;
 ;; This file is part of GNU Emacs.
 ;;
@@ -216,7 +216,8 @@ and then loads the resulting file using `load-file'.  With
 optional prefix argument COMPILE, the tangled Emacs Lisp file is
 byte-compiled before it is loaded."
   (interactive "fFile to load: \nP")
-  (let* ((tangled-file (concat (file-name-sans-extension file) ".el")))
+  (let* ((file (file-truename file))
+	 (tangled-file (concat (file-name-sans-extension file) ".el")))
     ;; Tangle only if the Org file is newer than the Elisp file.
     (unless (org-file-newer-than-p
 	     tangled-file
@@ -5078,9 +5079,10 @@ stacked delimiters is N.  Escaping delimiters is not possible."
 		   ;; Do not span over cells in table rows.
 		   (not (and (save-match-data (org-match-line "[ \t]*|"))
 			     (string-match-p "|" (match-string 4))))))
-	    (pcase-let ((`(,_ ,face ,_) (assoc marker org-emphasis-alist)))
+	    (pcase-let ((`(,_ ,face ,_) (assoc marker org-emphasis-alist))
+			(m (if org-hide-emphasis-markers 4 2)))
 	      (font-lock-prepend-text-property
-	       (match-beginning 2) (match-end 2) 'face face)
+	       (match-beginning m) (match-end m) 'face face)
 	      (when verbatim?
 		(org-remove-flyspell-overlays-in
 		 (match-beginning 0) (match-end 0))
@@ -6403,11 +6405,15 @@ Use `\\[org-edit-special]' to edit table.el tables"))
 	(setq eos (save-excursion (org-end-of-subtree t t)
 				  (when (bolp) (backward-char)) (point)))
 	(setq has-children
-	      (save-excursion
-		(let ((level (funcall outline-level)))
-		  (outline-next-heading)
-		  (and (org-at-heading-p t)
-		       (> (funcall outline-level) level))))))
+	      (or
+	       (save-excursion
+		 (let ((level (funcall outline-level)))
+		   (outline-next-heading)
+		   (and (org-at-heading-p t)
+			(> (funcall outline-level) level))))
+	       (and (eq org-cycle-include-plain-lists 'integrate)
+		    (save-excursion
+		      (org-list-search-forward (org-item-beginning-re) eos t))))))
       ;; Determine end invisible part of buffer (EOL)
       (beginning-of-line 2)
       (while (and (not (eobp)) ;This is like `next-line'.
@@ -8305,7 +8311,7 @@ the value of the drawer property."
 (defun org-refresh-property (tprop p &optional inherit)
   "Refresh the buffer text property TPROP from the drawer property P.
 The refresh happens only for the current headline, or the whole
-sub-tree if optional argument INHERIT is non-nil."
+subtree if optional argument INHERIT is non-nil."
   (unless (org-before-first-heading-p)
     (save-excursion
       (org-back-to-heading t)
@@ -8348,7 +8354,7 @@ sub-tree if optional argument INHERIT is non-nil."
 		(throw 'buffer-category
 		       (org-element-property :value element)))))
 	  default-category))
-       ;; Set sub-tree specific categories.
+       ;; Set subtree specific categories.
        (goto-char (point-min))
        (let ((regexp (org-re-property "CATEGORY")))
 	 (while (re-search-forward regexp nil t)
@@ -13018,6 +13024,10 @@ variables is set."
 			(not (get-text-property 0 'org-unrestricted
 						(caar allowed))))))
 	      (completing-read "Effort: " allowed nil must-match))))))
+    ;; Test whether the value can be interpreted as a duration before
+    ;; inserting it in the buffer:
+    (org-duration-to-minutes value)
+    ;; Maybe update the effort value:
     (unless (equal current value)
       (org-entry-put nil org-effort-property value))
     (org-refresh-property '((effort . identity)
@@ -18699,13 +18709,14 @@ With prefix arg UNCOMPILED, load the uncompiled versions."
 			      (and (string= org-dir contrib-dir)
 				   (org-load-noerror-mustsuffix (concat contrib-dir f)))
 			      (and (org-load-noerror-mustsuffix (concat (org-find-library-dir f) f))
-				   (add-to-list 'load-uncore f 'append)
+				   (push f load-uncore)
 				   't)
 			      f))
 			lfeat)))
     (when load-uncore
       (message "The following feature%s found in load-path, please check if that's correct:\n%s"
-	       (if (> (length load-uncore) 1) "s were" " was") load-uncore))
+	       (if (> (length load-uncore) 1) "s were" " was")
+               (reverse load-uncore)))
     (if load-misses
 	(message "Some error occurred while reloading Org feature%s\n%s\nPlease check *Messages*!\n%s"
 		 (if (> (length load-misses) 1) "s" "") load-misses (org-version nil 'full))
@@ -19280,7 +19291,7 @@ indent.  The function will not indent contents of example blocks,
 verse blocks and export blocks as leading white spaces are
 assumed to be significant there."
   (interactive "r")
-  (save-window-excursion
+  (save-excursion
     (goto-char start)
     (skip-chars-forward " \r\t\n")
     (unless (eobp) (beginning-of-line))

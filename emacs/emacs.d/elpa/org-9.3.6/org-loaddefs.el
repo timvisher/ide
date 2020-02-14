@@ -72,7 +72,7 @@
 
 ;;;***
 
-;;;### (autoloads nil "ob-core" "ob-core.el" "5cd3ac73828f7d2edfbcd2e1bdfa1650")
+;;;### (autoloads nil "ob-core" "ob-core.el" "a30deb7fdf38be4229c562e7c669959a")
 ;;; Generated autoloads from ob-core.el
 
 (autoload 'org-babel-execute-safely-maybe "ob-core" "\
@@ -1037,7 +1037,7 @@ This command is set with the variable `org-archive-default-command'.
 
 ;;;***
 
-;;;### (autoloads nil "org-attach" "org-attach.el" "615f9751ee146d0bc438026f3fbc667a")
+;;;### (autoloads nil "org-attach" "org-attach.el" "af7192dc7063c7f6628ad08730b86bc2")
 ;;; Generated autoloads from org-attach.el
 
 (autoload 'org-attach "org-attach" "\
@@ -1494,7 +1494,7 @@ with \"H:MM:SS\" format, return `h:mm:ss'.  Otherwise, return
 
 ;;;***
 
-;;;### (autoloads nil "org-element" "org-element.el" "14bbacf67ee8e6e7343ab0af0ee2f893")
+;;;### (autoloads nil "org-element" "org-element.el" "7cf23eb0d866686004b5967f5b6b4467")
 ;;; Generated autoloads from org-element.el
 
 (autoload 'org-element-update-syntax "org-element" "\
@@ -1530,7 +1530,7 @@ element.
 
 Possible types are defined in `org-element-all-elements'.
 Properties depend on element or object type, but always include
-`:begin', `:end', `:parent' and `:post-blank' properties.
+`:begin', `:end', and `:post-blank' properties.
 
 As a special case, if point is at the very beginning of the first
 item in a list or sub-list, returned element will be that list
@@ -3002,7 +3002,7 @@ Call the customize function with org as argument.
 
 ;;;***
 
-;;;### (autoloads nil "ox" "ox.el" "bf7e0d6c4b1ca15b2856f8064e1161e8")
+;;;### (autoloads nil "ox" "ox.el" "d39a3b5f2053b7fd088cbffada421a3e")
 ;;; Generated autoloads from ox.el
 
 (autoload 'org-export-get-backend "ox" "\
@@ -3592,7 +3592,7 @@ The file is stored under the name chosen in
 
 ;;;***
 
-;;;### (autoloads nil "ox-latex" "ox-latex.el" "34c654817cdf3847334af5ef9e5d7fc8")
+;;;### (autoloads nil "ox-latex" "ox-latex.el" "a487b2142b7292793da2aee19bf203c7")
 ;;; Generated autoloads from ox-latex.el
 
 (autoload 'org-latex-make-preamble "ox-latex" "\
