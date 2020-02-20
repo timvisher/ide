@@ -423,13 +423,21 @@ The link defaults to the current commit's link for stability.
 With a single prefix arg, the link will use the current branch
 rather than the current commit's hash."
   (interactive "p")
-  (let* ((remote-url (magit-get "remote" (magit-get-remote) "url"))
+  ;; TODO an idea here would be to not just error out but somehow verify
+  ;; that nothing has changed since the last public commit for _this file_
+  ;; at least and then generate a link based on that. In that way it's the
+  ;; _remote's_ commit that matters (as we know that has at least been
+  ;; published) and whether or not there's a diff from there.
+  (when (magit-anything-modified-p)
+    (error (concat "Cannot generate a source link as there "
+                   "are modifications in the source tree.")))
+  (let* ((remote-url (magit-get "remote" (magit-get-push-remote) "url"))
          (parsed (github-parse-remote-url remote-url))
          (user (car (alist-get 'user parsed)))
          (repo (car (alist-get 'repo parsed)))
          (commit-hash (if (prefix-arg-count-p arg 1)
                           (magit-get-current-branch)
-                          (magit-rev-parse "HEAD")))
+                        (magit-rev-parse "HEAD")))
          (starting-line (line-number-at-pos (if (region-active-p)
                                                 (region-beginning)
                                               (point))))
