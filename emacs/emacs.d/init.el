@@ -913,8 +913,17 @@ Any other context has undefined behavior."
  '(js-indent-level 2)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-export-backends (quote (ascii html md)))
+ '(org-export-initial-scope (quote subtree))
+ '(org-export-with-section-numbers nil)
+ '(org-export-with-tags nil)
+ '(org-export-with-toc nil)
+ '(org-export-with-todo-keywords nil)
+ '(org-log-done (quote time))
+ '(org-log-refile (quote time))
+ '(org-refile-allow-creating-parent-nodes (quote confirm))
  '(org-refile-targets (quote ((nil :maxlevel . 3))))
  '(org-refile-use-outline-path t)
+ '(org-reverse-note-order t)
  '(org-todo-keywords
    (quote
     ((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
