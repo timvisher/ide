@@ -664,8 +664,13 @@ Any other context has undefined behavior."
 (defun ide-read-box-virtualenv
     (arg)
   (completing-read "virtualenv: "
-                   (directory-files (format "/sshx:%s:.virtualenvs"
-                                            (ide-get-target-vm arg)))
+                   (let ((target-vm (ide-get-target-vm arg)))
+                     (seq-concatenate
+                      'list
+                      (directory-files (format "/sshx:%s:.virtualenvs"
+                                               target-vm))
+                      (directory-files (format "/sshx:%s:/usr/local/share/virtualenvs"
+                                               target-vm))))
                    (lambda (file)
                      (not
                       (or (string= "." file)
