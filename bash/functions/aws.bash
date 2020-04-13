@@ -1144,7 +1144,7 @@ configure_aws_profiles() {
     then
         _configure_aws_profiles_new
     else
-        _configure_aws_profiles_old
+        _configure_aws_profiles_orig
     fi
 }
 
