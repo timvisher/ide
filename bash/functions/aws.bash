@@ -127,8 +127,6 @@ aws_bastion_ip() {
 # DEPRECATED
 # Use service files instead
 ssh_admin_instances() { ssh_layer_instances webservices admin; }
-ssh_api_passthrough_instances() { ssh_layer_instances webservices api_passthrough; }
-ssh_api_passthrough_staging_instances() { ssh_layer_instances webservices api_passthrough_staging; }
 ssh_app_instances() { ssh_layer_instances webservices app; }
 ssh_app_staging_instances() { ssh_layer_instances webservices app_staging; }
 ssh_bastion() { echo ssh "$(aws_bastion_ip)" '# bastion'; }
@@ -531,10 +529,8 @@ multi_exec_whitelist_tester() { multi_exec_layer bastion whitelist-tester "$@"; 
 # stack: webservices
 multi_exec_webhook_service() { multi_exec_layer webservices webhook_service "$@"; }
 multi_exec_billing_service() { multi_exec_layer webservices billing_service "$@"; }
-multi_exec_api_passthrough() { multi_exec_layer webservices api_passthrough "$@"; }
 multi_exec_webhookz() { multi_exec_layer webservices webhookz "$@"; }
 multi_exec_billing_service_scheduler() { multi_exec_layer webservices billing_service_scheduler "$@"; }
-multi_exec_api_passthrough_staging() { multi_exec_layer webservices api_passthrough_staging "$@"; }
 multi_exec_app() { multi_exec_layer webservices app "$@"; }
 multi_exec_app_staging() { multi_exec_layer webservices app_staging "$@"; }
 multi_exec_spool_service() { multi_exec_layer webservices spool_service "$@"; }
@@ -1266,8 +1262,6 @@ aws_layer_status() {
 }
 
 aws_layer_status_admin() { aws_layer_status webservices admin; }
-aws_layer_status_api_passthrough() { aws_layer_status webservices api_passthrough; }
-aws_layer_status_api_passthrough_staging() { aws_layer_status webservices api_passthrough_staging; }
 aws_layer_status_bastion() { aws_layer_status bastion bastion; }
 aws_layer_status_billing_service() { aws_layer_status webservices billing_service; }
 aws_layer_status_billing_service_scheduler() { aws_layer_status webservices billing_service_scheduler; }
@@ -1406,8 +1400,6 @@ ide_aws_elb_instance_health() {
 }
 
 aws_elb_instance_health_admin() { aws_elb_instance_health admin; }
-aws_elb_instance_health_api_passthrough() { aws_elb_instance_health api-passthrough; }
-aws_elb_instance_health_api_passthrough_staging() { aws_elb_instance_health api-passthrough-staging; }
 aws_elb_instance_health_billing_service() { aws_elb_instance_health billing-service; }
 aws_elb_instance_health_core_service() { aws_elb_instance_health core-service; }
 aws_elb_instance_health_dbreplicators_service() { aws_elb_instance_health dbreplicators-service; }
