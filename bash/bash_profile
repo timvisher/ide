@@ -2,4 +2,9 @@
 
 export PATH=~/bin:~/.local/bin:$PATH
 
+if [[ -d ~/.config/stitch/ide/bash/bin ]]
+then
+  export PATH=~/.config/stitch/ide/bash/bin:$PATH
+fi
+
 source ~/.bashrc
