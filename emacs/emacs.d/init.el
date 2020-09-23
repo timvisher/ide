@@ -431,7 +431,8 @@ rather than the current commit's hash."
   (when (magit-anything-modified-p)
     (error (concat "Cannot generate a source link as there "
                    "are modifications in the source tree.")))
-  (let* ((remote-url (magit-get "remote" (magit-get-push-remote) "url"))
+  (let* ((remote-url (or (magit-get "remote" (magit-get-push-remote) "url")
+                         (magit-get "remote" (magit-get-remote) "url")))
          (parsed (github-parse-remote-url remote-url))
          (user (car (alist-get 'user parsed)))
          (repo (car (alist-get 'repo parsed)))
