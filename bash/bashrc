@@ -166,13 +166,20 @@ alias ag='ag --pager "less -R"'
 # something, consider changing it in the default and publishing it.
 #
 # That said if you absolutely must override something, you can do so by
-# placing .bash files in the ~/.config/stitch/ide/bash/ directory.
+# placing .bash files in the ~/.config/stitch/ide/bash/functions/
+# directory for functions and ~/.config/stitch/ide/bash/bin/ directory for
+# executables.
 
 if [[ -d ~/.config/stitch/ide/bash ]]
 then
   shopt -s nullglob
-  for f in ~/.config/stitch/ide/bash/*.bash
+  for f in ~/.config/stitch/ide/bash/{,functions/}*.bash
   do
+    if [[ $f != *bash/functions/*.bash ]]
+    then
+      printf '‘%s’ in deprecated ‘~/.config/stitch/ide/bash/’ location\n' "$f" >&2
+      printf 'mv -v "%s" ~/.config/stitch/ide/bash/functions/\n' "$f" >&2
+    fi
     if [[ -f $f ]]
     then
       source "$f"
