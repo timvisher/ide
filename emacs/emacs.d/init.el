@@ -978,3 +978,4 @@ Any other context has undefined behavior."
 (when (file-exists-p (ide--system-extension-file-name))
   (load (ide--system-extension-file-name)))
 
+(put 'magit-clean 'disabled nil)
