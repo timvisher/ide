@@ -166,7 +166,7 @@ again."
     (host)
   "Test whether HOST can be reached via ssh"
   (if (= 0 (process-file-shell-command
-            (format "ssh -o ConnectTimeout=10 -Tq %s true"
+            (format "ssh -o ConnectTimeout=2 -Tq '%s' true"
                     host)))
       (progn
         (message (format "%s is reachable"
