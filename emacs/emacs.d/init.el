@@ -916,6 +916,7 @@ Any other context has undefined behavior."
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
  '(js-indent-level 2)
+ '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-export-backends (quote (ascii html md)))
  '(org-export-initial-scope (quote subtree))
