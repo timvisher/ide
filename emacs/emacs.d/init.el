@@ -2,7 +2,9 @@
 ;;; Packages
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(package-initialize)
+(when (< emacs-major-version 27)
+  (display-warning :warning "Please upgrade your emacs version to at least 27.1")
+  (package-initialize))
 
 (add-to-list 'package-archives
              '("melpa-stable" . "https://stable.melpa.org/packages/")
