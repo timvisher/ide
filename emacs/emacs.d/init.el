@@ -899,60 +899,54 @@ Any other context has undefined behavior."
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
  '(ag-arguments
-   (quote
-    ("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--")))
- '(auto-hscroll-mode (quote current-line))
+   '("--line-number" "--smart-case" "--nogroup" "--column" "--stats" "--hidden" "--"))
+ '(auto-hscroll-mode 'current-line)
  '(cider-repl-use-pretty-printing t)
- '(cider-request-dispatch (quote static))
- '(clojure-defun-indents (quote (fact facts for-all)))
+ '(cider-request-dispatch 'static)
+ '(clojure-defun-indents '(fact facts for-all))
  '(coffee-tab-width 2)
  '(column-number-mode t)
  '(delete-selection-mode t)
  '(dired-dwim-target t)
- '(dired-recursive-copies (quote always))
+ '(dired-recursive-copies 'always)
  '(fill-column 74)
  '(global-hl-line-mode t)
  '(global-whitespace-mode nil)
  '(hippie-expand-try-functions-list
-   (quote
-    (try-complete-file-name-partially try-complete-file-name try-expand-all-abbrevs try-expand-dabbrev try-expand-dabbrev-all-buffers try-expand-dabbrev-from-kill try-complete-lisp-symbol-partially try-complete-lisp-symbol)))
+   '(try-complete-file-name-partially try-complete-file-name try-expand-all-abbrevs try-expand-dabbrev try-expand-dabbrev-all-buffers try-expand-dabbrev-from-kill try-complete-lisp-symbol-partially try-complete-lisp-symbol))
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
  '(js-indent-level 2)
  '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
- '(org-export-backends (quote (ascii html md)))
- '(org-export-initial-scope (quote subtree))
+ '(org-export-backends '(ascii html md))
+ '(org-export-initial-scope 'subtree)
  '(org-export-with-section-numbers nil)
  '(org-export-with-tags nil)
  '(org-export-with-toc nil)
  '(org-export-with-todo-keywords nil)
- '(org-log-done (quote time))
- '(org-log-refile (quote time))
- '(org-refile-allow-creating-parent-nodes (quote confirm))
- '(org-refile-targets (quote ((nil :maxlevel . 3))))
+ '(org-log-done 'time)
+ '(org-log-refile 'time)
+ '(org-refile-allow-creating-parent-nodes 'confirm)
+ '(org-refile-targets '((nil :maxlevel . 3)))
  '(org-refile-use-outline-path t)
  '(org-reverse-note-order t)
  '(org-todo-keywords
-   (quote
-    ((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
-     (sequence "DELEGATED" "|" "DONE" "CANCELLED"))))
+   '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
+     (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(package-selected-packages
-   (quote
-    (ido-completing-read+ clojure-mode browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode)))
+   '(go-mode ido-completing-read+ clojure-mode browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
-   (quote
-    ((sh-indent-for-case-alt . ++)
-     (sh-indent-for-case-label . +))))
- '(search-default-mode (quote char-fold-to-regexp))
+   '((sh-indent-for-case-alt . ++)
+     (sh-indent-for-case-label . +)))
+ '(search-default-mode 'char-fold-to-regexp)
  '(sentence-end-double-space nil)
  '(sh-basic-offset 2)
  '(whitespace-line-column nil)
  '(whitespace-style
-   (quote
-    (face trailing tabs newline empty space-after-tab space-before-tab tab-mark)))
+   '(face trailing tabs newline empty space-after-tab space-before-tab tab-mark))
  '(winner-mode t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
