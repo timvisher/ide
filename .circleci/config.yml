@@ -8,12 +8,8 @@ jobs:
     docker:
       - image: koalaman/shellcheck-alpine:v0.4.6
     steps:
-      - run:
-          name: Update apk
-          command: apk update
-      - run:
-          name: Install git
-          command: apk add git openssh-client
+      - run: apk update
+      - run: apk add git openssh-client
       - checkout
       - run:
           name: Check Scripts
