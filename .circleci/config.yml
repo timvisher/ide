@@ -13,7 +13,7 @@ jobs:
           command: apk update
       - run:
           name: Install git
-          command: apk add git
+          command: apk add git openssh-client
       - checkout
       - run:
           name: Check Scripts
