@@ -38,7 +38,6 @@ ide_stitch_task_clone_state() {
 
   prod_state=$(
     ide_menagerie_ssh_instance stitch_task clone_state \
-                               --target-host="http://${api_host}:5033" \
                                "$source_client_id" \
                                "$source_connection_id" \
         | jq '.state')
