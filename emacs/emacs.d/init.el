@@ -935,7 +935,7 @@ Any other context has undefined behavior."
    '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(package-selected-packages
-   '(go-mode ido-completing-read+ clojure-mode browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region cider better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
+   '(cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
