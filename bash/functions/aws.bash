@@ -719,7 +719,20 @@ gnu_date_command() {
 bsd_date_command() {
     local target="$1"
 
-    date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$target" '+%s'
+    # aws cli v2 has changed its date format to include a colon in the
+    # timezone offset which BSD doesn't seem to be able to parse.
+    if [[ "${target: -3:1}" == ':' ]]
+    then
+        target="${target: 0:$((${#target} - 3 ))}""${target: -2}"
+    fi
+
+    if epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%S%z' "$target" '+%s' 2>/dev/null)
+    then
+        echo "$epoch"
+    else
+        # Fallback to original Z parser
+        date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$target" '+%s'
+    fi
 }
 
 determine_date_flavor() {
