@@ -934,6 +934,7 @@ Any other context has undefined behavior."
  '(org-todo-keywords
    '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
+ '(org-use-property-inheritance '("EXPORT_OPTIONS"))
  '(package-selected-packages
    '(dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode yaml-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
  '(projectile-mode t nil (projectile))
