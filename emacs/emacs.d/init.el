@@ -925,6 +925,7 @@ Any other context has undefined behavior."
  '(org-export-with-tags nil)
  '(org-export-with-toc nil)
  '(org-export-with-todo-keywords nil)
+ '(org-html-postamble nil)
  '(org-log-done 'time)
  '(org-log-refile 'time)
  '(org-refile-allow-creating-parent-nodes 'confirm)
