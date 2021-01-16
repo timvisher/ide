@@ -920,6 +920,7 @@ Any other context has undefined behavior."
  '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-export-backends '(ascii html md))
+ '(org-export-copy-to-kill-ring 'if-interactive)
  '(org-export-initial-scope 'subtree)
  '(org-export-with-section-numbers nil)
  '(org-export-with-tags nil)
