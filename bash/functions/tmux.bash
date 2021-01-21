@@ -1,7 +1,7 @@
 function new_tmux_session {
     local session_name="$1"
 
-    if tmux has-session -t "$session_name" > /dev/null 2>&1
+    if tmux has-session -t="$session_name" > /dev/null 2>&1
     then
         echo "# Attempted to create new tmux session $session_name when it already exists!" 2>&1
         return 1
@@ -27,15 +27,15 @@ function new_tmux_session {
             tmux send-keys 'TERM=xterm-256color emacs' 'C-m'
         fi
         tmux set-option -g default-command "$default_command"
-        tmux new-window -t "$session_name" -n admin
-        tmux new-window -t "$session_name" -n services
-        tmux new-window -t "$session_name" -n db
-        tmux new-window -t "$session_name" -n tests
+        tmux new-window -t="$session_name" -n admin
+        tmux new-window -t="$session_name" -n services
+        tmux new-window -t="$session_name" -n db
+        tmux new-window -t="$session_name" -n tests
         tmux select-window -t 1
         tmux select-window -t 0
     )
 
-    tmux attach -t "$session_name"
+    tmux attach -t="$session_name"
 }
 
 function matching_git_project() {
@@ -112,10 +112,10 @@ function ntmux {
 
     # Used properly
 
-    if tmux has-session -t "$session_name" >/dev/null 2>&1
+    if tmux has-session -t="$session_name" >/dev/null 2>&1
     then
         # Attach to Existing Session
-        tmux attach -t "$session_name"
+        tmux attach -t="$session_name"
     elif [[ -n $base_dir ]]
     then
         new_tmux_session "$session_name" "$base_dir"
