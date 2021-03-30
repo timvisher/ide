@@ -15,9 +15,9 @@
 ;; (add-to-list 'package-archives
 ;;              '("marmalade" . "https://marmalade-repo.org/packages/")
 ;;              t)
-(add-to-list 'package-archives
-             '("org" . "https://orgmode.org/elpa/")
-             t)
+;; (add-to-list 'package-archives
+;;              '("org" . "https://orgmode.org/elpa/")
+;;              t)
 
 (autoload 'package-pinned-packages "package")
 
