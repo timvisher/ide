@@ -933,6 +933,7 @@ Any other context has undefined behavior."
  '(org-refile-targets '((nil :maxlevel . 3)))
  '(org-refile-use-outline-path t)
  '(org-reverse-note-order t)
+ '(org-startup-folded t)
  '(org-todo-keywords
    '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
