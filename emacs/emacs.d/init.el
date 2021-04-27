@@ -910,6 +910,14 @@ Any other context has undefined behavior."
 
 (require 'org-tempo)
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; magit
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar ide-magit-auto-status
+  t
+  "Whether or not to automatically open a magit-status buffer on startup")
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Customize
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -939,6 +947,7 @@ Any other context has undefined behavior."
    '(try-complete-file-name-partially try-complete-file-name try-expand-all-abbrevs try-expand-dabbrev try-expand-dabbrev-all-buffers try-expand-dabbrev-from-kill try-complete-lisp-symbol-partially try-complete-lisp-symbol))
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
+ '(inhibit-startup-screen t)
  '(js-indent-level 2)
  '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
@@ -1015,3 +1024,10 @@ Any other context has undefined behavior."
            (directory-files (ide--xdg-extension-directory-name) t "^[^.]")))
 
 (put 'magit-clean 'disabled nil)
+
+(require 'vc-git)
+
+(when ide-magit-auto-status
+  (when (vc-git-responsible-p default-directory)
+   (magit-status)
+   (delete-other-windows)))
