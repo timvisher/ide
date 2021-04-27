@@ -134,16 +134,39 @@ again."
   (interactive)
   (find-file (concat (getenv "HOME") "/.emacs.d/init.el")))
 
-(defun ide--system-extension-theme-directory-name
+(defun ide--PREV-system-extension-theme-directory-name
     ()
   (concat (getenv "HOME")
           "/.emacs.d/host-extensions/"
           system-name
           "/themes"))
 
-(defun ide--system-extension-file-name ()
+(defun ide--PREV-system-extension-file-name ()
   (concat (getenv "HOME")
           "/.emacs.d/host-extensions/"
+          system-name
+          ".el"))
+
+(defun ide--PREV-edit-system-extension-file ()
+  (interactive)
+  (find-file (ide--system-extension-file-name)))
+
+(defun ide--xdg-extension-directory-name
+    ()
+  (format "%s/stitch/ide/emacs"
+          (or (getenv "XDG_CONFIG_HOME")
+              "~/.config")))
+
+(defun ide--system-extension-theme-directory-name
+    ()
+  (concat (ide--xdg-extension-directory-name)
+          "/"
+          system-name
+          "/themes"))
+
+(defun ide--system-extension-file-name ()
+  (concat (ide--xdg-extension-directory-name)
+          "/"
           system-name
           ".el"))
 
@@ -964,6 +987,11 @@ Any other context has undefined behavior."
 ;;; Load system extensions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(when (file-accessible-directory-p (ide--PREV-system-extension-theme-directory-name))
+  (message "Found system extension theme directory in the deprecated location. Moving.")
+  (rename-file (ide--PREV-system-extension-theme-directory-name)
+               (ide--system-extension-theme-directory-name)))
+
 (when (file-accessible-directory-p (ide--system-extension-theme-directory-name))
   (seq-doseq (directory-file (directory-files (ide--system-extension-theme-directory-name)
                                               nil
@@ -977,7 +1005,13 @@ Any other context has undefined behavior."
                          "/"
                          directory-file))))
 
-(when (file-exists-p (ide--system-extension-file-name))
-  (load (ide--system-extension-file-name)))
+(when (file-exists-p (ide--PREV-system-extension-file-name))
+  (message "Found system extension file in the deprecated location. Moving.")
+  (rename-file (ide--PREV-system-extension-file-name)
+               (ide--system-extension-file-name)))
+
+(when (file-exists-p (ide--xdg-extension-directory-name))
+  (seq-map #'load-file
+           (directory-files (ide--xdg-extension-directory-name) t "^[^.]")))
 
 (put 'magit-clean 'disabled nil)
