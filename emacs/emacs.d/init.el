@@ -963,6 +963,7 @@ Any other context has undefined behavior."
  '(org-log-refile 'time)
  '(org-refile-allow-creating-parent-nodes 'confirm)
  '(org-refile-targets '((nil :maxlevel . 3)))
+ '(org-refile-use-cache t)
  '(org-refile-use-outline-path t)
  '(org-reverse-note-order t)
  '(org-startup-folded t)
