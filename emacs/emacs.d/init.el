@@ -539,7 +539,8 @@ enough prefix args to subtract."
 (defun ide--prefix-arg-count-p
     (prefix-arg count)
   "Predicate returns true if raw PREFIX-ARG matches COUNT"
-  (= count (ide--prefix-arg-count prefix-arg)))
+  (and prefix-arg
+       (= count (ide--prefix-arg-count prefix-arg))))
 
 (defalias 'prefix-arg-count-p 'ide--prefix-arg-count-p)
 (make-obsolete 'prefix-arg-count-p 'ide--prefix-arg-count-p "2019-04-24T12:42:23")
