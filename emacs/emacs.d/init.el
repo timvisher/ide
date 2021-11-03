@@ -935,6 +935,7 @@ Any other context has undefined behavior."
  '(auto-hscroll-mode 'current-line)
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch 'static)
+ '(cider-test-defining-forms '("deftest" "defspec" "defn"))
  '(clojure-defun-indents '(fact facts for-all))
  '(coffee-tab-width 2)
  '(column-number-mode t)
