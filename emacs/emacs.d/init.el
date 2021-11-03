@@ -2,6 +2,12 @@
 ;;; Packages
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;;; Attempts to allow elpa.gnu.org to be contacted from macOS
+;;; https://emacs.stackexchange.com/questions/68288/error-retrieving-https-elpa-gnu-org-packages-archive-contents
+(when (and (equal emacs-version "27.2")
+           (eql system-type 'darwin))
+  (setq gnutls-algorithm-priority "NORMAL:-VERS-TLS1.3"))
+
 (when (< emacs-major-version 27)
   (display-warning :warning "Please upgrade your emacs version to at least 27.1")
   (package-initialize))
