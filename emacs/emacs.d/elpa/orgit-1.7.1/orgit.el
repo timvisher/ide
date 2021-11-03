@@ -6,8 +6,8 @@
 ;; Maintainer: Jonas Bernoulli <jonas@bernoul.li>
 
 ;; Package-Requires: ((emacs "25.1") (magit "3.0") (org "9.4"))
-;; Package-Version: 1.7.0
-;; Package-Commit: 26242895ef1642bf30c63683fb224fdba25e0853
+;; Package-Version: 1.7.1
+;; Package-Commit: f956d802f19ea495efa95af6c673588afeb3adc5
 ;; Homepage: https://github.com/magit/orgit
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -221,6 +221,25 @@ then store a link to the commit itself."
   :group 'orgit
   :type 'boolean)
 
+(defcustom orgit-rev-description-format "%%N (magit-rev %%R)"
+  "Format used for `orgit-rev' links.
+
+The format is used in two passes.  The first pass consumes all
+specs of the form `%C'; to preserve a spec for the second pass
+it has to be quoted like `%%C'.
+
+The first pass accepts the \"pretty formats\" documented in
+the git-show(1) manpage.  The second pass accepts these specs:
+
+`%%N' The name or id of the repository.
+`%%R' If `orgit-store-reference' is non-nil, then the tag or
+      branch that points at the commit, if any.  Otherwise the
+      abbreviated commit hash. (A prefix argument reverses the
+      meaning of `orgit-store-reference'.)"
+  :package-version '(orgit . "1.8.0")
+  :group 'orgit
+  :type 'string)
+
 ;;; Command
 
 ;;;###autoload
@@ -235,7 +254,7 @@ then store a link to the commit itself."
       (save-excursion
         (dolist (section sections)
           (goto-char (oref section start))
-	  (set-mark (point))
+          (set-mark (point))
           (activate-mark)
           (call-interactively 'org-store-link))
         (deactivate-mark))
@@ -381,8 +400,10 @@ store links to the Magit-Revision mode buffers for these commits."
      :type        "orgit-rev"
      :link        (format "orgit-rev:%s::%s" repo
                           (or ref (magit-rev-parse rev)))
-     :description (format "%s (magit-rev %s)" repo
-                          (or ref (magit-rev-abbrev rev))))))
+     :description (format-spec
+                   (magit-rev-format orgit-rev-description-format rev)
+                   `((?N . ,repo)
+                     (?R . ,(or ref (magit-rev-abbrev rev))))))))
 
 ;;;###autoload
 (defun orgit-rev-open (path)
@@ -406,7 +427,7 @@ store links to the Magit-Revision mode buffers for these commits."
 
 (defun orgit-export (path desc format gitvar idx)
   (pcase-let* ((`(,dir ,rev) (split-string path "::"))
-               (dir (file-name-as-directory (expand-file-name dir))))
+               (dir (orgit--repository-directory dir)))
     (if (file-exists-p dir)
         (let* ((default-directory dir)
                (remotes (magit-git-lines "remote"))
