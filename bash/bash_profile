@@ -7,4 +7,9 @@ then
   export PATH=~/.config/stitch/ide/bash/bin:$PATH
 fi
 
+# The deprecation warning was hard coded into the macOS bash binary so
+# this is the only way to disable it.
+# https://support.apple.com/en-us/HT208050
+export BASH_SILENCE_DEPRECATION_WARNING=1
+
 source ~/.bashrc
