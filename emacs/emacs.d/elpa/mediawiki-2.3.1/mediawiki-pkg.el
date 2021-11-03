@@ -1,0 +1,2 @@
+;;; Generated package description from mediawiki.el  -*- no-byte-compile: t -*-
+(define-package "mediawiki" "2.3.1" "mediawiki frontend" 'nil :commit "5178a1a1dbe37a144d9c82622eb683bd3c61bef1" :authors '(("Mark A. Hershberger" . "mah@everybody.org")) :maintainer '("Mark A. Hershberger" . "mah@everybody.org") :keywords '("mediawiki" "wikipedia" "network" "wiki") :url "https://github.com/hexmode/mediawiki-el")
