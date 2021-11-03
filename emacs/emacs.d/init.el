@@ -1033,3 +1033,4 @@ Any other context has undefined behavior."
   (when (vc-git-responsible-p default-directory)
    (magit-status)
    (delete-other-windows)))
+(put 'scroll-left 'disabled nil)
