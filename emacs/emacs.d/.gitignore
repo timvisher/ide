@@ -10,3 +10,4 @@ tramp
 var/
 /url/
 /%backup%*
+/transient
