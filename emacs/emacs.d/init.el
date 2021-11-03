@@ -941,6 +941,7 @@ Any other context has undefined behavior."
  '(delete-selection-mode t)
  '(dired-dwim-target t)
  '(dired-recursive-copies 'always)
+ '(erc-server "irc.libera.chat")
  '(fill-column 74)
  '(global-hl-line-mode t)
  '(global-whitespace-mode nil)
