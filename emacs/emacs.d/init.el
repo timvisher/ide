@@ -959,6 +959,7 @@ Any other context has undefined behavior."
  '(js-indent-level 2)
  '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
+ '(org-adapt-indentation t)
  '(org-export-backends '(ascii html md))
  '(org-export-copy-to-kill-ring 'if-interactive)
  '(org-export-initial-scope 'subtree)
