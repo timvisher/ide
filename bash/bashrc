@@ -57,7 +57,7 @@ if ! ssh-add -l > /dev/null 2>&1
 then
   echo '# Initializing the ssh-agent' >&2
   [[ -r ~/.agent.env ]] && source ~/.agent.env >/dev/null 2>&1
-  ssh-add -A >/dev/null 2>&1
+  ssh-add --apple-load-keychain >/dev/null 2>&1
   ssh-add -l >/dev/null 2>&1
   ssh_add_status=$?
   if (( 2 == ssh_add_status ))
