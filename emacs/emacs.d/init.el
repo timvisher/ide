@@ -1,3 +1,5 @@
+(setq startup-time (current-time))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Packages
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1042,3 +1044,5 @@ Any other context has undefined behavior."
    (magit-status)
    (delete-other-windows)))
 (put 'scroll-left 'disabled nil)
+
+(message "Started up in %d seconds" (time-convert (time-subtract (current-time) startup-time) 'integer))
