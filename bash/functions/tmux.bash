@@ -22,9 +22,16 @@ function new_tmux_session {
         tmux new-session -d -s "$session_name" -n editor "$default_command"
         if [[ Darwin = $(uname) ]]
         then
-            tmux send-keys 'emacs' 'C-m'
+          tmux send-keys 'emacs'
+          if [[ -n $target_file ]]
+          then
+            tmux send-keys " '${target_file}'"
+          fi
+          tmux send-keys 'C-m'
         else
-            tmux send-keys 'TERM=xterm-256color emacs' 'C-m'
+          echo 'Do you really still mean to be executing outside of Darwin?' >&2
+          return 1
+          # tmux send-keys 'TERM=xterm-256color emacs' 'C-m'
         fi
         tmux set-option -g default-command "$default_command"
         tmux new-window -t="$session_name" -n admin
@@ -104,9 +111,15 @@ function ntmux {
     local session_name="$1"
     local base_dir="$2"
 
+    if [[ -f "$base_dir" ]]
+    then
+      target_file="$base_dir"
+      base_dir="${base_dir%/*}"
+    fi
+
     if [[ -z $session_name ]]
     then
-        echo 'Usage: ntmux [namespace/]session_name [base_dir]'
+        echo 'Usage: ntmux [namespace/]session_name [base_dir | file]'
         return 1
     fi
 

@@ -402,7 +402,6 @@ again."
         (delete-other-windows))
     ;; go back to the other one
     (raise-frame -ide-frame-bounce-prior-frame)))
-(define-obsolete-function-alias 'todo-frame-bounce 'ide-frame-bounce-todo)
 
 (global-set-key (kbd "<f5>") 'ide-frame-bounce-todo)
 
@@ -939,6 +938,7 @@ Any other context has undefined behavior."
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
  '(auto-hscroll-mode 'current-line)
+ '(cider-clojure-cli-global-options "-A:dev")
  '(cider-repl-use-pretty-printing t)
  '(cider-request-dispatch 'static)
  '(cider-test-defining-forms '("deftest" "defspec" "defn"))
@@ -962,7 +962,8 @@ Any other context has undefined behavior."
  '(magit-diff-refine-hunk t)
  '(nrepl-use-ssh-fallback-for-remote-hosts t)
  '(org-adapt-indentation t)
- '(org-export-backends '(ascii html md))
+ '(org-babel-load-languages '((emacs-lisp . t) (shell . t)))
+ '(org-export-backends '(ascii html latex md odt))
  '(org-export-copy-to-kill-ring 'if-interactive)
  '(org-export-initial-scope 'subtree)
  '(org-export-with-section-numbers nil)
@@ -974,7 +975,7 @@ Any other context has undefined behavior."
  '(org-log-refile 'time)
  '(org-refile-allow-creating-parent-nodes 'confirm)
  '(org-refile-targets '((nil :maxlevel . 3)))
- '(org-refile-use-cache t)
+ '(org-refile-use-cache nil)
  '(org-refile-use-outline-path t)
  '(org-reverse-note-order t)
  '(org-startup-folded t)
@@ -1001,8 +1002,7 @@ Any other context has undefined behavior."
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
- '(match ((t (:inherit secondary-selection))))
- '(secondary-selection ((t (:extend t :background "yellow1" :foreground "white")))))
+ '(match ((t (:inherit secondary-selection)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Load system extensions
