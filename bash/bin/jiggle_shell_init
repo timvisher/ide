@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+cleanup_emacs
+tmux kill-server
