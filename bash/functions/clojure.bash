@@ -32,5 +32,6 @@ rebl() {
         deps+=("$line")
     done
     clojure -Sdeps '{:deps {com.bhauman/rebel-readline {:mvn/version "0.1.4"} '"${deps[*]}"'}}' \
+            -M \
             -m rebel-readline.main
 }
