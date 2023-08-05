@@ -984,7 +984,7 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(org-use-property-inheritance '("EXPORT_OPTIONS"))
  '(package-selected-packages
-   '(yaml-mode ox-slack orgit dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
+   '(swift-mode yaml-mode ox-slack orgit dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
