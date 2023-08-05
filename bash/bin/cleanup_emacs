@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+pgrep emacs |
+  while read -r emacs_pid
+  do
+    SECONDS=0
+    while kill -0 "$emacs_pid"
+    do
+      printf 'Trying to kill emacs pid ‘%d’ after %ds\n' "$emacs_pid" "$SECONDS" >&2
+      kill -HUP "$emacs_pid"
+      sleep 1
+    done
+  done
