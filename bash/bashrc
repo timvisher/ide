@@ -38,20 +38,6 @@ export HISTTIMEFORMAT='%FT%T%z '
 # Store multi-line commands on a single history line, using semi-colons
 shopt -s cmdhist
 
-# Load in bash_completion if we can find it.
-if ! [[ -r ~/.config/stitch/ide/bash/no_bash_completion ]]
-then
-  if [[ -r /usr/local/etc/bash_completion ]]
-  then
-    source /usr/local/etc/bash_completion
-  elif [[ -r /usr/share/bash-completion/bash_completion ]]
-  then
-    source /usr/share/bash-completion/bash_completion
-  else
-    echo "# Can't find bash-completion. You should install it." >&2
-  fi
-fi
-
 # set up the ssh agent if we can't connect to it
 if ! ssh-add -l > /dev/null 2>&1
 then
@@ -66,6 +52,23 @@ then
   elif (( 1 == ssh_add_status ))
   then
     echo "# The ssh-agent has no identities" >&2
+  fi
+fi
+
+# Load in bash_completion if we can find it.
+if ! [[ -r ~/.config/stitch/ide/bash/no_bash_completion ]]
+then
+  if [[ -r /usr/local/etc/bash_completion ]]
+  then
+    source /usr/local/etc/bash_completion
+  elif [[ -r /usr/share/bash-completion/bash_completion ]]
+  then
+    source /usr/share/bash-completion/bash_completion
+  elif [[ -r /opt/homebrew/etc/bash_completion ]]
+  then
+    source /opt/homebrew/etc/bash_completion
+  else
+    echo "# Can't find bash-completion. You should install it." >&2
   fi
 fi
 
