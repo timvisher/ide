@@ -11,7 +11,7 @@
 ;;         Steve Purcell <steve@sanityinc.com>
 ;; Maintainer: Bozhidar Batsov <bozhidar@batsov.dev>
 ;; URL: http://www.github.com/clojure-emacs/cider
-;; Version: 1.9.0
+;; Version: 1.10.0
 ;; Package-Requires: ((emacs "26") (clojure-mode "5.18.0") (parseedn "1.2.0") (queue "0.2") (spinner "1.7") (seq "2.22") (sesman "0.3.2") (transient "0.4.1"))
 ;; Keywords: languages, clojure, cider
 
@@ -93,10 +93,10 @@
 (require 'sesman)
 (require 'package)
 
-(defconst cider-version "1.9.0"
+(defconst cider-version "1.10.0"
   "The current version of CIDER.")
 
-(defconst cider-codename "Barcelona"
+(defconst cider-codename "Sant Cugat"
   "Codename used to denote stable releases.")
 
 (defcustom cider-lein-command
@@ -527,7 +527,7 @@ the artifact.")
 (defconst cider-latest-clojure-version "1.10.1"
   "Latest supported version of Clojure.")
 
-(defconst cider-required-middleware-version "0.41.0"
+(defconst cider-required-middleware-version "0.42.1"
   "The CIDER nREPL version that's known to work properly with CIDER.")
 
 (defcustom cider-injected-middleware-version cider-required-middleware-version
@@ -1302,12 +1302,15 @@ nil."
     (define-key map (kbd "j s") #'cider-jack-in-cljs)
     (define-key map (kbd "j m") #'cider-jack-in-clj&cljs)
     (define-key map (kbd "j u") #'cider-jack-in-universal)
+    (define-key map (kbd "j n") #'cider-start-nrepl-server)
     (define-key map (kbd "C-j j") #'cider-jack-in-clj)
     (define-key map (kbd "C-j s") #'cider-jack-in-cljs)
     (define-key map (kbd "C-j m") #'cider-jack-in-clj&cljs)
+    (define-key map (kbd "C-j n") #'cider-start-nrepl-server)
     (define-key map (kbd "C-j C-j") #'cider-jack-in-clj)
     (define-key map (kbd "C-j C-s") #'cider-jack-in-cljs)
     (define-key map (kbd "C-j C-m") #'cider-jack-in-clj&cljs)
+    (define-key map (kbd "C-j C-n") #'cider-start-nrepl-server)
     (define-key map (kbd "c j") #'cider-connect-clj)
     (define-key map (kbd "c s") #'cider-connect-cljs)
     (define-key map (kbd "c m") #'cider-connect-clj&cljs)
@@ -1326,6 +1329,27 @@ nil."
     map)
   "CIDER jack-in and connect keymap.")
 
+(defun cider--start-nrepl-server (params &optional on-port-callback)
+  "Start an nREPL server.
+PARAMS is a plist optionally containing :project-dir and :jack-in-cmd.
+ON-PORT-CALLBACK (optional) is a function of one argument (server buffer)
+which is called by the process filter once the port of the connection has
+been determined."
+  (nrepl-start-server-process
+   (plist-get params :project-dir)
+   (plist-get params :jack-in-cmd)
+   on-port-callback))
+
+(defun cider--update-params (params)
+  "Fill-in the passed in PARAMS plist needed to start an nREPL server.
+Updates :project-dir and :jack-in-cmd.
+Also checks whether a matching session already exists."
+  (thread-first
+    params
+    (cider--update-project-dir)
+    (cider--check-existing-session)
+    (cider--update-jack-in-cmd)))
+
 ;;;###autoload
 (defun cider-jack-in-clj (params)
   "Start an nREPL server for the current project and connect to it.
@@ -1333,16 +1357,19 @@ PARAMS is a plist optionally containing :project-dir and :jack-in-cmd.
 With the prefix argument, allow editing of the jack in command; with a
 double prefix prompt for all these parameters."
   (interactive "P")
-  (let ((params (thread-first
-                  params
-                  (cider--update-project-dir)
-                  (cider--check-existing-session)
-                  (cider--update-jack-in-cmd))))
-    (nrepl-start-server-process
-     (plist-get params :project-dir)
-     (plist-get params :jack-in-cmd)
+  (let ((params (cider--update-params params)))
+    (cider--start-nrepl-server
+     params
      (lambda (server-buffer)
        (cider-connect-sibling-clj params server-buffer)))))
+
+(defun cider-start-nrepl-server (params)
+  "Start an nREPL server for the current project, but don't connect to it.
+PARAMS is a plist optionally containing :project-dir and :jack-in-cmd.
+With the prefix argument, allow editing of the start server command; with a
+double prefix prompt for all these parameters."
+  (interactive "P")
+  (cider--start-nrepl-server (cider--update-params params)))
 
 ;;;###autoload
 (defun cider-jack-in-cljs (params)
