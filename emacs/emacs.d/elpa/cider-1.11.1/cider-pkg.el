@@ -1,4 +1,4 @@
-(define-package "cider" "1.10.0" "Clojure Interactive Development Environment that Rocks"
+(define-package "cider" "1.11.1" "Clojure Interactive Development Environment that Rocks"
   '((emacs "26")
     (clojure-mode "5.18.0")
     (parseedn "1.2.0")
@@ -7,7 +7,7 @@
     (seq "2.22")
     (sesman "0.3.2")
     (transient "0.4.1"))
-  :commit "d16988719ae5561f32b06db0726adb03d84fe15c" :authors
+  :commit "9c605cd4938c0055c2766c55606f19ecbf664e8e" :authors
   '(("Tim King" . "kingtim@gmail.com")
     ("Phil Hagelberg" . "technomancy@gmail.com")
     ("Bozhidar Batsov" . "bozhidar@batsov.dev")
@@ -20,7 +20,7 @@
   '("Bozhidar Batsov" . "bozhidar@batsov.dev")
   :keywords
   '("languages" "clojure" "cider")
-  :url "http://www.github.com/clojure-emacs/cider")
+  :url "https://www.github.com/clojure-emacs/cider")
 ;; Local Variables:
 ;; no-byte-compile: t
 ;; End:

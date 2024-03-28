@@ -308,11 +308,11 @@ the results to be displayed in a different window.
 
 (fn &optional ARG NS)" t)
 (autoload 'cider-find-keyword "cider-find" "\
-Find the namespace of the keyword at point and its first occurrence there.
+Find the namespace of the keyword at point and its primary occurrence there.
 
 For instance - if the keyword at point is \":cider.demo/keyword\", this command
-would find the namespace \"cider.demo\" and afterwards find the first mention
-of \"::keyword\" there.
+would find the namespace \"cider.demo\" and afterwards find the primary (most relevant or first)
+mention of \"::keyword\" there.
 
 Prompt according to prefix ARG and `cider-prompt-for-symbol'.
 A single or double prefix argument inverts the meaning of
@@ -368,6 +368,12 @@ Interactively, EXPR is read from the minibuffer, and NS the
 current buffer's namespace.
 
 (fn EXPR NS)" t)
+(autoload 'cider-sync-request:inspect-last-exception "cider-inspector" "\
+Inspects the exception in the cause stack identified by INDEX,
+V2 indicates if the entire response should be returned
+instead of just its \"value\" entry.
+
+(fn INDEX &optional V2)")
 (register-definition-prefixes "cider-inspector" '("cider-"))
 
 
