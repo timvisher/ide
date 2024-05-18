@@ -801,6 +801,12 @@ Any other context has undefined behavior."
     (ag string (format "/sshx:%s:/opt/code/"
                        target-vm))))
 
+;;; /ht https://stackoverflow.com/a/23739656/16562
+(defun ide-disable-require-final-newline
+    ()
+  (interactive)
+  (set (make-local-variable 'require-final-newline) nil))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -930,7 +936,7 @@ Any other context has undefined behavior."
 ;;; fixme
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(eval-after-load 'fixme
+(eval-after-load 'fixme-mode
   '(progn
      (add-to-list 'fixme-mode-warning-words "IN_PROGRESS")
      (add-to-list 'fixme-mode-warning-words "HERE")))
@@ -993,7 +999,7 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(org-use-property-inheritance '("EXPORT_OPTIONS"))
  '(package-selected-packages
-   '(swift-mode yaml-mode ox-slack orgit dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
+   '(logview clojure-mode-extra-font-locking swift-mode yaml-mode ox-slack orgit dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
