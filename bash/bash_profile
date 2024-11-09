@@ -2,9 +2,9 @@
 
 export PATH=~/bin:~/.local/bin:$PATH
 
-if [[ -d ~/.config/stitch/ide/bash/bin ]]
+if [[ -d ~/.config/timvisher/ide/bash/bin ]]
 then
-  export PATH=~/.config/stitch/ide/bash/bin:$PATH
+  export PATH=~/.config/timvisher/ide/bash/bin:$PATH
 fi
 
 # The deprecation warning was hard coded into the macOS bash binary so

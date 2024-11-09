@@ -56,7 +56,7 @@ then
 fi
 
 # Load in bash_completion if we can find it.
-if ! [[ -r ~/.config/stitch/ide/bash/no_bash_completion ]]
+if ! [[ -r ~/.config/timvisher/ide/bash/no_bash_completion ]]
 then
   if [[ -r /usr/local/etc/bash_completion ]]
   then
@@ -75,7 +75,7 @@ fi
 # set up git ps1
 if ! command -v __git_ps1 > /dev/null 2>&1
 then
-  if ! [[ -r ~/.config/stitch/ide/bash/no_bash_completion ]]
+  if ! [[ -r ~/.config/timvisher/ide/bash/no_bash_completion ]]
   then
       echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
   fi
@@ -181,19 +181,19 @@ export DOCKER_CLI_HINTS=false
 # something, consider changing it in the default and publishing it.
 #
 # That said if you absolutely must override something, you can do so by
-# placing .bash files in the ~/.config/stitch/ide/bash/functions/
-# directory for functions and ~/.config/stitch/ide/bash/bin/ directory for
+# placing .bash files in the ~/.config/timvisher/ide/bash/functions/
+# directory for functions and ~/.config/timvisher/ide/bash/bin/ directory for
 # executables.
 
-if [[ -d ~/.config/stitch/ide/bash ]]
+if [[ -d ~/.config/timvisher/ide/bash ]]
 then
   shopt -s nullglob
-  for f in ~/.config/stitch/ide/bash/{,functions/}*.bash
+  for f in ~/.config/timvisher/ide/bash/{,functions/}*.bash
   do
     if [[ $f != *bash/functions/*.bash ]]
     then
-      printf '‘%s’ in deprecated ‘~/.config/stitch/ide/bash/’ location\n' "$f" >&2
-      printf 'mv -v "%s" ~/.config/stitch/ide/bash/functions/\n' "$f" >&2
+      printf '‘%s’ in deprecated ‘~/.config/timvisher/ide/bash/’ location\n' "$f" >&2
+      printf 'mv -v "%s" ~/.config/timvisher/ide/bash/functions/\n' "$f" >&2
     fi
     if [[ -f $f ]]
     then
