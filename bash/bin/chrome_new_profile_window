@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+source "${HOME}/git/ide/bash/functions/logging.bash" ||
+  {
+    echo "Unable to source logging functins" >&2
+    exit 1
+  }
+
+profile_directory=Default
+default_profile_email=tim.visher@gmail.com
+
+if [[ -n $1 ]]
+then
+  profile_email=$1
+  info 'Searching for Profile with Email ‘%s’' "$profile_email"
+
+  if [[ $profile_email == $default_profile_email ]]
+  then
+    info 'Using profile_directory ‘%s’ because profile_email ‘%s’ is the default profile email' "$profile_directory" "$profile_email"
+  else
+    profile_directory=$(
+      parallel --will-cite -q \
+               jq --arg pf '{}' '
+                 {
+                   profileDirectory: ($pf | split("/")[-2]),
+                   emails: (.account_info // [] | map(.email))
+                 }' \
+                 '{}' \
+                 ::: ~/Library/Application\ Support/Google/Chrome/Profile\ */Preferences |
+        jq -r --arg profileEmail "$profile_email" '
+          select(.emails | index($profileEmail))
+          | .profileDirectory'
+                     )
+  fi
+fi
+
+if [[ -z $profile_directory ]]
+then
+  die 'Unable to determine profile_directory'
+fi
+
+info 'Using profile_directory ‘%s’' "$profile_directory"
+
+if ! [[ -d ~/Library/'Application Support'/Google/Chrome/"${profile_directory}" ]]
+then
+  die "Profile isn\'t a directory which is impossible? ‘%s’" "${profile_directory}"
+fi
+
+open -a 'Google Chrome' -n --args --profile-directory="$profile_directory"
