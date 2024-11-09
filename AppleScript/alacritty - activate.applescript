@@ -1,0 +1,1 @@
+tell script "Alacritty" to activateOrMakeNewWindow()
