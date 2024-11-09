@@ -22,7 +22,7 @@ function new_tmux_session {
         tmux new-session -d -s "$session_name" -n editor "$default_command"
         if [[ Darwin = $(uname) ]]
         then
-          tmux send-keys 'emacs'
+          tmux send-keys -t "${session_name}:editor" 'emacs'
           if [[ -n $target_file ]]
           then
             tmux send-keys " '${target_file}'"
