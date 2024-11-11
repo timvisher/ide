@@ -27,7 +27,7 @@ function new_tmux_session {
           then
             tmux send-keys " '${target_file}'"
           fi
-          tmux send-keys 'C-m'
+          tmux send-keys -t "${session_name}:editor" 'C-m'
         else
           echo 'Do you really still mean to be executing outside of Darwin?' >&2
           return 1
@@ -38,8 +38,8 @@ function new_tmux_session {
         tmux new-window -t="$session_name" -n services
         tmux new-window -t="$session_name" -n db
         tmux new-window -t="$session_name" -n tests
-        tmux select-window -t 1
-        tmux select-window -t 0
+        tmux select-window -t "${session_name}:admin"
+        tmux select-window -t "${session_name}:editor"
     )
 
     tmux attach -t="$session_name"
