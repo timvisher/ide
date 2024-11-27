@@ -6,33 +6,25 @@ source "${HOME}/git/ide/bash/functions/logging.bash" ||
     exit 1
   }
 
-profile_directory=Default
 default_profile_email=tim.visher@gmail.com
 
-if [[ -n $1 ]]
-then
-  profile_email=$1
-  info 'Searching for Profile with Email ‘%s’' "$profile_email"
+profile_email=${1:-${default_profile_email}}
 
-  if [[ $profile_email == $default_profile_email ]]
-  then
-    info 'Using profile_directory ‘%s’ because profile_email ‘%s’ is the default profile email' "$profile_directory" "$profile_email"
-  else
-    profile_directory=$(
-      parallel --will-cite -q \
-               jq --arg pf '{}' '
-                 {
-                   profileDirectory: ($pf | split("/")[-2]),
-                   emails: (.account_info // [] | map(.email))
-                 }' \
-                 '{}' \
-                 ::: ~/Library/Application\ Support/Google/Chrome/Profile\ */Preferences |
-        jq -r --arg profileEmail "$profile_email" '
-          select(.emails | index($profileEmail))
-          | .profileDirectory'
-                     )
-  fi
+if [[ -z $profile_email ]]
+then
+  die "profile_email isn't set which is impossible"
 fi
+
+info 'Searching for Profile with Email ‘%s’' "$profile_email"
+
+profile_directory=$(
+  jq -r --arg email "$profile_email" '
+       (.account_info // [])[].email
+       | select($email == .)
+       | input_filename
+       | split("/")[-2]
+     ' ~/Library/Application\ Support/Google/Chrome/*/Preferences
+                 )
 
 if [[ -z $profile_directory ]]
 then
