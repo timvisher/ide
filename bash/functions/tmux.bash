@@ -111,6 +111,31 @@ function ntmux {
     local session_name="$1"
     local base_dir="$2"
 
+    if [[ "$session_name" =~ ^(https?://github.com/|git@github.com:)([^/]+)/([^/]+) ]]; then
+        local user_or_org=${BASH_REMATCH[2]}
+        local repo_name=${BASH_REMATCH[3]}
+        repo_name=${repo_name%.git} # Strip .git if present
+
+        local clone_url
+        if [[ ${BASH_REMATCH[1]} == "git@github.com:" ]]; then
+            clone_url="git@github.com:${user_or_org}/${repo_name}.git"
+        else
+            clone_url="https://github.com/${user_or_org}/${repo_name}.git"
+        fi
+
+        session_name="${user_or_org}/${repo_name}"
+        base_dir="${HOME}/git/${user_or_org}/${repo_name}"
+
+        if [ ! -d "${base_dir}/.git" ]; then
+            echo "# Cloning from ${clone_url} into ${base_dir}" >&2
+            mkdir -p "${base_dir%/*}" >&2
+            if ! git clone "$clone_url" "$base_dir" >&2; then
+                echo "# Failed to clone repository." >&2
+                return 1
+            fi
+        fi
+    fi
+
     if [[ -f "$base_dir" ]]
     then
       target_file="$base_dir"
