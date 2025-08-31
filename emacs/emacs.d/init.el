@@ -952,6 +952,7 @@ Any other context has undefined behavior."
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
+ '(Man-sed-command "gsed")
  '(auto-hscroll-mode 'current-line)
  '(cider-clojure-cli-global-options "-A:dev")
  '(cider-repl-use-pretty-printing t)
@@ -969,7 +970,13 @@ Any other context has undefined behavior."
  '(global-hl-line-mode t)
  '(global-whitespace-mode nil)
  '(hippie-expand-try-functions-list
-   '(try-complete-file-name-partially try-complete-file-name try-expand-all-abbrevs try-expand-dabbrev try-expand-dabbrev-all-buffers try-expand-dabbrev-from-kill try-complete-lisp-symbol-partially try-complete-lisp-symbol))
+   '(try-complete-file-name-partially try-complete-file-name
+                                      try-expand-all-abbrevs
+                                      try-expand-dabbrev
+                                      try-expand-dabbrev-all-buffers
+                                      try-expand-dabbrev-from-kill
+                                      try-complete-lisp-symbol-partially
+                                      try-complete-lisp-symbol))
  '(ido-ubiquitous-mode t)
  '(ido-vertical-mode t)
  '(inhibit-startup-screen t)
@@ -999,18 +1006,24 @@ Any other context has undefined behavior."
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(org-use-property-inheritance '("EXPORT_OPTIONS"))
  '(package-selected-packages
-   '(rust-mode logview clojure-mode-extra-font-locking swift-mode yaml-mode ox-slack orgit dockerfile-mode cider clojure-mode go-mode ido-completing-read+ browse-kill-ring xclip htmlize hcl-mode align-cljlet org mediawiki coffee-mode smex projectile paredit markdown-mode magit ido-vertical-mode ido-ubiquitous fixme-mode expand-region better-defaults bats-mode ag terraform-mode coffee-mode php-mode))
+   '(ag aidermacs align-cljlet bats-mode better-defaults browse-kill-ring
+        cider clojure-mode clojure-mode-extra-font-locking coffee-mode
+        coffee-mode dockerfile-mode expand-region fixme-mode go-mode
+        hcl-mode htmlize ido-completing-read+ ido-ubiquitous
+        ido-vertical-mode logview magit markdown-mode mediawiki org orgit
+        ox-slack paredit php-mode projectile rust-mode smex swift-mode
+        terraform-mode xclip yaml-mode zig-mode))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
-   '((sh-indent-for-case-alt . ++)
-     (sh-indent-for-case-label . +)))
+   '((sh-indent-for-case-alt . ++) (sh-indent-for-case-label . +)))
  '(search-default-mode 'char-fold-to-regexp)
  '(sentence-end-double-space nil)
  '(sh-basic-offset 2)
  '(whitespace-line-column nil)
  '(whitespace-style
-   '(face trailing tabs newline empty space-after-tab space-before-tab tab-mark))
+   '(face trailing tabs newline empty space-after-tab space-before-tab
+          tab-mark))
  '(winner-mode t))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.

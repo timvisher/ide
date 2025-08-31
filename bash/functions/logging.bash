@@ -9,6 +9,10 @@ info() {
   printf "%s INFO %s: ${1}\n" "$(date -u '+%FT%T%z')" "${FUNCNAME[1]}" "${@:2}" >&2
 }
 
+trace() {
+  printf "%s TRACE %s: ${1}\n" "$(date -u '+%FT%T%z')" "${FUNCNAME[1]}" "${@:2}" >&2
+}
+
 error() {
   printf "%s ERROR %s: ${1}\n" "$(date -u '+%FT%T%z')" "${FUNCNAME[1]}" "${@:2}" >&2
 }
