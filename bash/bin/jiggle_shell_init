@@ -2,12 +2,12 @@
 
 cleanup_emacs
 tmux kill-server
-osascript -e 'tell application "Alacritty" to quit'
-while [[ $(osascript -e 'application "Alacritty" is running') == true ]]
+while [[ $(osascript -e 'application "Ghostty" is running') == true ]]
 do
+  osascript -e 'tell application "Ghostty" to quit'
   sleep 0.1
 done
 
 sleep 0.1
 
-open -a Alacritty
+open -a Ghostty
