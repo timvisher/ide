@@ -161,7 +161,7 @@ again."
 
 (defun ide--xdg-extension-directory-name
     ()
-  (format "%s/stitch/ide/emacs"
+  (format "%s/timvisher/ide/emacs"
           (or (getenv "XDG_CONFIG_HOME")
               "~/.config")))
 
