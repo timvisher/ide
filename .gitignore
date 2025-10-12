@@ -4,3 +4,4 @@ pull_request.md
 pr.md
 .DS_Store
 emacs/emacs.d/projects
+emacs/emacs.d/logview-cache.extmap
