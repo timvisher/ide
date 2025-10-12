@@ -1,0 +1,88 @@
+This directory contains files for running Tramp related tests.
+
+tramp-archive-tests.el
+	This file is a test suite for file archives.  It uses test
+        data from directory "resources".  Interactively, you can run
+        the test suite by "M-x tramp-archive-test-all".
+
+tramp-tests.el
+        This file is a test suite.  Interactively, you can run the
+        test suite by "M-x tramp-test-all".  The environment variable
+        $REMOTE_TEMPORARY_FILE_DIRECTORY can be set in order to run
+        the tests on another remote host, see
+        `tramp-test-temporary-file-directory' for the default value.
+
+        All temporary Tramp test files are removed prior test run.
+        Therefore, two test runs cannot be performed in parallel.
+
+        The environment variable $TRAMP_TEST_CLEANUP_TEMP_FILES, when
+        set, forces the removal of all temporary Tramp files prior
+        test run.  This shouldn't be set if the test suite runs in
+        parallel using Tramp on a production system.
+
+        For slow remote connections, the test
+        `tramp-test45-asynchronous-requests' might be too heavy.
+        Setting $REMOTE_PARALLEL_PROCESSES to a proper value less than
+        10 could help.
+
+        This test suite obeys the environment variables $EMACS_HYDRA_CI
+        and $EMACS_EMBA_CI, used on the Emacs CI/CD platforms.
+
+        The following test tags are used: `:expensive-test',
+        `:tramp-asynchronous-processes' and `:unstable'.
+
+tramp-time.el (not on GNU ELPA)
+        These are performance tests on Tramp.  Read the "Commentary"
+        section for details.  These tests are not covered by the Makefile.
+
+The Makefile in this directory supports the following targets:
+
+* make all  -or-  make check
+  Run all tests declared in tramp-archive-tests.el and tramp-tests.el.
+  If $REMOTE_TEMPORARY_FILE_DIRECTORY is set, only tramp-tests.el is
+  used.
+
+* make <filename>  -or-  make <filename>.log (not on GNU ELPA)
+  Run all tests declared in <filename>.el.  <filename> can be either
+  tramp-archive-tests or tramp-tests.  If the target is
+  <filename>.log, the output of the test run will be redirected there.
+
+ERT offers selectors, which make it possible to filter out which test
+cases shall run.  The make variable $(SELECTOR) gives you a simple
+mean to use your own selectors.  The ERT manual describes how
+selectors are constructed, see (info "(ert)Test Selectors") or
+<https://www.gnu.org/software/emacs/manual/html_node/ert/Test-Selectors.html>.
+
+If your test file contains the tests "test-foo", "test2-foo" and
+"test-foo-remote", and you want to run only the former two tests, you
+could use a selector regexp.
+
+    make <filename> SELECTOR='"foo$$"'
+
+In case you want to use the symbol name of a test as selector, you can
+use it directly:
+
+    make <filename> SELECTOR='test-foo-remote'
+
+If you want to run just the non-expensive tests, you might apply
+
+    make check SELECTOR='(not (tag :expensive-test))'
+
+Sometimes, a given remote host does not support several connections in
+parallel, for example a telnet server which restricts the number of
+connections for a given user to one.  In this case, Tramp must be
+taught to avoid testing asynchronous processes.  This is achieved by
+using the selector
+
+    make check SELECTOR='(not (tag :tramp-asynchronous-processes))'
+
+The tag `:unstable' marks tests which do not run as expected, and are
+still under test by the developers.  In order to exclude those tests
+from run, you might call
+
+    make check SELECTOR='(not (tag :unstable))'
+
+The environment variable ${TRAMP_TEST_ARGS} allows to add further
+arguments to the Emacs test run.
+
+    make check TRAMP_TEST_ARGS="--eval 'some lisp code'"
