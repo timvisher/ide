@@ -1005,14 +1005,10 @@ Any other context has undefined behavior."
    '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(org-use-property-inheritance '("EXPORT_OPTIONS"))
- '(package-selected-packages
-   '(ag aidermacs align-cljlet bats-mode better-defaults browse-kill-ring
-        cider clojure-mode clojure-mode-extra-font-locking coffee-mode
-        coffee-mode dockerfile-mode expand-region fixme-mode go-mode
-        hcl-mode htmlize ido-completing-read+ ido-ubiquitous
-        ido-vertical-mode logview magit markdown-mode mediawiki org orgit
-        ox-slack paredit php-mode projectile rust-mode smex swift-mode
-        terraform-mode xclip yaml-mode zig-mode))
+ '(package-selected-packages nil)
+ '(package-vc-selected-packages
+   '((claude-code :url "https://github.com/stevemolitor/claude-code.el")
+     (monet :url "https://github.com/stevemolitor/monet")))
  '(projectile-mode t nil (projectile))
  '(python-check-command "pylint -f parseable")
  '(safe-local-variable-values
