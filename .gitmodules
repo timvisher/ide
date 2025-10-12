@@ -1,0 +1,3 @@
+[submodule "emacs/emacs.d/elpa/claude"]
+	path = emacs/emacs.d/elpa/claude
+	url = https://github.com/stevemolitor/claude-code.el
