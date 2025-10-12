@@ -1,6 +1,6 @@
-[submodule "emacs/emacs.d/elpa/claude"]
-	path = emacs/emacs.d/elpa/claude
-	url = https://github.com/stevemolitor/claude-code.el
 [submodule "emacs/emacs.d/elpa/monet"]
 	path = emacs/emacs.d/elpa/monet
 	url = https://github.com/stevemolitor/monet
+[submodule "emacs/emacs.d/elpa/claude-code"]
+	path = emacs/emacs.d/elpa/claude-code
+	url = https://github.com/stevemolitor/claude-code.el
