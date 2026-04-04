@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+if [[ -e ~/.emacs ]]
+then
+    echo "$(tput setaf 1)$(tput bold)# ~/.emacs exists. $(tput sgr0)"
+    echo '# backup ~/.emacs && rm -v ~/.emacs'
+    exit 1
+fi
+
+if [[ $(readlink ~/.emacs.d) == ~/git/ide/emacs/emacs.d ]]
+then
+    echo "$(tput setaf 2)# Success$(tput sgr0)"
+    exit 0
+fi
+
+if [[ -e ~/.emacs.d && $(readlink ~/.emacs.d) != ~/git/ide/emacs/emacs.d ]]
+then
+    echo "# ~/.emacs.d exists and doesn't point here." >&2
+    exit 1
+fi
+
+if ! ln -vs ~/git/ide/emacs/emacs.d ~/.emacs.d
+then
+    echo "# Couldn't symlink ~/.emacs.d to ~/git/ide/emacs/emacs.d" >&2
+    exit 1
+fi
+
+echo "$(tput setaf 2)# Success$(tput sgr0)"

@@ -1,0 +1,1 @@
+tell script "Background Noise" to mute()

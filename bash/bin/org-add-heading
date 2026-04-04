@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# org-add-heading - Add a new heading to an org file
+# Usage: org-add-heading <file.org> <new-heading> [parent-heading]
+#
+# If parent-heading is provided, adds new heading as a child of that heading.
+# If parent-heading is not provided, adds new heading as a top-level heading at the end.
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]
+then
+  echo 'Usage: org-add-heading <file.org> <new-heading> [parent-heading]' >&2
+  echo '' >&2
+  echo 'Examples:' >&2
+  echo '  org-add-heading todo.org "New Task"' >&2
+  echo '  org-add-heading todo.org "Subtask" "Parent Task"' >&2
+  exit 1
+fi
+
+file="$1"
+new_heading="$2"
+parent_heading="${3:-}"
+
+if [[ ! -f "$file" ]]
+then
+  echo "Error: File '$file' not found" >&2
+  exit 1
+fi
+
+emacs --batch \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  --eval '(load "~/.config/emacs/init.el")' \
+  --eval "(progn
+           (require 'org)
+           (find-file \"$file\")
+           (if (string-empty-p \"$parent_heading\")
+               ;; Add as top-level heading at end
+               (progn
+                 (goto-char (point-max))
+                 (unless (bolp) (insert \"\n\"))
+                 (insert \"* $new_heading\n\n\"))
+             ;; Add as child of parent heading
+             (progn
+               (goto-char (point-min))
+               (if (re-search-forward (concat \"^\\\\*+ .*\" (regexp-quote \"$parent_heading\")) nil t)
+                   (let ((parent-level (org-current-level)))
+                     (org-end-of-subtree t t)
+                     (unless (bolp) (insert \"\n\"))
+                     (insert (make-string (1+ parent-level) ?*) \" $new_heading\n\n\"))
+                 (error \"Parent heading not found: $parent_heading\"))))
+           (save-buffer))"

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# org-extract - Extract a heading and its complete subtree
+# Usage: org-extract <file.org> <heading-text>
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]
+then
+  echo 'Usage: org-extract <file.org> <heading-text>' >&2
+  exit 1
+fi
+
+file="$1"
+heading="$2"
+
+if [[ ! -f "$file" ]]
+then
+  echo "Error: File '$file' not found" >&2
+  exit 1
+fi
+
+emacs --batch \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  --eval '(load "~/.config/emacs/init.el")' \
+  --eval "(progn
+           (require 'org)
+           (find-file \"$file\")
+           (goto-char (point-min))
+           (if (re-search-forward (concat \"^\\\\*+ .*\" (regexp-quote \"$heading\")) nil t)
+               (progn
+                 (org-back-to-heading t)
+                 (let ((start (point))
+                       (end (save-excursion
+                              (org-end-of-subtree t t)
+                              (point))))
+                   (princ (buffer-substring-no-properties start end))))
+             (error \"Heading not found: $heading\")))"

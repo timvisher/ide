@@ -1,0 +1,47 @@
+#!/usr/bin/env bash -O extglob
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+config_file="${HOME}/.config/timvisher/ide/chrome-profile-email"
+
+if [[ -n $1 ]] && [[ $1 == *@* ]]
+then
+  profile_email=${1}
+  shift
+elif [[ -r $config_file ]]
+then
+  profile_email=$(< "$config_file")
+fi
+
+if [[ -z $profile_email ]]
+then
+  die 'No profile email: pass as argument or set in '%s'' "$config_file"
+fi
+
+info 'Searching for Profile with Email ‘%s’' "$profile_email"
+
+profile_directory=$(
+  jq -r --arg email "$profile_email" '
+       (.account_info // [])[].email
+       | select($email == .)
+       | input_filename | split("/")[-2]
+     ' ~/Library/Application\ Support/Google/Chrome/*/Preferences
+                 )
+
+if [[ -z $profile_directory ]]
+then
+  die 'Unable to determine profile_directory'
+fi
+
+info 'Using profile_directory ‘%s’' "$profile_directory"
+
+if ! [[ -d ~/Library/'Application Support'/Google/Chrome/"${profile_directory}" ]]
+then
+  die "Profile isn\'t a directory which is impossible? '%s'" "${profile_directory}"
+fi
+
+open -a 'Google Chrome' -n --args --profile-directory="$profile_directory" "$@"

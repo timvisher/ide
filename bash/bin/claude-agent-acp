@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+source ~/git/ide/bash/ai/agents.bash ||
+  die "Couldn't source agents.bash"
+
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
+
+export TIMVISHER_CLAUDE=true
+
+config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+bin_config=${config_dir}/claude-agent-acp_bin
+
+AGENT_BIN=()
+if [[ -r $bin_config ]]
+then
+  # shellcheck disable=SC1090
+  source "$bin_config"
+fi
+
+if [[ ${#AGENT_BIN[@]} -eq 0 ]]
+then
+  p=$(brew --prefix)
+  AGENT_BIN=("${p}/bin/claude-agent-acp")
+fi
+
+# If AGENT_BIN points at a node entrypoint that doesn't exist yet,
+# auto-run npm install + build in the project directory.
+if [[ ${AGENT_BIN[0]} == node ]] && (( 1 < ${#AGENT_BIN[@]} ))
+then
+  entrypoint=${AGENT_BIN[1]}
+  built_cookie=$(dirname "$entrypoint")/x.built
+  if [[ ! -f $entrypoint ]] ||
+       [[ ! -f $built_cookie ]] ||
+       [[ $(gdate -r "$built_cookie" '+%FT%T%z') < $(gdate -d '20 hours ago' '+%FT%T%z') ]]
+  then
+    project_dir=$(dirname "$entrypoint")
+    # Walk up to find package.json
+    while [[ $project_dir != / && ! -f ${project_dir}/package.json ]]
+    do
+      project_dir=$(dirname "$project_dir")
+    done
+    if [[ -f ${project_dir}/package.json ]]
+    then
+      info 'entrypoint '%s' missing; running npm install && npm run build in '%s'' "$entrypoint" "$project_dir"
+      (
+        cd "$project_dir" &&
+          npm install &&
+          npm run build &&
+          touch "$built_cookie"
+      ) ||
+        die 'failed to bootstrap '%s'' "$project_dir"
+    fi
+  fi
+fi
+
+exec op run --no-masking -- "${AGENT_BIN[@]}" "$@"

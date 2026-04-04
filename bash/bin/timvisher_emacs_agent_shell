@@ -1,0 +1,65 @@
+#!/usr/bin/env bash -O nullglob -O extglob
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+agents_bash=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/ai/agents.bash
+if [[ -r $agents_bash ]]
+then
+  # shellcheck disable=SC1090
+  . "$agents_bash"
+else
+  info '%s not found' "$agents_bash"
+fi
+
+agent=$1
+shift
+
+git_home=${timvisher_git_home:-${HOME}/git}
+
+agent_shell_dir=${timvisher_agent_shell_checkout:-${git_home}/timvisher-dd/agent-shell-plus/main}
+shell_maker_dir=${timvisher_shell_maker_checkout:-${git_home}/xenodium/shell-maker/main}
+acp_dir=${timvisher_acp_checkout:-${git_home}/timvisher-dd/acp.el-plus/main}
+
+elcs=({"${agent_shell_dir}","${shell_maker_dir}","${acp_dir}"}/*.elc)
+if (( 0 < "${#elcs[@]}" ))
+then
+  rm -v "${elcs[@]}"
+fi
+
+# Resolve agent-specific settings
+case $agent in
+  claude)
+    timvisher_agent_start_fn=${timvisher_agent_shell_start_fn:-agent-shell-anthropic-start-claude-code}
+    ;;
+  codex)
+    timvisher_agent_start_fn=${timvisher_agent_shell_start_fn:-agent-shell-openai-start-codex}
+    ;;
+  *)
+    die 'Unknown agent "%s"' "$agent"
+    ;;
+esac
+
+export timvisher_agent_shell_checkout="$agent_shell_dir"
+export timvisher_shell_maker_checkout="$shell_maker_dir"
+export timvisher_acp_checkout="$acp_dir"
+export timvisher_agent_start_fn
+
+# Unset CLAUDECODE to avoid the child Emacs connecting to the
+# parent agent's Claude Code MCP server.
+if [[ -n ${CLAUDECODE:-} ]]
+then
+  warn 'Unsetting CLAUDECODE=%s to avoid MCP conflict with parent agent' "$CLAUDECODE"
+  unset CLAUDECODE
+fi
+
+op run --no-masking -- \
+   emacs \
+   -L "$timvisher_agent_shell_checkout" \
+   -L "$timvisher_shell_maker_checkout" \
+   -L "$timvisher_acp_checkout" \
+   -l ~/bin/timvisher_emacs_agent_shell.start-agent-shell.el \
+   "$@"

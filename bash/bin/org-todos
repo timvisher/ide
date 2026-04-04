@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# org-todos - Extract TODO items with their heading hierarchy
+# Usage: org-todos <file.org>
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]
+then
+  echo 'Usage: org-todos <file.org>' >&2
+  exit 1
+fi
+
+file="$1"
+
+if [[ ! -f "$file" ]]
+then
+  echo "Error: File '$file' not found" >&2
+  exit 1
+fi
+
+emacs --batch \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  --eval '(load "~/.config/emacs/init.el")' \
+  --eval "(progn
+           (require 'org)
+           (find-file \"$file\")
+           (org-map-entries
+            (lambda ()
+              (let* ((todo-state (org-get-todo-state))
+                     (level (org-current-level))
+                     (heading (org-get-heading t t t t))
+                     (indent (make-string (* 2 (1- level)) ?\s)))
+                (when (member todo-state '(\"TODO\" \"DONE\" \"IN-PROGRESS\" \"WAITING\"))
+                  (princ indent)
+                  (princ todo-state)
+                  (princ \": \")
+                  (princ heading)
+                  (princ \"\n\"))))))"

@@ -1,0 +1,1 @@
+tell application "Finicky" to quit

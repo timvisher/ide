@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+if [[ *darwin* != $OSTYPE ]]
+then
+    sysctl -n vm.loadavg | awk '{print $2, $3, $4}'
+else
+    awk '{print $1, $2, $3}' < /proc/loadavg
+fi
+

@@ -1,0 +1,594 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+usage() {
+  cat <<'USAGE' >&2
+  timvisher_gh - GitHub workflow commands
+
+  Usage:
+    timvisher_gh pr              Create a PR from pr.md (or open existing)
+    timvisher_gh pr edit         Edit an existing PR from pr.md
+    timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
+    timvisher_gh issue           Create an issue from issue.md (or open existing)
+    timvisher_gh issue edit      Edit an existing issue from issue.md
+    timvisher_gh comment [--pull-request=URL] <file>
+                                 Post a comment on a PR from <file>
+    timvisher_gh comment edit [--pull-request=URL] <file>
+                                 Update an existing comment from <file>
+    timvisher_gh comment reply <comment-url> <file>
+                                 Reply to a review comment from <file>
+    timvisher_gh comment delete <file>
+                                 Delete the comment tracked by <file>.url
+
+  pr subcommand:
+    - Requires a clean git status
+    - Pushes the current branch before creating
+    - Reads title from line 1 and body from line 3+ of pr.md
+
+  pr edit subcommand:
+    - Requires pr.md.url to exist
+    - Updates the PR title and body from pr.md
+
+  pr merge subcommand:
+    - Requires pr.md.url to exist
+    - Tries rebase, then squash, then merge (based on repo settings)
+    - Repos listed in ~/.config/timvisher/ide/gh-pr-merge-comment-repos
+      are merged by posting a '/merge' comment instead
+    - Extra arguments are passed to 'gh pr merge'
+
+  issue subcommand:
+    - Reads title from line 1 and body from line 3+ of issue.md
+
+  issue edit subcommand:
+    - Requires issue.md.url to exist
+    - Updates the issue title and body from issue.md
+
+  comment subcommand:
+    - Posts the contents of <file> as a PR comment
+    - PR URL comes from --pull-request=URL, or pr.md.url, or Chrome active tab
+    - Stores the comment URL in <file>.url
+    - If <file>.url already exists, opens it in the browser
+
+  comment edit subcommand:
+    - Requires <file>.url to exist
+    - Updates the existing comment with contents of <file>
+
+  comment reply subcommand:
+    - Replies to a PR review comment (inline discussion thread)
+    - <comment-url> is the full GitHub URL with #discussion_r<ID>
+    - Stores the reply URL in <file>.url
+    - If <file>.url already exists, opens it in the browser
+
+  comment delete subcommand:
+    - Deletes the PR comment tracked by <file>.url
+    - Prompts for confirmation before deleting
+    - Removes <file>.url on successful deletion
+
+  Both pr/issue create subcommands:
+    - Store the resulting URL in <file>.url
+    - Open the URL in the browser on subsequent runs
+
+  Options:
+    -h, --help, help    Show this help
+USAGE
+}
+
+toplevel=$(command git rev-parse --show-toplevel) ||
+  die 'Not in a git repository'
+
+cd "$toplevel" ||
+  die 'Unable to cd to top level directory '%s'' "$toplevel"
+
+# Determine the target remote for the operation.
+# Use the branch's tracking remote when set; otherwise prefer 'upstream'
+# (fork parent) if it exists, falling back to 'origin'.  This respects
+# soft-fork repos where tracking intentionally points at origin.
+target_remote=
+tracking_remote=$(command git config "branch.$(command git rev-parse --abbrev-ref HEAD).remote" 2>/dev/null) || true
+if [[ -n $tracking_remote ]] && git remote | grep -qx "$tracking_remote"
+then
+  target_remote=$tracking_remote
+elif git remote | grep -q '^upstream$'
+then
+  target_remote='upstream'
+else
+  target_remote='origin'
+fi
+
+# Get the OWNER/REPO spec from the remote's URL.
+repo_spec=$(git remote get-url "$target_remote" | sed -E 's#^https?://github.com/|git@github.com:##; s#\.git$##')
+[[ -n $repo_spec ]] ||
+  die "Could not determine repository spec for remote '%s'" "$target_remote"
+
+# --- subcommand: pr ---
+
+gh_pr_edit() {
+  [[ -r pr.md.url ]] ||
+    die ''pr.md.url' does not exist; create a PR first'
+
+  [[ -r pr.md ]] ||
+    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
+
+  command gh pr edit \
+          "$(< pr.md.url)" \
+          --repo "$repo_spec" \
+          --title "$(head -n1 pr.md)" \
+          -F <(tail -n+3 pr.md) ||
+    die 'Unable to edit PR'
+
+  info 'PR updated'
+}
+
+gh_pr_merge() {
+  display_script "$0"
+
+  local pr_url
+  pr_url=$(< "${toplevel}/pr.md.url") ||
+    die 'pr.md.url unreadable'
+
+  [[ -n $pr_url ]] ||
+    die 'pr_url unset. Does pr.md.url exist at top level?'
+
+  local repo_slug_from_url=${pr_url#https://github.com/}
+  repo_slug_from_url=${repo_slug_from_url%%/pull/*}
+  local repo_slug_lc=${repo_slug_from_url,,}
+
+  # Repos that merge via comment (e.g. /merge) instead of gh pr merge.
+  local comment_merge_config="${HOME}/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
+  then
+    read -rp "Request merge for ${pr_url} by commenting '/merge'? y/N " r
+    if [[ $r != y ]]
+    then
+      info "Exiting at user's request."
+      return
+    fi
+
+    gh pr comment "$pr_url" --body "/merge" ||
+      die "Couldn't post /merge comment to '%s'" "$pr_url"
+
+    info "Requested merge via comment for %s" "$pr_url"
+    return 0
+  fi
+
+  local capabilities_json
+  capabilities_json=$(
+    gh repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+  )
+
+  local strategies=()
+  jq -e '.rebaseMergeAllowed'  <<<"$capabilities_json" >/dev/null && strategies+=(rebase)
+  jq -e '.squashMergeAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(squash)
+  jq -e '.mergeCommitAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(merge)
+
+  (( ${#strategies[@]} )) ||
+    die 'Repository allows no merge strategies: rebase, squash, and merge are all disabled.'
+
+  read -rp "Really merge ${pr_url}? y/N " r
+
+  if [[ $r != y ]]
+  then
+    info "Exiting at user's request."
+    return
+  fi
+
+  local merged=
+  for ((i = 0; i < ${#strategies[@]}; i++))
+  do
+    local strat=${strategies[i]}
+
+    if gh pr merge "$@" "--${strat}" "$pr_url"
+    then
+      merged=$strat
+      break
+    fi
+
+    local next=${strategies[i+1]:-}
+    if [[ -n $next ]]
+    then
+      read -rp "Merge with '${strat}' failed. Try '${next}'? Y/n " ans
+      [[ ${ans,,} == n* ]] && die "Aborted after '${strat}' failure."
+    fi
+  done
+
+  [[ -n ${merged-} ]] ||
+    die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
+        "$pr_url" "${strategies[*]}"
+
+  info 'PR merged via %s' "$merged"
+}
+
+gh_pr() {
+  case ${1-} in
+    edit)
+      shift
+      gh_pr_edit "$@"
+      return
+      ;;
+    merge)
+      shift
+      gh_pr_merge "$@"
+      return
+      ;;
+  esac
+
+  if [[ -r pr.md.url ]]
+  then
+    info ''pr.md.url' already exists. Opening'
+    open -a 'Google Chrome'
+    open "$(< pr.md.url)"
+    return
+  fi
+
+  local base_branch
+  base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+    die "Could not determine default branch for repository '%s'" "$repo_spec"
+
+  [[ -r pr.md ]] ||
+    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
+
+  local status
+  status=$(command git status --porcelain)
+
+  [[ -z $status ]] ||
+    die '%s\ngit status is not clean' "$status"
+
+  command git push -v origin HEAD ||
+    die 'Unable to git push'
+
+  open -a 'Google Chrome'
+
+  local pr_url
+  pr_url=$(
+    command gh pr create \
+            --repo "$repo_spec" \
+            --draft \
+            --base "$base_branch" \
+            --title "$(head -n1 pr.md)" \
+            -F <(tail -n+3 pr.md)
+        ) ||
+    die 'Unable to create PR'
+
+  tee <<<"$pr_url" pr.md.url
+
+  open "$pr_url"
+}
+
+# --- subcommand: issue ---
+
+gh_issue_edit() {
+  [[ -r issue.md.url ]] ||
+    die ''issue.md.url' does not exist; create an issue first'
+
+  [[ -r issue.md ]] ||
+    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
+
+  command gh issue edit \
+          "$(< issue.md.url)" \
+          --repo "$repo_spec" \
+          --title "$(head -n1 issue.md)" \
+          -F <(tail -n+3 issue.md) ||
+    die 'Unable to edit issue'
+
+  info 'Issue updated'
+}
+
+gh_issue() {
+  case ${1-} in
+    edit)
+      shift
+      gh_issue_edit "$@"
+      return
+      ;;
+  esac
+
+  if [[ -r issue.md.url ]]
+  then
+    info ''issue.md.url' already exists. Opening'
+    open -a 'Google Chrome'
+    open "$(< issue.md.url)"
+    return
+  fi
+
+  [[ -r issue.md ]] ||
+    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
+
+  open -a 'Google Chrome'
+
+  local issue_url
+  issue_url=$(
+    command gh issue create \
+            --repo "$repo_spec" \
+            --title "$(head -n1 issue.md)" \
+            -F <(tail -n+3 issue.md)
+        ) ||
+    die 'Unable to create issue'
+
+  tee <<<"$issue_url" issue.md.url
+
+  open "$issue_url"
+}
+
+# --- subcommand: comment ---
+
+# Resolve the PR URL for comment operations.
+# Checks (in order): --pull-request= flag, pr.md.url, Chrome active tab.
+resolve_pr_url() {
+  local url=${comment_pr_url:-}
+
+  if [[ -z $url ]] && [[ -r pr.md.url ]]
+  then
+    url=$(< pr.md.url)
+  fi
+
+  if [[ -z $url ]]
+  then
+    url=$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window' 2>/dev/null) || true
+  fi
+
+  if ! [[ $url == *github*/pull/?* ]]
+  then
+    die "'%s' doesn't look like a PR URL" "${url:-<empty>}"
+  fi
+
+  printf '%s' "$url"
+}
+
+gh_comment_edit() {
+  local comment_file=$1
+
+  [[ -n $comment_file ]] ||
+    die 'comment edit requires a <file> argument'
+
+  [[ -r $comment_file ]] ||
+    die "'%s' is not readable" "$comment_file"
+
+  local comment_url
+  comment_url=$(< "${comment_file}.url") ||
+    die "'%s.url' does not exist; post a comment first" "$comment_file"
+
+  [[ -n $comment_url ]] ||
+    die "'%s.url' is empty" "$comment_file"
+
+  # Extract owner/repo and comment ID from the URL.
+  # Format: https://github.com/OWNER/REPO/pull/N#issuecomment-ID
+  local o n comment_id
+  IFS=/ read -r _ _ _ o n _ <<<"$comment_url"
+  comment_id=${comment_url##*issuecomment-}
+
+  local comment_path="/repos/${o}/${n}/issues/comments/${comment_id}"
+
+  gh api \
+     --method PATCH \
+     "$comment_path" \
+     -f "body=$(< "$comment_file")" \
+     --jq '.html_url' ||
+    die 'Unable to update comment'
+
+  info 'Comment updated'
+}
+
+gh_comment_reply() {
+  local comment_url=${1-}
+  local comment_file=${2-}
+
+  [[ -n $comment_url ]] ||
+    die 'comment reply requires a <comment-url> argument'
+
+  [[ -n $comment_file ]] ||
+    die 'comment reply requires a <file> argument'
+
+  [[ -r $comment_file ]] ||
+    die "'%s' is not readable" "$comment_file"
+
+  if [[ -r "${comment_file}.url" ]]
+  then
+    info "'%s.url' already exists" "$comment_file"
+    cat "${comment_file}.url"
+    return
+  fi
+
+  # Parse: https://github.com/OWNER/REPO/pull/N#discussion_rID
+  local owner_repo pr_number comment_id
+  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/([0-9]+)#discussion_r([0-9]+) ]]
+  then
+    owner_repo=${BASH_REMATCH[1]}
+    pr_number=${BASH_REMATCH[2]}
+    comment_id=${BASH_REMATCH[3]}
+  else
+    die "'%s' doesn't look like a review comment URL (expected #discussion_r<ID>)" "$comment_url"
+  fi
+
+  local reply_url
+  reply_url=$(
+    gh api \
+       --method POST \
+       "repos/${owner_repo}/pulls/${pr_number}/comments" \
+       -F "in_reply_to=${comment_id}" \
+       -f "body=$(< "$comment_file")" \
+       --jq '.html_url'
+  ) ||
+    die 'Unable to post reply'
+
+  tee <<<"$reply_url" "${comment_file}.url"
+}
+
+gh_comment_delete() {
+  local comment_file=${1-}
+
+  [[ -n $comment_file ]] ||
+    die 'comment delete requires a <file> argument'
+
+  if [[ ! -r "${comment_file}.url" ]]
+  then
+    info "'%s.url' doesn't exist or is empty. Assuming already cleaned up." "$comment_file"
+    return
+  fi
+
+  local comment_url
+  comment_url=$(< "${comment_file}.url")
+
+  [[ -n $comment_url ]] ||
+    die "'%s.url' is empty" "$comment_file"
+
+  info 'Found comment URL: %s' "$comment_url"
+
+  # Extract owner/repo and comment ID from the URL.
+  # Format: https://github.com/OWNER/REPO/pull/N#issuecomment-ID
+  local o n comment_id
+  IFS=/ read -r _ _ _ o n _ <<<"$comment_url"
+  comment_id=${comment_url##*issuecomment-}
+
+  local comment_path="/repos/${o}/${n}/issues/comments/${comment_id}"
+
+  if ! gh api --method HEAD "${comment_path}" 2>/dev/null
+  then
+    info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
+    rm -v "${comment_file}.url" >&2
+    return
+  fi
+
+  read -rp "Really delete '${comment_path}'? y/N " resp
+  if [[ $resp != y ]]
+  then
+    info "Aborted at user's request."
+    return
+  fi
+
+  local rj
+  rj=$(
+    gh api \
+       --method DELETE \
+       -H "Accept: application/vnd.github+json" \
+       -H "X-GitHub-Api-Version: 2022-11-28" \
+       "${comment_path}"
+  ) || true
+
+  if [[ -z $rj ]]
+  then
+    # Successful DELETE returns empty body
+    rm -v "${comment_file}.url" >&2
+    info 'Deleted comment for '%s'' "$comment_file"
+  elif [[ 'Not Found' == $( <<<"$rj" jq -r '.message' ) ]]
+  then
+    rm -v "${comment_file}.url" >&2
+    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
+  else
+    error 'Unexpected response deleting comment for '%s': %s' "$comment_file" "$rj"
+  fi
+}
+
+gh_comment() {
+  local comment_pr_url=
+
+  # Parse leading flags
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --pull-request=*)
+        comment_pr_url=${1##--pull-request=}
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  case ${1-} in
+    edit)
+      shift
+      # Re-parse flags after 'edit'
+      while (( 0 < $# ))
+      do
+        case $1 in
+          --pull-request=*)
+            comment_pr_url=${1##--pull-request=}
+            shift
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+      gh_comment_edit "$@"
+      return
+      ;;
+    reply)
+      shift
+      gh_comment_reply "$@"
+      return
+      ;;
+    delete)
+      shift
+      gh_comment_delete "$@"
+      return
+      ;;
+  esac
+
+  local comment_file=${1-}
+
+  [[ -n $comment_file ]] ||
+    die 'comment requires a <file> argument'
+
+  [[ -r $comment_file ]] ||
+    die "'%s' is not readable" "$comment_file"
+
+  if [[ -r "${comment_file}.url" ]]
+  then
+    info "'%s.url' already exists" "$comment_file"
+    cat "${comment_file}.url"
+    return
+  fi
+
+  local pr_url
+  pr_url=$(resolve_pr_url) ||
+    exit $?
+
+  local comment_url
+  comment_url=$(
+    command gh pr comment "$pr_url" --body-file "$comment_file"
+  ) ||
+    die 'Unable to post comment'
+
+  tee <<<"$comment_url" "${comment_file}.url"
+}
+
+# --- dispatch ---
+
+if [[ $# -eq 0 ]]
+then
+  usage
+  exit 1
+fi
+
+case $1 in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+esac
+
+cmd=$1
+shift
+
+case $cmd in
+  pr)
+    gh_pr "$@"
+    ;;
+  issue)
+    gh_issue "$@"
+    ;;
+  comment)
+    gh_comment "$@"
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

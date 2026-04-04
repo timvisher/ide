@@ -1,0 +1,1 @@
+tell application "iTerm" to create window with default profile

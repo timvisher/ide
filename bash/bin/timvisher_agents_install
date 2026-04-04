@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+
+# Install agent skills and configuration from source directories into
+# ~/.agents/, then resolve symlinks for ~/.claude and ~/.codex.
+#
+# Usage:
+#   timvisher_agents_install <dir>...
+#
+# Each <dir> should contain .agents/skills/ and/or .agents/languages/.
+# Skills and language docs are symlinked into ~/.agents/skills/ and
+# ~/.agents/languages/ respectively.
+#
+# After installing, the following symlinks are created/verified:
+#   - ~/AGENTS.md            → ~/git/ide/ai/HOME/AGENTS.md
+#   - ~/.claude/CLAUDE.md    → ~/AGENTS.md
+#   - ~/.claude/skills       → ~/.agents/skills
+#   - ~/.codex/AGENTS.md     → ~/AGENTS.md
+#   - ~/.codex/skills/<name> → ~/.agents/skills/<name>  (for each skill,
+#                               preserving .system/)
+#
+# ~/.agents/ must be a real directory (not a symlink). If it is a symlink,
+# the script will error and tell you to convert it first.
+
+# shellcheck disable=SC1090
+. ~/.functions/logging.bash
+
+errors=()
+
+found_error() {
+  errors+=("$1")
+}
+
+assert_not_symlink() {
+  local path=$1
+  if [[ -L $path ]]
+  then
+    found_error "'${path}' is a symlink (to '$(readlink "$path")'). Remove it and create a real directory first."
+  fi
+}
+
+ensure_dir() {
+  local path=$1
+  if [[ ! -d $path ]]
+  then
+    mkdir -p "$path"
+  fi
+}
+
+# Create or verify a symlink. Errors if target exists and points elsewhere.
+ensure_symlink() {
+  local link=$1
+  local target=$2
+
+  if [[ -L $link ]]
+  then
+    local existing
+    existing=$(readlink "$link")
+    if [[ $existing != "$target" ]]
+    then
+      found_error "'${link}' already points to '${existing}', not '${target}'"
+    fi
+  elif [[ -e $link ]]
+  then
+    found_error "'${link}' exists and is not a symlink"
+  else
+    ln -s "$target" "$link"
+    info 'Created symlink '%s' → '%s'' "$link" "$target"
+  fi
+}
+
+do_install_from() {
+  local dir=$1
+  local found_something=false
+
+  local skills_dir="${dir}/.agents/skills"
+  if [[ -d $skills_dir ]]
+  then
+    found_something=true
+    local skill
+    for skill in "${skills_dir}"/*/
+    do
+      [[ -d $skill ]] || continue
+      local name
+      name=$(basename "$skill")
+      # Remove trailing slash from the skill path for clean symlink target
+      skill=${skill%/}
+      ensure_symlink "${HOME}/.agents/skills/${name}" "$skill"
+    done
+  fi
+
+  local languages_dir="${dir}/.agents/languages"
+  if [[ -d $languages_dir ]]
+  then
+    found_something=true
+    local lang
+    for lang in "${languages_dir}"/*
+    do
+      [[ -f $lang ]] || continue
+      local name
+      name=$(basename "$lang")
+      ensure_symlink "${HOME}/.agents/languages/${name}" "$lang"
+    done
+  fi
+
+  if [[ $found_something == false ]]
+  then
+    found_error "No .agents/skills/ or .agents/languages/ directory found in '${dir}'"
+  fi
+}
+
+do_resolve() {
+  # ~/AGENTS.md → ~/git/ide/ai/HOME/AGENTS.md
+  ensure_symlink "${HOME}/AGENTS.md" "${HOME}/git/ide/ai/HOME/AGENTS.md"
+
+  # ~/.claude/CLAUDE.md → ~/AGENTS.md
+  if [[ -d ${HOME}/.claude ]]
+  then
+    ensure_symlink "${HOME}/.claude/CLAUDE.md" "${HOME}/AGENTS.md"
+    ensure_symlink "${HOME}/.claude/skills" "${HOME}/.agents/skills"
+  else
+    # shellcheck disable=SC2088 # ~ is intentional in log message
+    warn '~/.claude does not exist; skipping Claude symlinks'
+  fi
+
+  # ~/.codex/AGENTS.md → ~/AGENTS.md
+  # ~/.codex/skills/<name> → ~/.agents/skills/<name> (preserving .system/)
+  if [[ -d ${HOME}/.codex ]]
+  then
+    ensure_symlink "${HOME}/.codex/AGENTS.md" "${HOME}/AGENTS.md"
+
+    if [[ -d ${HOME}/.codex/skills ]]
+    then
+      local skill
+      for skill in "${HOME}"/.agents/skills/*/
+      do
+        [[ -d $skill ]] || continue
+        local name
+        name=$(basename "$skill")
+        # Remove trailing slash
+        skill=${skill%/}
+        ensure_symlink "${HOME}/.codex/skills/${name}" "${HOME}/.agents/skills/${name}"
+      done
+    else
+      # shellcheck disable=SC2088 # ~ is intentional in log message
+      warn '~/.codex/skills does not exist; skipping Codex skill symlinks'
+    fi
+  else
+    # shellcheck disable=SC2088 # ~ is intentional in log message
+    warn '~/.codex does not exist; skipping Codex symlinks'
+  fi
+}
+
+# --- main ---
+
+if (( ${#} < 1 ))
+then
+  error 'Usage: timvisher_agents_install <dir>...'
+  exit 1
+fi
+
+# Pre-flight: ~/.agents must be a real directory
+assert_not_symlink "${HOME}/.agents"
+assert_not_symlink "${HOME}/.agents/skills"
+assert_not_symlink "${HOME}/.agents/languages"
+
+if (( 0 < ${#errors[@]} ))
+then
+  for msg in "${errors[@]}"
+  do
+    error '%s' "$msg"
+  done
+  exit 1
+fi
+
+ensure_dir "${HOME}/.agents"
+ensure_dir "${HOME}/.agents/skills"
+ensure_dir "${HOME}/.agents/languages"
+
+for dir in "$@"
+do
+  do_install_from "$dir"
+done
+
+do_resolve
+
+if (( 0 < ${#errors[@]} ))
+then
+  error 'Errors encountered:'
+  for msg in "${errors[@]}"
+  do
+    error '  %s' "$msg"
+  done
+  exit 1
+fi
+
+info 'Done'

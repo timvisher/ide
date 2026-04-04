@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+# Launch a shell (or run a command) using a fake HOME that points back
+# to this repo, so that ~/.bashrc, ~/.functions/, etc. all come from
+# the current worktree rather than ~/git/ide/.
+
+source "${HOME}/.functions/logging.bash" ||
+    {
+        echo "Unable to source logging functions" >&2
+        exit 1
+    }
+
+repo_root="$(git rev-parse --show-toplevel)" ||
+    die 'Not in a git repository'
+
+mkdir -p "${repo_root}/x.home/git"
+
+if [[ ! -L ${repo_root}/x.home/git/ide ]]
+then
+    ln -sf "../.." "${repo_root}/x.home/git/ide"
+fi
+
+HOME="${repo_root}/x.home" bash "${repo_root}/bash/install.bash" >/dev/null ||
+    die 'install.bash failed'
+
+export HOME="${repo_root}/x.home"
+
+exec bash "$@"

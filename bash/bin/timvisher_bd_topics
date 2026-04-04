@@ -1,0 +1,705 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+default_topics_root="${HOME}/Documents/projects"
+topics_root_config="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bd_topics_root"
+if [[ -r $topics_root_config ]]
+then
+  topics_root=$(eval echo "$(head -1 "$topics_root_config")")
+else
+  topics_root=$default_topics_root
+fi
+
+usage() {
+  cat <<'USAGE' >&2
+  timvisher_bd_topics - manage beads topics (minimal)
+
+  Usage:
+    timvisher_bd_topics ls [--all] [<prefix>...]
+    timvisher_bd_topics current
+    timvisher_bd_topics set [<topic>]
+    timvisher_bd_topics bd [<topic>] [-- <bd-args>...]
+    timvisher_bd_topics new <topic>
+    timvisher_bd_topics deactivate <topic>
+    timvisher_bd_topics rm <topic>
+    timvisher_bd_topics activate <topic>
+    timvisher_bd_topics prune [<topic>]
+  Notes:
+    - Topic paths are absolute or relative to the configured topics root.
+    - set must be run from within a git repo.
+    - new can be run outside a git repo (it skips writing .beads/redirect).
+    - deactivate (alias: rm) hides topics from ls/set unless --all is used.
+    - set prompts to reactivate deactivated topics.
+    - activate re-enables a deactivated topic without setting it.
+    - prune permanently deletes topics (rm -rf). When called bare, it offers
+      to remove deactivated topics older than 14 days.
+    - bd runs in the current directory unless a topic is provided. If the topic
+      has a .beads directory, it runs with BEADS_DIR set to that directory;
+      otherwise it runs in the topic directory. Use -- to pass bd arguments
+      that would otherwise match a topic name.
+    - Each topic runs its own dolt server on a hash-derived port
+      (auto-started by bd). Use 'bd dolt' directly to manage servers.
+USAGE
+}
+
+if [[ ! -d $topics_root ]]
+then
+  die "Topics root '%s' does not exist" "$topics_root"
+fi
+
+topics_root_real=$(cd "$topics_root" && pwd -P) ||
+  die "Unable to resolve topics root '%s'" "$topics_root"
+
+strip_beads_suffix() {
+  local path=$1
+
+  printf '%s' "${path%%/.beads*}"
+}
+
+prefixify() {
+  local s=$1
+
+  s=$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')
+  s=$(printf '%s' "$s" | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')
+  printf '%s' "$s"
+}
+
+normalize_topic_path() {
+  local root=$1
+  local input=$2
+
+  command -v python3 >/dev/null 2>&1 ||
+    die "python3 is required"
+
+  python3 - "$root" "$input" <<'PY'
+import os
+import sys
+
+root = sys.argv[1]
+path = sys.argv[2]
+
+if os.path.isabs(path):
+    resolved = os.path.abspath(path)
+else:
+    resolved = os.path.abspath(os.path.join(root, path))
+
+print(os.path.normpath(resolved))
+PY
+}
+
+require_repo_root() {
+  local repo_root
+
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
+    die "Must be run from within a git repo"
+
+  printf '%s' "$repo_root"
+}
+
+resolve_topic() {
+  local input=$1
+
+  topic_abs=$(normalize_topic_path "$topics_root_real" "$input") ||
+    return 1
+
+  case $topic_abs in
+    "$topics_root_real"/*)
+      topic_rel=${topic_abs#"$topics_root_real"/}
+      ;;
+    *)
+      die "Topic must resolve under '%s'" "$topics_root_real"
+      ;;
+  esac
+
+  if [[ -z $topic_rel || $topic_rel == "$topic_abs" ]]
+  then
+    die "Topic must resolve under '%s'" "$topics_root_real"
+  fi
+}
+
+topic_deactivated_path() {
+  local topic_abs=$1
+
+  printf '%s' "$topic_abs/.beads/deactivated"
+}
+
+topic_is_deactivated() {
+  local topic_abs=$1
+  local deactivated_path
+
+  deactivated_path=$(topic_deactivated_path "$topic_abs")
+  [[ -f $deactivated_path ]]
+}
+
+deactivate_topic() {
+  local topic_abs=$1
+  local deactivated_path
+
+  deactivated_path=$(topic_deactivated_path "$topic_abs")
+  : > "$deactivated_path" ||
+    die "Unable to write '%s'" "$deactivated_path"
+}
+
+reactivate_topic() {
+  local topic_abs=$1
+  local deactivated_path
+
+  deactivated_path=$(topic_deactivated_path "$topic_abs")
+  if [[ -f $deactivated_path ]]
+  then
+    rm -f "$deactivated_path" ||
+      die "Unable to remove '%s'" "$deactivated_path"
+  fi
+}
+
+list_topics_under_dir() {
+  local base_dir=$1
+  local include_deactivated=${2:-0}
+  local with_status=${3:-0}
+
+  shopt -s globstar nullglob
+  for beads_dir in "$base_dir"/**/.beads
+  do
+    [[ -d $beads_dir ]] || continue
+
+    local topic_dir=${beads_dir%/.beads}
+    # Skip the topics root itself (it has a redirect-only .beads)
+    [[ $topic_dir != "$topics_root_real" ]] || continue
+    local topic_rel=${topic_dir#"$topics_root_real"/}
+    local status=active
+
+    if [[ -f $beads_dir/deactivated ]]
+    then
+      status=deactivated
+    fi
+
+    if [[ $status == deactivated && $include_deactivated -ne 1 ]]
+    then
+      continue
+    fi
+
+    if [[ $with_status -eq 1 ]]
+    then
+      printf '%s\t%s\n' "$topic_rel" "$status"
+    else
+      printf '%s\n' "$topic_rel"
+    fi
+  done
+  shopt -u globstar nullglob
+}
+
+list_topics() {
+  list_topics_under_dir "$topics_root_real" 0 0 | LC_ALL=C sort
+}
+
+migrate_state_dir() {
+  local repo_root=$1
+  local new_dir="$repo_root/.timvisher_bd_topics"
+  local old_dir="$repo_root/.timvisher_EXP_bd_topics"
+
+  if [[ -d $old_dir && ! -d $new_dir ]]
+  then
+    warn "Migrating '%s' → '%s'" "$old_dir" "$new_dir"
+    mv "$old_dir" "$new_dir" ||
+      die "Unable to migrate '%s' → '%s'" "$old_dir" "$new_dir"
+  fi
+
+  printf '%s' "$new_dir"
+}
+
+read_current_topic() {
+  local repo_root
+  local topic_file
+  local topic_rel
+
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  local state_dir
+  state_dir=$(migrate_state_dir "$repo_root")
+  topic_file="$state_dir/topic.txt"
+  if [[ ! -f $topic_file ]]
+  then
+    return 1
+  fi
+
+  topic_rel=$(< "$topic_file")
+  [[ -n $topic_rel ]] || return 1
+
+  printf '%s' "$topic_rel"
+}
+
+list_deactivated_topics_older_than_days() {
+  local base_dir=$1
+  local days=$2
+  local cutoff mtime deactivated_file beads_dir topic_dir topic_rel
+
+  cutoff=$(( $(/opt/homebrew/bin/date +%s) - (days * 24 * 60 * 60) ))
+
+  shopt -s globstar nullglob
+  for deactivated_file in "$base_dir"/**/.beads/deactivated
+  do
+    [[ -f $deactivated_file ]] || continue
+
+    mtime=$(gstat -c '%Y' "$deactivated_file") || continue
+    if (( cutoff < mtime ))
+    then
+      continue
+    fi
+
+    beads_dir=${deactivated_file%/deactivated}
+    topic_dir=${beads_dir%/.beads}
+    topic_rel=${topic_dir#"$topics_root_real"/}
+
+    if [[ -z $topic_rel || $topic_rel == "$topic_dir" ]]
+    then
+      continue
+    fi
+
+    printf '%s\n' "$topic_rel"
+  done
+  shopt -u globstar nullglob
+}
+
+write_topic_file() {
+  local repo_root=$1
+  local topic_rel=$2
+  local state_dir
+  state_dir=$(migrate_state_dir "$repo_root")
+
+  mkdir -p "$state_dir" ||
+    die "Unable to create '%s'" "$state_dir"
+
+  printf '%s\n' "$topic_rel" > "$state_dir/topic.txt" ||
+    die "Unable to write '%s'" "$state_dir/topic.txt"
+}
+
+write_repo_redirect() {
+  local repo_root=$1
+  local topic_abs=$2
+
+  local repo_beads_dir="$repo_root/.beads"
+  local redirect_path="$repo_beads_dir/redirect"
+
+  mkdir -p "$repo_beads_dir" ||
+    die "Unable to create '%s'" "$repo_beads_dir"
+
+  printf '%s\n' "$topic_abs/.beads" > "$redirect_path" ||
+    die "Unable to write '%s'" "$redirect_path"
+}
+
+set_topic() {
+  local repo_root=$1
+  local topic_rel=$2
+  local topic_abs=$3
+
+  write_repo_redirect "$repo_root" "$topic_abs"
+  write_topic_file "$repo_root" "$topic_rel"
+}
+
+if [[ $# -eq 0 ]]
+then
+  usage
+  exit 1
+fi
+
+case $1 in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+esac
+
+cmd=$1
+shift
+
+case $cmd in
+  ls)
+    include_deactivated=0
+    prefixes=()
+    current_topic_rel=$(read_current_topic 2>/dev/null || true)
+
+    for arg in "$@"
+    do
+      if [[ $arg == --all ]]
+      then
+        include_deactivated=1
+        continue
+      fi
+      prefixes+=("$arg")
+    done
+    matches=()
+    no_matches=()
+
+    if (( ${#prefixes[@]} == 0 ))
+    then
+      while IFS= read -r topic_rel
+      do
+        matches+=("$topic_rel")
+      done < <(list_topics_under_dir "$topics_root_real" "$include_deactivated" "$include_deactivated")
+
+      if (( ${#matches[@]} == 0 ))
+      then
+        echo "no topics found" >&2
+        exit 1
+      fi
+    else
+      for prefix in "${prefixes[@]}"
+      do
+        prefix_stripped=$(strip_beads_suffix "$prefix")
+        if [[ -z $prefix_stripped ]]
+        then
+          no_matches+=("$prefix")
+          continue
+        fi
+
+        resolve_topic "$prefix_stripped"
+        prefix_abs=$topic_abs
+
+        found=0
+        if [[ -d $prefix_abs ]]
+        then
+          while IFS= read -r topic_rel
+          do
+            matches+=("$topic_rel")
+            found=1
+          done < <(list_topics_under_dir "$prefix_abs" "$include_deactivated" "$include_deactivated")
+        fi
+
+        if [[ $found -eq 0 ]]
+        then
+          no_matches+=("$prefix")
+        fi
+      done
+    fi
+
+    if (( ${#matches[@]} > 0 ))
+    then
+      if [[ $include_deactivated -eq 1 ]]
+      then
+        printf '%s\n' "${matches[@]}" |
+          LC_ALL=C sort -t $'\t' -k1,1 |
+          awk -F'\t' -v current="$current_topic_rel" '!seen[$1]++ { prefix=""; if ($1 == current) prefix="(current) "; if ($2 == "deactivated") prefix=prefix "(deactivated) "; print prefix $1 }'
+      else
+        printf '%s\n' "${matches[@]}" |
+          LC_ALL=C sort -u |
+          awk -v current="$current_topic_rel" '{ if ($0 == current) print "(current) " $0; else print $0 }'
+      fi
+    fi
+
+    if (( ${#no_matches[@]} > 0 ))
+    then
+      {
+        echo "no matches:"
+        for prefix in "${no_matches[@]}"
+        do
+          echo "  $prefix"
+        done
+      } >&2
+      exit 1
+    fi
+    ;;
+  current)
+    repo_root=$(require_repo_root)
+
+    state_dir=$(migrate_state_dir "$repo_root")
+    topic_file="$state_dir/topic.txt"
+    if [[ ! -f $topic_file ]]
+    then
+      error "No current topic set for '%s'" "$repo_root"
+      exit 1
+    fi
+
+    topic_rel=$(< "$topic_file")
+    if [[ -z $topic_rel ]]
+    then
+      error "No current topic set for '%s'" "$repo_root"
+      exit 1
+    fi
+
+    printf '%s\n' "$topic_rel"
+    ;;
+  bd)
+    if [[ $# -eq 0 ]]
+    then
+      bd
+      exit $?
+    fi
+
+    if [[ $1 == -- ]]
+    then
+      shift
+      bd "$@"
+      exit $?
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    if [[ -n $topic_input ]] && (resolve_topic "$topic_input" >/dev/null 2>&1)
+    then
+      resolve_topic "$topic_input"
+      if [[ ! -d $topic_abs ]]
+      then
+        bd "$@"
+        exit $?
+      fi
+
+      shift
+      # Strip the -- separator if present (it was only needed to
+      # disambiguate topic name from bd arguments)
+      if [[ ${1:-} == -- ]]
+      then
+        shift
+      fi
+      beads_dir="$topic_abs/.beads"
+      if [[ -d $beads_dir ]]
+      then
+        BEADS_DIR="$beads_dir" bd "$@"
+        exit $?
+      fi
+
+      (cd "$topic_abs" && bd "$@")
+      exit $?
+    fi
+
+    bd "$@"
+    ;;
+  set)
+    repo_root=$(require_repo_root)
+
+    if [[ $# -gt 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    if [[ $# -eq 0 ]]
+    then
+      state_dir=$(migrate_state_dir "$repo_root")
+      topic_file="$state_dir/topic.txt"
+      if [[ -f $topic_file ]]
+      then
+        topic_input=$(< "$topic_file")
+      else
+        list_topics
+        exit 1
+      fi
+    else
+      topic_input=$1
+    fi
+
+    topic_input=$(strip_beads_suffix "$topic_input")
+    [[ -n $topic_input ]] || die "Topic argument is empty"
+
+    resolve_topic "$topic_input"
+
+    beads_dir="$topic_abs/.beads"
+    if [[ ! -d $beads_dir ]]
+    then
+      error "Topic '%s' does not contain .beads" "$topic_abs"
+      list_topics
+      exit 1
+    fi
+
+    if topic_is_deactivated "$topic_abs"
+    then
+      warn "Topic '%s' is deactivated" "$topic_rel"
+      read -r -p "Reactivate '${topic_rel}'? (y/N) " resp
+      case $resp in
+        [yY]|[yY][eE][sS])
+          reactivate_topic "$topic_abs"
+          ;;
+        *)
+          error "Topic '%s' remains deactivated" "$topic_rel"
+          exit 1
+          ;;
+      esac
+    fi
+
+    set_topic "$repo_root" "$topic_rel" "$topic_abs"
+    ;;
+  new)
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -z $repo_root ]]
+    then
+      warn "Not in a git repo; skipping .beads/redirect setup"
+    fi
+
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$1
+
+    if [[ $topic_input == *"/.beads"* ]]
+    then
+      die "Do not include '/.beads' in topic path"
+    fi
+
+    resolve_topic "$topic_input"
+
+    beads_dir="$topic_abs/.beads"
+    if [[ -d $beads_dir ]]
+    then
+      die "Topic already initialized: '%s'" "$beads_dir"
+    fi
+
+    mkdir -p "$topic_abs" ||
+      die "Unable to create '%s'" "$topic_abs"
+
+    topic_prefix=$(prefixify "$(basename "$topic_abs")")
+    [[ -n $topic_prefix ]] ||
+      die "Unable to derive prefix from '%s'" "$(basename "$topic_abs")"
+
+    BEADS_DIR="$beads_dir" bd init \
+      --prefix "$topic_prefix" --skip-hooks -q </dev/null >&2 ||
+      exit 1
+
+    if [[ ! -d $beads_dir ]]
+    then
+      die "bd init did not create '%s'" "$beads_dir"
+    fi
+
+    # bd init may set auto-start: false if Gas Town heuristics trigger
+    # from CWD. Standalone topics always need auto-start enabled.
+    config_yaml="$beads_dir/config.yaml"
+    if [[ -f $config_yaml ]] && grep -q 'auto-start: false' "$config_yaml"
+    then
+      sed -i '' 's/auto-start: false/auto-start: true/' "$config_yaml"
+    fi
+
+    if [[ -n $repo_root ]]
+    then
+      set_topic "$repo_root" "$topic_rel" "$topic_abs"
+    fi
+    ;;
+  deactivate|rm)
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    [[ -n $topic_input ]] || die "Topic argument is empty"
+
+    resolve_topic "$topic_input"
+
+    beads_dir="$topic_abs/.beads"
+    if [[ ! -d $beads_dir ]]
+    then
+      error "Topic '%s' does not contain .beads" "$topic_abs"
+      list_topics
+      exit 1
+    fi
+
+    if topic_is_deactivated "$topic_abs"
+    then
+      warn "Topic '%s' is already deactivated" "$topic_rel"
+      exit 0
+    fi
+
+    deactivate_topic "$topic_abs"
+    ;;
+  activate)
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    [[ -n $topic_input ]] || die "Topic argument is empty"
+
+    resolve_topic "$topic_input"
+
+    beads_dir="$topic_abs/.beads"
+    if [[ ! -d $beads_dir ]]
+    then
+      error "Topic '%s' does not contain .beads" "$topic_abs"
+      list_topics
+      exit 1
+    fi
+
+    if ! topic_is_deactivated "$topic_abs"
+    then
+      warn "Topic '%s' is already active" "$topic_rel"
+      exit 0
+    fi
+
+    reactivate_topic "$topic_abs"
+    ;;
+  prune)
+    if [[ $# -eq 0 ]]
+    then
+      prunable=()
+      while IFS= read -r topic_rel
+      do
+        prunable+=("$topic_rel")
+      done < <(list_deactivated_topics_older_than_days "$topics_root_real" 14 | LC_ALL=C sort -u)
+
+      if (( ${#prunable[@]} == 0 ))
+      then
+        echo "no deactivated topics older than 14 days" >&2
+        exit 0
+      fi
+
+      printf '%s\n' "${prunable[@]}"
+      read -r -p "Remove ${#prunable[@]} deactivated topic(s)? (y/N) " resp
+      case $resp in
+        [yY]|[yY][eE][sS])
+          for topic_rel in "${prunable[@]}"
+          do
+            resolve_topic "$topic_rel"
+            if [[ -z $topic_abs || $topic_abs == "/" || $topic_abs == "$topics_root_real" ]]
+            then
+              die "Refusing to remove '%s'" "$topic_abs"
+            fi
+            rm -rf "$topic_abs" ||
+              die "Unable to remove '%s'" "$topic_abs"
+          done
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    else
+      for topic_input in "$@"
+      do
+        topic_input=$(strip_beads_suffix "$topic_input")
+        [[ -n $topic_input ]] || die "Topic argument is empty"
+
+        resolve_topic "$topic_input"
+
+        beads_dir="$topic_abs/.beads"
+        if [[ ! -d $beads_dir ]]
+        then
+          error "Topic '%s' does not contain .beads" "$topic_abs"
+          list_topics
+          exit 1
+        fi
+
+        if ! topic_is_deactivated "$topic_abs"
+        then
+          warn "Topic '%s' is active; removing anyway" "$topic_rel"
+        fi
+
+        if [[ -z $topic_abs || $topic_abs == "/" || $topic_abs == "$topics_root_real" ]]
+        then
+          die "Refusing to remove '%s'" "$topic_abs"
+        fi
+
+        rm -rf "$topic_abs" ||
+          die "Unable to remove '%s'" "$topic_abs"
+      done
+    fi
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

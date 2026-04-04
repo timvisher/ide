@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_chomp_newlines
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_chomp_newlines"
+
+# Test 1: strips leading blank lines
+run_test
+printf '\n\n\nhello\nworld\n' > "$tmpdir/t1.txt"
+"$script" "$tmpdir/t1.txt"
+result=$(cat "$tmpdir/t1.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "strips leading blank lines"
+else
+  fail "strips leading blank lines: expected '${expected}', got '${result}'"
+fi
+
+# Test 2: strips trailing blank lines
+run_test
+printf 'hello\nworld\n\n\n\n' > "$tmpdir/t2.txt"
+"$script" "$tmpdir/t2.txt"
+result=$(cat "$tmpdir/t2.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "strips trailing blank lines"
+else
+  fail "strips trailing blank lines: expected '${expected}', got '${result}'"
+fi
+
+# Test 3: strips both leading and trailing
+run_test
+printf '\n\nhello\nworld\n\n\n' > "$tmpdir/t3.txt"
+"$script" "$tmpdir/t3.txt"
+result=$(cat "$tmpdir/t3.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "strips both leading and trailing"
+else
+  fail "strips both leading and trailing: expected '${expected}', got '${result}'"
+fi
+
+# Test 4: leaves clean files alone
+run_test
+printf 'hello\nworld\n' > "$tmpdir/t4.txt"
+"$script" "$tmpdir/t4.txt"
+result=$(cat "$tmpdir/t4.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "leaves clean files alone"
+else
+  fail "leaves clean files alone: expected '${expected}', got '${result}'"
+fi
+
+# Test 5: handles multiple files
+run_test
+printf '\na\n\n' > "$tmpdir/t5a.txt"
+printf '\nb\n\n' > "$tmpdir/t5b.txt"
+"$script" "$tmpdir/t5a.txt" "$tmpdir/t5b.txt"
+ra=$(cat "$tmpdir/t5a.txt")
+rb=$(cat "$tmpdir/t5b.txt")
+if [[ $ra == "a" && $rb == "b" ]]
+then
+  pass "handles multiple files"
+else
+  fail "handles multiple files: got '${ra}' and '${rb}'"
+fi
+
+# Test 6: skips non-existent files without error
+run_test
+printf '\nc\n\n' > "$tmpdir/t6.txt"
+"$script" "$tmpdir/nonexistent.txt" "$tmpdir/t6.txt"
+result=$(cat "$tmpdir/t6.txt")
+if [[ $result == "c" ]]
+then
+  pass "skips non-existent files"
+else
+  fail "skips non-existent files: expected 'c', got '${result}'"
+fi
+
+# Test 7: empties an all-whitespace file
+run_test
+printf '\n\n   \n\n' > "$tmpdir/t7.txt"
+"$script" "$tmpdir/t7.txt"
+result=$(cat "$tmpdir/t7.txt")
+if [[ -z $result ]]
+then
+  pass "empties an all-whitespace file"
+else
+  fail "empties an all-whitespace file: expected empty, got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+# Tests for utilities.bash (maybe_continue)
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+source "$funcs_dir/logging.bash"
+source "$funcs_dir/utilities.bash"
+
+# Test 1: maybe_continue exits on 'n' input
+run_test
+result=$(echo 'n' | bash -c "
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/utilities.bash'
+  maybe_continue
+  echo 'should not reach here'
+" 2>/dev/null)
+if [[ $result != *"should not reach here"* ]]
+then
+  pass "exits on 'n' input"
+else
+  fail "exits on 'n' input: script continued past maybe_continue"
+fi
+
+# Test 2: maybe_continue continues on 'y' input
+run_test
+result=$(echo 'y' | bash -c "
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/utilities.bash'
+  maybe_continue
+  echo 'reached'
+" 2>/dev/null)
+if [[ $result == *"reached"* ]]
+then
+  pass "continues on 'y' input"
+else
+  fail "continues on 'y' input: got '${result}'"
+fi
+
+# Test 3: maybe_continue skips prompt when timvisher_EXP_force is set
+run_test
+result=$(bash -c "
+  export timvisher_EXP_force=1
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/utilities.bash'
+  maybe_continue
+  echo 'forced'
+" 2>/dev/null)
+if [[ $result == *"forced"* ]]
+then
+  pass "skips prompt when timvisher_EXP_force is set"
+else
+  fail "skips prompt when timvisher_EXP_force is set: got '${result}'"
+fi
+
+# Test 4: maybe_continue exits on empty input (default N)
+run_test
+result=$(echo '' | bash -c "
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/utilities.bash'
+  maybe_continue
+  echo 'should not reach here'
+" 2>/dev/null)
+if [[ $result != *"should not reach here"* ]]
+then
+  pass "exits on empty input (default N)"
+else
+  fail "exits on empty input: script continued past maybe_continue"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

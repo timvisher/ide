@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+cleanup_emacs --no-dry-run &&
+  if pgrep tmux >/dev/null
+  then
+    tmux kill-server
+  fi

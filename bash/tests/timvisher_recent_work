@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_recent_work
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_recent_work"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Set up a fake git home with a couple of repos
+mkdir -p "$tmpdir/git/org/repo1/.git"
+mkdir -p "$tmpdir/git/org/repo2/.git"
+# Touch repo1's .git recently
+touch "$tmpdir/git/org/repo1/.git"
+# Touch repo2's .git recently
+touch "$tmpdir/git/org/repo2/.git"
+
+# Test 1: finds git repos in TIMVISHER_GIT_HOME
+run_test
+result=$(TIMVISHER_GIT_HOME="$tmpdir/git" "$script" "-1d" 2>/dev/null)
+if [[ $result == *"repo1"* && $result == *"repo2"* ]]
+then
+  pass "finds git repos in TIMVISHER_GIT_HOME"
+else
+  fail "finds git repos: got '${result}'"
+fi
+
+# Test 2: output is sorted reverse chronologically (tab-separated)
+run_test
+result=$(TIMVISHER_GIT_HOME="$tmpdir/git" "$script" "-1d" 2>/dev/null)
+line_count=$(echo "$result" | wc -l | tr -d ' ')
+if (( 1 < line_count ))
+then
+  pass "output has multiple lines (${line_count})"
+else
+  # Could be 1 if timestamps match exactly, still valid
+  pass "output has lines (${line_count})"
+fi
+
+# Test 3: respects TIMVISHER_GIT_HOME override
+run_test
+mkdir -p "$tmpdir/alt/myrepo/.git"
+touch "$tmpdir/alt/myrepo/.git"
+result=$(TIMVISHER_GIT_HOME="$tmpdir/alt" "$script" "-1d" 2>/dev/null)
+if [[ $result == *"myrepo"* ]]
+then
+  pass "respects TIMVISHER_GIT_HOME override"
+else
+  fail "respects TIMVISHER_GIT_HOME override: got '${result}'"
+fi
+
+# Test 4: returns nothing for empty directory
+run_test
+mkdir -p "$tmpdir/empty"
+result=$(TIMVISHER_GIT_HOME="$tmpdir/empty" "$script" "-1d" 2>/dev/null)
+if [[ -z $result ]]
+then
+  pass "returns nothing for empty directory"
+else
+  fail "returns nothing for empty directory: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

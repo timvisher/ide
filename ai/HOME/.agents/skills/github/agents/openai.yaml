@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub"
+  short_description: "Draft pr.md / issue.md files for timvisher_gh"
+  default_prompt: "Use $github to draft a pr.md file for this branch."

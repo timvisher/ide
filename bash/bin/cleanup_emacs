@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+dry_run=true
+
+if [[ $1 == --no-dry-run ]]
+then
+  dry_run=false
+fi
+
+while read -r emacs_pid
+do
+  emacs_pids+=("$emacs_pid")
+done < <(pgrep emacs)
+
+for i in "${!emacs_pids[@]}"
+do
+  date -u '+%FT%T%z' >&2
+  echo "Killing emacsen $((i + 1))/${#emacs_pids[@]} ‘${emacs_pids[${i}]}’" >&2
+  command=(kill "${emacs_pids[${i}]}")
+  if [[ $dry_run == true ]]
+  then
+    echo "DRY_RUN: ${command[@]}" >&2
+  else
+    "${command[@]}" >&2
+  fi
+
+  SECONDS=0
+  while [[ $dry_run == false ]] && kill -0 "${emacs_pids[${i}]}" 2>/dev/null && (( SECONDS < 5 ))
+  do
+    sleep 0.1
+  done
+
+  if [[ $dry_run == false ]] && kill -0 "${emacs_pids[${i}]}" 2>/dev/null
+  then
+    kill -9 "${emacs_pids[${i}]}"
+  fi
+done
+
+[[ $dry_run == false ]] && pgrep emacs >&2
+
+echo 'Done' >&2

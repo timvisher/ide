@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+# Tests for org-outline, org-extract, org-todos, org-add-heading
+# Static validation tests (emacs batch with init.el is too slow for CI).
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
+
+# Test 1: no employer-specific references in any script
+# Patterns to guard against are read from system extensions config.
+# If no config exists, the test is a no-op (nothing to guard against).
+run_test
+employer_patterns_file="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/guard_patterns"
+found_leak=false
+if [[ -r $employer_patterns_file ]]
+then
+  patterns=$(paste -sd '|' "$employer_patterns_file")
+  for tool in org-outline org-extract org-todos org-add-heading
+  do
+    if grep -qiE "$patterns" "$bin_dir/$tool"
+    then
+      found_leak=true
+      break
+    fi
+  done
+fi
+if [[ $found_leak == false ]]
+then
+  pass "no employer-specific references in any org tool"
+else
+  fail "found employer-specific reference"
+fi
+
+# Test 2: all tools show usage on missing args
+run_test
+all_usage=true
+for tool in org-outline org-extract org-todos org-add-heading
+do
+  result=$("$bin_dir/$tool" 2>&1 || true)
+  if [[ $result != *"Usage"* ]]
+  then
+    all_usage=false
+    fail "$tool does not show usage: got '${result}'"
+    break
+  fi
+done
+if [[ $all_usage == true ]]
+then
+  pass "all tools show usage on missing args"
+fi
+
+# Test 3: all tools error on missing file
+run_test
+all_error=true
+for tool in org-outline org-extract org-todos org-add-heading
+do
+  result=$("$bin_dir/$tool" /nonexistent/file.org 2>&1 || true)
+  if [[ $result != *"not found"* ]]
+  then
+    # org-extract and org-add-heading need 2+ args; provide a dummy
+    if [[ $tool == org-extract || $tool == org-add-heading ]]
+    then
+      result=$("$bin_dir/$tool" /nonexistent/file.org "heading" 2>&1 || true)
+    fi
+    if [[ $result != *"not found"* ]]
+    then
+      all_error=false
+      fail "$tool does not error on missing file: got '${result}'"
+      break
+    fi
+  fi
+done
+if [[ $all_error == true ]]
+then
+  pass "all tools error on missing file"
+fi
+
+# Test 4: all tools are executable
+run_test
+all_exec=true
+for tool in org-outline org-extract org-todos org-add-heading
+do
+  if ! [[ -x $bin_dir/$tool ]]
+  then
+    all_exec=false
+    fail "$tool is not executable"
+    break
+  fi
+done
+if [[ $all_exec == true ]]
+then
+  pass "all tools are executable"
+fi
+
+# Test 5: all tools use emacs --batch
+run_test
+all_batch=true
+for tool in org-outline org-extract org-todos org-add-heading
+do
+  if ! grep -q 'emacs --batch' "$bin_dir/$tool"
+  then
+    all_batch=false
+    fail "$tool does not use emacs --batch"
+    break
+  fi
+done
+if [[ $all_batch == true ]]
+then
+  pass "all tools use emacs --batch"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

@@ -1,0 +1,1 @@
+tell script "Output Device" to setOutputDevice("External Headphones")

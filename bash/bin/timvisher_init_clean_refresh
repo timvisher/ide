@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+timvisher_cleanup_shell_procs
+
+# Must survive terminal shutdown since it kills our shell
+nohup osascript -e 'tell script "timvisher Terminal" to shutdown()' >/dev/null 2>&1 &

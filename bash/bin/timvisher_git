@@ -1,0 +1,1149 @@
+#!/usr/bin/env bash
+
+# Worktree-based git clone/worktree manager.
+# Uses separate cache/live roots.
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+
+# Migrate old cache root on first use
+old_cache_root=${HOME}/.cache/timvisher_EXP_git_worktrees
+new_cache_root=${HOME}/.cache/timvisher_git_worktrees
+if [[ -d $old_cache_root && ! -d $new_cache_root ]]
+then
+  warn "Migrating cache '%s' → '%s'" "$old_cache_root" "$new_cache_root"
+  mv "$old_cache_root" "$new_cache_root" ||
+    die "Unable to migrate cache '%s' → '%s'" "$old_cache_root" "$new_cache_root"
+
+  # Rewrite worktree .git files that reference the old cache path
+  live_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  shopt -s globstar nullglob
+  for gitfile in "$live_dir"/**/.git
+  do
+    [[ -f $gitfile ]] || continue
+    contents=$(< "$gitfile")
+    case $contents in
+      *"$old_cache_root"*)
+        new_contents=${contents//$old_cache_root/$new_cache_root}
+        printf '%s\n' "$new_contents" > "$gitfile"
+        warn "  Rewrote '%s'" "$gitfile"
+        ;;
+    esac
+  done
+  shopt -u globstar nullglob
+elif [[ -d $new_cache_root && ! -d $old_cache_root ]]
+then
+  # Cache already migrated but worktree .git files may still reference old path.
+  # Run a one-shot repair: check a sentinel file to avoid re-scanning every time.
+  sentinel=${new_cache_root}/.gitfile_migration_done
+  if [[ ! -f $sentinel ]]
+  then
+    live_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
+    repaired=0
+    shopt -s globstar nullglob
+    for gitfile in "$live_dir"/**/.git
+    do
+      [[ -f $gitfile ]] || continue
+      contents=$(< "$gitfile")
+      case $contents in
+        *"$old_cache_root"*)
+          new_contents=${contents//$old_cache_root/$new_cache_root}
+          printf '%s\n' "$new_contents" > "$gitfile"
+          warn "Repaired stale path in '%s'" "$gitfile"
+          repaired=1
+          ;;
+      esac
+    done
+    shopt -u globstar nullglob
+    if (( repaired ))
+    then
+      warn "Worktree .git files repaired after cache migration"
+    fi
+    : > "$sentinel"
+  fi
+fi
+
+repo_trunks_dir=${new_cache_root}/repo_trunks
+live_repo_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
+hooks_dir=${config_dir}/bash/bin/timvisher_git_hooks
+
+# Load org aliases from config file
+typeset -A org_aliases
+org_aliases_file=${config_dir}/git_org_aliases
+if [[ -r $org_aliases_file ]]
+then
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    [[ -z $line ]] && continue
+    [[ $line == \#* ]] && continue
+    key=${line%%=*}
+    value=${line#*=}
+    org_aliases[$key]=$value
+  done < "$org_aliases_file"
+fi
+
+# Load fork user from config file
+fork_user=
+fork_user_file=${config_dir}/git_fork_user
+if [[ -r $fork_user_file ]]
+then
+  fork_user=$(< "$fork_user_file")
+  fork_user=${fork_user%$'\n'}
+fi
+
+is_savannah_source() {
+  [[ $1 == *git.savannah.gnu.org* ]]
+}
+
+savannah_repo_name() {
+  local source=$1
+
+  is_savannah_source "$source" || return 1
+
+  local repo=${source##*/}
+  repo=${repo%/}
+  repo=${repo%.git}
+
+  [[ -n $repo ]] || return 1
+
+  printf '%s' "$repo"
+}
+
+normalize_savannah_url() {
+  local source=$1
+  local url=${source%/}
+
+  if [[ $url != *.git ]]; then
+    url="${url}.git"
+  fi
+
+  printf '%s' "$url"
+}
+
+mkdir -p "$repo_trunks_dir" "$live_repo_dir" ||
+  die "Unable to create cache/live roots"
+
+get_org() {
+  local source=$1 org
+
+  case $source in
+    *git.savannah.gnu.org*)
+      org=gnu
+      ;;
+    https://github.com/*/*)
+      org=${source#https://github.com/}
+      org=${org%%/*}
+      ;;
+    git@github.com:*/*)
+      org=${source#git@github.com:}
+      org=${org%%/*}
+      ;;
+    */*)
+      org=${source%%/*}
+      ;;
+    *)
+      die "get_org: Unsupported source ‘${source}’"
+      ;;
+  esac
+
+  if [[ -z $org ]]
+  then
+    die "get_org: Unable to extract org from '${source}'"
+  fi
+
+  printf '%s' "${org_aliases[${org}]:-${org}}"
+}
+
+get_repo() {
+  local source=$1 repo
+
+  case $source in
+    *git.savannah.gnu.org*)
+      repo=$(savannah_repo_name "$source") ||
+        die "get_repo: Unable to parse repo from '${source}'"
+      ;;
+    https://github.com/*/*)
+      repo=${source#https://github.com/*/}
+      repo=${repo%%/*}
+      ;;
+    git@github.com:*/*)
+      repo=${source#git@github.com:*/}
+      repo=${repo%%/*}
+      repo=${repo%%.git}
+      ;;
+    */*)
+      repo=${source#*/}
+      repo=${repo%%/*}
+      ;;
+    *)
+      die "get_repo: Unsupported source ‘${source}’"
+      ;;
+  esac
+
+  printf '%s' "$repo"
+}
+
+normalize_pr_url() {
+  local source=$1
+
+  if [[ $source =~ ^(https://github.com/[^/]+/[^/]+/pull/[0-9]+) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  printf '%s' "$source"
+}
+
+pr_head_ref_name() {
+  local source=$1 head_ref
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  source=$(normalize_pr_url "$source")
+  head_ref=$(gh pr view "$source" --json headRefName --jq .headRefName 2>/dev/null) ||
+    return 1
+
+  [[ -n $head_ref ]] || return 1
+
+  printf '%s' "$head_ref"
+}
+
+pr_number_from_url() {
+  local source=$1
+
+  source=$(normalize_pr_url "$source")
+
+  if [[ $source =~ /pull/([0-9]+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+pr_base_repo_spec() {
+  local source=$1
+
+  source=$(normalize_pr_url "$source")
+
+  if [[ $source =~ ^https://github.com/([^/]+/[^/]+)/pull/[0-9]+$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+pr_head_repo_spec() {
+  local source=$1 head_repo_spec
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  source=$(normalize_pr_url "$source")
+  head_repo_spec=$(gh pr view "$source" --json headRepository,headRepositoryOwner \
+    --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null) ||
+    return 1
+
+  # GitHub returns null for headRepository.name when the fork has been
+  # deleted.  jq renders "owner/" + null as "owner/" — reject that.
+  [[ -n $head_repo_spec && $head_repo_spec != */ ]] || return 1
+
+  printf '%s' "$head_repo_spec"
+}
+
+# Safely remove the upstream remote only when no branches track it.
+# In a worktree setup all worktrees share remotes; removing upstream
+# would strip branch.*.remote=upstream from branches in other worktrees.
+safe_remove_upstream() {
+  local real_git
+  real_git="$(brew --prefix)"/bin/git
+
+  local branches_tracking_upstream
+  branches_tracking_upstream=$("$real_git" config --get-regexp '^branch\..*\.remote$' 2>/dev/null | grep ' upstream$' || true)
+  if [[ -z $branches_tracking_upstream ]]
+  then
+    git remote remove upstream 2>/dev/null || true
+  else
+    info "Keeping 'upstream' remote: other branches still track it"
+  fi
+}
+
+upstream_override_for_repo() {
+  local repo_spec=$1 repo_name override_file line key value override
+
+  repo_name=${repo_spec##*/}
+
+  if [[ -r .upstream.repo ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line ]] && continue
+      [[ $line == \#* ]] && continue
+      override=$line
+      break
+    done < .upstream.repo
+  fi
+
+  if [[ -z $override ]]; then
+    override_file=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/upstream_overrides
+    if [[ -r $override_file ]]; then
+      while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line ]] && continue
+        [[ $line == \#* ]] && continue
+        key=${line%%=*}
+        value=${line#*=}
+        if [[ $key == "$repo_spec" || $key == "$repo_name" ]]; then
+          override=$value
+          break
+        fi
+      done < "$override_file"
+    fi
+  fi
+
+  [[ -n $override ]] || return 1
+  printf '%s' "$override"
+}
+
+maybe_execute_hook() {
+  local org=$1 repo=$2 hook=$3
+
+  [[ -n $org ]] || die 'org is unset'
+  [[ -n $repo ]] || die 'repo is unset'
+  [[ -n $hook ]] || die 'hook is inset'
+
+  local full_hook=${hooks_dir}/${org}/${repo}/${hook}
+
+  if [[ -x $full_hook ]]; then
+    "$full_hook" >&2
+  fi
+}
+
+cache_trunk() {
+  local source=$1
+  local org=$(get_org "$source") ||
+    die "Unable to get org from ‘${source}’"
+  local repo=$(get_repo "$source") ||
+    die "Unable to repo from ‘${source}’"
+  local org_dir="${repo_trunks_dir}/${org}"
+  local repo_dir="${org_dir}/${repo}"
+
+  mkdir -p "$org_dir" ||
+    die "cache_trunk: Unable to create directory ‘${org_dir}’"
+
+  local org_repo="${org}/${repo}"
+  local clone_source
+  if is_savannah_source "$source"; then
+    clone_source=$(normalize_savannah_url "$source")
+  elif [[ $source == git@* ]]; then
+    clone_source="git@github.com:${org_repo}.git"
+  else
+    clone_source="https://github.com/${org_repo}"
+  fi
+
+  if [[ -d $repo_dir ]]; then
+    info "${org_repo} is already cached"
+    local fetch_output
+    if fetch_output=$(command git -C "${repo_dir}" fetch --prune origin 2>&1)
+    then
+      printf '%s\n' "$fetch_output" >&2
+    else
+      printf '%s\n' "$fetch_output" >&2
+      if [[ $fetch_output == *"case-insensitive filesystem"* ]]
+      then
+        warn "cache_trunk: Case-insensitive ref collision in ${org_repo}; migrating to reftable"
+        if command git -C "${repo_dir}" refs migrate --ref-format=reftable >&2
+        then
+          info "cache_trunk: Reftable migration succeeded; retrying fetch"
+          command git -C "${repo_dir}" fetch --prune origin >&2 ||
+            warn "cache_trunk: Fetch still failed after reftable migration for ${org_repo}; continuing with stale cache"
+        else
+          warn "cache_trunk: Reftable migration failed for ${org_repo}; continuing with stale cache"
+        fi
+      else
+        warn "cache_trunk: Unable to fetch ${org_repo}; continuing with stale cache"
+      fi
+    fi
+    {
+      command git -C "${repo_dir}" remote set-head origin -a >&2 &&
+        if ! command git -C "${repo_dir}" symbolic-ref -q HEAD >/dev/null 2>&1
+        then
+          info "cache_trunk: HEAD already detached; skipping checkout --detach"
+        else
+          command git -C "${repo_dir}" -c core.hooksPath=/dev/null checkout --detach >&2
+        fi
+    } ||
+      warn "cache_trunk: Unable to update HEAD for ${org_repo}; continuing with stale cache"
+  else
+    info "${org_repo} is not cached"
+    command git -C "$org_dir" clone "${clone_source}" >&2 ||
+      die "cache_trunk: Unable to clone ‘${clone_source}’"
+
+    command git -C "${repo_dir}" remote set-head origin -a >&2 ||
+      die "cache_trunk: Unable to set origin HEAD for ‘${org_repo}’"
+    command git -C "${repo_dir}" -c core.hooksPath=/dev/null checkout --detach >&2 ||
+      die "cache_trunk: Unable to detach HEAD for '${org_repo}'"
+
+    maybe_execute_hook "${org}" "${repo}" post-cache
+  fi
+
+  printf '%s' "${repo_dir}"
+}
+
+get_trunk_branch_name_from_cache() {
+  local trunk_cache=$1
+
+  [[ -n $trunk_cache ]] ||
+    die "Passed an empty trunk_cache which should be impossible"
+
+  local origin_head
+  origin_head=$(command git -C "$trunk_cache" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) ||
+    origin_head=$(command git -C "$trunk_cache" rev-parse --abbrev-ref origin/HEAD 2>/dev/null) ||
+    {
+      command git -C "$trunk_cache" remote set-head origin -a >&2 ||
+        die "Unable to set origin HEAD in cache ‘${trunk_cache}’"
+      origin_head=$(command git -C "$trunk_cache" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) ||
+        die "Unable to resolve origin HEAD in cache ‘${trunk_cache}’"
+    }
+
+  printf '%s' "${origin_head#refs/remotes/origin/}"
+}
+
+configure_remotes_and_tracking() {
+  local trunk_cache=$1 source=$2
+  local repo_spec owner parent default_branch pr_url override_repo
+  local origin_url
+  origin_url=$(git remote get-url origin 2>/dev/null) || true
+  if [[ $origin_url == *git.savannah.gnu.org* ]]; then
+    info "Origin is Savannah; skipping GitHub remote configuration."
+    return
+  fi
+
+
+  if [[ $source == https://github.com/*/*/pull/* ]]; then
+    configure_remotes_for_pr "$source"
+    return
+  fi
+
+  if [[ -r pr.md.url ]]; then
+    pr_url=$(< pr.md.url)
+    pr_url=$(normalize_pr_url "$pr_url")
+    if [[ $pr_url == https://github.com/*/*/pull/* ]]; then
+      local pr_base pr_head
+      pr_base=$(pr_base_repo_spec "$pr_url") || true
+      pr_head=$(pr_head_repo_spec "$pr_url") || true
+      if [[ -n $pr_base && -n $pr_head && $pr_base != "$pr_head" ]]; then
+        # Cross-repo PR (e.g. fork → parent): let the PR helper set
+        # both origin and upstream from the PR metadata.
+        configure_remotes_for_pr "$pr_url"
+        return
+      fi
+      # Same-repo PR (or unable to resolve head): fall through to the
+      # regular fork-detection logic so soft forks still get an upstream.
+    fi
+  fi
+
+  repo_spec=$(printf '%s' "$origin_url" | sed -E 's#^https?://github.com/|git@github.com:##; s#\.git$##')
+
+  if [[ -z "$repo_spec" ]]; then
+    info "No origin remote URL found; assuming local-only repository. Skipping remote configuration."
+    return
+  fi
+
+  if override_repo=$(upstream_override_for_repo "$repo_spec"); then
+    if [[ $override_repo != "$repo_spec" ]]; then
+      info "Using upstream override '${override_repo}' for '${repo_spec}'"
+      if git remote get-url upstream >/dev/null 2>&1; then
+        git remote set-url upstream "https://github.com/${override_repo}.git"
+      else
+        git remote add upstream "https://github.com/${override_repo}.git"
+      fi
+      git fetch upstream >&2 || die "Unable to fetch from upstream remote"
+      default_branch=$(gh repo view "$override_repo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      info "Setting tracking to 'upstream/${default_branch}'"
+      git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
+      return
+    fi
+  fi
+
+  owner=${repo_spec%%/*}
+
+  if [[ -n "$fork_user" && "$owner" == "$fork_user" ]]; then
+    info "Owner is '%s', performing fork detection..." "$fork_user"
+
+    if ! gh repo set-default "$repo_spec" >&2; then
+      warn "Failed to set default gh repo, fork detection might fail."
+    fi
+
+    local fork_info
+    fork_info=$(gh repo view --json isFork,parent,repositoryTopics --jq '{parent: (if .isFork then "\(.parent.owner.login)/\(.parent.name)" else "" end), soft_fork: ([(.repositoryTopics // [])[].name] | any(. == "soft-fork"))}' 2>/dev/null) || true
+    parent=$(printf '%s' "$fork_info" | jq -r '.parent // empty' 2>/dev/null) || true
+    local soft_fork
+    soft_fork=$(printf '%s' "$fork_info" | jq -r '.soft_fork // empty' 2>/dev/null) || true
+  fi
+
+  if [[ -n "$parent" ]]; then
+    info "Repository is a fork of '${parent}'. Configuring 'upstream' remote."
+    if git remote get-url upstream >/dev/null 2>&1; then
+      git remote set-url upstream "https://github.com/${parent}.git"
+    else
+      git remote add upstream "https://github.com/${parent}.git"
+    fi
+    git fetch upstream >&2 || die "Unable to fetch from upstream remote"
+
+    if [[ $soft_fork == true ]]; then
+      # Soft fork: upstream is for fetching only; track origin.
+      local origin_default
+      origin_default=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
+      info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${origin_default}'"
+      git branch -u "origin/${origin_default}" >&2 || die "Unable to track origin/${origin_default}"
+      touch x.timvisher_git.soft-fork
+    else
+      default_branch=$(gh repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      info "Setting tracking to 'upstream/${default_branch}'"
+      git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
+      rm -f x.timvisher_git.soft-fork
+    fi
+  else
+    info "Repository is not a fork%s. Ensuring 'origin' is tracked." "${fork_user:+ or not owned by '${fork_user}'}"
+    local trunk_branch_name
+    trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
+    info "Setting tracking to 'origin/${trunk_branch_name}'"
+    git branch -u "origin/${trunk_branch_name}" >&2 || die "Unable to track origin/${trunk_branch_name}"
+    safe_remove_upstream
+    rm -f x.timvisher_git.soft-fork
+  fi
+}
+
+configure_remotes_for_pr() {
+  local source=$1
+  local base_repo_spec head_repo_spec
+
+  base_repo_spec=$(pr_base_repo_spec "$source") ||
+    die "Unable to parse PR base repo from '${source}'"
+
+  head_repo_spec=$(pr_head_repo_spec "$source") ||
+    die "Unable to resolve PR head repo for '${source}'; ensure gh is installed and authenticated"
+
+  info "Configuring PR remotes: origin=${head_repo_spec} upstream=${base_repo_spec}"
+
+  if git remote get-url origin >/dev/null 2>&1; then
+    git remote set-url origin "https://github.com/${head_repo_spec}.git"
+  else
+    git remote add origin "https://github.com/${head_repo_spec}.git"
+  fi
+  git fetch origin >&2 || die "Unable to fetch from origin remote"
+
+  if [[ $head_repo_spec != "$base_repo_spec" ]]; then
+    if git remote get-url upstream >/dev/null 2>&1; then
+      git remote set-url upstream "https://github.com/${base_repo_spec}.git"
+    else
+      git remote add upstream "https://github.com/${base_repo_spec}.git"
+    fi
+    git fetch upstream >&2 || die "Unable to fetch from upstream remote"
+  else
+    safe_remove_upstream
+  fi
+}
+
+sanitize_branch_name() {
+  local name=$1
+
+  # Replace leading dots in each path component with underscores
+  # (git check-ref-format rejects components starting with '.').
+  name=$(printf '%s' "$name" | sed -E 's#(^|/)\.+#\1_#g')
+
+  # Remove any resulting empty components (e.g. foo//bar → foo/bar)
+  while [[ $name == *//* ]]
+  do
+    name=${name//\/\//\/}
+  done
+
+  # Strip leading/trailing slashes
+  name=${name#/}
+  name=${name%/}
+
+  printf '%s' "$name"
+}
+
+branch_path_for_source() {
+  local source=$1 trunk_cache=$2
+  local branch_dir branch org repo head_repo_spec
+
+  case $source in
+    *git.savannah.gnu.org*)
+      org=$(get_org "$source")
+      repo=$(get_repo "$source")
+      branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
+      branch_dir="${org}/${repo}/${branch}"
+      ;;
+    https://github.com/*/*/pull/*)
+      head_repo_spec=$(pr_head_repo_spec "$source") ||
+        die "Unable to resolve PR head repo for '${source}'; ensure gh is installed and authenticated"
+      org=$(get_org "$head_repo_spec")
+      repo=$(get_repo "$head_repo_spec")
+      branch=$(pr_head_ref_name "$source") ||
+        die "Unable to resolve PR head branch for ‘${source}’; ensure gh is installed and authenticated"
+      branch_dir="${org}/${repo}/${branch}"
+      ;;
+    https://github.com/*/*/tree/*)
+      branch_dir=${source#https://github.com/}
+      org=$(get_org "$branch_dir")
+      repo=$(get_repo "$source")
+      branch_dir=${branch_dir/tree\//}
+      branch_dir="${org}/${branch_dir#*/}"
+      branch=${branch_dir##*/}
+      ;;
+    https://github.com/*/*)
+      local trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
+      org=$(get_org "$source")
+      repo=$(get_repo "$source")
+      branch_dir="${org}/${repo}/${trunk_branch_name}"
+      branch=$trunk_branch_name
+      ;;
+    */*/*)
+      org=$(get_org "$source")
+      source=${source#*/}
+      repo=${source%%/*}
+      source=${source#*/}
+      branch=${source}
+      branch_dir="${org}/${repo}/${branch}"
+      ;;
+    */*)
+      org=$(get_org "$source")
+      source=${source#*/}
+      repo=${source%%/*}
+      source=${source#*/}
+      branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
+      branch_dir="${org}/${repo}/${branch}"
+      ;;
+    *)
+      die "Unsupported source ‘${source}’"
+      ;;
+  esac
+
+  branch=$(sanitize_branch_name "$branch")
+  branch_dir=$(sanitize_branch_name "$branch_dir")
+
+  printf '%s;%s' "$branch_dir" "$branch"
+}
+
+ensure_worktree() {
+  local source=$1
+  local trunk_cache=$(cache_trunk "$source")
+
+  local branch_dir_and_branch
+  branch_dir_and_branch=$(branch_path_for_source "$source" "$trunk_cache")
+  local branch_dir=${branch_dir_and_branch%%;*}
+  local branch=${branch_dir_and_branch#*;}
+
+  [[ -n $branch_dir ]] ||
+    die "Unable to derive branch_dir"
+
+  [[ -n $branch ]] ||
+    die "Unable to derive branch"
+
+  local branch_dir_abs="${live_repo_dir}/${branch_dir}"
+  local branch_dir_parent=${branch_dir_abs%/*}
+  local branch_dir_exists=0
+
+  if [[ -d $branch_dir_abs ]]; then
+    branch_dir_exists=1
+  fi
+
+  if [[ $source == https://github.com/*/*/pull/* ]] && (( branch_dir_exists )); then
+    local existing_branch
+    existing_branch=$(git -C "${branch_dir_abs}" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+
+    if [[ -n $existing_branch && $existing_branch != "HEAD" ]]
+    then
+      # Worktree exists and has a real branch checked out — reuse it.
+      info "Using existing worktree for PR head branch ‘${existing_branch}’ at ‘${branch_dir_abs}’"
+      printf '%s' "$branch_dir_abs"
+      return 0
+    fi
+
+    # Directory exists but is broken (detached HEAD from a failed prior
+    # attempt, or not a valid git worktree).  Clean it up so we can
+    # start fresh.
+    warn "Removing broken PR worktree at ‘${branch_dir_abs}’"
+    command git -C "${trunk_cache}" worktree remove --force "$branch_dir_abs" >&2 2>/dev/null || true
+    rm -rf "$branch_dir_abs" 2>/dev/null || true
+    branch_dir_exists=0
+  fi
+
+  # If this is a PR, check whether the branch is already checked out in a
+  # worktree at a different path.  If so, move it to the expected location
+  # rather than failing on the duplicate-branch error.
+  if [[ $source == https://github.com/*/*/pull/* && $branch_dir_exists == 0 ]]; then
+    local existing_wt=""
+    local wt_line wt_path
+    while IFS= read -r wt_line
+    do
+      case $wt_line in
+        "worktree "*)  wt_path=${wt_line#worktree } ;;
+        "branch refs/heads/${branch}") existing_wt=$wt_path ; break ;;
+      esac
+    done < <(command git -C "${trunk_cache}" worktree list --porcelain 2>/dev/null)
+
+    if [[ -n $existing_wt && -d $existing_wt ]]
+    then
+      info "Branch ‘%s’ already checked out at ‘%s’; moving to ‘%s’" "$branch" "$existing_wt" "$branch_dir_abs"
+      mkdir -p "$branch_dir_parent" ||
+        die "Unable to create branch directory parent ‘${branch_dir_parent}’"
+      command git -C "${trunk_cache}" worktree move "$existing_wt" "$branch_dir_abs" >&2 ||
+        die "Unable to move worktree from ‘%s’ to ‘%s’" "$existing_wt" "$branch_dir_abs"
+      branch_dir_exists=1
+    fi
+  fi
+
+  mkdir -p "$branch_dir_parent" ||
+    die "Unable to create branch directory parent ‘${branch_dir_parent}’"
+
+  if ! [[ -d ${branch_dir_abs} ]]; then
+    info "Creating worktree ‘${branch_dir_abs}’ from cache ‘${trunk_cache}’"
+    command git -C "${trunk_cache}" worktree prune >&2
+    command git -C "${trunk_cache}" worktree add --detach "${branch_dir_abs}" "$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
+      die "Unable to add worktree ‘${branch_dir_abs}’"
+
+    maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-initial-branch-dir-creation
+  else
+    info "Worktree already exists at ${branch_dir_abs}"
+  fi
+
+  (
+    cd "$branch_dir_abs" ||
+      die "Unable to cd to ‘${branch_dir_abs}’"
+
+    local errors
+
+    if [[ $source == https://github.com/*/*/pull/* ]]; then
+      local current_branch
+      current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+
+      if [[ $current_branch != "HEAD" ]]
+      then
+        # Branch is already checked out (existing worktree).  No need to
+        # run gh pr checkout — it would try to fast-forward and fail if
+        # the local branch has diverged from the remote PR tip.
+        info "PR branch ‘%s’ already checked out; skipping gh pr checkout" "$current_branch"
+      else
+        local pr_url
+        pr_url=$(normalize_pr_url "$source")
+        gh pr checkout "$pr_url" >&2 ||
+          {
+            error "Failed to checkout PR source ‘${source}’"
+            errors=1
+          }
+      fi
+    else
+      if git show-ref --verify --quiet "refs/heads/${branch}"; then
+        command git checkout "${branch}" >&2 ||
+          warn "git checkout ${branch} exited non-zero (post-checkout hook failure?)"
+      elif git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+        command git checkout --track -b "${branch}" "origin/${branch}" >&2 ||
+          warn "git checkout --track -b ${branch} origin/${branch} exited non-zero"
+      else
+        local trunk_branch
+        trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
+        command git checkout --track -b "${branch}" "origin/${trunk_branch}" >&2 ||
+          warn "git checkout --track -b ${branch} origin/${trunk_branch} exited non-zero"
+      fi
+
+      # Verify we actually landed on the right branch regardless of exit code
+      # (post-checkout hooks can cause non-zero exit even on successful checkout).
+      local actual_branch
+      actual_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+      if [[ $actual_branch != "$branch" ]]
+      then
+        error "Expected branch '${branch}' but HEAD is on '${actual_branch}'"
+        errors=1
+      fi
+    fi
+
+    if [[ -z $errors ]]; then
+      configure_remotes_and_tracking "$trunk_cache" "$source"
+      maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-make-branch-dir
+      printf '%s' "$branch_dir_abs"
+    else
+      exit 1
+    fi
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Lightweight tracking setup for repos not managed by the worktree system.
+# Only acts when tracking is unset — never overrides existing tracking.
+# ---------------------------------------------------------------------------
+
+ensure_tracking() {
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+  [[ $branch != HEAD ]] || return 0
+
+  # If tracking already resolves, leave it alone.
+  if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1
+  then
+    return 0
+  fi
+
+  # Also bail if tracking is configured but the ref is temporarily missing
+  # (e.g. another worktree removed the remote).
+  local tracking_remote
+  tracking_remote=$(git config "branch.${branch}.remote" 2>/dev/null) || true
+  if [[ -n $tracking_remote ]]
+  then
+    return 0
+  fi
+
+  # No tracking at all.  Prefer upstream when available (regular fork),
+  # otherwise origin.
+  local target_remote=origin
+  if git remote get-url upstream >/dev/null 2>&1
+  then
+    target_remote=upstream
+  fi
+
+  local target_ref
+  target_ref=$(git symbolic-ref -q --short "refs/remotes/${target_remote}/HEAD" 2>/dev/null) || true
+  if [[ -z $target_ref ]]
+  then
+    local name
+    for name in main master
+    do
+      if git show-ref --verify --quiet "refs/remotes/${target_remote}/${name}"
+      then
+        target_ref="${target_remote}/${name}"
+        break
+      fi
+    done
+  fi
+
+  [[ -n $target_ref ]] || return 0
+
+  git branch --set-upstream-to="$target_ref" "$branch" >/dev/null 2>&1 ||
+    warn 'Unable to set upstream for %s to %s' "$branch" "$target_ref"
+}
+
+# ---------------------------------------------------------------------------
+# Ensure an existing repo (not managed by the worktree cache system) has
+# correct tracking.  Best-effort fetch, then lightweight tracking setup.
+# ---------------------------------------------------------------------------
+
+ensure_existing_repo() {
+  local repo_dir=$1
+  repo_dir=$(cd "$repo_dir" && pwd -P) || die "Cannot resolve '%s'" "$repo_dir"
+
+  (
+    cd "$repo_dir" || die "Cannot cd to '%s'" "$repo_dir"
+
+    # Best-effort fetch — tolerate network failures.
+    git fetch origin >&2 || true
+    if git remote get-url upstream >/dev/null 2>&1
+    then
+      git fetch upstream >&2 || true
+    fi
+
+    # Determine if this is a managed worktree (under our cache system).
+    local common_dir
+    common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || {
+      printf '%s' "$repo_dir"
+      return 0
+    }
+    common_dir=$(cd "$common_dir" && pwd -P 2>/dev/null) || {
+      printf '%s' "$repo_dir"
+      return 0
+    }
+
+    if [[ $common_dir == "${repo_trunks_dir}/"* ]]
+    then
+      # Managed worktree — run full remote/tracking configuration.
+      local origin_url
+      origin_url=$(git remote get-url origin 2>/dev/null) || true
+      configure_remotes_and_tracking "$common_dir" "${origin_url:-}"
+    else
+      # External repo — lightweight tracking setup.
+      ensure_tracking
+    fi
+  )
+
+  printf '%s' "$repo_dir"
+}
+
+# ---------------------------------------------------------------------------
+# Soft fork helpers
+# ---------------------------------------------------------------------------
+
+# Detect the trunk (default) branch name for a repo.
+# Works from any worktree or the bare cache.
+detect_trunk_branch() {
+  local dir=${1:-.}
+
+  local common_dir
+  common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
+    die "detect_trunk_branch: not a git repo: '%s'" "$dir"
+  common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
+
+  get_trunk_branch_name_from_cache "$common_dir"
+}
+
+# Find an existing worktree checked out on the given branch.
+# Prints the worktree path, or nothing if none exists.
+find_worktree_for_branch() {
+  local dir=${1:-.}
+  local branch=$2
+
+  [[ -n $branch ]] || die "find_worktree_for_branch: branch required"
+
+  git -C "$dir" worktree list --porcelain |
+    awk -v branch="refs/heads/${branch}" \
+      '/^worktree /{wt=substr($0,10)} /^branch / && $2 == branch {print wt}'
+}
+
+# Derive the expected worktree path for a branch from the bare repo location.
+derive_worktree_path() {
+  local dir=${1:-.}
+  local branch=$2
+
+  [[ -n $branch ]] || die "derive_worktree_path: branch required"
+
+  local common_dir
+  common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
+    die "derive_worktree_path: not a git repo: '%s'" "$dir"
+  common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
+
+  local rel_path="${common_dir#"${repo_trunks_dir}/"}"
+  printf '%s' "${live_repo_dir}/${rel_path}/${branch}"
+}
+
+# ---------------------------------------------------------------------------
+# sync-trunk: merge upstream/<trunk> into origin/<trunk> for soft forks
+#
+# Finds (or creates) the trunk worktree, fetches, merges upstream, and
+# pushes.  Non-interactive: exits non-zero on merge conflicts so the
+# caller can arrange for agent-driven resolution.  On conflict, prints
+# the trunk worktree path to stdout.
+# ---------------------------------------------------------------------------
+
+sync_trunk() {
+  local dir=${1:-.}
+  dir=$(cd "$dir" && pwd -P) || die "sync_trunk: invalid path '%s'" "$dir"
+
+  if ! git -C "$dir" remote get-url upstream >/dev/null 2>&1
+  then
+    info "sync_trunk: '%s' has no upstream remote; nothing to do" "$dir"
+    return 0
+  fi
+
+  if [[ ! -f ${dir}/x.timvisher_git.soft-fork ]]
+  then
+    info "sync_trunk: '%s' is not a soft fork; nothing to do" "$dir"
+    return 0
+  fi
+
+  local trunk_branch
+  trunk_branch=$(detect_trunk_branch "$dir") ||
+    die "sync_trunk: cannot detect trunk branch for '%s'" "$dir"
+
+  local trunk_wt
+  trunk_wt=$(find_worktree_for_branch "$dir" "$trunk_branch")
+
+  if [[ -z $trunk_wt ]]
+  then
+    trunk_wt=$(derive_worktree_path "$dir" "$trunk_branch")
+    info "sync_trunk: creating trunk worktree at '%s'" "$trunk_wt"
+    local trunk_wt_parent=${trunk_wt%/*}
+    mkdir -p "$trunk_wt_parent" ||
+      die "sync_trunk: cannot create parent dir '%s'" "$trunk_wt_parent"
+
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)
+    common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
+    command git -C "$common_dir" worktree prune >&2
+    command git -C "$common_dir" worktree add "$trunk_wt" "$trunk_branch" >&2 ||
+      die "sync_trunk: cannot create worktree at '%s'" "$trunk_wt"
+  fi
+
+  info "sync_trunk: trunk worktree at '%s' (branch '%s')" "$trunk_wt" "$trunk_branch"
+
+  git -C "$trunk_wt" fetch --all --quiet >&2 ||
+    warn "sync_trunk: fetch had warnings"
+
+  local current_branch
+  current_branch=$(git -C "$trunk_wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+  if [[ $current_branch != "$trunk_branch" ]]
+  then
+    die "sync_trunk: expected branch '%s' but found '%s' in '%s'" \
+      "$trunk_branch" "$current_branch" "$trunk_wt"
+  fi
+
+  if git -C "$trunk_wt" merge-base --is-ancestor "upstream/${trunk_branch}" HEAD 2>/dev/null
+  then
+    info "sync_trunk: origin/%s is already up to date with upstream/%s" \
+      "$trunk_branch" "$trunk_branch"
+    return 0
+  fi
+
+  info "sync_trunk: merging upstream/%s into %s" "$trunk_branch" "$trunk_branch"
+  if ! git -C "$trunk_wt" merge "upstream/${trunk_branch}" \
+    -m "Merge upstream/${trunk_branch} into ${trunk_branch}" >&2
+  then
+    warn "sync_trunk: merge conflicts in '%s'; aborting" "$trunk_wt"
+    git -C "$trunk_wt" merge --abort >&2 2>/dev/null || true
+    printf '%s' "$trunk_wt"
+    return 1
+  fi
+
+  info "sync_trunk: pushing %s to origin" "$trunk_branch"
+  git -C "$trunk_wt" push origin "$trunk_branch" >&2 ||
+    die "sync_trunk: push to origin failed for '%s'" "$trunk_wt"
+
+  info "sync_trunk: done — origin/%s updated" "$trunk_branch"
+}
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+clone_usage() {
+  cat >&2 <<'EOF'
+Usage: timvisher_git clone <target>
+
+Idempotently produce a worktree for <target> with correct remotes and
+tracking.  Prints the worktree path to stdout.  Safe to call repeatedly
+on the same target — existing worktrees are verified and repaired.
+
+Targets
+-------
+
+  Local path (existing git repo)
+    timvisher_git clone /path/to/repo
+    timvisher_git clone ~/projects/my-app
+
+    Best-effort fetch, then:
+    - Managed worktree (bare cache under ~/.cache/timvisher_git_worktrees):
+      full remote/tracking reconfiguration via configure_remotes_and_tracking.
+    - External repo: lightweight tracking setup (only acts when tracking is
+      completely unset; never overrides existing tracking).
+
+  GitHub repo URL
+    timvisher_git clone https://github.com/org/repo
+
+    Clones into ~/git/<org>/<repo>/<trunk-branch>/.
+    Configures remotes and tracking based on fork status.
+
+  GitHub repo URL with branch
+    timvisher_git clone https://github.com/org/repo/tree/branch-name
+
+    Clones into ~/git/<org>/<repo>/<branch-name>/.
+
+  GitHub PR URL
+    timvisher_git clone https://github.com/org/repo/pull/123
+
+    Checks out the PR's head branch into ~/git/<head-org>/<repo>/<branch>/.
+    Configures origin → head repo, upstream → base repo (if cross-fork).
+
+  SSH URL
+    timvisher_git clone git@github.com:org/repo.git
+
+    Same as HTTPS repo URL.
+
+  Savannah URL
+    timvisher_git clone https://git.savannah.gnu.org/git/project.git
+
+    Clones into ~/git/gnu/<project>/<trunk-branch>/.
+
+  Shorthand: org/repo
+    timvisher_git clone octocat/hello-world
+
+    Clones into ~/git/<org>/<repo>/<trunk-branch>/.
+    Org aliases are expanded (e.g. "oc" → "octocat" if configured in
+    ~/.config/timvisher/ide/git_org_aliases).
+
+  Shorthand: org/repo/branch[/parts...]
+    timvisher_git clone octocat/hello-world/timvisher/scratch/_trunk_
+
+    Clones into ~/git/<org>/<repo>/<branch/parts>/.
+    Creates the branch from origin/<trunk> if it doesn't exist yet.
+
+Remote & tracking configuration
+--------------------------------
+
+After creating (or verifying) the worktree, clone configures remotes
+and tracking based on the relationship between the repo and the
+configured fork_user (~/.config/timvisher/ide/git_fork_user):
+
+  Not a fork (or owner != fork_user)
+    origin  → the repo itself
+    tracks  → origin/<trunk>
+
+  Regular fork (owner == fork_user, GitHub says isFork, no "soft-fork" topic)
+    origin  → the fork (e.g. timvisher-dd/beads)
+    upstream → the parent (e.g. steveyegge/beads)
+    tracks  → upstream/<trunk>
+
+  Soft fork (owner == fork_user, has "soft-fork" GitHub topic)
+    origin  → the fork (e.g. timvisher-dd/acp.el-plus)
+    upstream → the parent (e.g. xenodium/acp.el)
+    tracks  → origin/<trunk>    (upstream changes are merged into
+              origin/<trunk> via `timvisher_git sync-trunk`, not rebased)
+    cookie  → x.timvisher_git.soft-fork written to worktree root
+
+  Upstream override (.upstream.repo file or ~/.config/.../upstream_overrides)
+    origin  → the repo itself
+    upstream → the override target
+    tracks  → upstream/<trunk>
+
+  PR (cross-fork)
+    origin  → PR head repo
+    upstream → PR base repo
+    tracks  → determined by PR head repo's fork status
+
+Other subcommands
+-----------------
+
+  timvisher_git sync-trunk <path>
+    For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
+    Finds or creates the trunk worktree, merges upstream/<trunk> into
+    <trunk>, and pushes to origin.  Non-interactive; exits non-zero on
+    merge conflicts and prints the trunk worktree path to stdout so the
+    caller can arrange for agent-driven resolution.
+
+  timvisher_git <git-args...>
+    Passes through to git (with agent safety wrappers).
+EOF
+}
+
+clone() {
+  local target=${1:-}
+
+  if [[ -z $target ]]
+  then
+    clone_usage
+    return 1
+  fi
+
+  # If target is an explicit path (absolute, or starts with ./ ../ ~),
+  # and it is an existing git working tree, run lightweight setup.
+  # We must NOT match org/repo shorthands like "oc/hello-world" that happen
+  # to collide with existing directories after alias expansion.
+  case $target in
+    /* | ./* | ../* | ~*)
+      if [[ -d $target ]] && git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1
+      then
+        ensure_existing_repo "$target"
+        return
+      fi
+      ;;
+  esac
+
+  ensure_worktree "$target"
+}
+
+case $1 in
+  clone)      clone "${@:2}" ;;
+  sync-trunk) sync_trunk "${@:2}" ;;
+  *)          git "$@" ;;
+esac

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Org Mode"
+  short_description: "Org file editing workflow and org-* helper tools"
+  default_prompt: "Use org-* helper tools and structure-preserving practices to edit org-mode files."

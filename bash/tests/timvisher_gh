@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_gh
+# Heavy mocking since this interacts with git, gh, and macOS open.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_gh"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+real_git="$(brew --prefix)/bin/git"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Set up a fake git repo
+mkdir -p "$tmpdir/repo"
+cd "$tmpdir/repo"
+"$real_git" init -q .
+"$real_git" config user.email "test@test.com"
+"$real_git" config user.name "Test"
+"$real_git" remote add origin https://github.com/testuser/testrepo.git
+echo "init" > README.md
+"$real_git" add README.md
+"$real_git" commit -q -m "init"
+
+# Create mock commands
+mkdir -p "$tmpdir/mockbin"
+
+cat > "$tmpdir/mockbin/git" <<MOCK
+#!/usr/bin/env bash
+if [[ \$1 == rev-parse || \$1 == status || \$1 == remote ]]
+then
+  "$real_git" "\$@"
+elif [[ \$1 == push ]]
+then
+  echo "mock-git-push \$*" >> "\$MOCK_LOG"
+else
+  "$real_git" "\$@"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/git"
+
+cat > "$tmpdir/mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "mock-gh $*" >> "$MOCK_LOG"
+if [[ $1 == repo && $2 == view ]]
+then
+  echo "main"
+elif [[ $1 == pr && $2 == create ]]
+then
+  echo "https://github.com/testuser/testrepo/pull/1"
+elif [[ $1 == pr && $2 == edit ]]
+then
+  echo "mock-pr-edit"
+elif [[ $1 == issue && $2 == create ]]
+then
+  echo "https://github.com/testuser/testrepo/issues/1"
+elif [[ $1 == issue && $2 == edit ]]
+then
+  echo "mock-issue-edit"
+elif [[ $1 == pr && $2 == comment ]]
+then
+  echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
+then
+  echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
+elif [[ $1 == api && $2 == --method && $3 == HEAD ]]
+then
+  # Simulate comment exists (HEAD check)
+  true
+elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
+then
+  # Successful DELETE returns empty body
+  true
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/gh"
+
+cat > "$tmpdir/mockbin/open" <<'MOCK'
+#!/usr/bin/env bash
+echo "mock-open $*" >> "$MOCK_LOG"
+MOCK
+chmod +x "$tmpdir/mockbin/open"
+
+test_path="$tmpdir/mockbin:$PATH"
+
+# --- dispatch tests ---
+
+# Test: no args prints usage and exits nonzero
+run_test
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script'" 2>&1 || true)
+if [[ $result == *"Usage:"* ]]
+then
+  pass "no args prints usage"
+else
+  fail "no args prints usage: got '${result}'"
+fi
+
+# Test: --help prints usage and exits zero
+run_test
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' --help" 2>&1)
+if [[ $result == *"Usage:"* ]]
+then
+  pass "--help prints usage"
+else
+  fail "--help prints usage: got '${result}'"
+fi
+
+# Test: unknown subcommand prints usage and exits nonzero
+run_test
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' bogus" 2>&1 || true)
+if [[ $result == *"Usage:"* ]]
+then
+  pass "unknown subcommand prints usage"
+else
+  fail "unknown subcommand prints usage: got '${result}'"
+fi
+
+# --- pr tests ---
+
+# Test: pr exits if pr.md doesn't exist and pr.md.url doesn't exist
+run_test
+export MOCK_LOG="$tmpdir/log_pr_nofile"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "pr exits if pr.md doesn't exist"
+else
+  fail "pr exits if pr.md doesn't exist: got '${result}'"
+fi
+
+# Test: pr opens existing pr.md.url if present
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_existing"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true
+if grep -q 'mock-open.*https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "pr opens existing pr.md.url"
+else
+  fail "pr opens existing pr.md.url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+
+# Test: pr creates PR from pr.md when git status is clean
+run_test
+cat > "$tmpdir/repo/pr.md" <<'PR'
+My PR Title
+
+This is the body of the PR.
+PR
+export MOCK_LOG="$tmpdir/log_pr_create"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true
+if grep -q 'mock-git-push' "$MOCK_LOG" && grep -q 'mock-gh pr create' "$MOCK_LOG"
+then
+  pass "pr creates PR from pr.md"
+else
+  fail "pr creates PR from pr.md: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+
+# Test: pr exits if git status is dirty
+run_test
+echo "dirty" > "$tmpdir/repo/untracked.txt"
+"$real_git" add "$tmpdir/repo/untracked.txt"
+export MOCK_LOG="$tmpdir/log_pr_dirty"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true)
+if [[ $result == *"not clean"* ]]
+then
+  pass "pr exits if git status is dirty"
+else
+  fail "pr exits if git status dirty: got '${result}'"
+fi
+"$real_git" reset -q HEAD "$tmpdir/repo/untracked.txt"
+rm -f "$tmpdir/repo/untracked.txt"
+rm -f "$tmpdir/repo/pr.md"
+
+# --- issue tests ---
+
+# Test: issue exits if issue.md doesn't exist and issue.md.url doesn't exist
+run_test
+export MOCK_LOG="$tmpdir/log_issue_nofile"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "issue exits if issue.md doesn't exist"
+else
+  fail "issue exits if issue.md doesn't exist: got '${result}'"
+fi
+
+# Test: issue opens existing issue.md.url if present
+run_test
+echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
+export MOCK_LOG="$tmpdir/log_issue_existing"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue" 2>&1 || true
+if grep -q 'mock-open.*https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
+then
+  pass "issue opens existing issue.md.url"
+else
+  fail "issue opens existing issue.md.url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/issue.md.url"
+
+# Test: issue creates issue from issue.md
+run_test
+cat > "$tmpdir/repo/issue.md" <<'ISSUE'
+My Issue Title
+
+This is the body of the issue.
+ISSUE
+export MOCK_LOG="$tmpdir/log_issue_create"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue" 2>&1 || true
+if grep -q 'mock-gh issue create' "$MOCK_LOG"
+then
+  pass "issue creates issue from issue.md"
+else
+  fail "issue creates issue from issue.md: got $(cat "$MOCK_LOG")"
+fi
+# Verify no git push happened (issues don't need push)
+if grep -q 'mock-git-push' "$MOCK_LOG"
+then
+  fail "issue should not git push"
+else
+  pass "issue does not git push"
+  ((tests++)) || true
+fi
+rm -f "$tmpdir/repo/issue.md.url"
+rm -f "$tmpdir/repo/issue.md"
+
+# --- pr edit tests ---
+
+# Test: pr edit exits if pr.md.url doesn't exist
+run_test
+rm -f "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_edit_nourl"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
+if [[ $result == *"does not exist"* ]]
+then
+  pass "pr edit exits if pr.md.url doesn't exist"
+else
+  fail "pr edit exits if pr.md.url doesn't exist: got '${result}'"
+fi
+
+# Test: pr edit exits if pr.md doesn't exist
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+rm -f "$tmpdir/repo/pr.md"
+export MOCK_LOG="$tmpdir/log_pr_edit_nomd"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "pr edit exits if pr.md doesn't exist"
+else
+  fail "pr edit exits if pr.md doesn't exist: got '${result}'"
+fi
+
+# Test: pr edit calls gh pr edit with url from pr.md.url
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+cat > "$tmpdir/repo/pr.md" <<'PR'
+Updated PR Title
+
+Updated body of the PR.
+PR
+export MOCK_LOG="$tmpdir/log_pr_edit_ok"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true
+if grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "pr edit calls gh pr edit with correct url"
+else
+  fail "pr edit calls gh pr edit with correct url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/pr.md"
+
+# --- issue edit tests ---
+
+# Test: issue edit exits if issue.md.url doesn't exist
+run_test
+rm -f "$tmpdir/repo/issue.md.url"
+export MOCK_LOG="$tmpdir/log_issue_edit_nourl"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
+if [[ $result == *"does not exist"* ]]
+then
+  pass "issue edit exits if issue.md.url doesn't exist"
+else
+  fail "issue edit exits if issue.md.url doesn't exist: got '${result}'"
+fi
+
+# Test: issue edit exits if issue.md doesn't exist
+run_test
+echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
+rm -f "$tmpdir/repo/issue.md"
+export MOCK_LOG="$tmpdir/log_issue_edit_nomd"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "issue edit exits if issue.md doesn't exist"
+else
+  fail "issue edit exits if issue.md doesn't exist: got '${result}'"
+fi
+
+# Test: issue edit calls gh issue edit with url from issue.md.url
+run_test
+echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
+cat > "$tmpdir/repo/issue.md" <<'ISSUE'
+Updated Issue Title
+
+Updated body of the issue.
+ISSUE
+export MOCK_LOG="$tmpdir/log_issue_edit_ok"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true
+if grep -q 'mock-gh issue edit https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
+then
+  pass "issue edit calls gh issue edit with correct url"
+else
+  fail "issue edit calls gh issue edit with correct url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/issue.md.url" "$tmpdir/repo/issue.md"
+
+# --- pr merge tests ---
+
+# Test: pr merge - no hardcoded employer-specific references
+# Patterns to guard against are read from system extensions config.
+run_test
+employer_patterns_file="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/guard_patterns"
+found_leak=false
+if [[ -r $employer_patterns_file ]]
+then
+  patterns=$(paste -sd '|' "$employer_patterns_file")
+  if grep -qiE "$patterns" "$script"
+  then
+    found_leak=true
+  fi
+fi
+if [[ $found_leak == false ]]
+then
+  pass "pr merge: no employer-specific references in script"
+else
+  fail "pr merge: found employer-specific references in script"
+fi
+
+# Test: pr merge - uses configurable gh-pr-merge-comment-repos file
+run_test
+if grep -q 'gh-pr-merge-comment-repos' "$script"
+then
+  pass "pr merge: uses configurable comment-repos config file"
+else
+  fail "pr merge: does not reference gh-pr-merge-comment-repos config"
+fi
+
+# Test: pr merge - config-based comment-merge routing
+run_test
+config_tmpdir=$(mktemp -d)
+mkdir -p "$config_tmpdir/.config/timvisher/ide"
+echo "myorg/special-repo" > "$config_tmpdir/.config/timvisher/ide/gh-pr-merge-comment-repos"
+
+comment_merge_config="$config_tmpdir/.config/timvisher/ide/gh-pr-merge-comment-repos"
+repo_slug_lc="myorg/special-repo"
+if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
+then
+  pass "pr merge: config matches repo slug case-insensitively"
+else
+  fail "pr merge: config did not match repo slug"
+fi
+
+# Test: pr merge - config does not match non-listed repos
+run_test
+repo_slug_lc="myorg/normal-repo"
+if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
+then
+  fail "pr merge: config incorrectly matched unlisted repo"
+else
+  pass "pr merge: config does not match unlisted repos"
+fi
+rm -rf "$config_tmpdir"
+
+# Test: pr merge - exits if pr.md.url is missing
+run_test
+rm -f "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_merge_nourl"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr merge" 2>&1 || true)
+if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+then
+  pass "pr merge: exits if pr.md.url is missing"
+else
+  fail "pr merge: exits if pr.md.url missing: got '${result}'"
+fi
+
+# --- comment tests ---
+
+# Test: comment exits if no file argument given
+run_test
+export MOCK_LOG="$tmpdir/log_comment_noarg"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment" 2>&1 || true)
+if [[ $result == *"requires a <file> argument"* ]]
+then
+  pass "comment exits if no file argument given"
+else
+  fail "comment exits if no file argument given: got '${result}'"
+fi
+
+# Test: comment exits if file is not readable
+run_test
+export MOCK_LOG="$tmpdir/log_comment_nofile"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment /nonexistent/file.md" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "comment exits if file is not readable"
+else
+  fail "comment exits if file is not readable: got '${result}'"
+fi
+
+# Test: comment opens existing comment.md.url if present
+run_test
+echo "test comment body" > "$tmpdir/repo/comment.md"
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-99" > "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_existing"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>&1 || true
+if grep -q 'mock-open.*issuecomment-99' "$MOCK_LOG"
+then
+  pass "comment opens existing comment.md.url"
+else
+  fail "comment opens existing comment.md.url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/comment.md.url"
+
+# Test: comment posts new comment using pr.md.url as PR source
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+echo "new comment body" > "$tmpdir/repo/comment.md"
+export MOCK_LOG="$tmpdir/log_comment_create"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>&1 || true
+if grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "comment posts new comment using pr.md.url"
+else
+  fail "comment posts new comment using pr.md.url: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+
+# Test: comment posts new comment using --pull-request flag
+run_test
+echo "flag comment body" > "$tmpdir/repo/comment.md"
+export MOCK_LOG="$tmpdir/log_comment_flag"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md" 2>&1 || true
+if grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/99' "$MOCK_LOG"
+then
+  pass "comment posts new comment using --pull-request flag"
+else
+  fail "comment posts new comment using --pull-request flag: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/comment.md.url"
+
+# Test: comment stores URL in comment.md.url after posting
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+echo "store url body" > "$tmpdir/repo/comment.md"
+rm -f "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_url_store"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>&1 || true
+if [[ -r "$tmpdir/repo/comment.md.url" ]]
+then
+  pass "comment stores URL in comment.md.url"
+else
+  fail "comment stores URL in comment.md.url"
+fi
+rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+
+# --- comment edit tests ---
+
+# Test: comment edit exits if no file argument given
+run_test
+export MOCK_LOG="$tmpdir/log_comment_edit_noarg"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit" 2>&1 || true)
+if [[ $result == *"requires a <file> argument"* ]]
+then
+  pass "comment edit exits if no file argument given"
+else
+  fail "comment edit exits if no file argument given: got '${result}'"
+fi
+
+# Test: comment edit exits if file is not readable
+run_test
+export MOCK_LOG="$tmpdir/log_comment_edit_nofile"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit /nonexistent/file.md" 2>&1 || true)
+if [[ $result == *"not readable"* ]]
+then
+  pass "comment edit exits if file is not readable"
+else
+  fail "comment edit exits if file is not readable: got '${result}'"
+fi
+
+# Test: comment edit exits if .url file doesn't exist
+run_test
+echo "edit body" > "$tmpdir/repo/comment.md"
+rm -f "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_edit_nourl"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit comment.md" 2>&1 || true)
+if [[ $result == *"does not exist"* ]]
+then
+  pass "comment edit exits if .url file doesn't exist"
+else
+  fail "comment edit exits if .url file doesn't exist: got '${result}'"
+fi
+
+# Test: comment edit calls gh api PATCH with correct path
+run_test
+echo "updated comment body" > "$tmpdir/repo/comment.md"
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_edit_ok"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit comment.md" 2>&1 || true
+if grep -q 'mock-gh api --method PATCH /repos/testuser/testrepo/issues/comments/12345' "$MOCK_LOG"
+then
+  pass "comment edit calls gh api PATCH with correct path"
+else
+  fail "comment edit calls gh api PATCH with correct path: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/comment.md" "$tmpdir/repo/comment.md.url"
+
+# --- comment delete tests ---
+
+# Test: comment delete exits if no file argument given
+run_test
+export MOCK_LOG="$tmpdir/log_comment_delete_noarg"
+touch "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete" 2>&1 || true)
+if [[ $result == *"requires a <file> argument"* ]]
+then
+  pass "comment delete exits if no file argument given"
+else
+  fail "comment delete exits if no file argument given: got '${result}'"
+fi
+
+# Test: comment delete skips if .url file doesn't exist (no gh api call made)
+run_test
+rm -f "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_delete_nourl"
+touch "$MOCK_LOG"
+PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" 2>&1 || true
+if ! grep -q 'mock-gh api' "$MOCK_LOG"
+then
+  pass "comment delete skips if .url file doesn't exist"
+else
+  fail "comment delete skips if .url file doesn't exist: got $(cat "$MOCK_LOG")"
+fi
+
+# Test: comment delete calls gh api DELETE and removes .url file (with --force)
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_delete_ok"
+touch "$MOCK_LOG"
+echo y | PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" 2>&1 || true
+if grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
+then
+  pass "comment delete calls gh api DELETE"
+else
+  fail "comment delete calls gh api DELETE: got $(cat "$MOCK_LOG")"
+fi
+
+# Test: comment delete removes .url file after successful deletion
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+export MOCK_LOG="$tmpdir/log_comment_delete_cleanup"
+touch "$MOCK_LOG"
+echo y | PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" 2>&1 || true
+if [[ ! -r "$tmpdir/repo/comment.md.url" ]]
+then
+  pass "comment delete removes .url file after deletion"
+else
+  fail "comment delete removes .url file after deletion: .url file still exists"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

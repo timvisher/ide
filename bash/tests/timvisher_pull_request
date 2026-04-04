@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_pull_request dead entry
+# Verifies the dead function emits an error pointing to timvisher_gh pr.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+# Test 1: timvisher_pull_request is defined as a dead function
+run_test
+result=$(bash -c "
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/timvisher_pull_request.dead.bash'
+  timvisher_pull_request 2>&1
+" || true)
+if [[ $result == *"timvisher_gh pr"* ]]
+then
+  pass "dead entry points to timvisher_gh pr"
+else
+  fail "dead entry points to timvisher_gh pr: got '${result}'"
+fi
+
+# Test 2: timvisher_pull_request is no longer a bin script
+run_test
+bindir="$(cd "$(dirname "$0")/../bin" && pwd)"
+if [[ ! -e "$bindir/timvisher_pull_request" ]]
+then
+  pass "bin script removed"
+else
+  fail "bin script still exists at ${bindir}/timvisher_pull_request"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

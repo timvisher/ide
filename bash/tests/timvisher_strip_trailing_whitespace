@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_strip_trailing_whitespace
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_strip_trailing_whitespace"
+
+# Test 1: strips trailing spaces
+run_test
+printf 'hello   \nworld  \n' > "$tmpdir/t1.txt"
+"$script" "$tmpdir/t1.txt"
+result=$(cat "$tmpdir/t1.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "strips trailing spaces"
+else
+  fail "strips trailing spaces: expected '${expected}', got '${result}'"
+fi
+
+# Test 2: strips trailing tabs
+run_test
+printf 'hello\t\t\nworld\t\n' > "$tmpdir/t2.txt"
+"$script" "$tmpdir/t2.txt"
+result=$(cat "$tmpdir/t2.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "strips trailing tabs"
+else
+  fail "strips trailing tabs: expected '${expected}', got '${result}'"
+fi
+
+# Test 3: leaves clean files alone
+run_test
+printf 'hello\nworld\n' > "$tmpdir/t3.txt"
+"$script" "$tmpdir/t3.txt"
+result=$(cat "$tmpdir/t3.txt")
+expected=$'hello\nworld'
+if [[ $result == "$expected" ]]
+then
+  pass "leaves clean files alone"
+else
+  fail "leaves clean files alone: expected '${expected}', got '${result}'"
+fi
+
+# Test 4: handles multiple files
+run_test
+printf 'a   \n' > "$tmpdir/t4a.txt"
+printf 'b   \n' > "$tmpdir/t4b.txt"
+"$script" "$tmpdir/t4a.txt" "$tmpdir/t4b.txt"
+ra=$(cat "$tmpdir/t4a.txt")
+rb=$(cat "$tmpdir/t4b.txt")
+if [[ $ra == "a" && $rb == "b" ]]
+then
+  pass "handles multiple files"
+else
+  fail "handles multiple files: got '${ra}' and '${rb}'"
+fi
+
+# Test 5: skips non-existent files without error
+run_test
+printf 'c   \n' > "$tmpdir/t5.txt"
+"$script" "$tmpdir/nonexistent.txt" "$tmpdir/t5.txt"
+result=$(cat "$tmpdir/t5.txt")
+if [[ $result == "c" ]]
+then
+  pass "skips non-existent files"
+else
+  fail "skips non-existent files: expected 'c', got '${result}'"
+fi
+
+# Test 6: follows symlinks
+run_test
+printf 'sym   \n' > "$tmpdir/t6_target.txt"
+ln -sf "$tmpdir/t6_target.txt" "$tmpdir/t6_link.txt"
+"$script" "$tmpdir/t6_link.txt"
+result=$(cat "$tmpdir/t6_target.txt")
+if [[ $result == "sym" ]]
+then
+  pass "follows symlinks"
+else
+  fail "follows symlinks: expected 'sym', got '${result}'"
+fi
+
+# Test 7: no-op with zero arguments
+run_test
+"$script" && pass "no-op with zero arguments" || fail "no-op with zero arguments"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

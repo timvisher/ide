@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+for f in "$@"
+do
+  # Skip files that don't exist (e.g., deleted files)
+  if ! [[ -r $f ]]
+  then
+    continue
+  fi
+
+  t=$(gsed -z 's/^\s*//; s/\s*$//' "$f")
+
+  if [[ -n $t ]]
+  then
+    cat > "$f" <<<"$t"
+  else
+    printf '' > "$f"
+  fi
+done

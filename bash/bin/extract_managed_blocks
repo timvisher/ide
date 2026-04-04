@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+# Extracts MANAGED BLOCK sections from bashrc and moves them to
+# system-extensions so they get sourced via the override mechanism.
+#
+# Safe to re-run: detects existing blocks in the target and replaces them.
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+repo_root="$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --show-toplevel)"
+bashrc="${repo_root}/bash/bashrc"
+target_dir="${HOME}/.config/timvisher/ide/bash/functions"
+target_file="${target_dir}/managed-blocks.bash"
+
+if [[ ! -f $bashrc ]]
+then
+    die 'bashrc not found at '%s'' "$bashrc"
+fi
+
+if [[ ! -d $target_dir ]]
+then
+    die 'target directory '%s' does not exist' "$target_dir"
+fi
+
+# Extract all managed blocks (everything between BEGIN...MANAGED BLOCK
+# and END...MANAGED BLOCK, inclusive)
+blocks=()
+in_block=false
+current_block=()
+
+while IFS= read -r line
+do
+    if [[ $line == *'BEGIN '*'MANAGED BLOCK'* ]]
+    then
+        in_block=true
+        current_block=()
+    fi
+
+    if [[ $in_block == true ]]
+    then
+        current_block+=("$line")
+    fi
+
+    if [[ $line == *'END '*'MANAGED BLOCK'* ]]
+    then
+        in_block=false
+        blocks+=("$(printf '%s\n' "${current_block[@]}")")
+        current_block=()
+    fi
+done < "$bashrc"
+
+if [[ 0 == "${#blocks[@]}" ]]
+then
+    info 'No managed blocks found in '%s'' "$bashrc"
+    exit 0
+fi
+
+info 'Found %d managed block(s) in '%s'' "${#blocks[@]}" "$bashrc"
+
+# Write blocks to system-extensions
+{
+    printf '# Managed blocks extracted from bashrc by extract_managed_blocks\n'
+    printf '# Re-run ~/bin/extract_managed_blocks after Ansible or SCFW updates\n'
+    printf '\n'
+    for block in "${blocks[@]}"
+    do
+        printf '%s\n\n' "$block"
+    done
+} > "$target_file"
+
+info 'Wrote managed blocks to '%s'' "$target_file"
+
+# Remove managed blocks from bashrc (including blank lines immediately after)
+tmpfile=$(mktemp)
+in_block=false
+skip_blank=false
+
+while IFS= read -r line
+do
+    if [[ $line == *'BEGIN '*'MANAGED BLOCK'* ]]
+    then
+        in_block=true
+        continue
+    fi
+
+    if [[ $line == *'END '*'MANAGED BLOCK'* ]]
+    then
+        in_block=false
+        skip_blank=true
+        continue
+    fi
+
+    if [[ $in_block == true ]]
+    then
+        continue
+    fi
+
+    if [[ $skip_blank == true ]]
+    then
+        skip_blank=false
+        if [[ -z $line ]]
+        then
+            continue
+        fi
+    fi
+
+    printf '%s\n' "$line"
+done < "$bashrc" > "$tmpfile"
+
+cp "$tmpfile" "$bashrc"
+rm "$tmpfile"
+
+info 'Removed managed blocks from '%s'' "$bashrc"
+info 'Done. Verify with: source ~/.bashrc'

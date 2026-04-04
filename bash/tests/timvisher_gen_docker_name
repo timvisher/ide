@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_gen_docker_name
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_gen_docker_name"
+
+# Test 1: outputs a name in adjective_scientist format
+run_test
+result=$("$script")
+if [[ $result == *_* ]]
+then
+  pass "outputs adjective_scientist format"
+else
+  fail "outputs adjective_scientist format: got '${result}'"
+fi
+
+# Test 2: output is a single line
+run_test
+line_count=$("$script" | wc -l)
+if (( line_count == 1 ))
+then
+  pass "output is a single line"
+else
+  fail "output is a single line: got ${line_count} lines"
+fi
+
+# Test 3: output contains only lowercase and underscore
+run_test
+result=$("$script")
+if [[ $result =~ ^[a-z_]+$ ]]
+then
+  pass "output is lowercase with underscores"
+else
+  fail "output is lowercase with underscores: got '${result}'"
+fi
+
+# Test 4: generates different names (run 10 times, expect at least 2 unique)
+run_test
+names=()
+for i in {1..10}
+do
+  names+=("$("$script")")
+done
+unique_count=$(printf '%s\n' "${names[@]}" | sort -u | wc -l)
+if (( 1 < unique_count ))
+then
+  pass "generates varied names (${unique_count} unique in 10 runs)"
+else
+  fail "generates varied names: got only ${unique_count} unique in 10 runs"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

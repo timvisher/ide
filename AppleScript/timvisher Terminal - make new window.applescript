@@ -1,0 +1,1 @@
+tell script "timvisher Terminal" to makeNewWindow()

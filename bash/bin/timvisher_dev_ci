@@ -1,0 +1,1354 @@
+#!/usr/bin/env bash
+
+# shellcheck source-path=SCRIPTDIR/../../
+
+# Local CI orchestrator for dev integration branches.
+#
+# Discovers dev integration worktrees from a registry file
+# (~/.config/timvisher/dev-ci/branches) listing worktree paths.
+# Resets+rebases their feature branches in parallel, then integrates
+# and tests.  Uses ntmux3 -d to create standard tmux sessions and
+# sends work to the :admin window.
+#
+# Subcommands:
+#   run [path ...]    (default) full pipeline: upgrade -> sync -> test -> integrate -> test
+#   status [path ...] show current status of all worktrees
+#   clean [path ...]  remove status files
+#
+# When paths are given, only those dev branches are processed instead
+# of discovering via marker files.
+#   __sync        (internal) agent: pull --rebase, resolve conflicts, test
+#   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
+#   __ensure_tests (internal) agent creates run-tests.sh if missing
+#
+# Hook scripts (run-tests.sh, post-integrate.sh) are stored in:
+#   bash/bin/timvisher_dev_ci.config/repo scripts/<org>/<repo>/<branch>/
+# If a legacy x.<hook> file exists in a worktree, it is auto-migrated
+# to the config dir on first use.
+#
+# Extension hooks (pre-run-tests.sh, pre-post-integrate.sh) are loaded
+# from ~/.config/timvisher/ide/dev_ci_hooks/<org>/<repo>/<branch>/ and
+# run before the base hook.  Use these for environment-specific setup
+# like VPN connectivity waits.
+
+source ~/.functions/logging.bash ||
+    {
+        echo "Unable to source logging functions" >&2
+        exit 1
+    }
+
+parallel git -C '{}' pull ::: ~/git/xenodium/*/main ||
+  die "Couldn't pull xenodium mains"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+DEV_CI_REGISTRY=${TIMVISHER_DEV_CI_REGISTRY:-${HOME}/.config/timvisher/dev-ci/branches}
+MARKER_FILENAME=x.dev-integration-branch
+STATUS_FILENAME=x.dev-ci.status
+POLL_INTERVAL_SECONDS=5
+SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
+SELF_DIR=$(dirname "$SELF")
+REPO_SCRIPTS_DIR="${SELF_DIR}/timvisher_dev_ci.config/repo scripts"
+REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/dev_ci_hooks"
+
+BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Push the current branch to its push remote with --force-with-lease.
+# Resolves the push remote via pushRemote > remote.pushDefault > tracking
+# remote > origin, then pushes HEAD (same-named branch) to avoid the
+# "upstream branch name doesn't match" error when tracking differs from
+# the local branch name (e.g., soft forks tracking origin/main).
+push_to_remote() {
+    local dir=$1
+    local err=$(mktemp)
+    local push_remote=$(
+      exec 2>"$err"
+      branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
+      git -C "$dir" config "branch.${branch}.pushRemote" ||
+        git -C "$dir" config remote.pushDefault ||
+        git -C "$dir" config "branch.${branch}.remote" ||
+        printf origin
+               )
+
+    if [[ -z $push_remote ]]
+    then
+      error_stdout 'push_remote detection stderr: %s' < "$err"
+      die "Couldn't detect push_remote. Error logs ↑"
+    fi
+
+    rm "$err"
+
+    info "push: pushing '%s' to '%s' with --force-with-lease" "$dir" "$push_remote"
+    if ! git -C "$dir" push --force-with-lease "$push_remote" HEAD
+    then
+        warn "push: --force-with-lease failed for '%s'" "$dir"
+        return 1
+    fi
+}
+
+# Read x.active-worktrees and emit uncommented, expanded paths.
+read_active_worktrees() {
+    local file=$1
+
+    [[ -f $file ]] || return 0
+
+    while IFS= read -r line
+    do
+        # skip blank lines and comments
+        [[ -z $line || $line == '#'* ]] && continue
+        # expand leading ~/ in the input line (literal match, not shell expansion)
+        # shellcheck disable=SC2088
+        if [[ $line == "~/"* ]]
+        then
+            line="${HOME}/${line#"~/"}"
+        fi
+        printf '%s\n' "$line"
+    done < "$file"
+}
+
+# ---------------------------------------------------------------------------
+# Repo script helpers: map worktree paths to checked-in config scripts
+# ---------------------------------------------------------------------------
+
+# Given a worktree path under ~/git/<org>/<repo>/<branch-parts...>/,
+# emit the corresponding config-dir path for a hook script.
+# Usage: repo_script_path "/path/to/worktree" "run-tests.sh"
+repo_script_path() {
+    local worktree_path=$1
+    local script_name=$2
+
+    # Strip $TIMVISHER_GIT_HOME/ prefix to get org/repo/branch-parts.
+    local git_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/"
+    if [[ $worktree_path != "${git_base}"* ]]
+    then
+        error "repo_script_path: '%s' is not under '%s'" "$worktree_path" "$git_base"
+        return 1
+    fi
+
+    local rel=${worktree_path#"$git_base"}
+    # Strip trailing slash if present.
+    rel=${rel%/}
+
+    printf '%s/%s/%s' "$REPO_SCRIPTS_DIR" "$rel" "$script_name"
+}
+
+# Ensure a repo script exists at the config path.  If an x.<name> file
+# exists in the worktree, migrate it to the config dir.
+# Returns 0 if the script exists (and is executable) after migration,
+# 1 otherwise.
+# Usage: ensure_repo_script "/path/to/worktree" "run-tests.sh"
+ensure_repo_script() {
+    local worktree_path=$1
+    local script_name=$2
+
+    local config_path
+    config_path=$(repo_script_path "$worktree_path" "$script_name") || return 1
+
+    local legacy_path="${worktree_path}/x.${script_name}"
+
+    # Migrate legacy x. file if it exists and config version does not.
+    if [[ ! -f $config_path && -f $legacy_path ]]
+    then
+        info "Migrating '%s' → '%s'" "$legacy_path" "$config_path"
+        mkdir -p "$(dirname "$config_path")"
+        cp "$legacy_path" "$config_path"
+        chmod +x "$config_path"
+    fi
+
+    [[ -x $config_path ]]
+}
+
+# Run an extension hook if one exists.  Extension hooks live in
+# ~/.config/timvisher/ide/dev_ci_hooks/<org>/<repo>/<branch>/<hook-name>
+# and are sourced (not exec'd) so they can set env vars, wait for
+# connectivity, etc.  Returns 0 even if no hook exists.
+# Usage: run_ext_hook "/path/to/worktree" "pre-run-tests.sh"
+run_ext_hook() {
+    local worktree_path=$1
+    local hook_name=$2
+
+    [[ -d ${REPO_HOOKS_EXT_DIR:-} ]] || return 0
+
+    local git_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/"
+    [[ $worktree_path == "${git_base}"* ]] || return 0
+
+    local rel=${worktree_path#"$git_base"}
+    rel=${rel%/}
+
+    local hook_path="${REPO_HOOKS_EXT_DIR}/${rel}/${hook_name}"
+    if [[ -x $hook_path ]]
+    then
+        info "ext hook: running '%s'" "$hook_path"
+        bash "$hook_path"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Discovery: build the dependency graph
+# ---------------------------------------------------------------------------
+
+# Associative arrays populated by discover().
+#   dev_branches[dev_path] = "wt1 wt2 wt3"   (space-separated feature worktree deps)
+#   dev_branch_deps[dev_path] = "dev1 dev2"   (space-separated dev branch deps)
+#   all_worktrees[wt_path] = 1                (deduplicated set)
+declare -A dev_branches
+declare -A dev_branch_deps
+declare -A all_worktrees
+
+discover() {
+    local found=0
+    local dev_dirs=()
+
+    if [[ $# -ne 0 ]]
+    then
+        dev_dirs=("$@")
+    else
+        if [[ ! -f $DEV_CI_REGISTRY ]]
+        then
+            die "Registry file not found: %s" "$DEV_CI_REGISTRY"
+        fi
+        while IFS= read -r line
+        do
+            dev_dirs+=("$line")
+        done < <(read_active_worktrees "$DEV_CI_REGISTRY")
+    fi
+
+    for dev_dir in "${dev_dirs[@]}"
+    do
+        [[ -d $dev_dir ]] || continue
+        dev_dir=$(cd "$dev_dir" && pwd -P)
+
+        local wt_file="${dev_dir}/x.active-worktrees"
+        local deps=()
+
+        # dev branches without x.active-worktrees are still tracked
+        # (they just have no feature-branch deps, like shell-maker/dev).
+        if [[ -f $wt_file ]]
+        then
+            while IFS= read -r wt
+            do
+                if [[ ! -d $wt ]]
+                then
+                    warn "Worktree '%s' listed in '%s' does not exist; skipping" "$wt" "$wt_file"
+                    continue
+                fi
+                deps+=("$wt")
+                all_worktrees["$wt"]=1
+            done < <(read_active_worktrees "$wt_file")
+        fi
+
+        dev_branches["$dev_dir"]="${deps[*]}"
+
+        # Read inter-dev-branch dependencies.
+        local dev_dep_file="${dev_dir}/x.integration-branch-dependencies"
+        local dev_deps=()
+
+        if [[ -f $dev_dep_file ]]
+        then
+            while IFS= read -r dd
+            do
+                if [[ ! -d $dd ]]
+                then
+                    warn "Dev dep '%s' listed in '%s' does not exist; skipping" "$dd" "$dev_dep_file"
+                    continue
+                fi
+                dev_deps+=("$dd")
+            done < <(read_active_worktrees "$dev_dep_file")
+        fi
+
+        dev_branch_deps["$dev_dir"]="${dev_deps[*]}"
+        found=1
+    done
+
+    if [[ $found == 0 ]]
+    then
+        if [[ $# -ne 0 ]]
+        then
+            die "No dev integration branches found at specified paths"
+        else
+            die "No dev integration branches found in registry: %s" "$DEV_CI_REGISTRY"
+        fi
+    fi
+
+    # Transitively discover dev branch dependencies not already in the set.
+    local new_deps_found=true
+    while [[ $new_deps_found == true ]]
+    do
+        new_deps_found=false
+        for dev_dir in "${!dev_branch_deps[@]}"
+        do
+            local dd_str=${dev_branch_deps[$dev_dir]}
+            [[ -n $dd_str ]] || continue
+
+            read -ra dd_list <<< "$dd_str"
+            for dd in "${dd_list[@]}"
+            do
+                [[ -n ${dev_branches[$dd]+x} ]] && continue
+                [[ -d $dd ]] || continue
+
+                info "Adding transitive dependency '%s' (required by '%s')" "$dd" "$dev_dir"
+                new_deps_found=true
+
+                # Discover this dep the same way as the main loop.
+                local resolved_dd
+                resolved_dd=$(cd "$dd" && pwd -P)
+
+                local wt_file="${resolved_dd}/x.active-worktrees"
+                local deps=()
+
+                if [[ -f $wt_file ]]
+                then
+                    while IFS= read -r wt
+                    do
+                        if [[ ! -d $wt ]]
+                        then
+                            warn "Worktree '%s' listed in '%s' does not exist; skipping" "$wt" "$wt_file"
+                            continue
+                        fi
+                        deps+=("$wt")
+                        all_worktrees["$wt"]=1
+                    done < <(read_active_worktrees "$wt_file")
+                fi
+
+                dev_branches["$resolved_dd"]="${deps[*]}"
+
+                local dev_dep_file="${resolved_dd}/x.integration-branch-dependencies"
+                local dev_deps=()
+
+                if [[ -f $dev_dep_file ]]
+                then
+                    while IFS= read -r sub_dd
+                    do
+                        if [[ ! -d $sub_dd ]]
+                        then
+                            warn "Dev dep '%s' listed in '%s' does not exist; skipping" "$sub_dd" "$dev_dep_file"
+                            continue
+                        fi
+                        dev_deps+=("$sub_dd")
+                    done < <(read_active_worktrees "$dev_dep_file")
+                fi
+
+                dev_branch_deps["$resolved_dd"]="${dev_deps[*]}"
+            done
+        done
+    done
+}
+
+# Check each active worktree to see if its branch has been merged into
+# upstream/main.  If so, comment it out of x.active-worktrees and remove
+# it from the dependency graph so we don't waste time syncing/integrating it.
+retire_merged_worktrees() {
+    for dev_dir in "${!dev_branches[@]}"
+    do
+        local wt_file="${dev_dir}/x.active-worktrees"
+        [[ -f $wt_file ]] || continue
+
+        local changed=false
+
+        local deps_str=${dev_branches[$dev_dir]}
+        [[ -n $deps_str ]] || continue
+
+        read -ra wt_list <<< "$deps_str"
+        local remaining=()
+
+        for wt in "${wt_list[@]}"
+        do
+            # Fetch in the worktree so we have current refs.
+            git -C "$wt" fetch --all --quiet 2>/dev/null || true
+
+            # Resolve the upstream default branch for this worktree's repo.
+            local upstream_ref
+            upstream_ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || true
+            if [[ -z $upstream_ref ]]
+            then
+                if git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null
+                then
+                    upstream_ref=upstream/main
+                elif git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
+                then
+                    upstream_ref=origin/main
+                fi
+            fi
+
+            if [[ -z $upstream_ref ]]
+            then
+                remaining+=("$wt")
+                continue
+            fi
+
+            if git -C "$wt" merge-base --is-ancestor HEAD "$upstream_ref" 2>/dev/null
+            then
+                info "retire: '%s' is fully merged into %s; commenting out" "$wt" "$upstream_ref"
+
+                # Comment out the line in x.active-worktrees.
+                # The file may use ~/... or absolute paths; match either form.
+                local wt_home_relative="${wt/#${HOME}/~}"
+                local escaped_wt escaped_home_rel
+                escaped_wt=$(printf '%s' "$wt" | sed 's/[&/\]/\\&/g')
+                escaped_home_rel=$(printf '%s' "$wt_home_relative" | sed 's/[&/\]/\\&/g')
+                sed -i '' -e "s|^${escaped_wt}\$|# ${escaped_wt}|" \
+                          -e "s|^${escaped_home_rel}\$|# ${escaped_home_rel}|" \
+                    "$wt_file"
+
+                # Remove from tracking.
+                unset 'all_worktrees[$wt]'
+                changed=true
+            else
+                remaining+=("$wt")
+            fi
+        done
+
+        if [[ $changed == true ]]
+        then
+            dev_branches["$dev_dir"]="${remaining[*]}"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+# Ensure an ntmux3 session exists for a worktree and return its session name.
+ensure_session() {
+    local worktree_path=$1
+
+    # ntmux3 is a shell function loaded via ~/.functions/tmux.bash.
+    # Source it in a subshell so we get it without loading all of .bashrc.
+    # tmux.bash requires extglob for extended glob patterns.
+    (
+        shopt -s extglob
+        source ~/.functions/logging.bash 2>/dev/null
+        source ~/.functions/tmux.bash 2>/dev/null ||
+            {
+                error "Unable to source tmux.bash"
+                return 1
+            }
+        ntmux3 -d "$worktree_path"
+    ) ||
+        {
+            error "ntmux3 -d failed for '%s'" "$worktree_path"
+            return 1
+        }
+}
+
+# Send a command string to the :admin window of a tmux session.
+# First sends M-# to clear any partial input (bash insert-comment:
+# prepends # and accepts the line, giving a clean prompt).
+send_to_admin() {
+    local session_name=$1
+    shift
+    local cmd="$*"
+
+    tmux send-keys -t="${session_name}":admin M-'#'
+    tmux send-keys -t="${session_name}":admin "$cmd" C-m
+}
+
+# ---------------------------------------------------------------------------
+# Worker: __sync_trunk_resolve  (runs inside :admin pane)
+#
+# Agent-driven: merge upstream/<trunk> into the trunk branch, resolve
+# conflicts, and push.  Used when timvisher_git sync-trunk fails due to
+# merge conflicts.
+# ---------------------------------------------------------------------------
+
+cmd__sync_trunk_resolve() {
+    local worktree_path=$1
+    local status_file="${worktree_path}/${STATUS_FILENAME}"
+
+    cd "$worktree_path" ||
+        {
+            echo 'fail' > "$status_file"
+            die "Cannot cd to '%s'" "$worktree_path"
+        }
+
+    rm -f "$status_file"
+
+    local trunk_branch
+    trunk_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || {
+        echo 'fail' > "$status_file"
+        die "Cannot detect current branch in '%s'" "$worktree_path"
+    }
+
+    local prompt_file
+    prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") || {
+        echo 'fail' > "$status_file"
+        die "Cannot create prompt file"
+    }
+
+    cat > "$prompt_file" <<PROMPT_EOF
+You are in a soft fork's trunk worktree at ${worktree_path}.
+The branch is '${trunk_branch}' and the repo has an 'upstream' remote
+pointing to the original project.
+
+A previous attempt to merge upstream/${trunk_branch} into ${trunk_branch}
+had conflicts and was aborted.
+
+Your job:
+1. Run 'git fetch --all' to ensure refs are current.
+2. Run 'git merge upstream/${trunk_branch}' to merge upstream changes.
+3. Resolve any conflicts. Our fork's changes take priority when there is
+   a genuine conflict in intent, but try to preserve both sides where
+   possible.
+4. After resolving the merge, commit the merge result (e.g.
+   'git merge --continue' or 'git commit'). Do NOT push -- the
+   caller handles pushing after you finish.
+
+When done, write 'pass' to '${status_file}'.
+If you cannot resolve a conflict, write 'fail' to '${status_file}'.
+
+Work in ${worktree_path}. Do not modify other directories.
+PROMPT_EOF
+
+    info "sync_trunk_resolve: launching agent"
+
+    if claudeshot "$(< "$prompt_file")"
+    then
+        info "sync_trunk_resolve: agent finished"
+    else
+        warn "sync_trunk_resolve: agent exited with error"
+    fi
+
+    rm -f "$prompt_file"
+
+    if [[ ! -f $status_file ]]
+    then
+        warn "sync_trunk_resolve: agent did not write status file; marking fail"
+        echo 'fail' > "$status_file"
+    fi
+
+    # Push after successful agent resolution (agents cannot push).
+    if [[ -f $status_file && $(cat "$status_file") == pass ]]
+    then
+        info "sync_trunk_resolve: pushing '%s' to origin" "$trunk_branch"
+        if ! push_to_remote "$worktree_path"
+        then
+            warn "sync_trunk_resolve: push failed for '%s'" "$worktree_path"
+            echo 'fail' > "$status_file"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Worker: __sync  (runs inside :admin pane)
+#
+# Agent-driven: pull --rebase, resolve conflicts.
+# Script-driven: run tests after agent finishes.
+# ---------------------------------------------------------------------------
+
+cmd__sync() {
+    local worktree_path=$1
+    local status_file="${worktree_path}/${STATUS_FILENAME}"
+
+    cd "$worktree_path" ||
+        {
+            echo 'fail' > "$status_file"
+            die "Cannot cd to '%s'" "$worktree_path"
+        }
+
+    rm -f "$status_file"
+
+    # Ensure run-tests.sh exists before syncing.
+    if ! ensure_repo_script "$worktree_path" "run-tests.sh"
+    then
+        info "sync: no run-tests.sh found; launching agent to create one"
+        cmd__ensure_tests "$worktree_path"
+    fi
+
+    # Tracking is set correctly by timvisher_git (origin/<trunk> for soft
+    # forks, upstream/<trunk> for regular forks).  Plain pull --rebase
+    # follows the tracking branch.
+    local pull_cmd="git pull --rebase"
+
+    local prompt_file
+    prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") || {
+        echo 'fail' > "$status_file"
+        die "Cannot create prompt file"
+    }
+
+    cat > "$prompt_file" <<PROMPT_EOF
+You are in a feature worktree at ${worktree_path}.
+This worktree contains features we are actively developing.
+
+Run '${pull_cmd}' to sync with upstream. If there are conflicts,
+resolve them. Be sure to keep the features that were developed on this
+worktree -- upstream changes should be incorporated, but our feature
+work takes priority when there is a genuine conflict in intent.
+
+When done, write 'pass' to '${status_file}'.
+If you cannot resolve a conflict, write 'fail' to '${status_file}'.
+
+Work in ${worktree_path}. Do not modify other directories.
+PROMPT_EOF
+
+    info "sync: launching agent for pull --rebase"
+
+    if claudeshot "$(< "$prompt_file")"
+    then
+        info "sync: agent finished"
+    else
+        warn "sync: agent exited with error"
+    fi
+
+    rm -f "$prompt_file"
+
+    if [[ ! -f $status_file ]]
+    then
+        warn "sync: agent did not write status file; marking fail"
+        echo 'fail' > "$status_file"
+    fi
+
+    # Run tests after successful rebase.
+    if [[ $(cat "$status_file") == pass ]]
+    then
+        local run_tests
+        run_tests=$(repo_script_path "$worktree_path" "run-tests.sh") || true
+
+        if [[ -x $run_tests ]]
+        then
+            info "sync: running tests in '%s'" "$worktree_path"
+            run_ext_hook "$worktree_path" "pre-run-tests.sh"
+            if ! bash "$run_tests"
+            then
+                warn "sync: tests failed in '%s'" "$worktree_path"
+                echo 'fail' > "$status_file"
+            fi
+        else
+            info "sync: no run-tests.sh; skipping tests"
+        fi
+    fi
+
+    if [[ $(cat "$status_file") == pass ]]
+    then
+        if ! push_to_remote "$worktree_path"
+        then
+            echo 'fail' > "$status_file"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Worker: __integrate  (runs inside :admin pane)
+#
+# Script-driven: fetch, reset --hard @{u}, ensure run-tests.sh,
+# run baseline tests.
+# Agent-driven: merge worktrees ONE AT A TIME, running tests after each.
+# The agent handles conflicts and cross-worktree incompatibilities.
+# ---------------------------------------------------------------------------
+
+cmd__integrate() {
+    local dev_path=$1
+    shift
+    # remaining args are worktree paths to merge
+    local worktree_paths=("$@")
+    local status_file="${dev_path}/${STATUS_FILENAME}"
+
+    cd "$dev_path" ||
+        {
+            echo 'fail' > "$status_file"
+            die "Cannot cd to '%s'" "$dev_path"
+        }
+
+    rm -f "$status_file"
+
+    # --- scripted baseline ---
+
+    info "integrate: fetching"
+    if ! git fetch --all
+    then
+        echo 'fail' > "$status_file"
+        die "git fetch failed in '%s'" "$dev_path"
+    fi
+
+    info "integrate: resetting to @{u}"
+    if ! git reset --hard '@{u}'
+    then
+        echo 'fail' > "$status_file"
+        die "git reset failed in '%s'" "$dev_path"
+    fi
+
+    # Ensure run-tests.sh exists before baseline test.
+    if ! ensure_repo_script "$dev_path" "run-tests.sh"
+    then
+        info "integrate: no run-tests.sh found; launching agent to create one"
+        cmd__ensure_tests "$dev_path"
+    fi
+
+    local run_tests
+    run_tests=$(repo_script_path "$dev_path" "run-tests.sh") || true
+
+    # Run baseline tests on @{u}.  Capture output rather than
+    # failing hard -- pre-existing upstream failures should not block
+    # integration.  The output is passed to the agent so it can tell
+    # which failures are pre-existing vs caused by the merge.
+    local baseline_log="${dev_path}/x.dev-ci-baseline.log"
+    local baseline_clean=true
+
+    if [[ -x $run_tests ]]
+    then
+        info "integrate: running baseline tests on @{u}"
+        run_ext_hook "$dev_path" "pre-run-tests.sh"
+        if bash "$run_tests" > "$baseline_log" 2>&1
+        then
+            info "integrate: baseline tests passed"
+        else
+            warn "integrate: baseline tests have pre-existing failures on @{u}"
+            baseline_clean=false
+        fi
+    else
+        warn "integrate: run-tests.sh missing; skipping baseline tests"
+        printf '(no run-tests.sh)\n' > "$baseline_log"
+    fi
+
+    # --- agent-driven integration ---
+
+    # If there are no worktrees to integrate, we're done after baseline tests.
+    if [[ ${#worktree_paths[@]} == 0 ]]
+    then
+        if [[ $baseline_clean == true ]]
+        then
+            echo 'pass' > "$status_file"
+            info "integrate: no worktrees to integrate; baseline tests passed; done"
+        else
+            echo 'pass' > "$status_file"
+            warn "integrate: no worktrees to integrate; baseline has pre-existing failures (ignored)"
+        fi
+
+        # Run post-integration hook even with no worktrees (e.g. build+install).
+        local post_integrate
+        post_integrate=$(repo_script_path "$dev_path" "post-integrate.sh") || true
+        ensure_repo_script "$dev_path" "post-integrate.sh" || true
+
+        if [[ -x $post_integrate ]]
+        then
+            info "integrate: running post-integration hook"
+            run_ext_hook "$dev_path" "pre-post-integrate.sh"
+            if ! bash "$post_integrate"
+            then
+                error "integrate: post-integration hook failed"
+                echo 'fail' > "$status_file"
+            fi
+        fi
+
+        if [[ $(cat "$status_file") == pass ]]
+        then
+            if ! push_to_remote "$dev_path"
+            then
+                echo 'fail' > "$status_file"
+            fi
+        fi
+
+        return 0
+    fi
+
+    # Build branch lists for the agent prompt.
+    local branch_list=""
+    local branch_names=()
+    for wt in "${worktree_paths[@]}"
+    do
+        local branch
+        branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || {
+            error "integrate: cannot resolve branch for '%s'" "$wt"
+            echo 'fail' > "$status_file"
+            return 1
+        }
+        branch_list+="  - ${branch}  (from ${wt})"$'\n'
+        branch_names+=("$branch")
+    done
+
+    local test_instruction=""
+    local baseline_context=""
+    if [[ -x $run_tests ]]
+    then
+        test_instruction="After the merge, run 'bash ${run_tests}' and verify it passes."
+        if [[ $baseline_clean == false ]]
+        then
+            baseline_context="
+IMPORTANT: The baseline tests on the upstream tracking branch ALREADY HAD FAILURES before
+any branches were merged. The baseline test output is in '${baseline_log}'.
+Read that file. Any test failures that also appear in the baseline are
+PRE-EXISTING upstream issues -- do NOT count them as integration failures.
+Only NEW failures (ones not in the baseline) indicate a problem caused by
+the merge. If the only failures after merging are the same ones from the
+baseline, that counts as passing."
+        fi
+    else
+        test_instruction="No run-tests.sh is available, so skip testing."
+    fi
+
+    local prompt_file
+    prompt_file=$(mktemp "${dev_path}/x.dev-ci-prompt.XXXXXX") || {
+        echo 'fail' > "$status_file"
+        die "Cannot create prompt file"
+    }
+
+    cat > "$prompt_file" <<PROMPT_EOF
+You are in a dev integration worktree at ${dev_path}.
+It has been reset to the upstream tracking branch (@{u}).
+
+Integrate the following branches using a single octopus merge:
+
+${branch_list}
+Run:
+  git merge ${branch_names[*]}
+
+This merges all branches at once. If the octopus merge fails (conflicts),
+fall back to merging the branches one at a time, resolving conflicts as
+you go. When falling back:
+1. Reset to @{u} with 'git reset --hard @{u}'.
+2. Merge each branch individually with 'git merge <branch>'.
+3. If a merge has conflicts, resolve them preserving the intent of both
+   sides. Stage resolved files with 'git add' and complete with
+   'git merge --continue'.
+
+${test_instruction}
+If tests fail, investigate and fix the issue.
+${baseline_context}
+Pay special attention to conflicts BETWEEN worktrees -- cases where two
+feature branches both modify the same file or API in mutually incompatible
+ways. When this happens, reconcile both features so they coexist correctly.
+
+When ALL branches are integrated and tests pass, write 'pass' to '${status_file}'.
+If you cannot resolve a conflict or fix a test failure, write 'fail' to '${status_file}'.
+
+Work in ${dev_path}. Do not modify other directories.
+PROMPT_EOF
+
+    info "integrate: launching agent to integrate %d worktrees" "${#worktree_paths[@]}"
+
+    if claudeshot "$(< "$prompt_file")"
+    then
+        info "integrate: agent finished"
+    else
+        warn "integrate: agent exited with error"
+    fi
+
+    rm -f "$prompt_file" "$baseline_log"
+
+    # The agent should have written the status file.
+    if [[ ! -f $status_file ]]
+    then
+        warn "integrate: agent did not write status file; marking fail"
+        echo 'fail' > "$status_file"
+    fi
+
+    # Run post-integration hook if integration passed.
+    local post_integrate
+    post_integrate=$(repo_script_path "$dev_path" "post-integrate.sh") || true
+    ensure_repo_script "$dev_path" "post-integrate.sh" || true
+
+    if [[ $(cat "$status_file") == pass && -x $post_integrate ]]
+    then
+        info "integrate: running post-integration hook"
+        run_ext_hook "$dev_path" "pre-post-integrate.sh"
+        if ! bash "$post_integrate"
+        then
+            error "integrate: post-integration hook failed"
+            echo 'fail' > "$status_file"
+        fi
+    fi
+
+    if [[ $(cat "$status_file") == pass ]]
+    then
+        if ! push_to_remote "$dev_path"
+        then
+            echo 'fail' > "$status_file"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Worker: __ensure_tests  (agent creates run-tests.sh if missing)
+# ---------------------------------------------------------------------------
+
+cmd__ensure_tests() {
+    local worktree_path=$1
+
+    cd "$worktree_path" ||
+        die "Cannot cd to '%s'" "$worktree_path"
+
+    local target_path
+    target_path=$(repo_script_path "$worktree_path" "run-tests.sh") || {
+        warn "ensure_tests: cannot determine config path for '%s'" "$worktree_path"
+        return 1
+    }
+
+    if [[ -x $target_path ]]
+    then
+        info "ensure_tests: run-tests.sh already exists at '%s'" "$target_path"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$target_path")"
+
+    local prompt_file
+    prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") ||
+        die "Cannot create prompt file"
+
+    cat > "$prompt_file" <<PROMPT_EOF
+You are in a git worktree at ${worktree_path}.
+
+This project is missing a run-tests.sh script. Create one.
+
+run-tests.sh should be a bash script that runs the full local CI
+suite for this project -- everything that CI would check on a pull
+request. This includes:
+
+- Linting (e.g. eslint, golangci-lint, shellcheck, flake8)
+- Formatting checks (e.g. prettier --check, gofmt, black --check)
+- Type checking if applicable (e.g. tsc --noEmit, mypy)
+- Unit tests (e.g. npm test, make test, go test, pytest)
+- Byte-compilation if applicable (e.g. emacs batch-byte-compile for .el files)
+
+Examine the project structure to determine which tools and test
+frameworks are in use. Look at:
+- Makefile, package.json, go.mod, setup.py/pyproject.toml, Cask, etc.
+- Existing CI configuration (.github/workflows/, .gitlab-ci.yml, etc.)
+- README or CONTRIBUTING docs for test instructions
+
+The script should:
+- Use #!/usr/bin/env bash
+- cd to the repo root
+- Run each check, exiting non-zero on first failure
+- Print clear headers before each step (e.g. "--- lint ---", "--- test ---")
+- Be executable (chmod +x)
+
+Write the script to ${target_path} and make it executable.
+Do not run the tests yourself -- just create the script.
+PROMPT_EOF
+
+    info "ensure_tests: launching agent to create run-tests.sh at '%s'" "$target_path"
+
+    if claudeshot "$(< "$prompt_file")"
+    then
+        info "ensure_tests: agent finished"
+    else
+        warn "ensure_tests: agent exited with error"
+    fi
+
+    rm -f "$prompt_file"
+
+    if [[ -x $target_path ]]
+    then
+        info "ensure_tests: run-tests.sh created successfully at '%s'" "$target_path"
+    else
+        warn "ensure_tests: agent did not create run-tests.sh"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+# Sync soft fork trunks: for each unique soft fork repo (detected by the
+# x.timvisher_git.soft-fork cookie), merge upstream into origin/<trunk>
+# using timvisher_git sync-trunk.  If the non-interactive merge fails
+# (conflicts), launch an agent in the trunk worktree to resolve.
+sync_soft_fork_trunks() {
+    local -A seen_repos  # keyed by git common dir
+
+    local dir
+    for dir in "${!dev_branches[@]}" "${!all_worktrees[@]}"
+    do
+        [[ -f ${dir}/x.timvisher_git.soft-fork ]] || continue
+
+        local common_dir
+        common_dir=$(cd "$dir" && git rev-parse --git-common-dir 2>/dev/null) || continue
+        common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
+        [[ -n ${seen_repos[$common_dir]+x} ]] && continue
+        seen_repos["$common_dir"]=1
+
+        info "sync_trunk: syncing soft fork repo for '%s'" "$dir"
+        local trunk_wt
+        if trunk_wt=$(timvisher_git sync-trunk "$dir")
+        then
+            info "sync_trunk: succeeded"
+        else
+            # sync-trunk prints the trunk worktree path on conflict.
+            if [[ -n $trunk_wt && -d $trunk_wt ]]
+            then
+                warn "sync_trunk: conflicts in '%s'; launching agent" "$trunk_wt"
+                local status_file="${trunk_wt}/${STATUS_FILENAME}"
+                rm -f "$status_file"
+
+                local session_name
+                session_name=$(ensure_session "$trunk_wt") || {
+                    error "sync_trunk: cannot create session for '%s'" "$trunk_wt"
+                    continue
+                }
+                send_to_admin "$session_name" " '${SELF}' __sync_trunk_resolve '${trunk_wt}'"
+
+                # Wait for the agent to finish.
+                while [[ ! -f $status_file ]]
+                do
+                    sleep "$POLL_INTERVAL_SECONDS"
+                done
+
+                if [[ $(cat "$status_file") != pass ]]
+                then
+                    error "sync_trunk: agent failed to resolve conflicts in '%s'" "$trunk_wt"
+                fi
+                rm -f "$status_file"
+            else
+                error "sync_trunk: failed for repo containing '%s'" "$dir"
+            fi
+        fi
+    done
+}
+
+# Verify all feature worktrees have clean working trees.
+# Fails fast before any sync/integrate work if any worktree has
+# uncommitted changes or untracked files.
+preflight_check_clean() {
+    local dirty=()
+
+    for wt in "${!all_worktrees[@]}"
+    do
+        if [[ -n $(git -C "$wt" status --porcelain 2>/dev/null) ]]
+        then
+            dirty+=("$wt")
+        fi
+    done
+
+    if [[ ${#dirty[@]} -ne 0 ]]
+    then
+        error "Worktrees with uncommitted changes or untracked files:"
+        for wt in "${dirty[@]}"
+        do
+            error "  %s" "$wt"
+            git -C "$wt" status --short | sed 's/^/    /' >&2
+        done
+        die "Refusing to sync/integrate dirty worktrees. Commit or stash first."
+    fi
+}
+
+# Clean up status files before starting.
+clean_status_files() {
+    for wt in "${!all_worktrees[@]}"
+    do
+        rm -f "${wt}/${STATUS_FILENAME}"
+    done
+    for dev in "${!dev_branches[@]}"
+    do
+        rm -f "${dev}/${STATUS_FILENAME}"
+    done
+}
+
+# Read a status file.  Returns the contents or empty string.
+read_status() {
+    local path=$1
+    local status_file="${path}/${STATUS_FILENAME}"
+    if [[ -f $status_file ]]
+    then
+        cat "$status_file"
+    fi
+}
+
+# Phase 1: launch sync+test for all feature worktrees.
+launch_sync_phase() {
+    for wt in "${!all_worktrees[@]}"
+    do
+        local session_name
+        session_name=$(ensure_session "$wt") || {
+            error "Cannot create session for '%s'; marking fail" "$wt"
+            echo 'fail' > "${wt}/${STATUS_FILENAME}"
+            continue
+        }
+
+        info "Launching sync for '%s' in session '%s':admin" "$wt" "$session_name"
+        send_to_admin "$session_name" " '${SELF}' __sync '${wt}'"
+    done
+}
+
+# Wait for all feature worktrees to report status.
+# Populates wt_results[path]=status.
+declare -A wt_results
+
+wait_for_worktrees() {
+    local pending=("${!all_worktrees[@]}")
+
+    while [[ ${#pending[@]} -ne 0 ]]
+    do
+        local still_pending=()
+
+        for wt in "${pending[@]}"
+        do
+            local status
+            status=$(read_status "$wt")
+
+            case $status in
+                pass)
+                    info "[pass] '%s'" "$wt"
+                    wt_results["$wt"]="pass"
+                    ;;
+                fail)
+                    error "[fail] '%s'" "$wt"
+                    wt_results["$wt"]="fail"
+                    ;;
+                *)
+                    still_pending+=("$wt")
+                    ;;
+            esac
+        done
+
+        pending=("${still_pending[@]}")
+
+        if [[ ${#pending[@]} -ne 0 ]]
+        then
+            sleep "$POLL_INTERVAL_SECONDS"
+        fi
+    done
+}
+
+# Phase 2: launch integration for dev branches whose deps all passed.
+declare -A dev_results
+declare -A dev_launched
+
+launch_integrate_phase() {
+    local all_done=
+
+    while [[ -z $all_done ]]
+    do
+        all_done=true
+
+        for dev in "${!dev_branches[@]}"
+        do
+            # Already finished?
+            [[ -n ${dev_results[$dev]+x} ]] && continue
+
+            all_done=
+
+            # Already launched?  Check for agent's status file.
+            if [[ -n ${dev_launched[$dev]+x} ]]
+            then
+                local status
+                status=$(read_status "$dev")
+
+                case $status in
+                    pass)
+                        info "[pass] '%s'" "$dev"
+                        dev_results["$dev"]="pass"
+                        ;;
+                    fail)
+                        error "[fail] '%s'" "$dev"
+                        dev_results["$dev"]="fail"
+                        ;;
+                esac
+                continue
+            fi
+
+            # Check if all deps passed (both feature worktrees and dev branches).
+            local deps_str=${dev_branches[$dev]}
+            local dd_str=${dev_branch_deps[$dev]}
+            local all_deps_pass=true
+            local any_dep_fail=
+
+            # Check feature worktree deps.
+            if [[ -n $deps_str ]]
+            then
+                read -ra deps <<< "$deps_str"
+                for dep in "${deps[@]}"
+                do
+                    case ${wt_results[$dep]:-} in
+                        pass) ;;
+                        fail)
+                            any_dep_fail=true
+                            break
+                            ;;
+                        *)
+                            all_deps_pass=
+                            break
+                            ;;
+                    esac
+                done
+            fi
+
+            # Check dev branch deps (other integration branches that must finish first).
+            if [[ -z $any_dep_fail && -n $dd_str ]]
+            then
+                read -ra dd_deps <<< "$dd_str"
+                for dep in "${dd_deps[@]}"
+                do
+                    case ${dev_results[$dep]:-} in
+                        pass) ;;
+                        fail|skip)
+                            any_dep_fail=true
+                            break
+                            ;;
+                        *)
+                            all_deps_pass=
+                            break
+                            ;;
+                    esac
+                done
+            fi
+
+            if [[ -n $any_dep_fail ]]
+            then
+                error "Skipping '%s' -- dependency failed" "$dev"
+                dev_results["$dev"]="skip"
+                continue
+            fi
+
+            if [[ -z $all_deps_pass ]]
+            then
+                continue
+            fi
+
+            # All deps passed -- launch integration.
+            local session_name
+            session_name=$(ensure_session "$dev") || {
+                error "Cannot create session for '%s'; marking fail" "$dev"
+                dev_results["$dev"]="fail"
+                continue
+            }
+
+            # Build the argument list: dev_path followed by worktree paths
+            local args="'${SELF}' __integrate '${dev}'"
+            read -ra dep_paths <<< "$deps_str"
+            for dep in "${dep_paths[@]}"
+            do
+                args+=" '${dep}'"
+            done
+
+            info "Launching integration for '%s' in session '%s':admin" "$dev" "$session_name"
+            send_to_admin "$session_name" " $args"
+            dev_launched["$dev"]=1
+        done
+
+        if [[ -z $all_done ]]
+        then
+            sleep "$POLL_INTERVAL_SECONDS"
+        fi
+    done
+}
+
+# Print final summary.
+print_summary() {
+    echo
+    echo "===== dev-ci summary ====="
+    echo
+
+    if [[ ${#wt_results[@]} -ne 0 ]]
+    then
+        echo "Feature worktrees:"
+        for wt in "${!wt_results[@]}"
+        do
+            printf '  %-60s %s\n' "$wt" "${wt_results[$wt]}"
+        done
+        echo
+    fi
+
+    if [[ ${#dev_results[@]} -ne 0 ]]
+    then
+        echo "Dev integration branches:"
+        for dev in "${!dev_results[@]}"
+        do
+            printf '  %-60s %s\n' "$dev" "${dev_results[$dev]}"
+        done
+        echo
+    fi
+
+    echo "=========================="
+
+    # Return non-zero if anything failed.
+    for status in "${wt_results[@]}" "${dev_results[@]}"
+    do
+        if [[ $status != pass ]]
+        then
+            return 1
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Top-level subcommands
+# ---------------------------------------------------------------------------
+
+cmd_run() {
+    info "Phase 0: upgrading agent tooling"
+    if ! brew upgrade "${BREW_UPGRADE_PACKAGES[@]}" 2>&1
+    then
+        warn "brew upgrade had warnings (non-fatal, continuing)"
+    fi
+
+    discover "$@"
+    retire_merged_worktrees
+    info "Found %d dev branches, %d feature worktrees" "${#dev_branches[@]}" "${#all_worktrees[@]}"
+
+    # Phase 0.5: for soft fork repos, merge upstream into origin/<trunk>
+    # so that @{u} (origin/<trunk>) is current before feature sync.
+    info "Phase 0.5: syncing soft fork trunk branches"
+    sync_soft_fork_trunks
+
+    preflight_check_clean
+    clean_status_files
+
+    info "Phase 1: syncing feature worktrees"
+    launch_sync_phase
+    wait_for_worktrees
+
+    info "Phase 2: integrating dev branches"
+    launch_integrate_phase
+
+    print_summary
+}
+
+cmd_status() {
+    discover "$@"
+
+    echo "Feature worktrees:"
+    for wt in "${!all_worktrees[@]}"
+    do
+        local status
+        status=$(read_status "$wt")
+        printf '  %-60s %s\n' "$wt" "${status:-pending}"
+    done
+
+    echo
+    echo "Dev integration branches:"
+    for dev in "${!dev_branches[@]}"
+    do
+        local status
+        status=$(read_status "$dev")
+        local dep_list=${dev_branches[$dev]}
+        local dd_list=${dev_branch_deps[$dev]}
+        local all_deps="${dep_list:+$dep_list}${dep_list:+${dd_list:+ }}${dd_list:+$dd_list}"
+        printf '  %-60s %s  (deps: %s)\n' "$dev" "${status:-pending}" "${all_deps:-none}"
+    done
+}
+
+cmd_clean() {
+    discover "$@"
+    clean_status_files
+    info "Cleaned status files"
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+if [[ $# -ne 0 && -d $1 && -r $1 ]]
+then
+    cmd_run "$@"
+else
+    case ${1:-run} in
+        run)             cmd_run "${@:2}" ;;
+        status)          cmd_status "${@:2}" ;;
+        clean)           cmd_clean "${@:2}" ;;
+        __sync_trunk_resolve) cmd__sync_trunk_resolve "${@:2}" ;;
+        __sync)          cmd__sync "${@:2}" ;;
+        __integrate)     cmd__integrate "${@:2}" ;;
+        __ensure_tests)  cmd__ensure_tests "${@:2}" ;;
+        *)
+            echo "Usage: timvisher_dev_ci [run|status|clean] [dev_path ...]" >&2
+            exit 1
+            ;;
+    esac
+fi

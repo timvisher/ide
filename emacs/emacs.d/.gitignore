@@ -1,0 +1,16 @@
+.org-id-locations
+auto-save-list/
+backups/
+bookmarks
+ido.last
+places
+projectile-bookmarks.eld
+projectile.cache
+tramp
+var/
+/url/
+/%backup%*
+/transient/*
+!/transient/levels.el
+/projects
+/eshell/

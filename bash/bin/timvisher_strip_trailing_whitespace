@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+# Filter out non-existent files (e.g., deleted files) before passing to sed.
+# Follow symlinks so in-place edits operate on the target file.
+existing_files=()
+for f in "$@"
+do
+  if [[ -L $f ]]
+  then
+    target=$f
+    while [[ -L $target ]]
+    do
+      link_target=$(readlink "$target") || break
+      if [[ $link_target = /* ]]
+      then
+        target=$link_target
+      else
+        target="$(cd -P -- "$(dirname "$target")" && pwd)/$link_target"
+      fi
+    done
+    if [[ -f $target ]]
+    then
+      existing_files+=("$target")
+    fi
+  elif [[ -f $f ]]
+  then
+    existing_files+=("$f")
+  fi
+done
+
+if (( 0 < ${#existing_files[@]} ))
+then
+  sed -i '' -E 's/[[:space:]]*$//' "${existing_files[@]}"
+fi
