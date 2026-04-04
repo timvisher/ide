@@ -1,0 +1,3 @@
+tell script "Ghostty"
+	runCommandInteractively("cd ~/Downloads/Evernote && if ! nc -zvG1 127.0.0.1 9050; then tor --ExitNodes '{US}' --MaxCircuitDirtiness 60 & tor_pid=$!; fi; while ! nc -x 127.0.0.1:9050 -zvG1 1.1.1.1 443; do sleep 1; done; yt-dlp --download-archive yt-dlp-archive.txt --write-description --format b --proxy 'socks5://127.0.0.1:9050' '" & (the clipboard) & "' && sleep 5 && if [[ -n $tor_pid ]];then kill \"$tor_pid\"; fi; exit")
+end tell

@@ -1005,13 +1005,7 @@ Any other context has undefined behavior."
    '((sequence "TODO" "IN_PROGRESS" "|" "DONE" "CANCELLED")
      (sequence "DELEGATED" "|" "DONE" "CANCELLED")))
  '(org-use-property-inheritance '("EXPORT_OPTIONS"))
- '(package-selected-packages
-   '(ag aidermacs bats-mode better-defaults browse-kill-ring cider
-        claude-code clojure-mode-extra-font-locking coffee-mode
-        dockerfile-mode eat expand-region fixme-mode go-mode htmlize
-        ido-ubiquitous ido-vertical-mode logview mediawiki monet orgit
-        ox-slack paredit php-mode projectile rust-mode smex swift-mode
-        terraform-mode tramp typescript-mode xclip yaml-mode zig-mode))
+ '(package-selected-packages nil)
  '(package-vc-selected-packages
    '((claude-code :url "https://github.com/stevemolitor/claude-code.el")
      (monet :url "https://github.com/stevemolitor/monet")))

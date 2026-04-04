@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+declare -A opts
+while [[ -n $1 ]]
+do
+  case $1 in
+    --?*=?*)
+      opt=${1#--}
+      opt=${opt%%=*}
+      opts[${opt//-/_}]=${1#*=}
+      ;;
+    --?*)
+      opt=${1#--}
+      opt=${opt%%=*}
+      opts[${opt//-/_}]=${2}
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+  esac
+
+  shift
+done
+
+for i in "${!opts[@]}"
+do
+  info 'opt: %s=‘%s’' "$i" "${opts[${i}]}"
+done
+
+info_array 'arg: ‘%s’' "$@"
+
+if [[ -n ${opts[url]} ]]
+then
+  tab_expression='tell script "Google Chrome" to set t to getTabWithUrl("'"${opts[url]}"'")'
+else
+  tab_expression='tell script "Google Chrome" to set t to getActiveTab()'
+fi
+
+osascript -e "${tab_expression}" \
+          -e 'if missing value is t' \
+          -e '  display notification "No tab to execute javascript in"' \
+          -e '  error "no tab"' \
+          -e 'end if' \
+          -e 'tell application "Google Chrome" to execute t javascript (read (open for access (POSIX path of "'"$1"'")))'
+
+# osascript -e "${tab_expression}" \
+#           -e 'tell application "Google Chrome" to execute t javascript (read (open for access (POSIX path of "'"$1"'")))'

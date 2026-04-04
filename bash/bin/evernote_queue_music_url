@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+trace_v() {
+  v=$1
+
+  trace '%s: ‘%s’' "$v" "${!v}"
+}
+
+assert_set() {
+  v=$1
+
+  [[ -n ${!v} ]] ||
+    die '%s is unset' "${!v}"
+}
+
+qf=~/bin/evernote_current_music_url.queue.yaml
+dlf=~/bin/evernote_current_music_url.dead_letter.yaml
+df=~/bin/evernote_current_music_url.done.yaml
+
+while y=$(yq '.[0]' "$qf")
+      t=$(yq '.type' <<<"$y")
+      u=$(yq '.url' <<<"$y")
+      [[ -n "$u" ]]
+do
+  trace_v y
+  assert_set u
+  assert_set t
+  if [[ $u == null ]]
+  then
+    info "Done queue"
+    break
+  fi
+
+  trace_v u
+  trace_v t
+  qn=$(yq 'del(.[0])' "$qf")
+  trace_v qn
+  if [[ $qn == '[]' ]]
+  then
+    qn=''
+    trace_v qn
+  fi
+  # s=$(( (RANDOM % 15) + 30))
+  # info 'Sleeping for %ds' "$s"
+  # sleep "$s"
+  case $t in
+    artist)
+      evernote_current_music_url --artist-url="$u" ||
+        die "Couldn't evernote_current_music_url for ‘%s’" "$u"
+      dn=$(
+        yq '[(.completed = now)]' <<<"$y"
+        yq "$df"
+        )
+      ;;
+    playlist)
+      evernote_current_music_url --playlist-url="$u" ||
+        die "Couldn't evernote_current_music_url for ‘%s’" "$u"
+      dn=$(
+        yq '[(.completed = now)]' <<<"$y"
+        yq "$df"
+        )
+      ;;
+    *)
+      info 'Unhandled type: ‘%s’' "$t"
+      assert_set dlf
+      info 'Appending to dead letter file ‘%s’' "$dlf"
+      yq '[.]' <<<"$y" >> "$dlf"
+      dn=$(
+        yq "$df"
+        )
+      ;;
+  esac
+  trace_v dn
+  cat <<<"$dn" > "$df" ||
+    die "Couldn't update ‘%s’" "$df"
+  if [[ -z $qn ]]
+  then
+    truncate -s 0 "$qf"
+  else
+    cat <<<"$qn" > "$qf"
+  fi ||
+    die "Couldn't update ‘%s’" "$qf"
+done
+      

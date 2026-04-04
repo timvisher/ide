@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+# TODO Make a bookmarklet for Firefox like
+#
+# copy(
+# `url: '${document.location}'
+# title: '${document.title}'`
+# )
+
+# TODO Make an evernote queue youtube
+
+# TODO Spin up tor proxy
+
+tor --ExitNodes '{US}' --MaxCircuitDirtiness 60 &
+tor_pid=$!
+
+cd ~/Downloads/Evernote &&
+  /opt/homebrew/bin/yt-dlp --write-description --format b "$(~/bin/chrome_js_in_active_tab ~/bin/chrome_js/yt-dlp-url.js)" &&
+  ! [[ -t 0 ]] &&
+  sleep 5
+

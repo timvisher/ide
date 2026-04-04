@@ -1,1 +1,7 @@
 .aider*
+.beads-planning/
+.beads/
+.claude/
+pr.md*
+todo.org
+.agent-shell/

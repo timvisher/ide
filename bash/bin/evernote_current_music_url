@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+ulimit -n 8000
+
+while [[ -n $1 ]]
+do
+  case $1 in
+    --artist-url=*)
+      url=${1#--artist-url=}
+      ;;
+    --playlist-url=*)
+      url=${1#--playlist-url=}
+      ;;
+    *)
+      die 'Unsupported option: ‘%s’' "$1"
+  esac
+
+  shift
+done
+
+if [[ -z $url ]]
+then
+  die 'One of --artist-url or --playlist-url must be passed'
+fi
+
+if [[ $url != *?(open.spotify.com)* ]]
+then
+  die 'Unsupported URL ‘%s’' "$url"
+fi
+
+mkdir -p ~/Downloads/Music/Lists ||
+  die "Couldn't make local output directories"
+
+mkdir -p /Volumes/gemedet-nas/Plex/quarantine/Music ||
+  die "Couldn't create output directory"
+
+cd ~/Downloads/Music ||
+  die "Couldn't cd to local output directory"
+
+tor --ExitNodes '{US}' --MaxCircuitDirtiness 60 &
+tor_pid=$!
+
+while ! nc -x 127.0.0.1:9050 -zvG1 1.1.1.1 443 >&2
+do
+  sleep 1
+done
+
+while ! ~/.virtualenvs/spotdl/bin/spotdl \
+        --yt-dlp-args '--download-archive yt-dlp-archive.txt --proxy socks5://127.0.0.1:9050' \
+        --archive spotdl-archive.txt \
+        --save-file spotdl-save-file.spotdl \
+        --preload \
+        --output '/Volumes/gemedet-nas/Plex/quarantine/Music/{artist}/{artist} - {album} ({year})/{artist} - {album} ({year}) - {track-number} {title}.{output-ext}' \
+        --format flac \
+        --m3u "Lists/{list}.$(date '+%FT%H-%M-%S%z').m3u8" \
+        --simple-tui \
+        --log-level DEBUG \
+        download \
+        "$url"
+do
+  s=$(( 15 + (RANDOM % 5) + (RANDOM % 45) ))
+  printf "Sleeping for %ds\n" "$s" >&2
+  sleep "$s"
+done
+
+kill "$tor_pid"
