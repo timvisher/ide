@@ -1,4 +1,4 @@
-run script POSIX path of (path to home folder) & ".config/timvisher/ide/AppleScript/vlc safe restart.applescript"
+run script POSIX path of (path to home folder) & "git/ide/AppleScript/vlc safe restart.applescript"
 
 tell application "VLC"
 	OpenURL "http://somafm.com/groovesalad.pls"
