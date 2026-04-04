@@ -10,7 +10,7 @@ default_topics_root="${HOME}/Documents/projects"
 topics_root_config="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bd_topics_root"
 if [[ -r $topics_root_config ]]
 then
-  topics_root=$(eval echo "$(head -1 "$topics_root_config")")
+  topics_root=$(< "$topics_root_config")
 else
   topics_root=$default_topics_root
 fi
