@@ -1,0 +1,3 @@
+interface:
+  display_name: "Make Skill"
+  short_description: "Create new agent skills and install them"

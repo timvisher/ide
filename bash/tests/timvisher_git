@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_git functions
+
+set -eo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script_dir="$(cd "$(dirname "$0")/.." && pwd)"
+script="${script_dir}/bin/timvisher_git"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a minimal config dir so the script can initialize
+config_dir="$tmpdir/config"
+mkdir -p "$config_dir/bash/bin/timvisher_git_hooks"
+
+# Create minimal cache and live dirs
+cache_dir="$tmpdir/cache"
+live_dir="$tmpdir/git"
+mkdir -p "$cache_dir" "$live_dir"
+
+# Create mock gh that outputs jq-filtered results (as real gh --jq does)
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Find the PR URL argument (comes after 'pr view')
+pr_url=
+for arg in "$@"; do
+  case $arg in
+    https://github.com/*)
+      pr_url=$arg
+      ;;
+  esac
+done
+
+case $pr_url in
+  https://github.com/upstream/repo/pull/1)
+    # Normal PR: both owner and repo present
+    echo "fork-owner/repo"
+    ;;
+  https://github.com/upstream/repo/pull/2)
+    # Deleted fork: headRepository is null, jq renders null as empty
+    echo "fork-owner/"
+    ;;
+  https://github.com/upstream/repo/pull/3)
+    # Empty repo name
+    echo "fork-owner/"
+    ;;
+  https://github.com/upstream/repo/pull/4)
+    # Normal PR (used for URL normalization test)
+    echo "fork-owner/repo"
+    ;;
+  *)
+    echo "not found" >&2
+    exit 1
+    ;;
+esac
+MOCK
+chmod +x "$tmpdir/mockbin/gh"
+
+# Source the script in a subshell-safe way by overriding env vars
+# and intercepting the final case block
+source_timvisher_git() {
+  export XDG_CONFIG_HOME="$tmpdir"
+  export TIMVISHER_GIT_HOME="$live_dir"
+
+  # Rename config_dir so script finds our test config
+  mkdir -p "$tmpdir/timvisher/ide"
+  # Empty org aliases file
+  : > "$tmpdir/timvisher/ide/git_org_aliases"
+
+  # Extract function definitions by stripping the final dispatch
+  local body
+  body=$(sed '/^case \$1 in$/,$ d' "$script")
+  eval "$body"
+}
+
+export PATH="$tmpdir/mockbin:$PATH"
+source_timvisher_git
+
+# ---------------------------------------------------------------------------
+# pr_head_repo_spec tests
+# ---------------------------------------------------------------------------
+
+# Test: pr_head_repo_spec returns correct spec for normal PR
+run_test
+result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/1") || true
+if [[ $result == "fork-owner/repo" ]]
+then
+  pass "pr_head_repo_spec returns correct spec for normal PR"
+else
+  fail "pr_head_repo_spec normal PR: expected 'fork-owner/repo', got '${result}'"
+fi
+
+# Test: pr_head_repo_spec fails when headRepository is null (deleted fork)
+run_test
+result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/2" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "pr_head_repo_spec fails when headRepository is null (deleted fork)"
+else
+  fail "pr_head_repo_spec should fail for null headRepository, got rc=${rc} result='${result}'"
+fi
+
+# Test: pr_head_repo_spec fails when headRepository.name is empty string
+run_test
+result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/3" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "pr_head_repo_spec fails when headRepository.name is empty"
+else
+  fail "pr_head_repo_spec should fail for empty repo name, got rc=${rc} result='${result}'"
+fi
+
+# Test: pr_head_repo_spec works with PR URL that has trailing path junk
+run_test
+result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/4/files") || true
+if [[ $result == "fork-owner/repo" ]]
+then
+  pass "pr_head_repo_spec normalizes PR URL with trailing path"
+else
+  fail "pr_head_repo_spec trailing path: expected 'fork-owner/repo', got '${result}'"
+fi
+
+# Test: pr_head_repo_spec fails when gh is not found
+run_test
+result=$(PATH=/usr/bin:/bin pr_head_repo_spec "https://github.com/upstream/repo/pull/1" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "pr_head_repo_spec fails when gh is not available"
+else
+  fail "pr_head_repo_spec should fail without gh, got rc=${rc}"
+fi
+
+# ---------------------------------------------------------------------------
+# get_org / get_repo tests
+# ---------------------------------------------------------------------------
+
+# Test: get_org from shorthand with multiple path segments
+run_test
+result=$(get_org "timvisher-dd/aws-vault/sso-browser-lock")
+if [[ $result == "timvisher-dd" ]]
+then
+  pass "get_org extracts org from shorthand"
+else
+  fail "get_org shorthand: expected 'timvisher-dd', got '${result}'"
+fi
+
+# Test: get_repo from shorthand with multiple path segments
+run_test
+result=$(get_repo "timvisher-dd/aws-vault/sso-browser-lock")
+if [[ $result == "aws-vault" ]]
+then
+  pass "get_repo extracts repo from shorthand"
+else
+  fail "get_repo shorthand: expected 'aws-vault', got '${result}'"
+fi
+
+# Test: get_org from HTTPS URL
+run_test
+result=$(get_org "https://github.com/DataDog/dd-source")
+if [[ $result == "DataDog" ]]
+then
+  pass "get_org extracts org from HTTPS URL"
+else
+  fail "get_org HTTPS: expected 'DataDog', got '${result}'"
+fi
+
+# Test: get_repo from HTTPS URL
+run_test
+result=$(get_repo "https://github.com/DataDog/dd-source")
+if [[ $result == "dd-source" ]]
+then
+  pass "get_repo extracts repo from HTTPS URL"
+else
+  fail "get_repo HTTPS: expected 'dd-source', got '${result}'"
+fi
+
+# Test: get_org from SSH URL
+run_test
+result=$(get_org "git@github.com:DataDog/dd-source.git")
+if [[ $result == "DataDog" ]]
+then
+  pass "get_org extracts org from SSH URL"
+else
+  fail "get_org SSH: expected 'DataDog', got '${result}'"
+fi
+
+# Test: get_repo from SSH URL
+run_test
+result=$(get_repo "git@github.com:DataDog/dd-source.git")
+if [[ $result == "dd-source" ]]
+then
+  pass "get_repo extracts repo from SSH URL"
+else
+  fail "get_repo SSH: expected 'dd-source', got '${result}'"
+fi
+
+# Test: get_org from simple org/repo shorthand
+run_test
+result=$(get_org "ByteNess/aws-vault")
+if [[ $result == "ByteNess" ]]
+then
+  pass "get_org extracts org from simple shorthand"
+else
+  fail "get_org simple shorthand: expected 'ByteNess', got '${result}'"
+fi
+
+# Test: get_repo from simple org/repo shorthand
+run_test
+result=$(get_repo "ByteNess/aws-vault")
+if [[ $result == "aws-vault" ]]
+then
+  pass "get_repo extracts repo from simple shorthand"
+else
+  fail "get_repo simple shorthand: expected 'aws-vault', got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# normalize_pr_url tests
+# ---------------------------------------------------------------------------
+
+# Test: normalizes PR URL with trailing /files
+run_test
+result=$(normalize_pr_url "https://github.com/org/repo/pull/123/files")
+if [[ $result == "https://github.com/org/repo/pull/123" ]]
+then
+  pass "normalize_pr_url strips trailing /files"
+else
+  fail "normalize_pr_url trailing files: expected 'https://github.com/org/repo/pull/123', got '${result}'"
+fi
+
+# Test: leaves clean PR URL unchanged
+run_test
+result=$(normalize_pr_url "https://github.com/org/repo/pull/456")
+if [[ $result == "https://github.com/org/repo/pull/456" ]]
+then
+  pass "normalize_pr_url leaves clean URL unchanged"
+else
+  fail "normalize_pr_url clean URL: got '${result}'"
+fi
+
+# Test: passes through non-PR URL unchanged
+run_test
+result=$(normalize_pr_url "DataDog/dd-source")
+if [[ $result == "DataDog/dd-source" ]]
+then
+  pass "normalize_pr_url passes through non-PR URL"
+else
+  fail "normalize_pr_url non-PR: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

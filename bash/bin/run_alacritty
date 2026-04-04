@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+if (( 0 < $# ))
+then
+  command=(
+    -e "$@"
+  )
+fi
+
+/opt/homebrew/bin/alacritty msg create-window "${command[@]}" ||
+  open -a Alacritty --args "${command[@]}"

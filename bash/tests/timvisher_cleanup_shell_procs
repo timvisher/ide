@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_cleanup_shell_procs
+# Uses mock commands to avoid actually killing processes.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_cleanup_shell_procs"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Test 1: calls cleanup_emacs and tmux kill-server when tmux is running
+run_test
+mkdir -p "$tmpdir/bin1"
+cat > "$tmpdir/bin1/cleanup_emacs" <<'MOCK'
+#!/usr/bin/env bash
+echo "cleanup_emacs $*" >> "$MOCK_LOG"
+MOCK
+cat > "$tmpdir/bin1/pgrep" <<'MOCK'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$MOCK_LOG"
+exit 0
+MOCK
+cat > "$tmpdir/bin1/tmux" <<'MOCK'
+#!/usr/bin/env bash
+echo "tmux $*" >> "$MOCK_LOG"
+MOCK
+chmod +x "$tmpdir/bin1"/{cleanup_emacs,pgrep,tmux}
+
+export MOCK_LOG="$tmpdir/log1"
+touch "$MOCK_LOG"
+PATH="$tmpdir/bin1:$PATH" bash "$script"
+if grep -q 'cleanup_emacs --no-dry-run' "$MOCK_LOG" && grep -q 'tmux kill-server' "$MOCK_LOG"
+then
+  pass "calls cleanup_emacs and tmux kill-server when tmux running"
+else
+  fail "expected cleanup_emacs and tmux calls, got: $(cat "$MOCK_LOG")"
+fi
+
+# Test 2: skips tmux kill-server when tmux is not running
+run_test
+mkdir -p "$tmpdir/bin2"
+cat > "$tmpdir/bin2/cleanup_emacs" <<'MOCK'
+#!/usr/bin/env bash
+echo "cleanup_emacs $*" >> "$MOCK_LOG"
+MOCK
+cat > "$tmpdir/bin2/pgrep" <<'MOCK'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$MOCK_LOG"
+exit 1
+MOCK
+cat > "$tmpdir/bin2/tmux" <<'MOCK'
+#!/usr/bin/env bash
+echo "tmux $*" >> "$MOCK_LOG"
+MOCK
+chmod +x "$tmpdir/bin2"/{cleanup_emacs,pgrep,tmux}
+
+export MOCK_LOG="$tmpdir/log2"
+touch "$MOCK_LOG"
+PATH="$tmpdir/bin2:$PATH" bash "$script"
+if grep -q 'cleanup_emacs --no-dry-run' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
+then
+  pass "skips tmux kill-server when tmux not running"
+else
+  fail "expected only cleanup_emacs, got: $(cat "$MOCK_LOG")"
+fi
+
+# Test 3: aborts if cleanup_emacs fails
+run_test
+mkdir -p "$tmpdir/bin3"
+cat > "$tmpdir/bin3/cleanup_emacs" <<'MOCK'
+#!/usr/bin/env bash
+echo "cleanup_emacs $*" >> "$MOCK_LOG"
+exit 1
+MOCK
+cat > "$tmpdir/bin3/pgrep" <<'MOCK'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$MOCK_LOG"
+exit 0
+MOCK
+cat > "$tmpdir/bin3/tmux" <<'MOCK'
+#!/usr/bin/env bash
+echo "tmux $*" >> "$MOCK_LOG"
+MOCK
+chmod +x "$tmpdir/bin3"/{cleanup_emacs,pgrep,tmux}
+
+export MOCK_LOG="$tmpdir/log3"
+touch "$MOCK_LOG"
+PATH="$tmpdir/bin3:$PATH" bash "$script" || true
+if grep -q 'cleanup_emacs' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
+then
+  pass "aborts if cleanup_emacs fails"
+else
+  fail "expected abort on cleanup_emacs failure, got: $(cat "$MOCK_LOG")"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Make Prompt"
+  short_description: "Research a problem and produce a self-contained agent prompt"

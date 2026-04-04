@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# Rebuild the Homebrew info dir file so Emacs M-x info shows all manuals
+# Emacs automatically merges dir files from all directories in Info-directory-list
+
+info_dir="/opt/homebrew/share/info"
+install_info="/opt/homebrew/opt/texinfo/bin/install-info"
+
+info "Rebuilding Homebrew info dir at ${info_dir}/dir"
+
+# Check if texinfo is installed
+if ! [[ -x "${install_info}" ]]; then
+  die "texinfo not installed. Run: brew install texinfo"
+fi
+
+cd "${info_dir}"
+
+# Backup existing dir file if it exists
+if [[ -f dir ]]; then
+  backup_name="dir.$(date -u +%Y-%m-%dT%H-%M-%S%z).bak"
+  info "Backing up existing dir file to ${backup_name}"
+  mv dir "${backup_name}"
+fi
+
+# Register all .info files (not in subdirectories)
+info "Registering .info files..."
+for file in *.info; do
+  if [[ -f "$file" ]]; then
+    info "  Processing %s" "$file"
+    "${install_info}" --quiet "$file" dir
+  fi
+done
+
+# Register all .info.gz files (not in subdirectories)
+info "Registering .info.gz files..."
+for file in *.info.gz; do
+  if [[ -f "$file" ]]; then
+    info "  Processing %s" "$file"
+    "${install_info}" --quiet "$file" dir
+  fi
+done
+
+info "Done! Info dir file rebuilt at ${info_dir}/dir"
+info ""
+info "Emacs will merge this with the emacs subdirectory dir file at:"
+info "  ${info_dir}/emacs/dir"
+info ""
+info "Run M-x info in Emacs to see all manuals"

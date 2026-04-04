@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+source ~/git/ide/bash/ai/agents.bash ||
+  die "Couldn't source agents.bash"
+
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
+
+export TIMVISHER_CLAUDE=true
+
+p=$(brew --prefix)
+
+exec op run --no-masking -- "${p}/bin/claude" "$@"

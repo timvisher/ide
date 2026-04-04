@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+source ~/git/ide/bash/ai/agents.bash ||
+  die "Couldn't source agents.bash"
+
+export OPENAI_API_KEY="${OPENAI_API_KEY:-op://Private/OpenAI API Secret Key/credential}"
+
+export TIMVISHER_CODEX=true
+
+config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+bin_config=${config_dir}/codex-acp_bin
+
+AGENT_BIN=()
+if [[ -r $bin_config ]]
+then
+  # shellcheck disable=SC1090
+  source "$bin_config"
+fi
+
+if [[ ${#AGENT_BIN[@]} -eq 0 ]]
+then
+  p=$(brew --prefix)
+  AGENT_BIN=("${p}/bin/codex-acp")
+fi
+
+exec op run --no-masking -- "${AGENT_BIN[@]}" "$@"

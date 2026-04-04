@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+source ~/git/ide/bash/ai/agents.bash ||
+  die "Couldn't source agents.bash"
+
+export GEMINI_API_KEY="${GEMINI_API_KEY:-op://Private/Gemini API Key/credential}"
+export VERTEXAI_PROJECT="${VERTEXAI_PROJECT:-op://Private/Gemini API Key/Project number}"
+export VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-us-east1}"
+
+export TIMVISHER_GEMINI=true
+
+p=$(brew --prefix)
+
+exec op run --no-masking -- "${p}/bin/gemini" "$@"

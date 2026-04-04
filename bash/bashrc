@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+
+# This file should maintain backwards compatability with bash 3.2 as
+# that's still the only version by default on macs
+
+##########################################################################
+### Shell Options
+##########################################################################
+
+# this allows as much history as possible to caputured between many shells.
+shopt -s histappend
+
+# in the event that you intentionally (or unintentionally) activated
+# history expansion, this will instead substitue the command you are about
+# to run into the prompt and then you can press enter.
+shopt -s histverify
+
+# Allows the use of better globbing. Globbing is almost always the right
+# answer compared to any other form of command parsing. Please read up on
+# it if you haven't already. http://mywiki.wooledge.org/glob
+shopt -s extglob
+shopt -s globstar
+
+# Ignore some controlling instructions
+# HISTIGNORE is a colon-delimited list of patterns which should be excluded.
+# The '&' is a special pattern which suppresses duplicate entries.
+export HISTIGNORE=$'[ \t]*:&:[fb]g:exit'
+
+# Whenever displaying the prompt, write the previous line to disk
+export PROMPT_COMMAND=("history -a")
+
+export HISTCONTROL="ignoredups"
+export HISTFILESIZE=500000000
+export HISTSIZE=500000
+
+# Prepend history entries with timestamps
+export HISTTIMEFORMAT='%FT%T%z '
+
+# Store multi-line commands on a single history line, using semi-colons
+shopt -s cmdhist
+
+# Load in bash_completion if we can find it.
+if ! [[ -r ~/.config/timvisher/ide/bash/no_bash_completion ]]
+then
+  if [[ -r /usr/local/etc/bash_completion ]]
+  then
+    source /usr/local/etc/bash_completion
+  elif [[ -r /usr/share/bash-completion/bash_completion ]]
+  then
+    source /usr/share/bash-completion/bash_completion
+  elif [[ -r /opt/homebrew/etc/profile.d/bash_completion.sh ]]
+  then
+    source /opt/homebrew/etc/profile.d/bash_completion.sh
+  else
+    echo "# Can't find bash-completion. You should install it." >&2
+  fi
+fi
+
+# set up git ps1
+if ! command -v __git_ps1 > /dev/null 2>&1
+then
+  if ! [[ -r ~/.config/timvisher/ide/bash/no_bash_completion ]]
+  then
+    echo "# Can't find __git_ps1. Not adding it to the prompt." >&2
+  fi
+  __git_ps1() { :; }
+fi
+
+# only works if using __git_ps1 as a PROMPT_COMMAND
+# export GIT_PS1_SHOWCOLORHINTS=1
+export GIT_PS1_SHOWDIRTYSTATE=1
+export GIT_PS1_SHOWSTASHSTATE=1
+export GIT_PS1_SHOWUNTRACKEDFILES=1
+export GIT_PS1_SHOWUPSTREAM=auto
+
+git_prompt_help() {
+  column -t -s $'\t' <<EOF
+*	unstaged changes
++	staged changes
+$	stashes
+%	untracked files
+<	behind
+>	ahead
+<>	diverged
+=	no difference
+EOF
+}
+
+red=$(tput setaf 1)
+bold=$(tput bold)
+reset=$(tput sgr0)
+current_aws_profile() {
+  if [[ -n $AWS_PROFILE ]]
+  then
+    printf 'AWS_PROFILE=‘%s’' "$AWS_PROFILE"
+  fi
+}
+
+current_aws_region() {
+  if [[ -n $AWS_REGION ]]
+  then
+    if [[ -n $AWS_PROFILE ]]
+    then
+      printf ' '
+    fi
+    printf 'AWS_REGION=‘%s’' "$AWS_REGION"
+  fi
+}
+
+current_kube_context() {
+  local timvisher_kctx timvisher_kns
+  mkdir -p ~/.cache
+  touch ~/.cache/timvisher_k{ctx,ns}
+  timvisher_kctx="$(< ~/.cache/timvisher_kctx)"
+  timvisher_kns="$(< ~/.cache/timvisher_kns)"
+  printf 'kctx=‘%s’ kns=‘%s’' "$timvisher_kctx" "$timvisher_kns"
+}
+
+timvisher_kctx_cache() {
+  kubectx -c 2>/dev/null > ~/.cache/timvisher_kctx || true
+  kubens -c 2>/dev/null > ~/.cache/timvisher_kns || true
+}
+
+if [[ -t 0 ]] && [[ -z $timvisher_kctx_sync ]]
+then
+  coproc timvisher_kctx_sync {
+    while :
+    do
+      timvisher_kctx_cache
+      sleep 30
+    done
+  }
+fi
+
+export DEFAULT_PS1='\n\D{%FT%T%z}\n\u@\H\n$(current_kube_context)\nAWS_PROFILE=‘${AWS_PROFILE}’ AWS_REGION=‘${AWS_REGION}’\n\w\n\$ '
+export PS1="$DEFAULT_PS1"
+
+##########################################################################
+### standard software configuration
+##########################################################################
+
+GREP_OPTIONS='--color=auto'
+GREP_COLOR='1;32'
+
+export EDITOR='emacs'
+
+# Functions
+
+for f in ~/.functions/*.bash
+do
+  if [[ -f $f ]]
+  then
+    . "$f"
+  fi
+done
+
+# display file type hints and colorize the output of ls
+if ls --version > /dev/null 2>&1
+then
+  alias ls='ls --color -Fh'
+else
+  alias ls='ls -FGh'
+fi
+
+alias ll='ls -l'
+
+# human readable figures
+alias df='df -h'
+alias du='du -h'
+
+# use a colorized pager in ag
+alias ag='ag --pager "less -R"'
+
+##########################################################################
+### ChefDK
+##########################################################################
+
+# if command -v chef > /dev/null
+# then
+#     eval "$(chef shell-init bash)"
+# fi
+
+##########################################################################
+### Overrides
+##########################################################################
+
+# The above should only be overriden for a good reason. This configuration
+# helps us work smoothly with each other. If you want to override
+# something, consider changing it in the default and publishing it.
+#
+# That said if you absolutely must override something, you can do so by
+# placing .bash files in the ~/.config/timvisher/ide/bash/functions/
+# directory for functions and ~/.config/timvisher/ide/bash/bin/ directory for
+# executables.
+
+if [[ -d ~/.config/timvisher/ide/bash ]]
+then
+  shopt -s nullglob
+  for f in ~/.config/timvisher/ide/bash/{,functions/}!(*.ignore).bash
+  do
+    if [[ $f != *bash/functions/*.bash ]]
+    then
+      printf '‘%s’ in deprecated ‘~/.config/timvisher/ide/bash/’ location\n' "$f" >&2
+      printf 'mv -v "%s" ~/.config/timvisher/ide/bash/functions/\n' "$f" >&2
+    fi
+    if [[ -f $f ]]
+    then
+      source "$f"
+    fi
+  done
+  shopt -u nullglob
+fi
+
+export PATH=~/bin:~/.local/bin:$PATH
+
+if [[ -d ~/.config/timvisher/ide/bash/bin ]]
+then
+  export PATH=~/.config/timvisher/ide/bash/bin:$PATH
+fi
+
+# Local Variables:
+# sh-basic-offset: 2
+# End:

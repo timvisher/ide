@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_git clone's ensure_tracking (local-path code path).
+#
+# Previously these tested ntmux3__set_upstream_to_origin_default, which
+# has been deleted.  Tracking setup for external (non-managed) repos now
+# lives in timvisher_git's ensure_tracking function, invoked via
+# `timvisher_git clone <local-path>`.
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bin_dir="$(cd "$(dirname "$0")/../bin" && pwd)"
+
+# Use real git binary, not the wrapper which enforces agent commit rules
+real_git=$(brew --prefix 2>/dev/null)/bin/git
+[[ -x $real_git ]] || real_git=/usr/bin/git
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Helper: create a test repo with origin remote pointing to a bare repo.
+# When add_upstream=true, also creates an upstream bare repo and remote.
+setup_repo() {
+  local repo_dir=$1
+  local add_upstream=${2:-}
+  local bare_dir="${tmpdir}/bare-origin"
+  local bare_upstream="${tmpdir}/bare-upstream"
+
+  rm -rf "$bare_dir" "$bare_upstream" "$repo_dir"
+
+  "$real_git" init -b main --bare "$bare_dir" >/dev/null 2>&1 || { echo "failed to init bare" >&2; return 1; }
+  "$real_git" init -b main "$repo_dir" >/dev/null 2>&1 || { echo "failed to init repo" >&2; return 1; }
+
+  "$real_git" -C "$repo_dir" commit --allow-empty -m "initial" >/dev/null 2>&1 || { echo "failed to commit" >&2; return 1; }
+  "$real_git" -C "$repo_dir" remote add origin "$bare_dir" || { echo "failed to add remote" >&2; return 1; }
+  "$real_git" -C "$repo_dir" push -u origin main >/dev/null 2>&1 || { echo "failed to push" >&2; return 1; }
+
+  if [[ $add_upstream == true ]]
+  then
+    "$real_git" init -b main --bare "$bare_upstream" >/dev/null 2>&1 || { echo "failed to init bare upstream" >&2; return 1; }
+    "$real_git" -C "$repo_dir" remote add upstream "$bare_upstream" || { echo "failed to add upstream" >&2; return 1; }
+    "$real_git" -C "$repo_dir" push upstream main >/dev/null 2>&1 || { echo "failed to push upstream" >&2; return 1; }
+  fi
+}
+
+# Helper: run timvisher_git clone on a local path, using real git on PATH.
+run_clone_in_repo() {
+  local repo_dir=$1
+  (
+    PATH="$(dirname "$real_git"):${bin_dir}:$PATH"
+    timvisher_git clone "$repo_dir" >/dev/null 2>&1
+  )
+}
+
+# Test 1: preserves upstream/main tracking even when upstream ref is missing
+run_test
+repo="${tmpdir}/test1"
+setup_repo "$repo" || { fail "setup_repo test1"; exit 1; }
+"$real_git" -C "$repo" config "branch.main.remote" "upstream"
+"$real_git" -C "$repo" config "branch.main.merge" "refs/heads/main"
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" config "branch.main.remote" 2>/dev/null || echo "NONE")
+if [[ $result == "upstream" ]]
+then
+  pass "preserves upstream/main tracking when upstream ref is missing"
+else
+  fail "preserves upstream/main tracking when upstream ref missing: tracking_remote='${result}'"
+fi
+
+# Test 2: still sets origin/main when no tracking is configured at all
+run_test
+repo="${tmpdir}/test2"
+setup_repo "$repo" || { fail "setup_repo test2"; exit 1; }
+"$real_git" -C "$repo" config --unset "branch.main.remote" 2>/dev/null || true
+"$real_git" -C "$repo" config --unset "branch.main.merge" 2>/dev/null || true
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" config "branch.main.remote" 2>/dev/null || echo "NONE")
+if [[ $result == "origin" ]]
+then
+  pass "sets origin/main when no tracking configured"
+else
+  fail "sets origin/main when no tracking: tracking_remote='${result}'"
+fi
+
+# Test 3: preserves tracking when @{u} resolves successfully (origin/main already set)
+run_test
+repo="${tmpdir}/test3"
+setup_repo "$repo" || { fail "setup_repo test3"; exit 1; }
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")
+if [[ $result == "origin/main" ]]
+then
+  pass "preserves origin/main when already correctly set"
+else
+  fail "preserves origin/main: got '${result}'"
+fi
+
+# Test 4: preserves existing origin/main tracking (does not override)
+run_test
+repo="${tmpdir}/test4"
+setup_repo "$repo" || { fail "setup_repo test4"; exit 1; }
+"$real_git" -C "$repo" branch --set-upstream-to=origin/main main >/dev/null 2>&1
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")
+if [[ $result == "origin/main" ]]
+then
+  pass "preserves origin/main tracking"
+else
+  fail "preserves origin/main tracking: got '${result}'"
+fi
+
+# Test 5: sets upstream/main when upstream remote exists and no tracking configured
+run_test
+repo="${tmpdir}/test5"
+setup_repo "$repo" true || { fail "setup_repo test5"; exit 1; }
+"$real_git" -C "$repo" config --unset "branch.main.remote" 2>/dev/null || true
+"$real_git" -C "$repo" config --unset "branch.main.merge" 2>/dev/null || true
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" config "branch.main.remote" 2>/dev/null || echo "NONE")
+if [[ $result == "upstream" ]]
+then
+  pass "sets upstream/main when upstream remote exists and no tracking configured"
+else
+  fail "sets upstream/main with upstream remote, no tracking: tracking_remote='${result}'"
+fi
+
+# Test 6: does NOT override origin/main with upstream/main (key soft fork fix)
+# Previously ntmux3__set_upstream_to_origin_default would override origin/*
+# tracking with upstream/*, breaking soft forks.  ensure_tracking never
+# overrides existing valid tracking.
+run_test
+repo="${tmpdir}/test6"
+setup_repo "$repo" true || { fail "setup_repo test6"; exit 1; }
+# tracking is origin/main from setup_repo push -u
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")
+if [[ $result == "origin/main" ]]
+then
+  pass "preserves origin/main when upstream remote exists (soft fork safe)"
+else
+  fail "preserves origin/main with upstream remote: got '${result}'"
+fi
+
+# Test 7: preserves upstream/main when upstream remote exists and already tracking it
+run_test
+repo="${tmpdir}/test7"
+setup_repo "$repo" true || { fail "setup_repo test7"; exit 1; }
+"$real_git" -C "$repo" branch --set-upstream-to=upstream/main main >/dev/null 2>&1
+
+run_clone_in_repo "$repo"
+
+result=$("$real_git" -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "NONE")
+if [[ $result == "upstream/main" ]]
+then
+  pass "preserves upstream/main when upstream remote exists and already tracking"
+else
+  fail "preserves upstream/main already tracking: got '${result}'"
+fi
+
+echo
+echo "Results: ${tests} tests, ${failures} failures"
+exit "$failures"

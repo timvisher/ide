@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# < 2 ))
+then
+  printf 'Usage: %s TARGET_FILE EDIT_PROGRAM\n' "$0" >&2
+  exit 2
+fi
+
+target=$1
+edit_program=$2
+
+if [[ ! -f $target ]]
+then
+  printf 'Target file not found: %s\n' "$target" >&2
+  exit 1
+fi
+
+if [[ ! -f $edit_program ]]
+then
+  printf 'Edit program not found: %s\n' "$edit_program" >&2
+  exit 1
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+skill_root="$(cd "${script_dir}/.." && pwd)"
+emacs_dir="${skill_root}/emacs.d"
+
+emacs -Q --batch \
+  --init-directory "$emacs_dir" \
+  "$target" \
+  -l "$emacs_dir/init.el" \
+  -f agent-run "$edit_program"

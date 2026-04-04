@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+# Tests for dead.bash (timvisher_dead)
+
+set -eo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+source "$funcs_dir/logging.bash"
+source "$funcs_dir/dead.bash"
+
+# Test 1: one-arg form creates function that errors with "no longer defined"
+run_test
+timvisher_dead old_cmd
+result=$(old_cmd 2>&1 || true)
+if [[ $result == *"old_cmd no longer defined"* ]]
+then
+  pass "one-arg: errors with 'no longer defined'"
+else
+  fail "one-arg: got '${result}'"
+fi
+
+# Test 2: dead function returns 1
+run_test
+timvisher_dead failing_cmd
+if ! failing_cmd 2>/dev/null
+then
+  pass "dead function returns 1"
+else
+  fail "dead function did not return 1"
+fi
+
+# Test 3: two-arg with executable replacement mentions replacement
+run_test
+new_cmd() { echo "I am new"; }
+timvisher_dead replaced_cmd new_cmd
+result=$(replaced_cmd 2>&1 || true)
+if [[ $result == *"replaced_cmd replaced by new_cmd"* ]]
+then
+  pass "two-arg executable: mentions replacement"
+else
+  fail "two-arg executable: got '${result}'"
+fi
+
+# Test 4: two-arg with non-executable string uses it as message
+run_test
+timvisher_dead msg_cmd "use something_else instead"
+result=$(msg_cmd 2>&1 || true)
+if [[ $result == *"msg_cmd: use something_else instead"* ]]
+then
+  pass "two-arg message: uses string as message"
+else
+  fail "two-arg message: got '${result}'"
+fi
+
+# Test 5: auto-detects promoted name by stripping _EXP_
+run_test
+timvisher_promoted_thing() { echo "I exist"; }
+timvisher_dead timvisher_EXP_promoted_thing
+result=$(timvisher_EXP_promoted_thing 2>&1 || true)
+if [[ $result == *"timvisher_EXP_promoted_thing replaced by timvisher_promoted_thing"* ]]
+then
+  pass "auto-detects promoted _EXP_ → non-EXP replacement"
+else
+  fail "auto-detect: got '${result}'"
+fi
+
+# Test 6: auto-detect falls back to 'no longer defined' when no match
+run_test
+timvisher_dead timvisher_EXP_nonexistent_thing
+result=$(timvisher_EXP_nonexistent_thing 2>&1 || true)
+if [[ $result == *"no longer defined"* ]]
+then
+  pass "auto-detect fallback: 'no longer defined' when no match"
+else
+  fail "auto-detect fallback: got '${result}'"
+fi
+
+# Test 7: no args returns error
+run_test
+result=$(timvisher_dead 2>&1 || true)
+if [[ $result == *"requires at least one argument"* ]]
+then
+  pass "no args: returns error"
+else
+  fail "no args: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

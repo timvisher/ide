@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+# Tests for gh wrapper
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/gh"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a mock brew prefix with gh inside it
+mkdir -p "$tmpdir/prefix/bin"
+cat > "$tmpdir/prefix/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "real-gh $*"
+MOCK
+chmod +x "$tmpdir/prefix/bin/gh"
+
+# Mock brew to return our prefix
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/brew" <<MOCK
+#!/usr/bin/env bash
+echo "$tmpdir/prefix"
+MOCK
+chmod +x "$tmpdir/mockbin/brew"
+
+# Test 1: blocks 'gh repo create' when TIMVISHER_AGENT is set
+run_test
+result=$(
+  TIMVISHER_AGENT=true \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' repo create my-repo" 2>&1 || true
+)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'gh repo create' when agent"
+else
+  fail "blocks 'gh repo create': got '${result}'"
+fi
+
+# Test 2: allows 'gh repo create' when TIMVISHER_AGENT is unset
+run_test
+result=$(
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' repo create my-repo" 2>&1
+)
+if [[ $result == *"real-gh repo create my-repo"* ]]
+then
+  pass "allows 'gh repo create' when not agent"
+else
+  fail "allows 'gh repo create': got '${result}'"
+fi
+
+# Test 3: passes through normal commands when agent
+run_test
+result=$(
+  TIMVISHER_AGENT=true \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' pr list" 2>&1
+)
+if [[ $result == *"real-gh pr list"* ]]
+then
+  pass "passes through normal commands when agent"
+else
+  fail "passes through normal commands: got '${result}'"
+fi
+
+# Test 4: passes through all args to real gh
+run_test
+result=$(
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' pr view 123 --json title" 2>&1
+)
+if [[ $result == *"real-gh pr view 123 --json title"* ]]
+then
+  pass "passes through all args to real gh"
+else
+  fail "passes through all args: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

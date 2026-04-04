@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+
+# Tests for claude and codex wrappers
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
+
+# Test 1: no datadog references
+run_test
+found_dd=false
+for tool in claude codex
+do
+  if grep -qi 'datadog\|dd-source\|account datadog' "$bin_dir/$tool"
+  then
+    found_dd=true
+    break
+  fi
+done
+if [[ $found_dd == false ]]
+then
+  pass "no datadog references in wrappers"
+else
+  fail "found datadog reference"
+fi
+
+# Test 2: all wrappers source agents.bash
+run_test
+all_agents_bash=true
+for tool in claude codex gemini claude-agent-acp codex-acp timvisher_emacs_agent_shell
+do
+  if ! grep -q 'agents\.bash' "$bin_dir/$tool"
+  then
+    all_agents_bash=false
+    fail "  $tool does not source agents.bash"
+  fi
+done
+if [[ $all_agents_bash == true ]]
+then
+  pass "all wrappers source agents.bash"
+fi
+
+# Test 3: claude sets TIMVISHER_AGENT
+run_test
+if grep -q 'TIMVISHER_AGENT=true' "$bin_dir/claude"
+then
+  pass "claude sets TIMVISHER_AGENT"
+else
+  fail "claude does not set TIMVISHER_AGENT"
+fi
+
+# Test 4: codex sets TIMVISHER_AGENT and TIMVISHER_CODEX
+run_test
+if grep -q 'TIMVISHER_AGENT=true' "$bin_dir/codex" && grep -q 'TIMVISHER_CODEX=true' "$bin_dir/codex"
+then
+  pass "codex sets TIMVISHER_AGENT and TIMVISHER_CODEX"
+else
+  fail "codex missing agent env vars"
+fi
+
+# Test 5: claude uses ANTHROPIC_API_KEY with op:// fallback
+run_test
+if grep -q 'ANTHROPIC_API_KEY.*op://Private' "$bin_dir/claude"
+then
+  pass "claude uses ANTHROPIC_API_KEY with op:// fallback"
+else
+  fail "claude missing ANTHROPIC_API_KEY setup"
+fi
+
+# Test 6: codex uses OPENAI_API_KEY with op:// fallback
+run_test
+if grep -q 'OPENAI_API_KEY.*op://Private' "$bin_dir/codex"
+then
+  pass "codex uses OPENAI_API_KEY with op:// fallback"
+else
+  fail "codex missing OPENAI_API_KEY setup"
+fi
+
+# Test 7: both use op run --no-masking
+run_test
+all_op=true
+for tool in claude codex
+do
+  if ! grep -q 'op run --no-masking' "$bin_dir/$tool"
+  then
+    all_op=false
+    break
+  fi
+done
+if [[ $all_op == true ]]
+then
+  pass "both use op run --no-masking"
+else
+  fail "missing op run --no-masking"
+fi
+
+# Test 8: both use brew --prefix for binary lookup
+run_test
+all_brew=true
+for tool in claude codex
+do
+  if ! grep -q 'brew --prefix' "$bin_dir/$tool"
+  then
+    all_brew=false
+    break
+  fi
+done
+if [[ $all_brew == true ]]
+then
+  pass "both use brew --prefix for binary lookup"
+else
+  fail "missing brew --prefix"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

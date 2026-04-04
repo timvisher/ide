@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+real_git="$(brew --prefix)"/bin/git
+
+if [[ -n $TIMVISHER_AGENT ]]
+then
+  subcommand=""
+  skip_next=false
+  end_of_opts=false
+
+  for x in "$@"
+  do
+    if [[ -n $subcommand ]]
+    then
+      break
+    fi
+
+    if [[ $skip_next == true ]]
+    then
+      skip_next=false
+      continue
+    fi
+
+    if [[ $end_of_opts == true ]]
+    then
+      subcommand=$x
+      break
+    fi
+
+    if [[ $x == -- ]]
+    then
+      end_of_opts=true
+      continue
+    fi
+
+    if [[ $x == -* ]]
+    then
+      case "$x" in
+        -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+          skip_next=true
+          ;;
+        --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*)
+          ;;
+      esac
+      continue
+    fi
+
+    subcommand=$x
+  done
+
+  if [[ $subcommand == commit ]]
+  then
+    commit_message=""
+    commit_message_file=""
+    skip_next=false
+    last_opt=""
+
+    for x in "$@"
+    do
+      if [[ $skip_next == true ]]
+      then
+        skip_next=false
+        case "$last_opt" in
+          -m|--message)
+            commit_message+="${x}"$'\n'
+            ;;
+          -F|--file|-t|--template)
+            commit_message_file="$x"
+            ;;
+        esac
+        continue
+      fi
+
+      case "$x" in
+        -m|--message|-F|--file|-t|--template)
+          last_opt=$x
+          skip_next=true
+          ;;
+        -m=*|--message=*)
+          commit_message+="${x#*=}"$'\n'
+          ;;
+        -F=*|--file=*|-t=*|--template=*)
+          commit_message_file="${x#*=}"
+          ;;
+      esac
+    done
+
+    if [[ -z $commit_message && -n $commit_message_file ]]
+    then
+      if [[ $commit_message_file == "-" ]]
+      then
+        die "Agent git commit from stdin is not supported. Include the trailer and check ai/HOME/.agents/skills/git/SKILL.md."
+      fi
+      if [[ -r $commit_message_file ]]
+      then
+        commit_message=$(cat "$commit_message_file")
+      fi
+    fi
+
+    if [[ -z $commit_message ]]
+    then
+      die "Agent git commit must include a Co-authored-by trailer. Use -m/--message or -F/--file and check ai/HOME/.agents/skills/git/SKILL.md."
+    fi
+
+    required_trailer=""
+    if [[ -n $TIMVISHER_CODEX ]]
+    then
+      required_trailer='Codex <codex@openai.com>'
+    elif [[ -n $TIMVISHER_CLAUDE || -n $CLAUDECODE ]]
+    then
+      required_trailer='<noreply@anthropic.com>'
+    elif [[ -n $TIMVISHER_GEMINI ]]
+    then
+      required_trailer='<noreply@google.com>'
+    fi
+
+    if [[ -n $required_trailer ]] &&
+         ! printf '%s\n' "$commit_message" | grep -E -i -q "^Co-authored-by:[[:space:]].*${required_trailer}\$"
+    then
+      die "Missing Co-authored-by trailer matching '${required_trailer}'. Check ai/HOME/.agents/skills/git/SKILL.md."
+    fi
+  fi
+
+  if [[ $subcommand == diff || $subcommand == log ]]
+  then
+    for x in "$@"
+    do
+      # Detect range expressions (.. or ...) and validate both sides
+      if [[ $x == *..* ]]
+      then
+        # Split on ... first (three-dot), then .. (two-dot)
+        if [[ $x == *...* ]]
+        then
+          range_guard__lhs=${x%%...*}
+          range_guard__rhs=${x#*...}
+        else
+          range_guard__lhs=${x%%..*}
+          range_guard__rhs=${x#*..}
+        fi
+
+        # Allowed refs: empty (implied HEAD), HEAD, @{u}, @{upstream}, hex SHAs
+        range_guard__allowed='^(HEAD|@\{u(pstream)?\}|[0-9a-f]+)?$'
+        if [[ ! $range_guard__lhs =~ $range_guard__allowed ]] ||
+           [[ ! $range_guard__rhs =~ $range_guard__allowed ]]
+        then
+          die "STOP, AGENT!!!!
+
+DO NOT use hardcoded branch names in range expressions.
+
+You used '%s' but you MUST use @{u} (upstream tracking ref) instead.
+
+Examples:
+  git diff @{u}...HEAD    (three-dot: changes on this branch only)
+  git log @{u}..HEAD      (two-dot: commits on this branch only)
+
+@{u} automatically resolves to whatever the upstream tracking branch is.
+Hardcoding branch names is fragile and wrong.
+
+REFRESH YOUR UNDERSTANDING FROM THE GIT SKILL DOCS." "$x"
+        fi
+
+        if [[ $range_guard__lhs =~ @\{u(pstream)?\} ]] || [[ $range_guard__rhs =~ @\{u(pstream)?\} ]]
+        then
+          if ! "$real_git" rev-parse --verify '@{u}' >/dev/null 2>&1
+          then
+            die "STOP, AGENT!!!!
+
+@{u} does not resolve — this branch has no upstream tracking configured.
+
+ASK THE HUMAN what the upstream should be set to before continuing.
+Do NOT guess or set it yourself.
+
+Once they tell you, run:
+  git branch --set-upstream-to=<remote>/<branch>"
+          fi
+        fi
+      fi
+    done
+  fi
+
+  if [[ $subcommand == push || $subcommand == send-pack ]]
+  then
+    die "STOP, AGENT!!!!
+
+DO NOT ATTEMPT TO WORK AROUND THIS ERROR BY BYPASSING THIS WRAPPER SCRIPT!!!!
+
+DON'T _*EVER*_ RUN GIT PUSH AGAIN.
+
+REFRESH YOUR UNDERSTANDING OF WHAT YOU'RE ALLOWED TO DO FROM THE GIT
+TOOLING DOCS IN ~/.config/timvisher/ide/claude/HOME"
+  fi
+fi
+
+# --- Upstream tracking guard ---
+# Detect when a branch's upstream config is unexpectedly dropped.
+# A cookie file (x.upstream-configured) latches the fact that an upstream
+# was once observed. If the cookie exists but upstream is gone, something
+# broke it — die loudly.
+
+upstream_guard__toplevel=""
+upstream_guard__branch=""
+upstream_guard__cookie=""
+upstream_guard__had_upstream=""
+
+# Extract leading git global flags (-C, --git-dir, --work-tree) so the
+# guard checks the TARGETED repo, not the CWD, when these flags are present.
+upstream_guard__global_flags=()
+
+upstream_guard__extract_global_flags() {
+  upstream_guard__global_flags=()
+  local skip_next=false
+  for arg in "$@"
+  do
+    if [[ $skip_next == true ]]
+    then
+      upstream_guard__global_flags+=("$arg")
+      skip_next=false
+      continue
+    fi
+    case "$arg" in
+      -C|--git-dir|--work-tree)
+        upstream_guard__global_flags+=("$arg")
+        skip_next=true
+        ;;
+      --git-dir=*|--work-tree=*)
+        upstream_guard__global_flags+=("$arg")
+        ;;
+      -*)
+        ;;
+      *)
+        # First non-flag argument is the subcommand; stop scanning
+        break
+        ;;
+    esac
+  done
+}
+
+upstream_guard__pre() {
+  upstream_guard__extract_global_flags "$@"
+
+  upstream_guard__toplevel=$("$real_git" "${upstream_guard__global_flags[@]}" rev-parse --show-toplevel 2>/dev/null) || return 0
+  upstream_guard__branch=$("$real_git" "${upstream_guard__global_flags[@]}" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+
+  # Detached HEAD — nothing to guard
+  if [[ $upstream_guard__branch == "HEAD" ]]
+  then
+    upstream_guard__toplevel=""
+    return 0
+  fi
+
+  upstream_guard__cookie="${upstream_guard__toplevel}/x.upstream-configured"
+  upstream_guard__had_upstream=$("$real_git" "${upstream_guard__global_flags[@]}" config "branch.${upstream_guard__branch}.remote" 2>/dev/null) || true
+
+  if [[ -n $upstream_guard__had_upstream ]]
+  then
+    # Upstream is set — ensure cookie exists
+    if [[ ! -e $upstream_guard__cookie ]]
+    then
+      touch "$upstream_guard__cookie"
+    fi
+  elif [[ -e $upstream_guard__cookie ]]
+  then
+    # Cookie exists but upstream is gone — something already broke it
+    local agent_msg=""
+    if [[ -n ${TIMVISHER_AGENT:-} ]]
+    then
+      agent_msg="
+
+AGENT: STOP what you are doing immediately. Report to the human what
+actions you were just taking that resulted in this branch losing its
+upstream tracking configuration. Do NOT attempt to fix this yourself."
+    fi
+
+    warn "UPSTREAM TRACKING DROPPED!
+
+Branch '%s' in '%s' previously had an upstream configured
+(x.upstream-configured cookie exists) but branch.%s.remote is now unset.
+
+Investigate what removed it. To reset, delete:
+  %s
+
+git command that triggered this check: git %s%s" \
+      "$upstream_guard__branch" \
+      "$upstream_guard__toplevel" \
+      "$upstream_guard__branch" \
+      "$upstream_guard__cookie" \
+      "$*" \
+      "$agent_msg"
+  fi
+}
+
+upstream_guard__post() {
+  # Only check if we had a toplevel and branch to guard
+  if [[ -z $upstream_guard__toplevel ]]
+  then
+    return 0
+  fi
+
+  local upstream_after
+  upstream_after=$("$real_git" "${upstream_guard__global_flags[@]}" config "branch.${upstream_guard__branch}.remote" 2>/dev/null) || true
+
+  if [[ -n $upstream_guard__had_upstream ]] && [[ -z $upstream_after ]]
+  then
+    local log_file="${HOME}/.local/state/git-upstream-dropped.log"
+    mkdir -p "$(dirname "$log_file")"
+    printf '%s ppid=%s branch=%s toplevel=%s command: git %s\n' \
+      "$(date -u '+%FT%T%z')" \
+      "$$/$PPID" \
+      "$upstream_guard__branch" \
+      "$upstream_guard__toplevel" \
+      "$*" >> "$log_file"
+
+    local agent_msg=""
+    if [[ -n ${TIMVISHER_AGENT:-} ]]
+    then
+      agent_msg="
+
+AGENT: STOP what you are doing immediately. Report to the human what
+actions you were just taking that resulted in this branch losing its
+upstream tracking configuration. Do NOT attempt to fix this yourself."
+    fi
+
+    warn "UPSTREAM TRACKING DROPPED by this command!
+
+Branch '%s' in '%s' had upstream '%s' before this command ran,
+but branch.%s.remote is now unset.
+
+Offending command: git %s
+
+Logged to: %s%s" \
+      "$upstream_guard__branch" \
+      "$upstream_guard__toplevel" \
+      "$upstream_guard__had_upstream" \
+      "$upstream_guard__branch" \
+      "$*" \
+      "$log_file" \
+      "$agent_msg"
+  fi
+}
+
+upstream_guard__pre "$@"
+
+"$real_git" "$@"
+upstream_guard__rc=$?
+
+upstream_guard__post "$@"
+
+exit $upstream_guard__rc

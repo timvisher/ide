@@ -1,0 +1,4 @@
+This directory houses system extension files. They are not checked in to
+git and necessarily should be very lightweight. They are a decent place to
+start experimenting with extensions to IDE but if the extension prove
+useful get them merged in to trunk!

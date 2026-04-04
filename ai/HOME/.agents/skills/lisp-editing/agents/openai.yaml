@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lisp Editing"
+  short_description: "Edit Emacs Lisp via batch Emacs + paredit"
+  default_prompt: "Use the paredit-based batch Emacs workflow and scripts/agent-edit-lisp to make structure-safe edits to Emacs Lisp files."

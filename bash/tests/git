@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+
+# Tests for git wrapper
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/git"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a mock brew prefix with git inside it
+mkdir -p "$tmpdir/prefix/bin"
+cat > "$tmpdir/prefix/bin/git" <<'MOCK'
+#!/usr/bin/env bash
+echo "real-git $*"
+MOCK
+chmod +x "$tmpdir/prefix/bin/git"
+
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/brew" <<MOCK
+#!/usr/bin/env bash
+echo "$tmpdir/prefix"
+MOCK
+chmod +x "$tmpdir/mockbin/brew"
+
+run_wrapper() {
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+run_wrapper_agent() {
+  TIMVISHER_AGENT=true \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+# Test 1: blocks 'git push' when agent
+run_test
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git push' when agent"
+else
+  fail "blocks 'git push': got '${result}'"
+fi
+
+# Test 2: blocks 'git send-pack' when agent
+run_test
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' send-pack" 2>&1 || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git send-pack' when agent"
+else
+  fail "blocks 'git send-pack': got '${result}'"
+fi
+
+# Test 3: allows 'git push' when not agent
+run_test
+result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1)
+if [[ $result == *"real-git push origin main"* ]]
+then
+  pass "allows 'git push' when not agent"
+else
+  fail "allows 'git push': got '${result}'"
+fi
+
+# Test 4: requires Co-authored-by trailer for Claude agent commits
+run_test
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
+if [[ $result == *"Missing Co-authored-by trailer"* ]]
+then
+  pass "requires Co-authored-by trailer for Claude commits"
+else
+  fail "requires trailer: got '${result}'"
+fi
+
+# Test 5: accepts commit with proper Co-authored-by trailer
+run_test
+msg=$'Fix a bug\n\nCo-authored-by: Claude <noreply@anthropic.com>'
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m '$msg'" 2>&1)
+if [[ $result == *"real-git commit"* ]]
+then
+  pass "accepts commit with proper trailer"
+else
+  fail "accepts commit with trailer: got '${result}'"
+fi
+
+# Test 6: passes through normal commands for agents
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1)
+if [[ $result == *"real-git status"* ]]
+then
+  pass "passes through 'git status' for agents"
+else
+  fail "passes through status: got '${result}'"
+fi
+
+# Test 7: passes through all args when not agent
+run_test
+result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log --oneline -5" 2>&1)
+if [[ $result == *"real-git log --oneline -5"* ]]
+then
+  pass "passes through all args when not agent"
+else
+  fail "passes through all args: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Range expression guard tests (agent must use @{u} not hardcoded branches)
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'git log master..HEAD' for agents
+run_test
+result=$(run_wrapper_agent "log --oneline master..HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"@{u}"* ]]
+then
+  pass "blocks 'git log master..HEAD' for agents"
+else
+  fail "blocks 'git log master..HEAD': got '${result}'"
+fi
+
+# Test: blocks 'git diff origin/main..HEAD' for agents
+run_test
+result=$(run_wrapper_agent "diff origin/main..HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git diff origin/main..HEAD' for agents"
+else
+  fail "blocks 'git diff origin/main..HEAD': got '${result}'"
+fi
+
+# Test: blocks three-dot 'git diff main...HEAD' for agents
+run_test
+result=$(run_wrapper_agent "diff main...HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git diff main...HEAD' for agents"
+else
+  fail "blocks 'git diff main...HEAD': got '${result}'"
+fi
+
+# Test: blocks reverse 'git log HEAD..master' for agents
+run_test
+result=$(run_wrapper_agent "log HEAD..master" || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git log HEAD..master' for agents"
+else
+  fail "blocks 'git log HEAD..master': got '${result}'"
+fi
+
+# Test: blocks arbitrary branch names in range expressions
+run_test
+result=$(run_wrapper_agent "log feature/my-branch..HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git log feature/my-branch..HEAD' for agents"
+else
+  fail "blocks 'git log feature/my-branch..HEAD': got '${result}'"
+fi
+
+# Test: blocks origin/arbitrary-branch in range expressions
+run_test
+result=$(run_wrapper_agent "diff origin/develop...HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git diff origin/develop...HEAD' for agents"
+else
+  fail "blocks 'git diff origin/develop...HEAD': got '${result}'"
+fi
+
+# Test: allows SHA..HEAD for agents
+run_test
+result=$(run_wrapper_agent "log abc123..HEAD" || true)
+if [[ $result == *"real-git log"* ]]
+then
+  pass "allows 'git log abc123..HEAD' for agents"
+else
+  fail "allows SHA..HEAD: got '${result}'"
+fi
+
+# Test: allows @{u}..HEAD for agents
+run_test
+result=$(run_wrapper_agent "log @{u}..HEAD" || true)
+if [[ $result == *"real-git log"* ]]
+then
+  pass "allows 'git log @{u}..HEAD' for agents"
+else
+  fail "allows 'git log @{u}..HEAD': got '${result}'"
+fi
+
+# Test: allows @{upstream}...HEAD for agents
+run_test
+result=$(run_wrapper_agent "diff @{upstream}...HEAD" || true)
+if [[ $result == *"real-git diff"* ]]
+then
+  pass "allows 'git diff @{upstream}...HEAD' for agents"
+else
+  fail "allows @{upstream}...HEAD: got '${result}'"
+fi
+
+# Test: allows 'git log master..HEAD' for non-agents
+run_test
+result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log master..HEAD" 2>&1)
+if [[ $result == *"real-git log master..HEAD"* ]]
+then
+  pass "allows 'git log master..HEAD' for non-agents"
+else
+  fail "allows 'git log master..HEAD' for non-agents: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Upstream guard integration tests (using real git repos)
+# ---------------------------------------------------------------------------
+
+real_git=/opt/homebrew/bin/git
+
+# For upstream guard tests, the wrapper needs the real git binary (not the
+# echo mock) because it calls rev-parse/config internally.
+mkdir -p "$tmpdir/real-prefix/bin"
+ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
+cat > "$tmpdir/mockbin/brew-real" <<MOCK
+#!/usr/bin/env bash
+echo "$tmpdir/real-prefix"
+MOCK
+chmod +x "$tmpdir/mockbin/brew-real"
+
+run_wrapper_real_git() {
+  TIMVISHER_AGENT= CLAUDECODE= TIMVISHER_CODEX= \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "cp '$tmpdir/mockbin/brew-real' '$tmpdir/mockbin/brew'; source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+run_wrapper_real_git_agent() {
+  TIMVISHER_AGENT=true \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "cp '$tmpdir/mockbin/brew-real' '$tmpdir/mockbin/brew'; source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+# Helper: create a minimal repo with a branch tracking a remote
+setup_tracking_repo() {
+  local repo_dir=$1 branch_name=$2
+
+  "$real_git" -C "$tmpdir" init --bare "remote-${branch_name}.git" >/dev/null 2>&1
+  "$real_git" -C "$tmpdir" clone "remote-${branch_name}.git" "$repo_dir" >/dev/null 2>&1
+  "$real_git" -C "${tmpdir}/${repo_dir}" commit --allow-empty -m "init" >/dev/null 2>&1
+  "$real_git" -C "${tmpdir}/${repo_dir}" push origin HEAD >/dev/null 2>&1
+  if [[ $branch_name != main ]]
+  then
+    "$real_git" -C "${tmpdir}/${repo_dir}" checkout -b "$branch_name" >/dev/null 2>&1
+    "$real_git" -C "${tmpdir}/${repo_dir}" push -u origin "$branch_name" >/dev/null 2>&1
+  fi
+}
+
+# Test 8: upstream guard fires when tracking is dropped (pre-check)
+run_test
+setup_tracking_repo "guard-pre-test" "feature"
+# Create cookie to indicate tracking was previously observed
+touch "${tmpdir}/guard-pre-test/x.upstream-configured"
+# Strip tracking to simulate the broken state
+"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.remote
+"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.merge
+
+result=$(cd "${tmpdir}/guard-pre-test" && run_wrapper_real_git status 2>&1 || true)
+if [[ $result == *"UPSTREAM TRACKING DROPPED"* ]]
+then
+  pass "upstream guard fires when tracking is dropped"
+else
+  fail "upstream guard should fire when tracking dropped: got '${result}'"
+fi
+
+# Test 9: upstream guard uses -C target, not CWD
+run_test
+setup_tracking_repo "guard-C-target" "mybranch"
+# Create a second repo with detached HEAD (like a cache)
+"$real_git" -C "$tmpdir" init "detached-cache" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/detached-cache" commit --allow-empty -m "init" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/detached-cache" checkout --detach HEAD >/dev/null 2>&1
+
+# Make guard-C-target have broken tracking (cookie + no remote)
+touch "${tmpdir}/guard-C-target/x.upstream-configured"
+"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.remote
+"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.merge
+
+# Run git -C <detached-cache> status FROM the broken worktree dir.
+# With the fix, the guard should check the detached cache (and skip),
+# NOT the CWD (which is broken).
+result=$(cd "${tmpdir}/guard-C-target" && run_wrapper_real_git "-C '${tmpdir}/detached-cache' status" 2>&1 || true)
+if [[ $result != *"UPSTREAM TRACKING DROPPED"* ]]
+then
+  pass "upstream guard uses -C target, not CWD"
+else
+  fail "upstream guard should not fire for -C target with detached HEAD: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# @{u} resolve guard tests (agent must have upstream configured)
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'git log @{u}..HEAD' when upstream is not configured
+run_test
+# Create a repo with no upstream
+"$real_git" -C "$tmpdir" init "no-upstream" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/no-upstream" commit --allow-empty -m "init" >/dev/null 2>&1
+
+result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
+if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"ASK THE HUMAN"* ]]
+then
+  pass "blocks 'git log @{u}..HEAD' when no upstream"
+else
+  fail "blocks @{u} without upstream: got '${result}'"
+fi
+
+# Test: allows 'git log @{u}..HEAD' when upstream is configured
+run_test
+setup_tracking_repo "has-upstream" "feature2"
+
+result=$(cd "${tmpdir}/has-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
+if [[ $result != *"ASK THE HUMAN"* ]]
+then
+  pass "allows 'git log @{u}..HEAD' when upstream exists"
+else
+  fail "should allow @{u} with upstream: got '${result}'"
+fi
+
+# Test: blocks 'git diff @{upstream}...HEAD' when no upstream (long form)
+run_test
+result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "diff '@{upstream}...HEAD'" || true)
+if [[ $result == *"ASK THE HUMAN"* ]]
+then
+  pass "blocks @{upstream} long form when no upstream"
+else
+  fail "blocks @{upstream} long form: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

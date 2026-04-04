@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# org-outline - Show heading structure of an org file
+# Usage: org-outline <file.org> [max-depth]
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]
+then
+  echo 'Usage: org-outline <file.org> [max-depth]' >&2
+  exit 1
+fi
+
+file="$1"
+max_depth="${2:-3}"
+
+if [[ ! -f "$file" ]]
+then
+  echo "Error: File '$file' not found" >&2
+  exit 1
+fi
+
+emacs --batch \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  --eval '(load "~/.config/emacs/init.el")' \
+  --eval "(progn
+           (require 'org)
+           (require 'org-element)
+           (find-file \"$file\")
+           (let ((max-level $max_depth))
+             (org-element-map (org-element-parse-buffer 'headline) 'headline
+               (lambda (hl)
+                 (let ((level (org-element-property :level hl)))
+                   (when (<= level max-level)
+                     (princ (make-string (* 2 (1- level)) ?\s))
+                     (princ (org-element-property :raw-value hl))
+                     (princ \"\n\")))))))"

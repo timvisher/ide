@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+
+# Launch Emacs (or run a batch command) using a fake HOME that points
+# back to this repo, so that ~/.config/emacs/init.el comes from the
+# current worktree rather than ~/git/ide/.
+#
+# Usage:
+#   emacs/tests/emacs                              # interactive Emacs
+#   emacs/tests/emacs --batch \
+#     -l emacs/emacs.d/init-test.el \
+#     -f ert-run-tests-batch-and-exit              # run ERT tests
+#
+# When --batch is among the arguments, the script automatically
+# prepends the documented init-loading sequence:
+#   --eval "(require 'package)"
+#   --eval "(package-initialize)"
+#   --eval '(load "~/.config/emacs/init.el")'
+
+source "${HOME}/.functions/logging.bash" ||
+    {
+        echo "Unable to source logging functions" >&2
+        exit 1
+    }
+
+repo_root="$(git rev-parse --show-toplevel)" ||
+    die 'Not in a git repository'
+
+# Set up fake HOME
+mkdir -p "${repo_root}/x.home/git"
+
+if [[ ! -L ${repo_root}/x.home/git/ide ]]
+then
+    ln -sf "../.." "${repo_root}/x.home/git/ide"
+fi
+
+# Install bash dotfiles (needed by system extensions loader)
+HOME="${repo_root}/x.home" bash "${repo_root}/bash/install.bash" >/dev/null ||
+    die 'bash/install.bash failed'
+
+# Symlink ~/.config/emacs → repo emacs.d (mirrors live setup)
+mkdir -p "${repo_root}/x.home/.config"
+if [[ ! -L ${repo_root}/x.home/.config/emacs ]]
+then
+    ln -sf "../git/ide/emacs/emacs.d" "${repo_root}/x.home/.config/emacs"
+fi
+
+# Symlink ~/.config/timvisher/ide → matching system extensions worktree
+# Falls back to main if no matching branch worktree exists
+extensions_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/DataDog/timvisher-ide-datadog-system-extensions"
+branch="$(git -C "${repo_root}" rev-parse --abbrev-ref HEAD)"
+if [[ -d ${extensions_base}/${branch} ]]
+then
+    extensions_target="${extensions_base}/${branch}"
+elif [[ -d ${extensions_base}/main ]]
+then
+    extensions_target="${extensions_base}/main"
+fi
+if [[ -n ${extensions_target:-} ]]
+then
+    mkdir -p "${repo_root}/x.home/.config/timvisher"
+    if [[ ! -L ${repo_root}/x.home/.config/timvisher/ide ]]
+    then
+        ln -sf "${extensions_target}" "${repo_root}/x.home/.config/timvisher/ide"
+    fi
+fi
+
+export HOME="${repo_root}/x.home"
+
+# If --batch is in the arguments, prepend the init-loading sequence
+batch=false
+for arg in "$@"
+do
+    if [[ $arg == --batch ]]
+    then
+        batch=true
+        break
+    fi
+done
+
+if $batch
+then
+    exec emacs \
+        --eval "(require 'package)" \
+        --eval "(package-initialize)" \
+        --eval "(load \"~/.config/emacs/init.el\")" \
+        "$@"
+else
+    exec emacs "$@"
+fi

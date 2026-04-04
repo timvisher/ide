@@ -1,0 +1,9 @@
+node_modules
+todo.org
+pull_request.md
+issue.md
+pr.md
+.DS_Store
+emacs/emacs.d/agent/
+!AGENTS.md
+!CLAUDE.md

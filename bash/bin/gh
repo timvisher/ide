@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+if [[ -n $TIMVISHER_AGENT ]]
+then
+  args=("$@")
+  for ((i=0; i<${#args[@]}-1; i++))
+  do
+    if [[ ${args[i]} == repo && ${args[i+1]} == create ]]
+    then
+      die "STOP, AGENT!!!!
+
+DO NOT ATTEMPT TO WORK AROUND THIS ERROR BY BYPASSING THIS WRAPPER SCRIPT!!!!
+
+DON'T _*EVER*_ RUN GH REPO CREATE AGAIN.
+
+REFRESH YOUR UNDERSTANDING OF WHAT YOU'RE ALLOWED TO DO FROM THE GH
+TOOLING DOCS IN ~/.config/timvisher/ide/claude/HOME"
+    fi
+  done
+fi
+
+"$(brew --prefix)"/bin/gh "$@"

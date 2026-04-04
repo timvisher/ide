@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+
+# Tests for bd wrapper
+# Uses mocks since we can't actually build beads in tests.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/bd"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Test 1: uses TIMVISHER_GIT_HOME to locate beads source
+run_test
+mkdir -p "$tmpdir/git/steveyegge/beads/main"
+# Create a fake bd binary
+cat > "$tmpdir/git/steveyegge/beads/main/bd" <<'MOCK'
+#!/usr/bin/env bash
+echo "bd-mock $*"
+MOCK
+chmod +x "$tmpdir/git/steveyegge/beads/main/bd"
+
+# Create x.pulled file that's recent (so it skips the build)
+touch "$tmpdir/git/steveyegge/beads/main/x.pulled"
+
+# Mock gdate to report x.pulled as recent
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/gdate" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $* == *'-r'* ]]
+then
+  echo "2099-01-01T00:00:00+0000"
+elif [[ $* == *'20 hours ago'* ]]
+then
+  echo "2020-01-01T00:00:00+0000"
+else
+  /opt/homebrew/bin/date "$@"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/gdate"
+
+result=$(
+  TIMVISHER_GIT_HOME="$tmpdir/git" \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; exec '$script' status" 2>/dev/null
+)
+if [[ $result == *"bd-mock status"* ]]
+then
+  pass "uses TIMVISHER_GIT_HOME to locate beads and passes args"
+else
+  fail "expected 'bd-mock status', got '${result}'"
+fi
+
+# Test 2: exports bd_src to environment
+run_test
+cat > "$tmpdir/git/steveyegge/beads/main/bd" <<'MOCK'
+#!/usr/bin/env bash
+echo "$bd_src"
+MOCK
+chmod +x "$tmpdir/git/steveyegge/beads/main/bd"
+
+result=$(
+  TIMVISHER_GIT_HOME="$tmpdir/git" \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; exec '$script'" 2>/dev/null
+)
+if [[ $result == "$tmpdir/git/steveyegge/beads/main" ]]
+then
+  pass "exports bd_src correctly"
+else
+  fail "expected bd_src='${tmpdir}/git/steveyegge/beads/main', got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

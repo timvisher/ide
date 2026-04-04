@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+bin_config=${config_dir}/bd_src
+
+if [[ -r $bin_config ]]
+then
+  # shellcheck disable=SC1090
+  source "$bin_config"
+fi
+
+export bd_src=${bd_src:-${TIMVISHER_GIT_HOME:-${HOME}/git}/steveyegge/beads/main}
+
+(
+  cd "$bd_src" ||
+    die "Couldn't cd"
+
+  if ! [[ -r x.pulled ]] || [[ $(gdate -r x.pulled '+%FT%T%z') < $(gdate -d '20 hours ago' '+%FT%T%z') ]]
+  then
+    info 'Pulling'
+    git pull --rebase &&
+      touch x.pulled ||
+        die "Couldn't pull"
+
+    CGO_CFLAGS+=" -I$(brew --prefix icu4c)/include" CGO_CPPFLAGS+=" -I$(brew --prefix icu4c)/include" CGO_LDFLAGS+=" -L$(brew --prefix icu4c)/lib" go build -o ./bd ./cmd/bd ||
+      die "Couldn't build"
+  fi
+) ||
+  die "Just can't"
+
+exec "${bd_src}"/bd "$@"

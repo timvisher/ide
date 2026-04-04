@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+# Run claude one-shot with streaming progress output.
+# Usage: claudeshot <prompt>
+
+set -o pipefail
+
+SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
+JQ_FILTER="${SELF_DIR}/../lib/format_stream_json.jq"
+
+prompt=$1
+
+if [[ -z $prompt ]]
+then
+    echo "Usage: claudeshot <prompt>" >&2
+    exit 1
+fi
+
+claude --verbose --dangerously-skip-permissions --output-format stream-json -p "$prompt" |
+    jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"

@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_agents_install
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# shellcheck disable=SC1091
+source "${repo_root}/bash/functions/logging.bash"
+
+setup_home() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  mkdir -p "${tmpdir}/.agents"
+  mkdir -p "${tmpdir}/.agents/skills"
+  mkdir -p "${tmpdir}/.agents/languages"
+  mkdir -p "${tmpdir}/.claude"
+  mkdir -p "${tmpdir}/.codex/skills/.system"
+  mkdir -p "${tmpdir}/git/ide/ai/HOME/.agents/languages"
+  touch "${tmpdir}/git/ide/ai/HOME/AGENTS.md"
+  mkdir -p "${tmpdir}/.functions"
+  cp "${repo_root}/bash/functions/logging.bash" "${tmpdir}/.functions/logging.bash"
+  echo "$tmpdir"
+}
+
+cleanup() {
+  rm -rf "$1"
+}
+
+# --- Test: --install-from installs skill symlinks ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/skills/my-skill"
+echo "test" > "${source_dir}/.agents/skills/my-skill/SKILL.md"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>/dev/null
+
+if [[ -L "${test_home}/.agents/skills/my-skill" ]] &&
+   [[ $(readlink "${test_home}/.agents/skills/my-skill") == "${source_dir}/.agents/skills/my-skill" ]]
+then
+  pass "install-from: creates symlinks for skills"
+else
+  fail "install-from: expected symlink at ${test_home}/.agents/skills/my-skill → ${source_dir}/.agents/skills/my-skill, got '$(readlink "${test_home}/.agents/skills/my-skill" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --install-from with multiple skills ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/skills/skill-a"
+mkdir -p "${source_dir}/.agents/skills/skill-b"
+mkdir -p "${source_dir}/.agents/skills/skill-c"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>/dev/null
+
+count=0
+for s in skill-a skill-b skill-c
+do
+  if [[ -L "${test_home}/.agents/skills/${s}" ]]
+  then
+    ((count++)) || true
+  fi
+done
+
+if (( count == 3 ))
+then
+  pass "install-from: installs multiple skills"
+else
+  fail "install-from: expected 3 skill symlinks, got ${count}"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --install-from from multiple sources ---
+run_test
+test_home=$(setup_home)
+source_a=$(mktemp -d)
+source_b=$(mktemp -d)
+mkdir -p "${source_a}/.agents/skills/from-a"
+mkdir -p "${source_b}/.agents/skills/from-b"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_a" \
+  --install-from "$source_b" 2>/dev/null
+
+if [[ -L "${test_home}/.agents/skills/from-a" ]] &&
+   [[ -L "${test_home}/.agents/skills/from-b" ]]
+then
+  pass "install-from: multiple sources install distinct skills"
+else
+  fail "install-from: expected symlinks for from-a and from-b"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
+# --- Test: conflicting skill names from different sources error ---
+run_test
+test_home=$(setup_home)
+source_a=$(mktemp -d)
+source_b=$(mktemp -d)
+mkdir -p "${source_a}/.agents/skills/conflict"
+mkdir -p "${source_b}/.agents/skills/conflict"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_a" \
+  --install-from "$source_b" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"already points to"* ]]
+then
+  pass "install-from: conflicting skill names error"
+else
+  fail "install-from: expected error on conflict, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
+# --- Test: idempotent - same source twice is fine ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/skills/idem-skill"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>/dev/null
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code == 0 ))
+then
+  pass "install-from: idempotent with same source"
+else
+  fail "install-from: re-running same source should succeed, got exit=${exit_code}"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --install-from errors when no .agents subdir ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"No .agents/skills/ or .agents/languages/ directory"* ]]
+then
+  pass "install-from: errors when neither .agents subdir exists"
+else
+  fail "install-from: expected error for missing dirs, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --install-from installs language file symlinks ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/languages"
+echo "# Bash" > "${source_dir}/.agents/languages/bash.md"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>/dev/null
+
+if [[ -L "${test_home}/.agents/languages/bash.md" ]] &&
+   [[ $(readlink "${test_home}/.agents/languages/bash.md") == "${source_dir}/.agents/languages/bash.md" ]]
+then
+  pass "install-from: creates symlinks for language files"
+else
+  fail "install-from: expected symlink at .agents/languages/bash.md, got '$(readlink "${test_home}/.agents/languages/bash.md" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --install-from installs languages from multiple sources ---
+run_test
+test_home=$(setup_home)
+source_a=$(mktemp -d)
+source_b=$(mktemp -d)
+mkdir -p "${source_a}/.agents/languages"
+mkdir -p "${source_b}/.agents/languages"
+echo "# Bash" > "${source_a}/.agents/languages/bash.md"
+echo "# Terraform" > "${source_b}/.agents/languages/terraform.md"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_a" \
+  --install-from "$source_b" 2>/dev/null
+
+if [[ -L "${test_home}/.agents/languages/bash.md" ]] &&
+   [[ -L "${test_home}/.agents/languages/terraform.md" ]]
+then
+  pass "install-from: languages from multiple sources"
+else
+  fail "install-from: expected symlinks for bash.md and terraform.md"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
+# --- Test: conflicting language names error ---
+run_test
+test_home=$(setup_home)
+source_a=$(mktemp -d)
+source_b=$(mktemp -d)
+mkdir -p "${source_a}/.agents/languages"
+mkdir -p "${source_b}/.agents/languages"
+echo "# Bash v1" > "${source_a}/.agents/languages/bash.md"
+echo "# Bash v2" > "${source_b}/.agents/languages/bash.md"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_a" \
+  --install-from "$source_b" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"already points to"* ]]
+then
+  pass "install-from: conflicting language names error"
+else
+  fail "install-from: expected error on language conflict, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
+# --- Test: --install-from with only languages (no skills) succeeds ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/languages"
+echo "# Terraform" > "${source_dir}/.agents/languages/terraform.md"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code == 0 )) &&
+   [[ -L "${test_home}/.agents/languages/terraform.md" ]]
+then
+  pass "install-from: works with only languages (no skills)"
+else
+  fail "install-from: expected success with only languages, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --resolve creates ~/AGENTS.md symlink ---
+run_test
+test_home=$(setup_home)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>/dev/null
+
+if [[ -L "${test_home}/AGENTS.md" ]] &&
+   [[ $(readlink "${test_home}/AGENTS.md") == "${test_home}/git/ide/ai/HOME/AGENTS.md" ]]
+then
+  pass "resolve: creates ~/AGENTS.md symlink"
+else
+  fail "resolve: expected ~/AGENTS.md → ~/git/ide/ai/HOME/AGENTS.md, got '$(readlink "${test_home}/AGENTS.md" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+
+# --- Test: --resolve creates ~/.claude/CLAUDE.md → ~/AGENTS.md ---
+run_test
+test_home=$(setup_home)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>/dev/null
+
+if [[ -L "${test_home}/.claude/CLAUDE.md" ]] &&
+   [[ $(readlink "${test_home}/.claude/CLAUDE.md") == "${test_home}/AGENTS.md" ]]
+then
+  pass "resolve: creates ~/.claude/CLAUDE.md → ~/AGENTS.md"
+else
+  fail "resolve: expected ~/.claude/CLAUDE.md → ~/AGENTS.md, got '$(readlink "${test_home}/.claude/CLAUDE.md" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+
+# --- Test: --resolve creates ~/.claude/skills → ~/.agents/skills ---
+run_test
+test_home=$(setup_home)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>/dev/null
+
+if [[ -L "${test_home}/.claude/skills" ]] &&
+   [[ $(readlink "${test_home}/.claude/skills") == "${test_home}/.agents/skills" ]]
+then
+  pass "resolve: creates ~/.claude/skills → ~/.agents/skills"
+else
+  fail "resolve: expected ~/.claude/skills → ~/.agents/skills, got '$(readlink "${test_home}/.claude/skills" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+
+# --- Test: --resolve creates ~/.codex/AGENTS.md → ~/AGENTS.md ---
+run_test
+test_home=$(setup_home)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>/dev/null
+
+if [[ -L "${test_home}/.codex/AGENTS.md" ]] &&
+   [[ $(readlink "${test_home}/.codex/AGENTS.md") == "${test_home}/AGENTS.md" ]]
+then
+  pass "resolve: creates ~/.codex/AGENTS.md → ~/AGENTS.md"
+else
+  fail "resolve: expected ~/.codex/AGENTS.md → ~/AGENTS.md, got '$(readlink "${test_home}/.codex/AGENTS.md" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+
+# --- Test: --resolve creates per-skill symlinks in ~/.codex/skills ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/skills/codex-test-skill"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --install-from "$source_dir" \
+  --resolve 2>/dev/null
+
+if [[ -L "${test_home}/.codex/skills/codex-test-skill" ]] &&
+   [[ $(readlink "${test_home}/.codex/skills/codex-test-skill") == "${test_home}/.agents/skills/codex-test-skill" ]]
+then
+  pass "resolve: creates per-skill symlinks in ~/.codex/skills"
+else
+  fail "resolve: expected ~/.codex/skills/codex-test-skill → ~/.agents/skills/codex-test-skill, got '$(readlink "${test_home}/.codex/skills/codex-test-skill" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: --resolve preserves ~/.codex/skills/.system ---
+run_test
+test_home=$(setup_home)
+touch "${test_home}/.codex/skills/.system/marker"
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>/dev/null
+
+if [[ -f "${test_home}/.codex/skills/.system/marker" ]]
+then
+  pass "resolve: preserves ~/.codex/skills/.system"
+else
+  fail "resolve: ~/.codex/skills/.system/marker was lost"
+fi
+cleanup "$test_home"
+
+# --- Test: errors when ~/.agents is a symlink ---
+run_test
+test_home=$(mktemp -d)
+mkdir -p "${test_home}/.functions"
+cp "${repo_root}/bash/functions/logging.bash" "${test_home}/.functions/logging.bash"
+target=$(mktemp -d)
+ln -s "$target" "${test_home}/.agents"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  --resolve 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"is a symlink"* ]]
+then
+  pass "pre-flight: errors when ~/.agents is a symlink"
+else
+  fail "pre-flight: expected error for symlinked ~/.agents, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$target"
+
+# --- Test: no args prints usage and errors ---
+run_test
+test_home=$(setup_home)
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"Usage:"* ]]
+then
+  pass "no args: prints usage and errors"
+else
+  fail "no args: expected usage error, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+
+# --- Results ---
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

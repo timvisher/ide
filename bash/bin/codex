@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+source ~/git/ide/bash/ai/agents.bash ||
+  die "Couldn't source agents.bash"
+
+export OPENAI_API_KEY="${OPENAI_API_KEY:-op://Private/OpenAI API Secret Key/credential}"
+
+export TIMVISHER_CODEX=true
+
+p=$(brew --prefix)
+
+exec op run --no-masking -- "${p}/bin/codex" "$@"

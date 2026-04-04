@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+sources=(
+  https://github.com/DataDog/timvisher-ide-datadog-system-extensions/pull/1
+  https://github.com/DataDog/timvisher-ide-datadog-system-extensions/tree/test/never-close
+  https://github.com/DataDog/timvisher-ide-datadog-system-extensions
+  https://github.com/datadog/timvisher-ide-datadog-system-extensions
+  dd/timvisher-ide-datadog-system-extensions
+  dd/timvisher-ide-datadog-system-extensions/test/never-close
+  dd/timvisher-ide-datadog-system-extensions/test/always-only-local
+)
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+for source in "${sources[@]}"
+do
+  printf 'test: ‘%s’\n' "$source"
+  printf 'result: '%s'\n' "$(timvisher_git clone "$source")" ||
+    die "Unable to clone ‘${source}’"
+done
