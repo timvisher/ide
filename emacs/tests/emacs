@@ -44,14 +44,13 @@ then
     ln -sf "../git/ide/emacs/emacs.d" "${repo_root}/x.home/.config/emacs"
 fi
 
-# Mirror ~/.config/timvisher/ide into fake HOME if it exists on the host
-real_ext="${HOME}/.config/timvisher/ide"
-if [[ -e $real_ext ]]
+# Symlink system extensions into fake HOME if they exist on the host
+if [[ -e ${HOME}/.config/timvisher/ide ]]
 then
     mkdir -p "${repo_root}/x.home/.config/timvisher"
     if [[ ! -L ${repo_root}/x.home/.config/timvisher/ide ]]
     then
-        ln -sf "$(readlink -f "$real_ext")" "${repo_root}/x.home/.config/timvisher/ide"
+        ln -sf "${HOME}/.config/timvisher/ide" "${repo_root}/x.home/.config/timvisher/ide"
     fi
 fi
 
