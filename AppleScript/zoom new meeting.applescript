@@ -11,5 +11,5 @@ tell application "System Events"
 		
 	end tell
 	
-	run script (POSIX path of (path to home folder) & "/.config/timvisher/ide/AppleScript/zoom set volume.applescript")
+	run script (POSIX path of (path to home folder) & "/git/ide/AppleScript/zoom set volume.applescript")
 end tell

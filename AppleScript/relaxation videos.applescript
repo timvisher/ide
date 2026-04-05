@@ -43,7 +43,7 @@ tell application "System Events"
 end tell
 
 try
-	tell script "timvisher utilities" to doShellScript({POSIX path of (path to home folder) & ".config/timvisher/ide/bash/bin/timvisher_EXP_relaxation_videos"})
+	tell script "timvisher utilities" to doShellScript({POSIX path of (path to home folder) & "git/ide/bash/bin/timvisher_EXP_relaxation_videos"})
 	set tryUntil to (current date) + 10
 	tell application "System Events"
 		repeat until 0 is less than (count of windows of application process "VLC")
