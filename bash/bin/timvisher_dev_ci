@@ -45,7 +45,6 @@ parallel git -C '{}' pull ::: ~/git/xenodium/*/main ||
 # ---------------------------------------------------------------------------
 
 DEV_CI_REGISTRY=${TIMVISHER_DEV_CI_REGISTRY:-${HOME}/.config/timvisher/dev-ci/branches}
-MARKER_FILENAME=x.dev-integration-branch
 STATUS_FILENAME=x.dev-ci.status
 POLL_INTERVAL_SECONDS=5
 SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
