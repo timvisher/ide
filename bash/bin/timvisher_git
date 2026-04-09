@@ -1009,11 +1009,17 @@ sync_trunk() {
 
 clone_usage() {
   cat >&2 <<'EOF'
-Usage: timvisher_git clone <target>
+Usage: timvisher_git clone <target> [stack-on-base]
 
 Idempotently produce a worktree for <target> with correct remotes and
 tracking.  Prints the worktree path to stdout.  Safe to call repeatedly
 on the same target — existing worktrees are verified and repaired.
+
+When [stack-on-base] is provided, the target worktree is "stacked" on
+the base: the base worktree is cloned first (ensuring it exists), then
+the target is reset --hard to the base branch's HEAD.  Both arguments
+must resolve to the same org/repo.  An x.stack-pending marker provides
+idempotent recovery from partial failures.
 
 Targets
 -------
@@ -1118,6 +1124,9 @@ EOF
 
 clone() {
   local target=${1:-}
+  # REFACTOR: A future enhancement could allow stack_on_base to be a bare
+  # branch name (repo inferred from target).
+  local stack_on_base=${2:-}
 
   if [[ -z $target ]]
   then
@@ -1139,11 +1148,138 @@ clone() {
       ;;
   esac
 
-  ensure_worktree "$target"
+  if [[ -n $stack_on_base ]]
+  then
+    clone_stacked "$target" "$stack_on_base"
+  else
+    ensure_worktree "$target"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Stacked worktree: clone target on top of a base branch.
+# ---------------------------------------------------------------------------
+
+clone_stacked() {
+  local target=$1 stack_on_base=$2
+
+  # Validate both resolve to the same org/repo.
+  local target_org target_repo base_org base_repo
+  target_org=$(get_org "$target") ||
+    die "clone_stacked: unable to extract org from target '%s'" "$target"
+  target_repo=$(get_repo "$target") ||
+    die "clone_stacked: unable to extract repo from target '%s'" "$target"
+  base_org=$(get_org "$stack_on_base") ||
+    die "clone_stacked: unable to extract org from stack-on-base '%s'" "$stack_on_base"
+  base_repo=$(get_repo "$stack_on_base") ||
+    die "clone_stacked: unable to extract repo from stack-on-base '%s'" "$stack_on_base"
+
+  if [[ $target_org != "$base_org" || $target_repo != "$base_repo" ]]
+  then
+    die "clone_stacked: target '%s/%s' and stack-on-base '%s/%s' must be the same org/repo" \
+      "$target_org" "$target_repo" "$base_org" "$base_repo"
+  fi
+
+  # Clone the base first — ensures its worktree and local branch exist.
+  info "clone_stacked: ensuring base worktree for '%s'" "$stack_on_base"
+  local base_dir
+  base_dir=$(ensure_worktree "$stack_on_base") ||
+    die "clone_stacked: unable to clone base '%s'" "$stack_on_base"
+
+  # Resolve the base's local branch name.
+  local base_branch
+  base_branch=$(git -C "$base_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) ||
+    die "clone_stacked: unable to determine base branch in '%s'" "$base_dir"
+  [[ $base_branch != HEAD ]] ||
+    die "clone_stacked: base worktree '%s' is in detached HEAD state" "$base_dir"
+
+  # Clone the target worktree.
+  local target_was_new=
+  local target_trunk_cache
+  target_trunk_cache=$(cache_trunk "$target") ||
+    die "clone_stacked: unable to cache trunk for target '%s'" "$target"
+
+  local target_branch_dir_and_branch
+  target_branch_dir_and_branch=$(branch_path_for_source "$target" "$target_trunk_cache")
+  local target_branch_dir=${target_branch_dir_and_branch%%;*}
+  local target_branch_dir_abs="${live_repo_dir}/${target_branch_dir}"
+
+  if [[ ! -d $target_branch_dir_abs ]]
+  then
+    target_was_new=true
+  fi
+
+  info "clone_stacked: ensuring target worktree for '%s'" "$target"
+  local target_dir
+  target_dir=$(ensure_worktree "$target") ||
+    die "clone_stacked: unable to clone target '%s'" "$target"
+
+  # Stack if: target was just created, OR x.stack-pending exists (recovery).
+  local stack_pending_file="${target_dir}/x.stack-pending"
+  if [[ -n $target_was_new || -f $stack_pending_file ]]
+  then
+    info "clone_stacked: stacking '%s' onto base branch '%s'" "$target" "$base_branch"
+
+    # Write the marker before resetting, for idempotent recovery.
+    printf '%s\n' "$stack_on_base" > "$stack_pending_file" ||
+      die "clone_stacked: unable to write x.stack-pending in '%s'" "$target_dir"
+
+    git -C "$target_dir" reset --hard "$base_branch" >&2 ||
+      die "clone_stacked: git reset --hard '%s' failed in '%s'" "$base_branch" "$target_dir"
+
+    rm -f "$stack_pending_file" ||
+      warn "clone_stacked: unable to remove x.stack-pending (non-fatal)"
+
+    info "clone_stacked: target '%s' is now stacked on '%s'" "$target" "$base_branch"
+  else
+    info "clone_stacked: target already exists and no x.stack-pending; skipping stacking"
+  fi
+
+  printf '%s' "$target_dir"
+}
+
+is_branch_ish() {
+  local source=${1:-}
+
+  [[ -n $source ]] || return 1
+
+  # Local path: valid branch-ish only if it's a managed worktree
+  # (git-common-dir under our cache system).  Purely local repos
+  # can't be recloned, so they're not branch-ishes.
+  case $source in
+    /* | ./* | ../* | ~*)
+      local expanded="$source"
+      case $expanded in
+        '~')   expanded="$HOME" ;;
+        '~/'*) expanded="${HOME}/${expanded#'~'/}" ;;
+      esac
+      [[ -d $expanded ]] || return 1
+      git -C "$expanded" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+      local common_dir
+      common_dir=$(cd "$expanded" && \
+        cd "$(git -C "$expanded" rev-parse --git-common-dir 2>/dev/null)" && \
+        pwd -P 2>/dev/null) || return 1
+      local resolved_trunks
+      resolved_trunks=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || return 1
+      [[ $common_dir == "${resolved_trunks}/"* ]]
+      return
+      ;;
+  esac
+
+  # Remote/shorthand: try the full resolution path (cache_trunk +
+  # branch_path_for_source).  Run in a subshell so that die() from the
+  # resolution functions exits the subshell, not the caller.  We only
+  # care about the exit code.
+  (
+    local trunk_cache
+    trunk_cache=$(cache_trunk "$source" 2>/dev/null) || exit 1
+    branch_path_for_source "$source" "$trunk_cache" >/dev/null 2>&1
+  )
 }
 
 case $1 in
-  clone)      clone "${@:2}" ;;
-  sync-trunk) sync_trunk "${@:2}" ;;
-  *)          git "$@" ;;
+  clone)        clone "${@:2}" ;;
+  is-branch-ish) is_branch_ish "${@:2}" ;;
+  sync-trunk)   sync_trunk "${@:2}" ;;
+  *)            git "$@" ;;
 esac

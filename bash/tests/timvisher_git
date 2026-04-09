@@ -266,6 +266,230 @@ else
   fail "normalize_pr_url non-PR: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# Setup for is_branch_ish and clone_stacked integration tests
+# ---------------------------------------------------------------------------
+
+# Use the real git binary directly to avoid the agent-safety wrapper
+# (~/bin/git) which requires Co-authored-by trailers on commits.
+test_git="$(brew --prefix)/bin/git"
+
+# Create a source repo to serve as the remote
+source_repo="$tmpdir/remote"
+"$test_git" init "$source_repo" >/dev/null 2>&1
+"$test_git" -C "$source_repo" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "initial" >/dev/null 2>&1
+default_branch=$("$test_git" -C "$source_repo" rev-parse --abbrev-ref HEAD)
+
+# Add a feature/base branch with a unique commit
+"$test_git" -C "$source_repo" checkout -b feature/base >/dev/null 2>&1
+"$test_git" -C "$source_repo" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "base commit" >/dev/null 2>&1
+base_commit=$("$test_git" -C "$source_repo" rev-parse HEAD)
+"$test_git" -C "$source_repo" checkout "$default_branch" >/dev/null 2>&1
+
+# Clone into the cache structure (simulating what cache_trunk creates)
+mkdir -p "$cache_dir/repo_trunks/testorg"
+"$test_git" clone "$source_repo" "$cache_dir/repo_trunks/testorg/testrepo" >/dev/null 2>&1
+"$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" remote set-head origin -a >/dev/null 2>&1
+"$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" -c core.hooksPath=/dev/null checkout --detach >/dev/null 2>&1
+
+# Add org alias: to → testorg, and re-source to pick it up
+echo 'to=testorg' > "$tmpdir/timvisher/ide/git_org_aliases"
+source_timvisher_git
+
+# Override cache/live dirs to use test paths
+repo_trunks_dir="$cache_dir/repo_trunks"
+live_repo_dir="$live_dir"
+# Re-add alias (source_timvisher_git re-reads the file, but the script
+# also sources from XDG_CONFIG_HOME which points to $tmpdir — however
+# the source function blanks the file.  Set it directly.)
+org_aliases[to]=testorg
+
+# ---------------------------------------------------------------------------
+# is_branch_ish tests
+# ---------------------------------------------------------------------------
+
+# Test: rejects empty arg
+run_test
+if is_branch_ish "" 2>/dev/null
+then
+  fail "is_branch_ish should reject empty arg"
+else
+  pass "is_branch_ish rejects empty arg"
+fi
+
+# Test: rejects bare word with no slash
+run_test
+if is_branch_ish "notabranchish" 2>/dev/null
+then
+  fail "is_branch_ish should reject bare word"
+else
+  pass "is_branch_ish rejects bare word"
+fi
+
+# Test: rejects non-existent local path
+run_test
+if is_branch_ish "/tmp/nonexistent_$(date +%s)" 2>/dev/null
+then
+  fail "is_branch_ish should reject non-existent local path"
+else
+  pass "is_branch_ish rejects non-existent local path"
+fi
+
+# Test: rejects non-git local directory
+run_test
+plain_dir="$tmpdir/plain_dir"
+mkdir -p "$plain_dir"
+if is_branch_ish "$plain_dir" 2>/dev/null
+then
+  fail "is_branch_ish should reject non-git local directory"
+else
+  pass "is_branch_ish rejects non-git local directory"
+fi
+
+# Test: rejects purely local (non-managed) git repo
+run_test
+local_repo="$tmpdir/local_repo"
+"$test_git" init "$local_repo" >/dev/null 2>&1
+"$test_git" -C "$local_repo" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "local" >/dev/null 2>&1
+if is_branch_ish "$local_repo" 2>/dev/null
+then
+  fail "is_branch_ish should reject purely local (non-managed) git repo"
+else
+  pass "is_branch_ish rejects purely local (non-managed) git repo"
+fi
+
+# Test: accepts valid org/repo/branch shorthand
+run_test
+if is_branch_ish "testorg/testrepo/mybranch" 2>/dev/null
+then
+  pass "is_branch_ish accepts valid org/repo/branch"
+else
+  fail "is_branch_ish should accept valid org/repo/branch"
+fi
+
+# Test: accepts org/repo shorthand (resolves to trunk)
+run_test
+if is_branch_ish "testorg/testrepo" 2>/dev/null
+then
+  pass "is_branch_ish accepts valid org/repo"
+else
+  fail "is_branch_ish should accept valid org/repo"
+fi
+
+# Test: accepts org alias shorthand
+run_test
+if is_branch_ish "to/testrepo" 2>/dev/null
+then
+  pass "is_branch_ish accepts org alias shorthand"
+else
+  fail "is_branch_ish should accept org alias shorthand (to -> testorg)"
+fi
+
+# Test: rejects org/repo for non-existent cached repo
+run_test
+if is_branch_ish "nosuchorg/nosuchrepo" 2>/dev/null
+then
+  fail "is_branch_ish should reject non-existent repo"
+else
+  pass "is_branch_ish rejects non-existent repo"
+fi
+
+# ---------------------------------------------------------------------------
+# clone_stacked tests
+# ---------------------------------------------------------------------------
+
+# Test: clone_stacked creates target stacked on base
+run_test
+target_dir=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  target_head=$("$test_git" -C "$target_dir" rev-parse HEAD 2>/dev/null) || true
+  base_dir="$live_dir/testorg/testrepo/feature/base"
+  base_head=$("$test_git" -C "$base_dir" rev-parse HEAD 2>/dev/null) || true
+  if [[ $target_head == "$base_head" && $target_head == "$base_commit" ]]
+  then
+    pass "clone_stacked: target HEAD matches base HEAD"
+  else
+    fail "clone_stacked: target HEAD '${target_head}' != base commit '${base_commit}' (base HEAD '${base_head}')"
+  fi
+else
+  fail "clone_stacked: returned rc=${rc}"
+fi
+
+# Test: x.stack-pending is cleaned up after successful stacking
+run_test
+if [[ ! -f "${target_dir}/x.stack-pending" ]]
+then
+  pass "clone_stacked: x.stack-pending cleaned up after stacking"
+else
+  fail "clone_stacked: x.stack-pending should not exist after successful stacking"
+fi
+
+# Test: is_branch_ish accepts managed worktree local path
+# (depends on clone_stacked having created the base worktree above)
+run_test
+if is_branch_ish "$base_dir" 2>/dev/null
+then
+  pass "is_branch_ish accepts managed worktree local path"
+else
+  fail "is_branch_ish should accept managed worktree local path"
+fi
+
+# Test: clone_stacked skips stacking on existing target with no x.stack-pending
+run_test
+# Make a commit in the target so we can detect if reset happens
+"$test_git" -C "$target_dir" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "target-only commit" >/dev/null 2>&1
+target_only_commit=$("$test_git" -C "$target_dir" rev-parse HEAD)
+target_dir2=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  target_head2=$("$test_git" -C "$target_dir2" rev-parse HEAD 2>/dev/null) || true
+  if [[ $target_head2 == "$target_only_commit" ]]
+  then
+    pass "clone_stacked: skips stacking on existing target (HEAD preserved)"
+  else
+    fail "clone_stacked: should preserve existing target HEAD '${target_only_commit}', got '${target_head2}'"
+  fi
+else
+  fail "clone_stacked: second call returned rc=${rc}"
+fi
+
+# Test: clone_stacked recovers via x.stack-pending
+run_test
+# Advance the base branch with a new commit
+"$test_git" -C "$base_dir" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "recovery commit" >/dev/null 2>&1
+recovery_commit=$("$test_git" -C "$base_dir" rev-parse HEAD)
+# Simulate partial failure: write x.stack-pending
+printf '%s\n' "testorg/testrepo/feature/base" > "${target_dir}/x.stack-pending"
+target_dir3=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  target_head3=$("$test_git" -C "$target_dir3" rev-parse HEAD 2>/dev/null) || true
+  if [[ $target_head3 == "$recovery_commit" && ! -f "${target_dir3}/x.stack-pending" ]]
+  then
+    pass "clone_stacked: recovers via x.stack-pending and re-stacks"
+  else
+    fail "clone_stacked: recovery failed (target=${target_head3} expected=${recovery_commit} pending=$(test -f "${target_dir3}/x.stack-pending" && echo yes || echo no))"
+  fi
+else
+  fail "clone_stacked: recovery call returned rc=${rc}"
+fi
+
+# Test: clone_stacked rejects mismatched org/repo
+run_test
+result=$(clone_stacked "testorg/testrepo/feature/a" "otherorg/otherrepo/feature/b" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "clone_stacked: rejects mismatched org/repo"
+else
+  fail "clone_stacked: should reject mismatched org/repo"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

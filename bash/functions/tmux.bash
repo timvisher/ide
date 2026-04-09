@@ -369,6 +369,7 @@ function ntmux3() {
 
     local target_file=
     local local_base_dir=
+    local stack_on_base=
 
     if [[ $session_name_or_github_pr_url != http*://* ]]
     then
@@ -380,38 +381,24 @@ function ntmux3() {
             '~/'*) expanded_arg="${HOME}/${expanded_arg#'~'/}" ;;
         esac
 
-        # Check whether the first path component is a known org alias
-        # (e.g. "oc" → "octocat").  When it is, the argument is an
-        # org/repo shorthand for timvisher_git clone — skip local-path
-        # resolution so a coincidental CWD match (like ~/dd symlink)
-        # doesn't hijack it.
-        local is_org_alias=
-        local first_component="${expanded_arg%%/*}"
-        local config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
-        local org_aliases_file=${config_dir}/git_org_aliases
-        if [[ -n $first_component && -r $org_aliases_file ]]
+        # Use timvisher_git is-branch-ish for unified branch-ish detection,
+        # replacing the inline org-alias/file/dir gauntlet.  When the arg
+        # is a branch-ish, skip local-path resolution so a coincidental
+        # CWD match (like ~/dd symlink) doesn't hijack it.
+        local is_branch_ish=
+        if timvisher_git is-branch-ish "$session_name_or_github_pr_url"
         then
-            local line key
-            while IFS= read -r line || [[ -n $line ]]
-            do
-                [[ -z $line || $line == \#* ]] && continue
-                key=${line%%=*}
-                if [[ $first_component == "$key" ]]
-                then
-                    is_org_alias=true
-                    break
-                fi
-            done < "$org_aliases_file"
+            is_branch_ish=true
         fi
 
-        if [[ -z $is_org_alias && -f $expanded_arg ]]
+        if [[ -z $is_branch_ish && -f $expanded_arg ]]
         then
             target_file="$expanded_arg"
             expanded_arg="${expanded_arg%/*}"
         fi
 
         # Detect local (non-worktree) directory for direct path mode
-        if [[ -z $is_org_alias && -d $expanded_arg ]]
+        if [[ -z $is_branch_ish && -d $expanded_arg ]]
         then
             local resolved_arg
             resolved_arg=$(cd "$expanded_arg" && pwd -P) || true
@@ -424,14 +411,14 @@ function ntmux3() {
         fi
 
         local path_session_name
-        if [[ -z $is_org_alias ]]
+        if [[ -z $is_branch_ish ]]
         then
             path_session_name=$(ntmux3__session_name_from_path "$session_name_or_github_pr_url") || true
         fi
         if [[ -n $path_session_name ]]
         then
             session_name_or_github_pr_url="$path_session_name"
-        elif [[ -z $is_org_alias ]]
+        elif [[ -z $is_branch_ish ]]
         then
             # The directory doesn't exist, but the path may still be
             # under ~/git/.  Strip that prefix so timvisher_git clone
@@ -456,6 +443,16 @@ function ntmux3() {
                 session_name_or_github_pr_url="$stripped"
             fi
         fi
+    fi
+
+    # Detect arg 2 as a branch-ish for stacked worktree support.
+    if [[ -n $base_dir_or_target_file ]] &&
+        timvisher_git is-branch-ish "$base_dir_or_target_file"
+    then
+        info 'arg 2 is a branch-ish; assuming stacked worktree: %s stacked on %s' \
+            "$session_name_or_github_pr_url" "$base_dir_or_target_file"
+        stack_on_base="$base_dir_or_target_file"
+        base_dir_or_target_file=
     fi
 
     if [[ -z $detached && -n $TMUX ]]
@@ -506,7 +503,7 @@ function ntmux3() {
         return
     fi
 
-    local branch_dir=$(timvisher_git clone "${session_name_or_github_pr_url}") ||
+    local branch_dir=$(timvisher_git clone "${session_name_or_github_pr_url}" ${stack_on_base:+"$stack_on_base"}) ||
         ntmux3__fail "Unable to clone ‘${session_name_or_github_pr_url}’"
 
     [[ -n $branch_dir ]] ||
