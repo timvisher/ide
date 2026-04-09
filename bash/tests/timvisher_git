@@ -307,6 +307,60 @@ live_repo_dir="$live_dir"
 org_aliases[to]=testorg
 
 # ---------------------------------------------------------------------------
+# strip_live_prefix tests
+# ---------------------------------------------------------------------------
+
+# Test: strips live_repo_dir prefix
+run_test
+result=$(strip_live_prefix "$live_dir/testorg/testrepo/feature/branch")
+if [[ $result == "testorg/testrepo/feature/branch" ]]
+then
+  pass "strip_live_prefix strips live_repo_dir prefix"
+else
+  fail "strip_live_prefix: expected 'testorg/testrepo/feature/branch', got '${result}'"
+fi
+
+# Test: strips trailing slash
+run_test
+result=$(strip_live_prefix "$live_dir/testorg/testrepo/feature/branch/")
+if [[ $result == "testorg/testrepo/feature/branch" ]]
+then
+  pass "strip_live_prefix strips trailing slash"
+else
+  fail "strip_live_prefix trailing slash: expected 'testorg/testrepo/feature/branch', got '${result}'"
+fi
+
+# Test: fallback strips to first /git/ component for absolute paths
+run_test
+result=$(strip_live_prefix "/other/home/git/org/repo/branch")
+if [[ $result == "org/repo/branch" ]]
+then
+  pass "strip_live_prefix fallback strips to first /git/ component"
+else
+  fail "strip_live_prefix fallback: expected 'org/repo/branch', got '${result}'"
+fi
+
+# Test: passes through non-matching absolute path (no /git/)
+run_test
+result=$(strip_live_prefix "/some/other/path")
+if [[ $result == "/some/other/path" ]]
+then
+  pass "strip_live_prefix passes through non-matching path"
+else
+  fail "strip_live_prefix passthrough: expected '/some/other/path', got '${result}'"
+fi
+
+# Test: passes through shorthand unchanged
+run_test
+result=$(strip_live_prefix "testorg/testrepo/branch")
+if [[ $result == "testorg/testrepo/branch" ]]
+then
+  pass "strip_live_prefix passes through shorthand unchanged"
+else
+  fail "strip_live_prefix shorthand: expected 'testorg/testrepo/branch', got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
 # is_branch_ish tests
 # ---------------------------------------------------------------------------
 

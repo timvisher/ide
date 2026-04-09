@@ -1122,6 +1122,43 @@ Other subcommands
 EOF
 }
 
+# Strip live_repo_dir prefix from a local path, yielding an
+# org/repo/branch shorthand that ensure_worktree can parse.
+# Same stripping ntmux3 does for paths under ~/git/.
+strip_live_prefix() {
+  local path=$1
+  [[ -n $path ]] || return 0
+
+  case $path in
+    '~')   path="$HOME" ;;
+    '~/'*) path="${HOME}/${path#'~'/}" ;;
+  esac
+  path="${path%/}"
+
+  # Only strip from absolute paths
+  case $path in
+    /*)
+      # Try direct prefix match first
+      local live_prefix="${live_repo_dir}/"
+      if [[ $path == "${live_prefix}"* ]]
+      then
+        printf '%s' "${path#${live_prefix}}"
+        return
+      fi
+      # Fallback: strip up to the first /git/ path component.
+      # Handles cases where HOME differs from the path's origin
+      # (e.g., test harness with fake HOME).
+      if [[ $path == */git/* ]]
+      then
+        printf '%s' "${path#*/git/}"
+        return
+      fi
+      ;;
+  esac
+
+  printf '%s' "$path"
+}
+
 clone() {
   local target=${1:-}
   # REFACTOR: A future enhancement could allow stack_on_base to be a bare
@@ -1148,7 +1185,16 @@ clone() {
       ;;
   esac
 
+  # Strip ~/git/ prefix from local-path args so ensure_worktree and
+  # clone_stacked receive org/repo/branch shorthands.
+  target=$(strip_live_prefix "$target")
   if [[ -n $stack_on_base ]]
+  then
+    stack_on_base=$(strip_live_prefix "$stack_on_base")
+  fi
+
+  if [[ -n $stack_on_base ]] &&
+    is_branch_ish "$target" && is_branch_ish "$stack_on_base"
   then
     clone_stacked "$target" "$stack_on_base"
   else

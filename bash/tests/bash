@@ -20,6 +20,23 @@ then
     ln -sf "../.." "${repo_root}/x.home/git/ide"
 fi
 
+if [[ ! -L ${repo_root}/x.home/.config ]]
+then
+    ln -sf "${HOME}/.config" "${repo_root}/x.home/.config"
+fi
+
+if [[ ! -L ${repo_root}/x.home/.local ]]
+then
+    ln -sf "${HOME}/.local" "${repo_root}/x.home/.local"
+fi
+
+# macOS login keychain lives under ~/Library/Keychains; without this
+# symlink, security(1) and go-keyring can't find stored credentials.
+if [[ ! -L ${repo_root}/x.home/Library ]]
+then
+    ln -sf "${HOME}/Library" "${repo_root}/x.home/Library"
+fi
+
 HOME="${repo_root}/x.home" bash "${repo_root}/bash/install.bash" >/dev/null ||
     die 'install.bash failed'
 
