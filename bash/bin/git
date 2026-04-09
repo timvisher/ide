@@ -184,6 +184,22 @@ Once they tell you, run:
     done
   fi
 
+  if [[ $subcommand == add ]]
+  then
+    for x in "$@"
+    do
+      if [[ $x == -f || $x == --force ]]
+      then
+        die "STOP, AGENT!!!!
+
+DO NOT use 'git add -f' or 'git add --force'.
+
+Files ignored by .gitignore are ignored for a reason. If you believe
+a file should be tracked, ASK THE HUMAN to add it manually."
+      fi
+    done
+  fi
+
   if [[ $subcommand == push || $subcommand == send-pack ]]
   then
     die "STOP, AGENT!!!!
