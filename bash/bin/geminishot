@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 
-# Run claude one-shot with streaming progress output.
+# Run gemini one-shot with streaming progress output.
 #
-# Usage: claudeshot <prompt>
-#        echo "prompt" | claudeshot
-#        claudeshot review
+# Usage: geminishot <prompt>
+#        echo "prompt" | geminishot
+#        geminishot review
 
 set -o pipefail
 
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
-JQ_FILTER="${SELF_DIR}/../lib/format_stream_json.jq"
+JQ_FILTER="${SELF_DIR}/../lib/format_gemini_stream_json.jq"
 
 # shellcheck source=../lib/aishot_help.bash
 source "${SELF_DIR}/../lib/aishot_help.bash"
 
 # Reads prompt from stdin.
 run_shot() {
-    claude --verbose --dangerously-skip-permissions --output-format stream-json -p |
+    gemini -y -p "" -o stream-json |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
@@ -25,20 +25,20 @@ case "$1" in
         shift
         if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]
         then
-            aishot_show_review_help claudeshot Claude
+            aishot_show_review_help geminishot Gemini
             exit 0
         fi
         aishot make-review-prompt | run_shot
         ;;
     --help|-h)
-        aishot_show_help claudeshot Claude
+        aishot_show_help geminishot Gemini
         exit 0
         ;;
     "")
         # No arg — read from stdin if piped, otherwise show help
         if [[ -t 0 ]]
         then
-            aishot_show_help claudeshot Claude >&2
+            aishot_show_help geminishot Gemini >&2
             exit 1
         fi
         run_shot
