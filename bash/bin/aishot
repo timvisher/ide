@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+
+# Orchestrate multiple AI one-shot reviewers and synthesize results.
+#
+# Usage: aishot review [--with=claude,codex,gemini]
+#        aishot make-review-prompt
+#        aishot --help
+
+set -o pipefail
+
+DEFAULT_REVIEWERS="claude,codex"
+
+show_help() {
+    cat <<'EOF'
+Usage: aishot review [--with=claude,codex,gemini]
+       aishot make-review-prompt
+       aishot --help
+
+Orchestrate multiple AI one-shot commands in parallel, then synthesize
+the results via claudeshot.
+
+Subcommands:
+  review              Run parallel code reviews and synthesize findings.
+  make-review-prompt  Build a review prompt with all diffs inlined and
+                      print it to stdout.
+
+Options (review):
+  --with=LIST   Comma-separated list of reviewers to use.
+                Available: claude, codex, gemini.
+                Default: claude,codex
+
+## Agent instructions
+
+When invoking `aishot review`, use a subagent to run it — it launches
+multiple reviewers in parallel then synthesizes, so it can take 3-5
+minutes. The command handles everything internally; just run it:
+
+    Bash({ command: "aishot review", run_in_background: true })
+
+For maximum effort (all available reviewers):
+
+    Bash({ command: "aishot review --with=claude,codex,gemini", run_in_background: true })
+
+GOLDEN RULE: EVERY finding from the review is YOUR responsibility.
+Nothing in the diff is "pre-existing" or "not our commit". If it is in
+the diff, it ships with your work. Investigate and fix ALL findings.
+Never dismiss a finding. Never say "not actionable" or "good to note".
+EOF
+}
+
+show_review_help() {
+    cat <<'EOF'
+Usage: aishot review [--with=claude,codex,gemini]
+
+Run parallel code reviews via independent AI agents and synthesize the
+results. Each reviewer gets the same prompt (built by
+aishot make-review-prompt with all diffs inlined). After all reviewers
+finish, claudeshot synthesizes the findings into a unified report.
+
+Options:
+  --with=LIST   Comma-separated list of reviewers.
+                Available: claude, codex, gemini.
+                Default: claude,codex
+
+## Agent instructions
+
+Use a subagent to run this command — it can take 3-5 minutes. The
+command handles everything internally; just run it:
+
+    Bash({ command: "aishot review", run_in_background: true })
+
+GOLDEN RULE: EVERY finding from the review is YOUR responsibility.
+Nothing in the diff is "pre-existing" or "not our commit". If it is in
+the diff, it ships with your work. Investigate and fix ALL findings.
+Never dismiss a finding. Never say "not actionable" or "good to note".
+EOF
+}
+
+validate_reviewer() {
+    local name=$1
+    case "$name" in
+        claude|codex|gemini) return 0 ;;
+        *)
+            echo "Error: Unknown reviewer '${name}'. Available: claude, codex, gemini" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Build a review prompt with all diffs inlined. Outputs to stdout.
+# Returns 1 if there is nothing to review.
+do_make_review_prompt() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1
+    then
+        echo "Error: Not inside a git repository." >&2
+        return 1
+    fi
+
+    cd "$(git rev-parse --show-toplevel)" ||
+        { echo "Error: Could not cd to repo root." >&2; return 1; }
+
+    # --- Collect diffs ---
+
+    local has_upstream=true
+    if ! git rev-parse --verify '@{u}' >/dev/null 2>&1
+    then
+        has_upstream=false
+    fi
+
+    local sections=()
+
+    # Branch diff (upstream or remote-tracking)
+    local branch_diff=
+    if [[ $has_upstream == true ]]
+    then
+        branch_diff=$(git diff '@{u}..HEAD' 2>/dev/null)
+    else
+        # Find merge-base against remotes as fallback
+        local local_root
+        local_root=$(git rev-list HEAD --not --remotes 2>/dev/null | tail -1)
+        local merge_base=
+        if [[ -n $local_root ]]
+        then
+            merge_base=$(git merge-base HEAD "${local_root}^" 2>/dev/null) || true
+        fi
+        if [[ -n $merge_base ]]
+        then
+            branch_diff=$(git diff "${merge_base}..HEAD" 2>/dev/null)
+        fi
+    fi
+    if [[ -n $branch_diff ]]
+    then
+        sections+=("## Branch diff (pushed + unpushed commits vs upstream)
+\`\`\`diff
+${branch_diff}
+\`\`\`")
+    fi
+
+    # Staged changes
+    local staged_diff
+    staged_diff=$(git diff --cached 2>/dev/null)
+    if [[ -n $staged_diff ]]
+    then
+        sections+=("## Staged changes (git diff --cached)
+\`\`\`diff
+${staged_diff}
+\`\`\`")
+    fi
+
+    # Unstaged changes
+    local unstaged_diff
+    unstaged_diff=$(git diff 2>/dev/null)
+    if [[ -n $unstaged_diff ]]
+    then
+        sections+=("## Unstaged changes (git diff)
+\`\`\`diff
+${unstaged_diff}
+\`\`\`")
+    fi
+
+    # Helper: inline a file into a section string, respecting size/type limits.
+    # Appends to the variable named by $1.
+    local max_file_bytes=102400
+    local sensitive_pattern='^\.env$|\.env\.|credentials|secret|\.pem$|\.key$|\.p12$|\.pfx$'
+
+    _inline_file() {
+        local -n _section_ref=$1
+        local f=$2
+
+        local basename_f
+        basename_f=$(basename -- "$f")
+        if [[ $basename_f =~ $sensitive_pattern ]]
+        then
+            _section_ref+="
+### ${f}
+(skipped — filename matches sensitive pattern)"
+            return
+        fi
+        local size
+        size=$(wc -c < "$f" | tr -d ' ')
+        if ! file --brief --mime-type -- "$f" 2>/dev/null | grep -q '^text/'
+        then
+            _section_ref+="
+### ${f}
+(binary file, ${size} bytes)"
+        elif (( max_file_bytes < size ))
+        then
+            _section_ref+="
+### ${f}
+(text file, ${size} bytes — too large to inline, truncated to first 200 lines)
+\`\`\`\`
+$(head -200 -- "$f")
+\`\`\`\`"
+        else
+            _section_ref+="
+### ${f}
+\`\`\`\`
+$(cat -- "$f")
+\`\`\`\`"
+        fi
+    }
+
+    # Untracked files — show full contents
+    local untracked_files
+    untracked_files=$(git ls-files --others --exclude-standard)
+    if [[ -n $untracked_files ]]
+    then
+        local untracked_section="## Untracked files (new, not yet staged)
+"
+        local f
+        while IFS= read -r f
+        do
+            _inline_file untracked_section "$f"
+        done <<< "$untracked_files"
+        sections+=("$untracked_section")
+    fi
+
+    # Repo-root working files (gitignored x.*, y.*, z.*, pr.md)
+    local root_files=()
+    local candidate
+    for candidate in x x.* y y.* z z.* pr.md
+    do
+        [[ -f $candidate ]] && root_files+=("$candidate")
+    done
+    if (( 0 < ${#root_files[@]} ))
+    then
+        local root_section="## Repo-root working files (gitignored)
+"
+        for f in "${root_files[@]}"
+        do
+            _inline_file root_section "$f"
+        done
+        sections+=("$root_section")
+    fi
+
+    if (( ${#sections[@]} < 1 ))
+    then
+        echo "Error: No uncommitted changes or unpushed commits to review." >&2
+        return 1
+    fi
+
+    # --- Build prompt ---
+
+    local recent_commits
+    recent_commits=$(git log --oneline -10 2>/dev/null)
+
+    cat <<'HEADER'
+With a skeptical eye, do a thorough review of all changes below.
+
+The diffs are provided inline — you do NOT need to run git commands to
+see them. You may read files for additional context if needed.
+
+Examine:
+- Correctness: logic errors, off-by-ones, missed edge cases
+- Completeness: stubs, TODOs, missing error handling, untested paths
+- Consistency: does the change follow surrounding codebase patterns?
+- Safety: security issues, resource leaks, injection risks
+- Clarity: naming, comments, would a future reader understand?
+
+IMPORTANT: Your ONLY task is code review. Do NOT run any project tooling,
+task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.).
+Do NOT try to set up the project or install dependencies.
+
+Report ALL findings. Do NOT filter, skip, or deprioritize findings based
+on which commit introduced them. Every issue in the diff is an issue in
+the diff — there is no such thing as "not our commit" or "pre-existing".
+The person reading your review is responsible for everything in the diff
+and will act on every finding you report.
+
+Organize findings by severity:
+- **Findings**: file:line, severity (high/medium/low), description
+- **Missing Tests**: what test coverage gaps exist?
+- **Questions/Assumptions**: anything ambiguous or worth calling out
+
+HEADER
+
+    echo "Recent commits on this branch for context:"
+    echo "$recent_commits"
+    echo
+
+    local section
+    for section in "${sections[@]}"
+    do
+        echo "$section"
+        echo
+    done
+}
+
+do_review() {
+    local reviewers=$DEFAULT_REVIEWERS
+
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --with=*)
+                reviewers=${1#--with=}
+                shift
+                ;;
+            --help|-h)
+                show_review_help
+                return 0
+                ;;
+            *)
+                echo "Error: Unknown option '${1}'" >&2
+                show_review_help >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # Validate and deduplicate reviewers
+    IFS=',' read -ra raw_list <<< "$reviewers"
+    local -A seen=()
+    local reviewer_list=()
+    local r
+    for r in "${raw_list[@]}"
+    do
+        validate_reviewer "$r" || return 1
+        if [[ -z ${seen[$r]+x} ]]
+        then
+            seen[$r]=1
+            reviewer_list+=("$r")
+        fi
+    done
+
+    # Build the review prompt once to a temp file (avoids ARG_MAX)
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 1
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    do_make_review_prompt > "${tmpdir}/prompt.txt" || return 1
+
+    # Launch reviewers in parallel, capture output to temp files
+    local pids=()
+    local names=()
+    local exit_codes=()
+
+    for r in "${reviewer_list[@]}"
+    do
+        local shot_cmd="${r}shot"
+        echo ">>> Starting ${r} review..." >&2
+        "$shot_cmd" < "${tmpdir}/prompt.txt" > "${tmpdir}/${r}.out" 2>"${tmpdir}/${r}.err" &
+        pids+=($!)
+        names+=("$r")
+    done
+
+    # Wait for all reviewers, track exit codes
+    local i
+    for i in "${!pids[@]}"
+    do
+        local ec=0
+        wait "${pids[$i]}" || ec=$?
+        exit_codes[i]=$ec
+    done
+
+    # Determine successes and failures by exit code
+    local successful=0
+    for i in "${!names[@]}"
+    do
+        if (( exit_codes[i] != 0 ))
+        then
+            echo ">>> WARNING: ${names[$i]} review failed (exit ${exit_codes[$i]}, output may be partial)." >&2
+        else
+            (( successful++ ))
+        fi
+    done
+
+    if (( successful < 1 ))
+    then
+        echo "Error: All reviewers failed." >&2
+        return 1
+    fi
+
+    # Single reviewer — skip synthesis, output directly
+    if (( successful < 2 ))
+    then
+        for i in "${!names[@]}"
+        do
+            if (( exit_codes[i] == 0 ))
+            then
+                echo "# ${names[$i]} review"
+                echo
+                cat "${tmpdir}/${names[$i]}.out"
+            fi
+        done
+        return 0
+    fi
+
+    # Multiple reviewers — synthesize via claudeshot
+    {
+        cat <<'SYNTHESIS_HEADER'
+You are reviewing code review reports from multiple independent AI reviewers. Each reviewer examined the same diff independently.
+
+Synthesize their findings into a single unified report:
+
+1. **High confidence** — issues flagged by multiple reviewers (these are very likely real)
+2. **Worth investigating** — issues flagged by only one reviewer (may be real, may be false positive)
+3. **Disagreements** — where reviewers contradict each other (give your assessment)
+4. **Missing tests** — union of all test gaps identified
+5. **Questions** — union of all questions raised
+
+IMPORTANT: Do NOT dismiss any finding. Every finding from every reviewer
+is actionable. Do not say any finding is 'pre-existing', 'not our code',
+or 'good to note but not actionable'. ALL findings are actionable.
+
+For each finding, note which reviewer(s) flagged it.
+
+SYNTHESIS_HEADER
+
+        for i in "${!names[@]}"
+        do
+            if (( exit_codes[i] == 0 ))
+            then
+                echo "## ${names[$i]} review output"
+                echo
+                cat "${tmpdir}/${names[$i]}.out"
+                echo
+            fi
+        done
+    } > "${tmpdir}/synthesis_prompt.txt"
+
+    echo ">>> Synthesizing ${successful} reviews..." >&2
+    claudeshot < "${tmpdir}/synthesis_prompt.txt"
+}
+
+case "$1" in
+    review)
+        shift
+        do_review "$@"
+        ;;
+    make-review-prompt)
+        do_make_review_prompt
+        ;;
+    --help|-h)
+        show_help
+        exit 0
+        ;;
+    "")
+        show_help >&2
+        exit 1
+        ;;
+    *)
+        echo "Error: Unknown subcommand '${1}'" >&2
+        show_help >&2
+        exit 1
+        ;;
+esac

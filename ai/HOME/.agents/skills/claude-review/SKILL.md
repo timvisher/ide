@@ -1,22 +1,22 @@
 ---
-name: codex-review
-description: Run a skeptical code review via Codex (`codexshot review`). Use when you want an independent second opinion from Codex on your own work — uncommitted changes, a branch, or specific files.
+name: claude-review
+description: Run a skeptical code review via Claude (`claudeshot review`). Use when you want an independent second opinion from Claude on your own work — uncommitted changes, a branch, or specific files.
 user-invocable: true
 ---
 
-# Codex review
+# Claude review
 
 ## When to use
 - You want an independent review of code you just wrote or modified.
 - The user asks you to review yourself or get a second opinion.
 - Before committing or creating a PR, to catch issues you might have missed.
-- You specifically want to use Codex (OpenAI) as the reviewer.
+- You specifically want to use Claude (Anthropic) as the reviewer.
 
 ## How it works
 
-Run `codexshot review` in a subagent. The command automatically detects
+Run `claudeshot review` in a subagent. The command automatically detects
 uncommitted changes and/or unpushed commits, builds the review prompt,
-and runs a one-shot Codex review with streaming progress output.
+and runs a one-shot Claude review with streaming progress output.
 
 ## Workflow
 
@@ -27,8 +27,8 @@ Use a subagent with a background Bash call — the review can take
 
 ```
 Agent({
-  description: "Codex code review",
-  prompt: "Run codexshot review in the background and report the results.\n\nBash({ command: \"codexshot review\", run_in_background: true })"
+  description: "Claude code review",
+  prompt: "Run claudeshot review in the background and report the results.\n\nBash({ command: \"claudeshot review\", run_in_background: true })"
 })
 ```
 
@@ -50,5 +50,5 @@ If the review is wrong about something, explain why to the user.
 
 ## See also
 
-- `claudeshot review` — same workflow using Claude instead of Codex
-- `codexshot --help` — full usage for the codexshot command
+- `codexshot review` — same workflow using Codex instead of Claude
+- `claudeshot --help` — full usage for the claudeshot command
