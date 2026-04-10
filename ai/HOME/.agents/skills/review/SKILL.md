@@ -63,6 +63,10 @@ Read the synthesized output and present the findings to the user:
 If the review finds issues you agree with, fix them — don't just offer.
 If the review is wrong about something, explain why to the user.
 
+**pr.md**: If `pr.md` is in the diff and the review flags inaccuracies
+in it, you MUST update `pr.md` to reflect all feedback before
+considering the review complete.
+
 ## See also
 
 - `aishot --help` — full usage for the aishot orchestrator

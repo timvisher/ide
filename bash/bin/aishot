@@ -279,6 +279,30 @@ Organize findings by severity:
 
 HEADER
 
+    # If pr.md is in the diff, tell the reviewer to flag it
+    local has_pr_md=false
+    local section
+    for section in "${sections[@]}"
+    do
+        if [[ $section == *pr.md* ]]
+        then
+            has_pr_md=true
+            break
+        fi
+    done
+    if [[ $has_pr_md == true ]]
+    then
+        cat <<'PR_MD_NOTICE'
+CRITICAL: pr.md is included in the diff. This is the PR description
+draft. Review it carefully against the actual code changes. If ANY
+review finding would change what pr.md says — inaccurate summary,
+missing mention of a change, wrong scope description — flag it as a
+HIGH severity finding. The calling agent MUST update pr.md to reflect
+all review feedback before the review is considered complete.
+
+PR_MD_NOTICE
+    fi
+
     echo "Recent commits on this branch for context:"
     echo "$recent_commits"
     echo
