@@ -224,11 +224,30 @@ $(cat -- "$f")
     done
     if (( 0 < ${#root_files[@]} ))
     then
-        local root_section="## Repo-root working files (gitignored)
+        local root_section="## Repo-root working files (gitignored but MUST be reviewed)
+
+These files are gitignored but exist on disk and are part of the
+working context. They are intentionally included for review. Review
+them with the same rigor as tracked code.
 "
         for f in "${root_files[@]}"
         do
-            _inline_file root_section "$f"
+            if [[ $f == pr.md ]]
+            then
+                root_section+="
+### pr.md — PR DESCRIPTION DRAFT (review as deliverable, not just documentation)
+
+This is the pull request description that will be published. It is a
+deliverable of this work, not just a code comment. Review it against
+the actual code changes: does it accurately describe what changed and
+why? Any inaccuracy, missing change, or wrong scope is a HIGH severity
+finding — the same as a logic bug.
+\`\`\`\`
+$(cat -- "$f")
+\`\`\`\`"
+            else
+                _inline_file root_section "$f"
+            fi
         done
         sections+=("$root_section")
     fi
@@ -293,12 +312,14 @@ HEADER
     if [[ $has_pr_md == true ]]
     then
         cat <<'PR_MD_NOTICE'
-CRITICAL: pr.md is included in the diff. This is the PR description
-draft. Review it carefully against the actual code changes. If ANY
-review finding would change what pr.md says — inaccurate summary,
-missing mention of a change, wrong scope description — flag it as a
-HIGH severity finding. The calling agent MUST update pr.md to reflect
-all review feedback before the review is considered complete.
+CRITICAL: pr.md is included in the diff. This is a gitignored file that
+exists at the repo root — it is the PR description draft. It is only
+included because the file actually exists on disk; it will not appear in
+git status or git diff. Review it carefully against the actual code
+changes. If ANY review finding would change what pr.md says — inaccurate
+summary, missing mention of a change, wrong scope description — flag it
+as a HIGH severity finding. The calling agent MUST update pr.md to
+reflect all review feedback before the review is considered complete.
 
 PR_MD_NOTICE
     fi
