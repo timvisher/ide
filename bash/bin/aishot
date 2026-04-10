@@ -256,6 +256,11 @@ Examine:
 - Consistency: does the change follow surrounding codebase patterns?
 - Safety: security issues, resource leaks, injection risks
 - Clarity: naming, comments, would a future reader understand?
+- Hygiene: look carefully for dangling comments that reference removed
+  code, removed comments that were probably still relevant (check the
+  diff for deleted comment lines near surviving code), suspicious
+  whitespace (trailing spaces, mixed tabs/spaces, blank line runs),
+  and leftover debug statements
 
 IMPORTANT: Your ONLY task is code review. Do NOT run any project tooling,
 task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.).
