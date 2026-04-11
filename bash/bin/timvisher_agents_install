@@ -24,6 +24,20 @@
 # shellcheck disable=SC1090
 . ~/.functions/logging.bash
 
+# Canonicalize a path without requiring it to exist.
+# Uses Python as a portable fallback since macOS realpath lacks -m.
+canon_path() {
+  python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
+require_python3() {
+  if ! command -v python3 &>/dev/null
+  then
+    error 'python3 is required but not found in PATH'
+    exit 1
+  fi
+}
+
 errors=()
 
 found_error() {
@@ -53,11 +67,30 @@ ensure_symlink() {
 
   if [[ -L $link ]]
   then
-    local existing
-    existing=$(readlink "$link")
-    if [[ $existing != "$target" ]]
+    local existing_resolved target_resolved
+    local existing_raw link_dir
+    existing_raw=$(readlink "$link")
+    link_dir=$(dirname "$link")
+    # Resolve the existing target relative to the link's parent directory
+    if [[ $existing_raw == /* ]]
     then
-      found_error "'${link}' already points to '${existing}', not '${target}'"
+      existing_resolved=$(canon_path "$existing_raw")
+    else
+      existing_resolved=$(canon_path "${link_dir}/${existing_raw}")
+    fi
+    # Resolve the desired target (may be relative to CWD)
+    target_resolved=$(canon_path "$target")
+    if [[ $existing_resolved != "$target_resolved" ]]
+    then
+      if [[ ! -e $link ]]
+      then
+        # Dangling symlink — safe to replace
+        rm "$link"
+        ln -s "$target" "$link"
+        info 'Replaced dangling symlink '%s' → '%s'' "$link" "$target"
+      else
+        found_error "'${link}' resolves to '${existing_resolved}', not '${target_resolved}'"
+      fi
     fi
   elif [[ -e $link ]]
   then
@@ -82,9 +115,10 @@ do_install_from() {
       [[ -d $skill ]] || continue
       local name
       name=$(basename "$skill")
-      # Remove trailing slash from the skill path for clean symlink target
+      # Remove trailing slash and canonicalize to absolute path so the
+      # symlink target resolves correctly from ~/.agents/skills/
       skill=${skill%/}
-      ensure_symlink "${HOME}/.agents/skills/${name}" "$skill"
+      ensure_symlink "${HOME}/.agents/skills/${name}" "$(canon_path "$skill")"
     done
   fi
 
@@ -98,7 +132,7 @@ do_install_from() {
       [[ -f $lang ]] || continue
       local name
       name=$(basename "$lang")
-      ensure_symlink "${HOME}/.agents/languages/${name}" "$lang"
+      ensure_symlink "${HOME}/.agents/languages/${name}" "$(canon_path "$lang")"
     done
   fi
 
@@ -110,13 +144,13 @@ do_install_from() {
 
 do_resolve() {
   # ~/AGENTS.md → ~/git/ide/ai/HOME/AGENTS.md
-  ensure_symlink "${HOME}/AGENTS.md" "${HOME}/git/ide/ai/HOME/AGENTS.md"
+  ensure_symlink "${HOME}/AGENTS.md" "$(canon_path "${HOME}/git/ide/ai/HOME/AGENTS.md")"
 
   # ~/.claude/CLAUDE.md → ~/AGENTS.md
   if [[ -d ${HOME}/.claude ]]
   then
-    ensure_symlink "${HOME}/.claude/CLAUDE.md" "${HOME}/AGENTS.md"
-    ensure_symlink "${HOME}/.claude/skills" "${HOME}/.agents/skills"
+    ensure_symlink "${HOME}/.claude/CLAUDE.md" "$(canon_path "${HOME}/AGENTS.md")"
+    ensure_symlink "${HOME}/.claude/skills" "$(canon_path "${HOME}/.agents/skills")"
   else
     # shellcheck disable=SC2088 # ~ is intentional in log message
     warn '~/.claude does not exist; skipping Claude symlinks'
@@ -126,7 +160,7 @@ do_resolve() {
   # ~/.codex/skills/<name> → ~/.agents/skills/<name> (preserving .system/)
   if [[ -d ${HOME}/.codex ]]
   then
-    ensure_symlink "${HOME}/.codex/AGENTS.md" "${HOME}/AGENTS.md"
+    ensure_symlink "${HOME}/.codex/AGENTS.md" "$(canon_path "${HOME}/AGENTS.md")"
 
     if [[ -d ${HOME}/.codex/skills ]]
     then
@@ -138,7 +172,7 @@ do_resolve() {
         name=$(basename "$skill")
         # Remove trailing slash
         skill=${skill%/}
-        ensure_symlink "${HOME}/.codex/skills/${name}" "${HOME}/.agents/skills/${name}"
+        ensure_symlink "${HOME}/.codex/skills/${name}" "$(canon_path "${HOME}/.agents/skills/${name}")"
       done
     else
       # shellcheck disable=SC2088 # ~ is intentional in log message
@@ -157,6 +191,9 @@ then
   error 'Usage: timvisher_agents_install <dir>...'
   exit 1
 fi
+
+# Pre-flight: python3 is required for path canonicalization
+require_python3
 
 # Pre-flight: ~/.agents must be a real directory
 assert_not_symlink "${HOME}/.agents"
