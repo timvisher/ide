@@ -9,6 +9,7 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
 # Migrate old cache root on first use
@@ -87,13 +88,30 @@ then
   done < "$org_aliases_file"
 fi
 
-# Load fork user from config file
-fork_user=
-fork_user_file=${config_dir}/git_fork_user
-if [[ -r $fork_user_file ]]
+# Load GitHub user aliases (one per line).  The first entry is the
+# primary user; others are alternates (e.g. work accounts).
+# Replaces the old single-value git_fork_user file.
+github_user_aliases=()
+github_user_aliases_file=${SELF_DIR}/timvisher_git.config/github_user_aliases
+if [[ -r $github_user_aliases_file ]]
 then
-  fork_user=$(< "$fork_user_file")
-  fork_user=${fork_user%$'\n'}
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    [[ -z $line ]] && continue
+    [[ $line == \#* ]] && continue
+    github_user_aliases+=("$line")
+  done < "$github_user_aliases_file"
+fi
+# Backwards compat: fall back to git_fork_user if aliases file is absent.
+if (( ${#github_user_aliases[@]} < 1 ))
+then
+  fork_user_file=${config_dir}/git_fork_user
+  if [[ -r $fork_user_file ]]
+  then
+    local_fork_user=$(< "$fork_user_file")
+    local_fork_user=${local_fork_user%$'\n'}
+    [[ -n $local_fork_user ]] && github_user_aliases+=("$local_fork_user")
+  fi
 fi
 
 is_savannah_source() {
@@ -256,6 +274,66 @@ pr_head_repo_spec() {
   printf '%s' "$head_repo_spec"
 }
 
+# Look up the preferred fork user for a given parent org/repo.
+# Returns the preferred user on stdout, or fails silently.
+preferred_fork_user_for() {
+  local parent_spec=$1
+  local parent_org=${parent_spec%%/*}
+  local parent_repo=${parent_spec#*/}
+  local pref_file="${SELF_DIR}/timvisher_git.config/${parent_org}/${parent_repo}/preferred_fork_user"
+  if [[ -r $pref_file ]]
+  then
+    local user
+    user=$(< "$pref_file")
+    user=${user%$'\n'}
+    [[ -n $user ]] && printf '%s' "$user"
+  fi
+}
+
+# Find a fork of parent_spec owned by one of our github_user_aliases
+# that we have push access to.  Checks preferred_fork_user first,
+# then remaining aliases in order.  Prints the fork spec on stdout.
+find_pushable_fork() {
+  local parent_spec=$1
+  local repo_name=${parent_spec#*/}
+
+  # Build ordered alias list: preferred first, then the rest.
+  local ordered_aliases=()
+  local preferred
+  preferred=$(preferred_fork_user_for "$parent_spec") || true
+  if [[ -n $preferred ]]
+  then
+    ordered_aliases+=("$preferred")
+  fi
+  local alias
+  for alias in "${github_user_aliases[@]}"
+  do
+    [[ $alias == "$preferred" ]] && continue
+    ordered_aliases+=("$alias")
+  done
+
+  local candidate
+  for candidate in "${ordered_aliases[@]}"
+  do
+    local candidate_spec="${candidate}/${repo_name}"
+    local candidate_info
+    candidate_info=$(gh api "/repos/${candidate_spec}" --jq '{
+      push: .permissions.push,
+      parent: (if .fork then .parent.full_name else "" end)
+    }' 2>/dev/null) || continue
+    local push_access candidate_parent
+    push_access=$(printf '%s' "$candidate_info" | jq -r '.push // false') || continue
+    candidate_parent=$(printf '%s' "$candidate_info" | jq -r '.parent // empty') || continue
+    if [[ $push_access == true && $candidate_parent == "$parent_spec" ]]
+    then
+      printf '%s' "$candidate_spec"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # Safely remove the upstream remote only when no branches track it.
 # In a worktree setup all worktrees share remotes; removing upstream
 # would strip branch.*.remote=upstream from branches in other worktrees.
@@ -413,7 +491,7 @@ get_trunk_branch_name_from_cache() {
 
 configure_remotes_and_tracking() {
   local trunk_cache=$1 source=$2
-  local repo_spec owner parent default_branch pr_url override_repo
+  local repo_spec parent default_branch pr_url override_repo
   local origin_url
   origin_url=$(git remote get-url origin 2>/dev/null) || true
   if [[ $origin_url == *git.savannah.gnu.org* ]]; then
@@ -468,23 +546,29 @@ configure_remotes_and_tracking() {
     fi
   fi
 
-  owner=${repo_spec%%/*}
+  # Always query fork status and push permissions via API.
+  info "Checking fork status and permissions for '%s'..." "$repo_spec"
 
-  if [[ -n "$fork_user" && "$owner" == "$fork_user" ]]; then
-    info "Owner is '%s', performing fork detection..." "$fork_user"
-
-    if ! gh repo set-default "$repo_spec" >&2; then
-      warn "Failed to set default gh repo, fork detection might fail."
-    fi
-
-    local fork_info
-    fork_info=$(gh repo view --json isFork,parent,repositoryTopics --jq '{parent: (if .isFork then "\(.parent.owner.login)/\(.parent.name)" else "" end), soft_fork: ([(.repositoryTopics // [])[].name] | any(. == "soft-fork"))}' 2>/dev/null) || true
-    parent=$(printf '%s' "$fork_info" | jq -r '.parent // empty' 2>/dev/null) || true
-    local soft_fork
-    soft_fork=$(printf '%s' "$fork_info" | jq -r '.soft_fork // empty' 2>/dev/null) || true
+  if ! gh repo set-default "$repo_spec" >&2; then
+    warn "Failed to set default gh repo, fork detection might fail."
   fi
 
-  if [[ -n "$parent" ]]; then
+  local repo_info
+  repo_info=$(gh api "/repos/${repo_spec}" --jq '{
+    is_fork: .fork,
+    parent: (if .fork then .parent.full_name else "" end),
+    push: .permissions.push,
+    soft_fork: ([(.topics // [])[]] | any(. == "soft-fork"))
+  }' 2>/dev/null) || true
+
+  local is_fork can_push soft_fork
+  is_fork=$(printf '%s' "$repo_info" | jq -r '.is_fork // false' 2>/dev/null) || true
+  parent=$(printf '%s' "$repo_info" | jq -r '.parent // empty' 2>/dev/null) || true
+  can_push=$(printf '%s' "$repo_info" | jq -r '.push // false' 2>/dev/null) || true
+  soft_fork=$(printf '%s' "$repo_info" | jq -r '.soft_fork // false' 2>/dev/null) || true
+
+  if [[ $is_fork == true && -n $parent ]]; then
+    # Origin is already a fork.  Set up upstream → parent.
     info "Repository is a fork of '${parent}'. Configuring 'upstream' remote."
     if git remote get-url upstream >/dev/null 2>&1; then
       git remote set-url upstream "https://github.com/${parent}.git"
@@ -494,7 +578,6 @@ configure_remotes_and_tracking() {
     git fetch upstream >&2 || die "Unable to fetch from upstream remote"
 
     if [[ $soft_fork == true ]]; then
-      # Soft fork: upstream is for fetching only; track origin.
       local origin_default
       origin_default=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
       info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${origin_default}'"
@@ -506,14 +589,49 @@ configure_remotes_and_tracking() {
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       rm -f x.timvisher_git.soft-fork
     fi
-  else
-    info "Repository is not a fork%s. Ensuring 'origin' is tracked." "${fork_user:+ or not owned by '${fork_user}'}"
+  elif [[ $can_push == true ]]; then
+    # Not a fork and we can push — straightforward origin tracking.
+    info "Repository is not a fork. Ensuring 'origin' is tracked."
     local trunk_branch_name
     trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
     info "Setting tracking to 'origin/${trunk_branch_name}'"
     git branch -u "origin/${trunk_branch_name}" >&2 || die "Unable to track origin/${trunk_branch_name}"
     safe_remove_upstream
     rm -f x.timvisher_git.soft-fork
+  else
+    # Not a fork and no push rights — this is an upstream repo.
+    # Find a fork we can push to via github_user_aliases.
+    info "No push rights to '%s'. Searching for a pushable fork..." "$repo_spec"
+    local fork_spec
+    fork_spec=$(find_pushable_fork "$repo_spec") || true
+
+    if [[ -n $fork_spec ]]; then
+      info "Found pushable fork: '%s'. Reconfiguring remotes." "$fork_spec"
+      # Current origin becomes upstream
+      if git remote get-url upstream >/dev/null 2>&1; then
+        git remote set-url upstream "$origin_url"
+      else
+        git remote add upstream "$origin_url"
+      fi
+      # Fork becomes origin
+      git remote set-url origin "https://github.com/${fork_spec}.git"
+      git fetch origin >&2 || die "Unable to fetch from new origin '${fork_spec}'"
+      git fetch upstream >&2 || die "Unable to fetch from upstream"
+
+      default_branch=$(gh api "/repos/${repo_spec}" --jq '.default_branch // "main"' 2>/dev/null) || default_branch=main
+      info "Setting tracking to 'upstream/${default_branch}'"
+      git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
+      rm -f x.timvisher_git.soft-fork
+    else
+      # No fork found — track origin read-only.
+      info "No pushable fork found. Tracking origin read-only."
+      local trunk_branch_name
+      trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
+      info "Setting tracking to 'origin/${trunk_branch_name}'"
+      git branch -u "origin/${trunk_branch_name}" >&2 || die "Unable to track origin/${trunk_branch_name}"
+      safe_remove_upstream
+      rm -f x.timvisher_git.soft-fork
+    fi
   fi
 }
 

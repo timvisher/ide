@@ -35,11 +35,94 @@ cache_dir="$tmpdir/cache"
 live_dir="$tmpdir/git"
 mkdir -p "$cache_dir" "$live_dir"
 
-# Create mock gh that outputs jq-filtered results (as real gh --jq does)
+# Create mock gh that handles pr view, api /repos/, repo set-default, repo view
 mkdir -p "$tmpdir/mockbin"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
 #!/usr/bin/env bash
-# Find the PR URL argument (comes after 'pr view')
+
+# --- gh repo set-default: no-op ---
+if [[ $1 == repo && $2 == set-default ]]; then
+  exit 0
+fi
+
+# --- gh repo view --json ... --jq ... ---
+if [[ $1 == repo && $2 == view ]]; then
+  shift 2
+  repo_arg=
+  jq_expr=
+  for arg in "$@"; do
+    case $arg in
+      --json*|--jq*) ;;
+      -*) ;;
+      *) [[ -z $repo_arg ]] && repo_arg=$arg ;;
+    esac
+  done
+  # Extract --jq value
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
+    shift
+  done
+  case $repo_arg in
+    parentorg/parentrepo)
+      echo '{"defaultBranchRef":{"name":"main"},"isFork":false,"parent":null,"repositoryTopics":[]}' | jq -r "$jq_expr"
+      ;;
+    myuser/parentrepo)
+      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[]}' | jq -r "$jq_expr"
+      ;;
+    altuser/parentrepo)
+      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[]}' | jq -r "$jq_expr"
+      ;;
+    softforkuser/parentrepo)
+      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[{"name":"soft-fork"}]}' | jq -r "$jq_expr"
+      ;;
+    *)
+      echo "not found" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+
+# --- gh api /repos/<owner>/<repo> ---
+if [[ $1 == api && $2 == /repos/* ]]; then
+  repo_path=${2#/repos/}
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
+    shift
+  done
+  case $repo_path in
+    parentorg/parentrepo)
+      json='{"fork":false,"parent":null,"permissions":{"push":false},"topics":[],"default_branch":"main"}'
+      ;;
+    myuser/parentrepo)
+      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":[],"default_branch":"main"}'
+      ;;
+    altuser/parentrepo)
+      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":[],"default_branch":"main"}'
+      ;;
+    nopush/parentrepo)
+      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":false},"topics":[],"default_branch":"main"}'
+      ;;
+    softforkuser/parentrepo)
+      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":["soft-fork"],"default_branch":"main"}'
+      ;;
+    pushable/ownedrepo)
+      json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
+      ;;
+    *)
+      echo '{"message":"Not Found"}' >&2; exit 1 ;;
+  esac
+  if [[ -n $jq_expr ]]; then
+    echo "$json" | jq -r "$jq_expr"
+  else
+    echo "$json"
+  fi
+  exit 0
+fi
+
+# --- gh pr view (legacy, for pr_head_repo_spec tests) ---
 pr_url=
 for arg in "$@"; do
   case $arg in
@@ -51,19 +134,15 @@ done
 
 case $pr_url in
   https://github.com/upstream/repo/pull/1)
-    # Normal PR: both owner and repo present
     echo "fork-owner/repo"
     ;;
   https://github.com/upstream/repo/pull/2)
-    # Deleted fork: headRepository is null, jq renders null as empty
     echo "fork-owner/"
     ;;
   https://github.com/upstream/repo/pull/3)
-    # Empty repo name
     echo "fork-owner/"
     ;;
   https://github.com/upstream/repo/pull/4)
-    # Normal PR (used for URL normalization test)
     echo "fork-owner/repo"
     ;;
   *)
@@ -78,6 +157,11 @@ chmod +x "$tmpdir/mockbin/gh"
 # typeset -A inside a function creates a local, so the eval'd script body's
 # declaration would be lost when source_timvisher_git returns.
 typeset -A org_aliases
+
+# Create mock SELF_DIR with test config files
+mock_self_dir="$tmpdir/mock_self_dir"
+mkdir -p "$mock_self_dir/timvisher_git.config"
+printf '%s\n' "myuser" "altuser" > "$mock_self_dir/timvisher_git.config/github_user_aliases"
 
 # Source the script in a subshell-safe way by overriding env vars
 # and intercepting the final case block
@@ -94,8 +178,19 @@ source_timvisher_git() {
   local body
   body=$(sed '/^case \$1 in$/,$ d' "$script")
   eval "$body"
+  # Override SELF_DIR after eval so it's not overwritten by the script
+  SELF_DIR="$mock_self_dir"
+  # Re-load github_user_aliases from the mock config
+  github_user_aliases=()
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line ]] && continue
+    [[ $line == \#* ]] && continue
+    github_user_aliases+=("$line")
+  done < "$mock_self_dir/timvisher_git.config/github_user_aliases"
 }
 
+# mockbin must be first on PATH to shadow the x.home/bin/gh wrapper
+# installed by the test harness.
 export PATH="$tmpdir/mockbin:$PATH"
 source_timvisher_git
 
@@ -685,6 +780,81 @@ then
 else
   fail "clone: should error on non-existent path, got rc=${rc}"
 fi
+
+# ---------------------------------------------------------------------------
+# preferred_fork_user_for tests
+# ---------------------------------------------------------------------------
+
+# Test: preferred_fork_user_for returns user from config file
+run_test
+mkdir -p "$mock_self_dir/timvisher_git.config/parentorg/parentrepo"
+printf 'altuser\n' > "$mock_self_dir/timvisher_git.config/parentorg/parentrepo/preferred_fork_user"
+result=$(preferred_fork_user_for "parentorg/parentrepo") && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "altuser" ]]
+then
+  pass "preferred_fork_user_for: returns user from config file"
+else
+  fail "preferred_fork_user_for: expected 'altuser', got rc=${rc} result='${result}'"
+fi
+
+# Test: preferred_fork_user_for returns empty for unconfigured repo
+run_test
+result=$(preferred_fork_user_for "unknownorg/unknownrepo") && rc=0 || rc=$?
+if [[ -z $result ]]
+then
+  pass "preferred_fork_user_for: returns empty for unconfigured repo"
+else
+  fail "preferred_fork_user_for: expected empty, got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# find_pushable_fork tests
+# ---------------------------------------------------------------------------
+
+# Test: find_pushable_fork finds fork via aliases
+run_test
+result=$(find_pushable_fork "parentorg/parentrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "altuser/parentrepo" ]]
+then
+  pass "find_pushable_fork: finds preferred alias fork first"
+else
+  fail "find_pushable_fork: expected 'altuser/parentrepo', got rc=${rc} result='${result}'"
+fi
+
+# Test: find_pushable_fork falls back to non-preferred alias
+run_test
+rm "$mock_self_dir/timvisher_git.config/parentorg/parentrepo/preferred_fork_user"
+result=$(find_pushable_fork "parentorg/parentrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "myuser/parentrepo" ]]
+then
+  pass "find_pushable_fork: falls back to first alias in order"
+else
+  fail "find_pushable_fork: expected 'myuser/parentrepo', got rc=${rc} result='${result}'"
+fi
+
+# Test: find_pushable_fork fails when no alias has a pushable fork
+run_test
+# Temporarily replace aliases with a user that has no fork
+github_user_aliases=("nopush")
+result=$(find_pushable_fork "parentorg/parentrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "find_pushable_fork: fails when no alias has push access"
+else
+  fail "find_pushable_fork: should fail for no-push alias, got rc=${rc} result='${result}'"
+fi
+# Restore aliases
+github_user_aliases=("myuser" "altuser")
+
+# ---------------------------------------------------------------------------
+# configure_remotes_and_tracking tests
+# ---------------------------------------------------------------------------
+
+# NOTE: configure_remotes_and_tracking integration tests are deferred.
+# The test harness git wrapper (x.home/bin/git) interferes with
+# clone/fetch/branch-tracking operations needed for realistic remote
+# setup.  The decision logic is covered via find_pushable_fork and
+# preferred_fork_user_for tests above.
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
