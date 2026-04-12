@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
 
-host=gemedet-nas.local
+host=relaxation-videos.gemedet.twonegatives.com
+port=32354
 
-if ! nc -zvG5 "$host" 8080
+if nc -zvG5 "$host" "$port"
 then
-  if ssh -o ConnectTimeout 5 -fnL 8080:localhost:8080 gemedet-nas sleep 30
-     nc -zvG5 localhost 8080
-  then
-    host=localhost
-  else
-    unset host
-  fi
-fi
-
-if [[ -n $host ]]
-then
-  curl --fail --output-dir /tmp --output "relaxation videos.${host}.m3u8" "http://${host}:8080/relaxation%20videos.${host}.m3u8" &&
-    open -a VLC -n "/tmp/relaxation videos.${host}.m3u8" --args --loop --random --no-audio --video-wallpaper
+  curl --fail --output-dir /tmp --output "relaxation videos.${host}:${port}.m3u8" \
+    "http://${host}:${port}/relaxation%20videos.${host}:${port}.m3u8" &&
+    open -a VLC -n "/tmp/relaxation videos.${host}:${port}.m3u8" \
+      --args --loop --random --no-audio --video-wallpaper
 else
-  echo "Couldn't establish a connection to gemedet-nas on 8080" >&2
-  echo "Falling back to local Relation Videos" >&2
-  open -a VLC -n ~/Movies/'Relaxation Videos'/videos --args --loop --random --no-audio --video-wallpaper
+  printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" "$port" >&2
+  printf 'Falling back to local Relaxation Videos\n' >&2
+  open -a VLC -n ~/Movies/'Relaxation Videos'/videos \
+    --args --loop --random --no-audio --video-wallpaper
 fi
