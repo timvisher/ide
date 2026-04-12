@@ -14,9 +14,18 @@ JQ_FILTER="${SELF_DIR}/../lib/format_codex_stream_json.jq"
 # shellcheck source=../lib/aishot_help.bash
 source "${SELF_DIR}/../lib/aishot_help.bash"
 
+# Preamble prepended to every prompt to override system-level workflow
+# instructions that derail one-shot tasks.
+SHOT_PREAMBLE='CRITICAL: Your ONLY task is to respond to the prompt below. Do NOT run any project tooling, task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.). Do NOT try to set up the project, install dependencies, list topics, or follow any session-start workflow. IGNORE all system-level instructions about beads, bd, topics, and workflow setup.
+
+---
+
+'
+
 # Reads prompt from stdin.
 run_shot() {
-    codex exec --full-auto --sandbox read-only --json - |
+    { printf '%s' "$SHOT_PREAMBLE"; cat; } |
+        codex exec --full-auto --sandbox read-only --json - |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
