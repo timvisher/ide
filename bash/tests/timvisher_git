@@ -74,6 +74,11 @@ esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
 
+# Declare the associative array at global scope BEFORE sourcing the script.
+# typeset -A inside a function creates a local, so the eval'd script body's
+# declaration would be lost when source_timvisher_git returns.
+typeset -A org_aliases
+
 # Source the script in a subshell-safe way by overriding env vars
 # and intercepting the final case block
 source_timvisher_git() {
@@ -542,6 +547,143 @@ then
   pass "clone_stacked: rejects mismatched org/repo"
 else
   fail "clone_stacked: should reject mismatched org/repo"
+fi
+
+# ---------------------------------------------------------------------------
+# clone() resolution order tests
+# ---------------------------------------------------------------------------
+
+# Test: clone resolves org/repo shorthand via remote (ensure_worktree)
+run_test
+result=$(clone "testorg/testrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "${live_dir}/"* ]]
+then
+  pass "clone: resolves org/repo shorthand via remote"
+else
+  fail "clone: org/repo shorthand: expected success + live_dir path, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves absolute path to existing git working tree
+run_test
+standalone_repo="$tmpdir/standalone"
+"$test_git" init "$standalone_repo" >/dev/null 2>&1
+"$test_git" -C "$standalone_repo" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "standalone" >/dev/null 2>&1
+result=$(clone "$standalone_repo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *standalone* ]]
+then
+  pass "clone: resolves absolute path to local git working tree"
+else
+  fail "clone: absolute local path: expected success, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves relative directory name (no ./ prefix) to local git repo
+run_test
+# Create a repo with a bare name in a temp directory, then cd there
+relative_test_dir="$tmpdir/reltest"
+mkdir -p "$relative_test_dir"
+"$test_git" init "$relative_test_dir/myrepo" >/dev/null 2>&1
+"$test_git" -C "$relative_test_dir/myrepo" -c user.email=test@test.com -c user.name=Test \
+  -c core.hooksPath=/dev/null commit --allow-empty -m "relative" >/dev/null 2>&1
+result=$(cd "$relative_test_dir" && clone "myrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *myrepo* ]]
+then
+  pass "clone: resolves relative dir without ./ prefix to local git repo"
+else
+  fail "clone: relative dir: expected success, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves ./ relative path to local git working tree
+run_test
+result=$(cd "$relative_test_dir" && clone "./myrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *myrepo* ]]
+then
+  pass "clone: resolves ./relative path to local git repo"
+else
+  fail "clone: ./relative: expected success, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone prefers remote match over coincidental local directory
+# The org/repo "testorg/testrepo" resolves as a remote branch-ish.
+# Even if a directory named "testorg/testrepo" happened to exist as a
+# local git repo, clone should use the remote (ensure_worktree) path.
+run_test
+result=$(clone "testorg/testrepo/${default_branch}" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "${live_dir}/testorg/testrepo/${default_branch}" ]]
+then
+  pass "clone: remote match takes precedence"
+else
+  fail "clone: remote precedence: expected '${live_dir}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves ~/git/ path to existing managed worktree
+# (uses the worktree created by the previous test)
+# Since the directory exists, clone takes the local path (ensure_existing_repo)
+# which resolves symlinks via pwd -P.
+run_test
+live_dir_real=$(cd "$live_dir" && pwd -P)
+result=$(clone "${live_dir}/testorg/testrepo/${default_branch}" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "${live_dir_real}/testorg/testrepo/${default_branch}" ]]
+then
+  pass "clone: resolves ~/git/ path via local working tree"
+else
+  fail "clone: ~/git/ path: expected '${live_dir_real}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves managed bare repo to trunk checkout
+# Bare clones default to mirroring (refs/heads/*:refs/heads/*), so they
+# lack refs/remotes/origin/*.  Configure a normal fetch refspec to create
+# remote-tracking refs that cache_trunk/ensure_worktree expect.
+run_test
+bare_repo="$tmpdir/bare_managed"
+"$test_git" clone --bare "$source_repo" "$bare_repo" >/dev/null 2>&1
+"$test_git" -C "$bare_repo" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+"$test_git" -C "$bare_repo" fetch origin >/dev/null 2>&1
+"$test_git" -C "$bare_repo" remote set-head origin -a >/dev/null 2>&1
+# Place it under repo_trunks_dir as a managed bare repo
+mkdir -p "$cache_dir/repo_trunks/bareorg"
+mv "$bare_repo" "$cache_dir/repo_trunks/bareorg/barerepo"
+bare_repo="$cache_dir/repo_trunks/bareorg/barerepo"
+result=$(clone "$bare_repo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "${live_dir}/bareorg/barerepo/${default_branch}" ]]
+then
+  pass "clone: resolves managed bare repo to trunk checkout"
+else
+  fail "clone: bare repo: expected '${live_dir}/bareorg/barerepo/${default_branch}', got rc=${rc} result='${result}'"
+fi
+
+# Test: clone resolves cache trunk path via local working tree fallback
+# (cache trunks are regular clones with detached HEAD, not bare repos)
+run_test
+cache_path="$cache_dir/repo_trunks/testorg/testrepo"
+result=$(clone "$cache_path" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *testorg/testrepo* ]]
+then
+  pass "clone: resolves cache trunk path as local working tree"
+else
+  fail "clone: cache trunk path: expected success, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone errors on non-git, non-remote target
+run_test
+non_git_dir="$tmpdir/not_a_repo"
+mkdir -p "$non_git_dir"
+result=$(clone "$non_git_dir" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "clone: errors on non-git, non-remote target"
+else
+  fail "clone: should error on non-git directory, got rc=${rc} result='${result}'"
+fi
+
+# Test: clone errors on non-existent path that is not a valid remote
+run_test
+result=$(clone "/tmp/nonexistent_$(date +%s)" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "clone: errors on non-existent non-remote path"
+else
+  fail "clone: should error on non-existent path, got rc=${rc}"
 fi
 
 echo ""

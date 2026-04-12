@@ -309,150 +309,116 @@ function ntmux3() {
         shift
     fi
 
-    local branch_dir
+    local clone_target=
+    local target_file=
+    local stack_on_base=
+    local expected_pr_md_url=
+    local base_dir_or_target_file=
+
+    # --- Parse arguments ---
     if [[ $# == 0 ]]
     then
         if [[ $(pbpaste) == 'ntmux3 '* ]]
         then
-            local ntmux3_command_from_clipboard=$(pbpaste)
-            local session_name_or_github_pr_url=${ntmux3_command_from_clipboard#ntmux3 }
+            local ntmux3_command_from_clipboard
+            ntmux3_command_from_clipboard=$(pbpaste)
+            clone_target=${ntmux3_command_from_clipboard#ntmux3 }
         else
-            local session_name_or_github_pr_url="$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window')"
-            
-            if [[ $session_name_or_github_pr_url == https://github.com/*/pull/* ]]
+            clone_target="$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window')"
+
+            if [[ $clone_target == https://github.com/*/pull/* ]]
             then
                 # Handle PR URL
-                local head_ref="$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "document.querySelector(\".head-ref\").textContent"')"
-                local expected_pr_md_url=${session_name_or_github_pr_url%/*}
+                local head_ref
+                head_ref="$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "document.querySelector(\".head-ref\").textContent"')"
+                expected_pr_md_url=${clone_target%/*}
                 if [[ $expected_pr_md_url == */pull ]]
                 then
-                    expected_pr_md_url=${session_name_or_github_pr_url}
+                    expected_pr_md_url=${clone_target}
                 fi
-                local pr_path=${session_name_or_github_pr_url#https://github.com/}
+                local pr_path=${clone_target#https://github.com/}
                 local repo_name=${pr_path#*/}
                 repo_name=${repo_name%%/*}
+                local pr_branch_dir
                 if [[ $head_ref == *:* ]]
                 then
                     # Cross-fork PR: head_ref is "fork-owner:branch-name"
                     local fork_org="${head_ref%%:*}"
                     local fork_branch="${head_ref#*:}"
-                    # timvisher_git uses headRepositoryOwner/headRepository/headRefName
-                    # which is fork_org/repo/branch (no fork_org prefix on branch)
-                    branch_dir="${fork_org}/${repo_name}/${fork_branch}"
+                    pr_branch_dir="${fork_org}/${repo_name}/${fork_branch}"
                 else
-                    branch_dir=${pr_path%/pull/*}
-                    branch_dir="${branch_dir}/${head_ref}"
+                    pr_branch_dir=${pr_path%/pull/*}
+                    pr_branch_dir="${pr_branch_dir}/${head_ref}"
                 fi
-                if [[ -d ${HOME}/git/${branch_dir} ]]
+                # Optimization: if the worktree already exists, use the
+                # branch-ish shorthand to avoid a gh API call.
+                if [[ -d ${HOME}/git/${pr_branch_dir} ]]
                 then
-                    session_name_or_github_pr_url="$branch_dir"
+                    clone_target="$pr_branch_dir"
                 fi
-            elif [[ $session_name_or_github_pr_url == https://github.com/*/* ]]
+            elif [[ $clone_target == https://github.com/*/* ]]
             then
                 # Handle repo URL - extract org/repo
-                local repo_path=${session_name_or_github_pr_url#https://github.com/}
-                # Remove any trailing paths (like /tree/branch, /issues, etc.)
+                local repo_path=${clone_target#https://github.com/}
                 local org=${repo_path%%/*}
                 repo_path=${repo_path#*/}
                 local repo=${repo_path%%/*}
-                session_name_or_github_pr_url="${org}/${repo}"
+                clone_target="${org}/${repo}"
             else
-                ntmux3__fail "'${session_name_or_github_pr_url}' does not look like a PR or repo URL"
+                ntmux3__fail "'${clone_target}' does not look like a PR or repo URL"
                 return
             fi
-            history -s ntmux3 "$session_name_or_github_pr_url"
+            history -s ntmux3 "$clone_target"
         fi
     else
-        local session_name_or_github_pr_url="$1"
-        local base_dir_or_target_file="$2"
+        clone_target="$1"
+        base_dir_or_target_file="${2:-}"
     fi
 
-    local target_file=
-    local local_base_dir=
-    local stack_on_base=
-
-    if [[ $session_name_or_github_pr_url != http*://* ]]
+    # --- Pre-processing for non-URL targets ---
+    if [[ $clone_target != http*://* ]]
     then
-        # Expand tilde for detection (command-line args are already expanded,
-        # but clipboard/variable values may not be)
-        local expanded_arg="$session_name_or_github_pr_url"
-        case $expanded_arg in
-            '~')   expanded_arg="$HOME" ;;
-            '~/'*) expanded_arg="${HOME}/${expanded_arg#'~'/}" ;;
+        # Expand tilde (command-line args are already expanded, but
+        # clipboard/variable values may not be)
+        case $clone_target in
+            '~')   clone_target="$HOME" ;;
+            '~/'*) clone_target="${HOME}/${clone_target#'~'/}" ;;
         esac
 
-        # Use timvisher_git is-branch-ish for unified branch-ish detection,
-        # replacing the inline org-alias/file/dir gauntlet.  When the arg
-        # is a branch-ish, skip local-path resolution so a coincidental
-        # CWD match (like ~/dd symlink) doesn't hijack it.
-        local is_branch_ish=
-        if timvisher_git is-branch-ish "$session_name_or_github_pr_url"
+        # Resolve relative FILE paths to absolute (editor needs full path).
+        # Relative DIRECTORIES are left as-is so clone() can try remote
+        # first — resolving here would turn "org/repo" into an absolute
+        # path that bypasses remote-first resolution.
+        if [[ $clone_target != /* && -f $clone_target ]]
         then
-            is_branch_ish=true
-        fi
-
-        if [[ -z $is_branch_ish && -f $expanded_arg ]]
-        then
-            target_file="$expanded_arg"
-            expanded_arg="${expanded_arg%/*}"
-        fi
-
-        # Detect local (non-worktree) directory for direct path mode
-        if [[ -z $is_branch_ish && -d $expanded_arg ]]
-        then
-            local resolved_arg
-            resolved_arg=$(cd "$expanded_arg" && pwd -P) || true
-            local home_real_check
-            home_real_check=$(cd "$HOME" && pwd -P) || true
-            if [[ -n $resolved_arg && $resolved_arg != "${home_real_check}/git/"* ]]
+            local abs_dir
+            abs_dir=$(cd "$(dirname "$clone_target")" && pwd -P) || true
+            if [[ -n $abs_dir ]]
             then
-                local_base_dir="$resolved_arg"
+                clone_target="${abs_dir}/$(basename "$clone_target")"
             fi
         fi
 
-        local path_session_name
-        if [[ -z $is_branch_ish ]]
+        # File-path inputs: strip to parent dir, preserve file for editor
+        if [[ -f $clone_target ]]
         then
-            path_session_name=$(ntmux3__session_name_from_path "$session_name_or_github_pr_url") || true
-        fi
-        if [[ -n $path_session_name ]]
-        then
-            session_name_or_github_pr_url="$path_session_name"
-        elif [[ -z $is_branch_ish ]]
-        then
-            # The directory doesn't exist, but the path may still be
-            # under ~/git/.  Strip that prefix so timvisher_git clone
-            # receives an org/repo/branch spec instead of an absolute
-            # path (which it can't parse).
-            local home_real_for_strip
-            home_real_for_strip=$(cd "$HOME" && pwd -P) || true
-            local git_prefix="${home_real_for_strip}/git/"
-            if [[ $expanded_arg == "${git_prefix}"* ]]
-            then
-                local stripped="${expanded_arg#${git_prefix}}"
-                if [[ -z $detached ]]
-                then
-                    printf 'Create a new worktree at %q? (y/N) ' "$stripped" >&2
-                    local reply
-                    read -r reply
-                    if [[ $reply != [yY] ]]
-                    then
-                        return 1
-                    fi
-                fi
-                session_name_or_github_pr_url="$stripped"
-            fi
+            target_file="$clone_target"
+            clone_target="$(dirname "$clone_target")"
         fi
     fi
 
-    # Detect arg 2 as a branch-ish for stacked worktree support.
-    if [[ -n $base_dir_or_target_file ]] &&
-        timvisher_git is-branch-ish "$base_dir_or_target_file"
+    # Handle arg2: stacked worktree or file
+    if [[ -n $base_dir_or_target_file ]]
     then
-        info 'arg 2 is a branch-ish; assuming stacked worktree: %s stacked on %s' \
-            "$session_name_or_github_pr_url" "$base_dir_or_target_file"
-        stack_on_base="$base_dir_or_target_file"
-        base_dir_or_target_file=
+        if timvisher_git is-branch-ish "$base_dir_or_target_file"
+        then
+            info 'arg 2 is a branch-ish; assuming stacked worktree: %s stacked on %s' \
+                "$clone_target" "$base_dir_or_target_file"
+            stack_on_base="$base_dir_or_target_file"
+        elif [[ -z $target_file && -f $base_dir_or_target_file ]]
+        then
+            target_file="$base_dir_or_target_file"
+        fi
     fi
 
     if [[ -z $detached && -n $TMUX ]]
@@ -461,31 +427,35 @@ function ntmux3() {
         return 1
     fi
 
-    # Handle arg2 as file
-    if [[ -z $target_file && -f $base_dir_or_target_file ]]
-    then
-        target_file=$base_dir_or_target_file
-        base_dir_or_target_file=${base_dir_or_target_file%/*}
-    fi
+    # --- Non-git directory: open as local session ---
+    # Only fires as a pre-clone fast path for absolute paths that are
+    # clearly not remotes and not under ~/git/.  Relative paths (which
+    # could be org/repo shorthands) always go through clone first;
+    # non-git dirs are handled as a post-clone fallback below.
+    local home_real_ngd
+    home_real_ngd=$(cd "$HOME" && pwd -P 2>/dev/null) || true
 
-    # Local path (not a git worktree) — skip timvisher_git clone
-    if [[ -n $local_base_dir ]]
-    then
-        local session_name="$session_name_or_github_pr_url"
+    ntmux3__open_nonrepo_dir() {
+        local dir=$1
+        local session_name
+        session_name=$(ntmux3__session_name_from_path "$dir") || true
+        if [[ -z $session_name ]]
+        then
+            session_name=$(basename "$dir")
+        fi
         local sanitized_session_name=${session_name//./_}
 
         info 'local path: sanitized_session_name=%s base_dir=%s' \
-            "$sanitized_session_name" "$local_base_dir"
+            "$sanitized_session_name" "$dir"
 
         (
-            cd "$local_base_dir" ||
+            cd "$dir" ||
                 {
-                    ntmux3__fail "Unable to cd to '${local_base_dir}'"
+                    ntmux3__fail "Unable to cd to '${dir}'"
                     return $?
                 }
 
-            maybe_set_beads_topic "$local_base_dir"
-            timvisher_git clone "$local_base_dir" >/dev/null 2>&1 || true
+            maybe_set_beads_topic "$dir"
 
             if tmux has-session -t="$sanitized_session_name" >/dev/null 2>&1
             then
@@ -500,11 +470,33 @@ function ntmux3() {
                 ntmux ${detached:+-d} "${sanitized_session_name}" "${target_file:-.}"
             fi
         )
+    }
+
+    if [[ $clone_target == /* && -d $clone_target ]] &&
+        [[ -z $home_real_ngd || $clone_target != "${home_real_ngd}/git/"* ]] &&
+        ! git -C "$clone_target" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+        ! [[ $(git -C "$clone_target" rev-parse --is-bare-repository 2>/dev/null) == true ]]
+    then
+        ntmux3__open_nonrepo_dir "$clone_target"
         return
     fi
 
-    local branch_dir=$(timvisher_git clone "${session_name_or_github_pr_url}" ${stack_on_base:+"$stack_on_base"}) ||
-        ntmux3__fail "Unable to clone ‘${session_name_or_github_pr_url}’"
+    # --- Everything else: pass to timvisher_git clone ---
+    # Remote is always tried first.  If clone fails on a non-git
+    # directory (e.g. relative path that isn't an org/repo shorthand),
+    # fall back to opening it as a local session.
+    local branch_dir
+    branch_dir=$(timvisher_git clone "$clone_target" ${stack_on_base:+"$stack_on_base"}) || {
+        if [[ -d $clone_target ]] &&
+            ! git -C "$clone_target" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+            ! [[ $(git -C "$clone_target" rev-parse --is-bare-repository 2>/dev/null) == true ]]
+        then
+            ntmux3__open_nonrepo_dir "$clone_target"
+            return
+        fi
+        ntmux3__fail "Unable to clone '${clone_target}'"
+        return
+    }
 
     [[ -n $branch_dir ]] ||
         {
@@ -512,19 +504,27 @@ function ntmux3() {
             return 1
         }
 
-    local home_real
-    home_real=$(cd "$HOME" && pwd -P) ||
-        {
-            ntmux3__fail "Unable to resolve HOME"
-            return 1
-        }
-    local branch_dir_real
-    branch_dir_real=$(cd "$branch_dir" && pwd -P) ||
-        {
-            ntmux3__fail "Unable to resolve branch_dir"
-            return 1
-        }
-    local session_name=${branch_dir_real#${home_real}/git/}
+    # Derive session name from the returned directory
+    local session_name
+    session_name=$(ntmux3__session_name_from_path "$branch_dir") || true
+    if [[ -z $session_name ]]
+    then
+        # Fallback: ~/git/-relative path or basename
+        local branch_dir_real
+        branch_dir_real=$(cd "$branch_dir" && pwd -P) || true
+        if [[ -n $branch_dir_real ]]
+        then
+            local home_real
+            home_real=$(cd "$HOME" && pwd -P) || true
+            session_name=${branch_dir_real#${home_real}/git/}
+            if [[ $session_name == "$branch_dir_real" ]]
+            then
+                session_name=$(basename "$branch_dir_real")
+            fi
+        else
+            session_name=$(basename "$branch_dir")
+        fi
+    fi
 
     (
         {
@@ -540,7 +540,7 @@ function ntmux3() {
         then
             if ! [[ -r pr.md.url ]]
             then
-                echo "Adding pr.md.url with contents ‘${expected_pr_md_url}’" >&2
+                echo "Adding pr.md.url with contents '${expected_pr_md_url}'" >&2
                 tee pr.md.url <<<"${expected_pr_md_url}" >&2
             fi
             pr_md_url=$(< pr.md.url)
@@ -563,7 +563,9 @@ function ntmux3() {
             fi
         fi
 
-        maybe_set_beads_topic "$branch_dir_real"
+        local branch_dir_real
+        branch_dir_real=$(cd . && pwd -P) || true
+        maybe_set_beads_topic "${branch_dir_real:-.}"
 
         local sanitized_session_name=${session_name//./_}
 

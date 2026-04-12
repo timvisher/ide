@@ -1021,12 +1021,34 @@ the target is reset --hard to the base branch's HEAD.  Both arguments
 must resolve to the same org/repo.  An x.stack-pending marker provides
 idempotent recovery from partial failures.
 
+Resolution order
+----------------
+
+  clone resolves targets in preference order:
+
+  1. Local directory that already exists on disk — checked first so
+     that local-only repos (no GitHub remote) work even when
+     strip_live_prefix produces a valid-looking org/repo shorthand:
+     a. Bare repo — managed caches (under ~/.cache/timvisher_git_worktrees)
+        are translated to a trunk checkout; others get best-effort tracking.
+     b. Git working tree → ensure_existing_repo.
+  2. Remote match — URL, or org/repo shorthand that resolves via aliases
+     and the GitHub trunk cache → ensure_worktree.  When stack_on_base
+     is provided, both args must resolve as branch-ishes for
+     clone_stacked.
+  3. Error — if none of the above match.
+
+  Relative paths without ./ prefix (e.g. "myrepo") are resolved against
+  the current directory for step 1.  ~/git/ paths are stripped to
+  org/repo/branch shorthands for step 2 (via strip_live_prefix).
+
 Targets
 -------
 
   Local path (existing git repo)
     timvisher_git clone /path/to/repo
     timvisher_git clone ~/projects/my-app
+    timvisher_git clone myrepo          # relative dir in CWD
 
     Best-effort fetch, then:
     - Managed worktree (bare cache under ~/.cache/timvisher_git_worktrees):
@@ -1171,35 +1193,105 @@ clone() {
     return 1
   fi
 
-  # If target is an explicit path (absolute, or starts with ./ ../ ~),
-  # and it is an existing git working tree, run lightweight setup.
-  # We must NOT match org/repo shorthands like "oc/hello-world" that happen
-  # to collide with existing directories after alias expansion.
+  # Expand tilde (command-line args are already expanded, but clipboard
+  # or variable values passed by callers may not be).
   case $target in
-    /* | ./* | ../* | ~*)
-      if [[ -d $target ]] && git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1
-      then
-        ensure_existing_repo "$target"
-        return
-      fi
-      ;;
+    '~')   target="$HOME" ;;
+    '~/'*) target="${HOME}/${target#'~'/}" ;;
   esac
 
-  # Strip ~/git/ prefix from local-path args so ensure_worktree and
-  # clone_stacked receive org/repo/branch shorthands.
-  target=$(strip_live_prefix "$target")
+  # Resolve relative directory paths to absolute for local filesystem checks.
+  local resolved_target="$target"
+  if [[ $resolved_target != /* && -d $resolved_target ]]
+  then
+    resolved_target=$(cd "$resolved_target" && pwd -P) || true
+  fi
+
+  # --- 2. Remote match: URL, or org/repo shorthand via aliases ---
+  # strip_live_prefix converts ~/git/ paths to org/repo/branch shorthands.
+  local remote_target
+  remote_target=$(strip_live_prefix "$target")
+
   if [[ -n $stack_on_base ]]
   then
+    case $stack_on_base in
+      '~')   stack_on_base="$HOME" ;;
+      '~/'*) stack_on_base="${HOME}/${stack_on_base#'~'/}" ;;
+    esac
     stack_on_base=$(strip_live_prefix "$stack_on_base")
   fi
 
   if [[ -n $stack_on_base ]] &&
-    is_branch_ish "$target" && is_branch_ish "$stack_on_base"
+    is_branch_ish "$remote_target" && is_branch_ish "$stack_on_base"
   then
-    clone_stacked "$target" "$stack_on_base"
-  else
-    ensure_worktree "$target"
+    clone_stacked "$remote_target" "$stack_on_base"
+    return
   fi
+
+  # Only route to ensure_worktree when strip_live_prefix actually produced
+  # a shorthand AND the original target is not an existing local directory.
+  # When the directory exists locally, prefer the local-path checks above
+  # (step 1) so that local-only repos without a GitHub remote work.
+  if [[ $remote_target != /* && ! -d $resolved_target ]] && is_branch_ish "$remote_target"
+  then
+    # If the original target was a non-existent path under ~/git/,
+    # confirm before creating a new worktree (interactive only).
+    if [[ -t 0 && ! -d $resolved_target && $resolved_target == "${live_repo_dir}/"* ]]
+    then
+      printf 'Create a new worktree at %q? (y/N) ' "$remote_target" >&2
+      local reply
+      read -r reply
+      if [[ $reply != [yY] ]]
+      then
+        return 1
+      fi
+    fi
+    ensure_worktree "$remote_target"
+    return
+  fi
+
+  # --- 1. Local directory: bare repo or working tree ---
+  # Check bare repos first because --is-inside-work-tree exits 0 (with
+  # output "false") for bare repos, making a bare-unaware check incorrect.
+  if [[ -d $resolved_target ]]
+  then
+    local is_bare
+    is_bare=$(git -C "$resolved_target" rev-parse --is-bare-repository 2>/dev/null) || true
+
+    if [[ $is_bare == true ]]
+    then
+      # --- 1a. Bare repo → translate to trunk checkout ---
+      local bare_abs
+      bare_abs=$(cd "$resolved_target" && pwd -P) || true
+      local resolved_trunks
+      resolved_trunks=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || true
+      local bare_rel="${bare_abs#"${resolved_trunks}/"}"
+      if [[ -n $resolved_trunks && $bare_rel != "$bare_abs" ]]
+      then
+        # Managed bare repo under our cache system — check out trunk.
+        local bare_trunk
+        bare_trunk=$(get_trunk_branch_name_from_cache "$resolved_target") ||
+          die "clone: unable to determine trunk branch for bare repo '%s'" "$resolved_target"
+        ensure_worktree "${bare_rel}/${bare_trunk}"
+        return
+      fi
+      # Non-managed bare repo: best-effort tracking setup.
+      ensure_existing_repo "$resolved_target"
+      return
+    fi
+
+    # --- 1b. Git working tree ---
+    local is_work_tree
+    is_work_tree=$(git -C "$resolved_target" rev-parse --is-inside-work-tree 2>/dev/null) || true
+    if [[ $is_work_tree == true ]]
+    then
+      ensure_existing_repo "$resolved_target"
+      return
+    fi
+  fi
+
+  # --- 3. Error ---
+  die "clone: unable to resolve '%s' as a remote or local git repository" "$target"
 }
 
 # ---------------------------------------------------------------------------
