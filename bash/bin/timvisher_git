@@ -1535,9 +1535,74 @@ is_branch_ish() {
   )
 }
 
+status__all_published() {
+  local real_git dirty=0
+  real_git="$(brew --prefix)"/bin/git
+
+  # @{push} must resolve
+  if ! "$real_git" rev-parse --verify '@{push}' >/dev/null 2>&1
+  then
+    die "No push target configured for branch '%s'" \
+      "$("$real_git" symbolic-ref --short HEAD 2>/dev/null || echo '(detached)')"
+  fi
+
+  # Unpushed commits
+  local -a unpushed
+  readarray -t unpushed < <("$real_git" log --oneline '@{push}..HEAD')
+  if (( 0 < ${#unpushed[@]} ))
+  then
+    warn "Unpushed commits:"
+    info_array '  %s' "${unpushed[@]}"
+    dirty=1
+  fi
+
+  # Unstaged changes
+  local -a unstaged
+  readarray -td '' unstaged < <("$real_git" diff --name-only -z)
+  if (( 0 < ${#unstaged[@]} ))
+  then
+    warn "Unstaged changes:"
+    info_array '  %s' "${unstaged[@]}"
+    dirty=1
+  fi
+
+  # Staged changes
+  local -a staged
+  readarray -td '' staged < <("$real_git" diff --name-only --cached -z)
+  if (( 0 < ${#staged[@]} ))
+  then
+    warn "Staged changes:"
+    info_array '  %s' "${staged[@]}"
+    dirty=1
+  fi
+
+  # Untracked files
+  local -a untracked
+  readarray -td '' untracked < <("$real_git" ls-files --others --exclude-standard -z)
+  if (( 0 < ${#untracked[@]} ))
+  then
+    warn "Untracked files:"
+    info_array '  %s' "${untracked[@]}"
+    dirty=1
+  fi
+
+  if (( 0 < dirty ))
+  then
+    return 1
+  fi
+
+  info "All changes published"
+}
+
 case $1 in
   clone)        clone "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
+  status)
+    case ${2:-} in
+      --all-published) status__all_published ;;
+      *)               git "$@" ;;
+    esac
+    ;;
   sync-trunk)   sync_trunk "${@:2}" ;;
   *)            git "$@" ;;
 esac
