@@ -1346,11 +1346,13 @@ clone() {
     return
   fi
 
-  # Only route to ensure_worktree when strip_live_prefix actually produced
-  # a shorthand AND the original target is not an existing local directory.
-  # When the directory exists locally, prefer the local-path checks above
-  # (step 1) so that local-only repos without a GitHub remote work.
-  if [[ $remote_target != /* && ! -d $resolved_target ]] && is_branch_ish "$remote_target"
+  # Route to ensure_worktree when strip_live_prefix produced a shorthand
+  # that resolves as a branch-ish.  is_branch_ish is the semantic gate:
+  # it succeeds only when the target can be resolved through the managed
+  # cache system (cache_trunk + branch_path_for_source).  Local-only
+  # repos without a GitHub remote fail is_branch_ish and fall through to
+  # the local-directory checks below.
+  if [[ $remote_target != /* ]] && is_branch_ish "$remote_target"
   then
     # If the original target was a non-existent path under ~/git/,
     # confirm before creating a new worktree (interactive only).

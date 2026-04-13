@@ -711,18 +711,36 @@ else
   fail "clone: remote precedence: expected '${live_dir}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
 fi
 
+# Test: clone prefers remote over coincidental local directory (symlink)
+# Simulates the real-world case where ~/dd is a symlink and "dd/testrepo"
+# resolves as a local directory even though it's an org/repo shorthand.
+run_test
+conflict_dir="$tmpdir/symlink_conflict"
+mkdir -p "$conflict_dir/testorg/testrepo"
+"$test_git" init "$conflict_dir/testorg/testrepo" >/dev/null 2>&1
+"$test_git" -C "$conflict_dir/testorg/testrepo" -c user.email=test@test.com \
+  -c user.name=Test -c core.hooksPath=/dev/null \
+  commit --allow-empty -m "decoy" >/dev/null 2>&1
+result=$(cd "$conflict_dir" && clone "testorg/testrepo" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "${live_dir}/testorg/testrepo/${default_branch}" ]]
+then
+  pass "clone: remote match beats coincidental local dir (implicit relative)"
+else
+  fail "clone: symlink conflict: expected '${live_dir}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
+fi
+
 # Test: clone resolves ~/git/ path to existing managed worktree
 # (uses the worktree created by the previous test)
-# Since the directory exists, clone takes the local path (ensure_existing_repo)
-# which resolves symlinks via pwd -P.
+# strip_live_prefix converts the absolute path to an org/repo/branch
+# shorthand, and is_branch_ish succeeds, so it routes through
+# ensure_worktree which returns the live_repo_dir-based path.
 run_test
-live_dir_real=$(cd "$live_dir" && pwd -P)
 result=$(clone "${live_dir}/testorg/testrepo/${default_branch}" 2>/dev/null) && rc=0 || rc=$?
-if (( rc == 0 )) && [[ $result == "${live_dir_real}/testorg/testrepo/${default_branch}" ]]
+if (( rc == 0 )) && [[ $result == "${live_dir}/testorg/testrepo/${default_branch}" ]]
 then
-  pass "clone: resolves ~/git/ path via local working tree"
+  pass "clone: resolves ~/git/ path via managed worktree"
 else
-  fail "clone: ~/git/ path: expected '${live_dir_real}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
+  fail "clone: ~/git/ path: expected '${live_dir}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
 fi
 
 # Test: clone resolves managed bare repo to trunk checkout
