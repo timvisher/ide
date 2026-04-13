@@ -87,6 +87,31 @@ validate_reviewer() {
     esac
 }
 
+# Set up persistent run directory with XDG canonical path and repo-local
+# symlink.  Sets RUN_DIR (used by callers as working/log directory).
+#
+# Layout:
+#   $XDG_STATE_HOME/aishot/runs/<ts> <encoded-repo>/   <- canonical
+#   <repo>/.aishot/runs/<ts>                            <- symlink -> canonical
+setup_run_dir() {
+    local xdg_state="${XDG_STATE_HOME:-${HOME}/.local/state}"
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel) || return 1
+
+    local ts
+    ts=$(date +%Y%m%dT%H%M%S)
+
+    local encoded_repo="${repo_root#/}"
+    encoded_repo="${encoded_repo//\//_}"
+
+    RUN_DIR="${xdg_state}/aishot/runs/${ts} ${encoded_repo}"
+    mkdir -p "$RUN_DIR"
+
+    local local_runs="${repo_root}/.aishot/runs"
+    mkdir -p "$local_runs"
+    ln -sfn "$RUN_DIR" "${local_runs}/${ts}"
+}
+
 # Build a review prompt with all diffs inlined. Outputs to stdout.
 # Returns 1 if there is nothing to review.
 do_make_review_prompt() {
@@ -113,7 +138,7 @@ do_make_review_prompt() {
     local branch_diff=
     if [[ $has_upstream == true ]]
     then
-        branch_diff=$(git diff '@{u}..HEAD' 2>/dev/null)
+        branch_diff=$(git diff '@{u}...HEAD' 2>/dev/null)
     else
         # Find merge-base against remotes as fallback
         local local_root
@@ -373,14 +398,12 @@ do_review() {
         fi
     done
 
-    # Build the review prompt once to a temp file (avoids ARG_MAX)
-    local tmpdir
-    tmpdir=$(mktemp -d) || return 1
-    trap 'rm -rf "$tmpdir"' EXIT
+    # Build the review prompt and log all run artifacts
+    setup_run_dir || return 1
 
-    do_make_review_prompt > "${tmpdir}/prompt.txt" || return 1
+    do_make_review_prompt > "${RUN_DIR}/prompt.txt" || return 1
 
-    # Launch reviewers in parallel, capture output to temp files
+    # Launch reviewers in parallel
     local pids=()
     local names=()
     local exit_codes=()
@@ -389,7 +412,7 @@ do_review() {
     do
         local shot_cmd="${r}shot"
         echo ">>> Starting ${r} review..." >&2
-        "$shot_cmd" < "${tmpdir}/prompt.txt" > "${tmpdir}/${r}.out" 2>"${tmpdir}/${r}.err" &
+        "$shot_cmd" < "${RUN_DIR}/prompt.txt" > "${RUN_DIR}/${r}.out" 2>"${RUN_DIR}/${r}.err" &
         pids+=($!)
         names+=("$r")
     done
@@ -402,6 +425,15 @@ do_review() {
         wait "${pids[$i]}" || ec=$?
         exit_codes[i]=$ec
     done
+
+    # Log run metadata
+    {
+        echo "reviewers: ${names[*]}"
+        for i in "${!names[@]}"
+        do
+            echo "${names[$i]}: exit=${exit_codes[$i]}"
+        done
+    } > "${RUN_DIR}/meta.txt"
 
     # Determine successes and failures by exit code
     local successful=0
@@ -428,9 +460,11 @@ do_review() {
         do
             if (( exit_codes[i] == 0 ))
             then
-                echo "# ${names[$i]} review"
-                echo
-                cat "${tmpdir}/${names[$i]}.out"
+                {
+                    echo "# ${names[$i]} review"
+                    echo
+                    cat "${RUN_DIR}/${names[$i]}.out"
+                } | tee "${RUN_DIR}/output.txt"
             fi
         done
         return 0
@@ -463,14 +497,14 @@ SYNTHESIS_HEADER
             then
                 echo "## ${names[$i]} review output"
                 echo
-                cat "${tmpdir}/${names[$i]}.out"
+                cat "${RUN_DIR}/${names[$i]}.out"
                 echo
             fi
         done
-    } > "${tmpdir}/synthesis_prompt.txt"
+    } > "${RUN_DIR}/synthesis_prompt.txt"
 
     echo ">>> Synthesizing ${successful} reviews..." >&2
-    claudeshot < "${tmpdir}/synthesis_prompt.txt"
+    claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
 }
 
 case "$1" in
