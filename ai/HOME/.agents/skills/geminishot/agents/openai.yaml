@@ -1,0 +1,3 @@
+interface:
+  display_name: "geminishot"
+  short_description: "Run one-shot Gemini prompts or reviews"

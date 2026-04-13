@@ -1,0 +1,3 @@
+interface:
+  display_name: "codexshot"
+  short_description: "Run one-shot Codex prompts or reviews"

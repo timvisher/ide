@@ -1,0 +1,3 @@
+interface:
+  display_name: "claudeshot"
+  short_description: "Run one-shot Claude prompts or reviews"
