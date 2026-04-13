@@ -537,8 +537,8 @@ PROMPT_EOF
 # ---------------------------------------------------------------------------
 # Worker: __sync  (runs inside :admin pane)
 #
-# Agent-driven: pull --rebase, resolve conflicts.
-# Script-driven: run tests after agent finishes.
+# Agent-driven: pull --rebase, resolve conflicts, run tests.
+# Script-driven: verify tests after agent finishes.
 # ---------------------------------------------------------------------------
 
 cmd__sync() {
@@ -565,6 +565,18 @@ cmd__sync() {
     # follows the tracking branch.
     local pull_cmd="git pull --rebase"
 
+    local run_tests
+    run_tests=$(repo_script_path "$worktree_path" "run-tests.sh") || true
+
+    local test_instruction=""
+    if [[ -x $run_tests ]]
+    then
+        test_instruction="After syncing, run 'bash ${run_tests}' and verify it passes.
+If tests fail, investigate and fix the issue."
+    else
+        test_instruction="No run-tests.sh is available, so skip testing."
+    fi
+
     local prompt_file
     prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") || {
         echo 'fail' > "$status_file"
@@ -580,8 +592,10 @@ resolve them. Be sure to keep the features that were developed on this
 worktree -- upstream changes should be incorporated, but our feature
 work takes priority when there is a genuine conflict in intent.
 
+${test_instruction}
+
 When done, write 'pass' to '${status_file}'.
-If you cannot resolve a conflict, write 'fail' to '${status_file}'.
+If you cannot resolve a conflict or fix a test failure, write 'fail' to '${status_file}'.
 
 Work in ${worktree_path}. Do not modify other directories.
 PROMPT_EOF
@@ -603,15 +617,12 @@ PROMPT_EOF
         echo 'fail' > "$status_file"
     fi
 
-    # Run tests after successful rebase.
+    # Verify tests deterministically -- don't rely solely on the agent.
     if [[ $(cat "$status_file") == pass ]]
     then
-        local run_tests
-        run_tests=$(repo_script_path "$worktree_path" "run-tests.sh") || true
-
         if [[ -x $run_tests ]]
         then
-            info "sync: running tests in '%s'" "$worktree_path"
+            info "sync: verifying tests in '%s'" "$worktree_path"
             run_ext_hook "$worktree_path" "pre-run-tests.sh"
             if ! bash "$run_tests"
             then
@@ -619,7 +630,7 @@ PROMPT_EOF
                 echo 'fail' > "$status_file"
             fi
         else
-            info "sync: no run-tests.sh; skipping tests"
+            info "sync: no run-tests.sh; skipping test verification"
         fi
     fi
 
@@ -835,6 +846,18 @@ PROMPT_EOF
     then
         warn "integrate: agent did not write status file; marking fail"
         echo 'fail' > "$status_file"
+    fi
+
+    # Verify tests deterministically -- don't rely solely on the agent.
+    if [[ $(cat "$status_file") == pass && -x $run_tests ]]
+    then
+        info "integrate: verifying tests post-merge"
+        run_ext_hook "$dev_path" "pre-run-tests.sh"
+        if ! bash "$run_tests"
+        then
+            error "integrate: tests failed post-merge"
+            echo 'fail' > "$status_file"
+        fi
     fi
 
     # Run post-integration hook if integration passed.
