@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+
+# Bash port of the Go notify library at
+# dd-source/domains/cloud-networks/shared/libs/go/os/notify/
+#
+# Delivers messages to both stderr (TTY line) and the OS notification
+# system. On macOS: OSC 9 (Ghostty/iTerm/WezTerm), OSC 99 (Kitty),
+# tmux DCS passthrough, osascript fallback.
+#
+# Usage:
+#   timvisher_notify "Title" "message"
+#   timvisher_notify --silent "Title" "message"   # TTY only, no OS notification
+#
+# Env:
+#   TIMVISHER_NOTIFY_DEBUG=1  — enable debug output to stderr
+
+set -euo pipefail
+
+timvisher_notify__debug() {
+  if [[ -n ${TIMVISHER_NOTIFY_DEBUG:-} ]]
+  then
+    printf 'notify[debug]: %s\n' "$1" >&2
+  fi
+}
+
+timvisher_notify__detect_terminal() {
+  local tp=${TERM_PROGRAM:-}
+
+  if [[ -n $tp && $tp != tmux ]]
+  then
+    printf '%s' "$tp"
+    return
+  fi
+
+  # Inside tmux: check the global environment tmux inherited at launch.
+  if [[ $tp == tmux ]]
+  then
+    local raw
+    if raw=$(tmux show-environment -g TERM_PROGRAM 2>/dev/null)
+    then
+      timvisher_notify__debug "tmux global TERM_PROGRAM raw='${raw}'"
+      local val=${raw#TERM_PROGRAM=}
+      if [[ -n $val && $val != tmux ]]
+      then
+        printf '%s' "$val"
+        return
+      fi
+    else
+      timvisher_notify__debug "tmux show-environment TERM_PROGRAM failed"
+    fi
+  fi
+
+  # Fall back to terminal-specific env vars.
+  if [[ -n ${GHOSTTY_RESOURCES_DIR:-} ]]
+  then
+    printf 'ghostty'
+  elif [[ -n ${ITERM_SESSION_ID:-} ]]
+  then
+    printf 'iTerm.app'
+  elif [[ -n ${WEZTERM_EXECUTABLE:-} ]]
+  then
+    printf 'WezTerm'
+  elif [[ -n ${KITTY_PID:-} ]]
+  then
+    printf 'kitty'
+  fi
+}
+
+timvisher_notify__tmux_allow_passthrough() {
+  local val
+  if ! val=$(tmux show-option -gv allow-passthrough 2>/dev/null)
+  then
+    timvisher_notify__debug "tmux show-option allow-passthrough failed"
+    return 1
+  fi
+  val=${val%$'\n'}
+  timvisher_notify__debug "tmux allow-passthrough='${val}'"
+  [[ $val == on ]]
+}
+
+timvisher_notify__tmux_passthrough() {
+  local seq=$1
+
+  if [[ -z ${TMUX:-} ]]
+  then
+    printf '%s' "$seq"
+    return
+  fi
+
+  if ! timvisher_notify__tmux_allow_passthrough
+  then
+    return 1
+  fi
+
+  # DCS tmux; <escaped-sequence> ST
+  # Inner ESC bytes must be doubled for tmux to forward them.
+  local escaped=${seq//$'\x1b'/$'\x1b\x1b'}
+  printf '\x1bPtmux;%s\x1b\\' "$escaped"
+}
+
+timvisher_notify__native_notify_warned=0
+
+timvisher_notify__osascript() {
+  local title=$1 message=$2
+
+  if (( timvisher_notify__native_notify_warned < 1 ))
+  then
+    timvisher_notify__native_notify_warned=1
+    printf '%s\n' \
+      "notify: using osascript for notifications. For native terminal notifications:" \
+      "  - Use a terminal that supports OSC 9 (iTerm2, Ghostty, WezTerm) or OSC 99 (Kitty)" \
+      >&2
+    if [[ -n ${TMUX:-} ]]
+    then
+      printf '%s\n' "  - Enable tmux passthrough: set -g allow-passthrough on" >&2
+    fi
+  fi
+
+  osascript -e "display notification \"${message//\"/\\\"}\" with title \"${title//\"/\\\"}\"" 2>/dev/null || true
+}
+
+timvisher_notify__platform_notify() {
+  local title=$1 message=$2
+
+  local term
+  term=$(timvisher_notify__detect_terminal)
+  timvisher_notify__debug "detected terminal='${term}' TERM_PROGRAM='${TERM_PROGRAM:-}' TMUX='${TMUX:-}' GHOSTTY_RESOURCES_DIR='${GHOSTTY_RESOURCES_DIR:-}'"
+
+  local seq
+  case $term in
+    iTerm.app|ghostty|WezTerm)
+      seq=$(printf '\x1b]9;%s\x1b\\' "$message")
+      ;;
+    kitty)
+      seq=$(printf '\x1b]99;i=1:d=0;%s\x1b\\\x1b]99;i=1:p=body;%s\x1b\\' "$title" "$message")
+      ;;
+    *)
+      timvisher_notify__debug "fallback to osascript: unknown terminal '${term}'"
+      timvisher_notify__osascript "$title" "$message"
+      return
+      ;;
+  esac
+
+  local wrapped
+  if ! wrapped=$(timvisher_notify__tmux_passthrough "$seq")
+  then
+    timvisher_notify__debug "fallback to osascript: tmux passthrough unavailable"
+    timvisher_notify__osascript "$title" "$message"
+    return
+  fi
+
+  timvisher_notify__debug "sending native notification via ${term} (tmux-wrapped=$([[ -n ${TMUX:-} ]] && echo true || echo false))"
+
+  # Write directly to /dev/tty so escape sequences bypass any pipe
+  # and reach the terminal emulator.
+  if [[ -c /dev/tty ]] && { true > /dev/tty; } 2>/dev/null
+  then
+    printf '%s' "$wrapped" > /dev/tty
+  else
+    timvisher_notify__debug "fallback to osascript: cannot write to /dev/tty"
+    timvisher_notify__osascript "$title" "$message"
+  fi
+}
+
+timvisher_notify__send() {
+  local title=$1 message=$2 silent=${3:-}
+
+  printf '%s: %s\n' "$title" "$message" >&2
+
+  if [[ $silent != --silent ]]
+  then
+    timvisher_notify__platform_notify "$title" "$message"
+  fi
+}
+
+# --- main ---
+
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]
+then
+  silent=""
+  if [[ ${1:-} == --silent ]]
+  then
+    silent=--silent
+    shift
+  fi
+
+  if (( $# < 2 ))
+  then
+    printf 'Usage: %s [--silent] <title> <message>\n' "${0##*/}" >&2
+    exit 1
+  fi
+
+  timvisher_notify__send "$1" "$2" "$silent"
+fi
