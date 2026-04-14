@@ -692,18 +692,18 @@ else
   fail "comment exits if file is not readable: got '${result}'"
 fi
 
-# Test: comment opens existing comment.md.url if present
+# Test: comment prints existing comment.md.url if present
 run_test
 echo "test comment body" > "$tmpdir/repo/comment.md"
 echo "https://github.com/testuser/testrepo/pull/1#issuecomment-99" > "$tmpdir/repo/comment.md.url"
 export MOCK_LOG="$tmpdir/log_comment_existing"
 touch "$MOCK_LOG"
-PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>&1 || true
-if grep -q 'mock-open.*issuecomment-99' "$MOCK_LOG"
+result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>/dev/null)
+if [[ $result == *"issuecomment-99"* ]]
 then
-  pass "comment opens existing comment.md.url"
+  pass "comment prints existing comment.md.url"
 else
-  fail "comment opens existing comment.md.url: got $(cat "$MOCK_LOG")"
+  fail "comment prints existing comment.md.url: got '${result}'"
 fi
 rm -f "$tmpdir/repo/comment.md.url"
 

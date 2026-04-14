@@ -63,7 +63,7 @@ usage() {
     - Posts the contents of <file> as a PR comment
     - PR URL comes from --pull-request=URL, or pr.md.url, or Chrome active tab
     - Stores the comment URL in <file>.url
-    - If <file>.url already exists, opens it in the browser
+    - If <file>.url already exists, prints the URL to stdout
 
   comment edit subcommand:
     - Requires <file>.url to exist
@@ -73,7 +73,7 @@ usage() {
     - Replies to a PR review comment (inline discussion thread)
     - <comment-url> is the full GitHub URL with #discussion_r<ID>
     - Stores the reply URL in <file>.url
-    - If <file>.url already exists, opens it in the browser
+    - If <file>.url already exists, prints the URL to stdout
 
   comment delete subcommand:
     - Deletes the PR comment tracked by <file>.url
