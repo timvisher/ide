@@ -16,7 +16,9 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 
 # Preamble prepended to every prompt to override system-level workflow
 # instructions that derail one-shot tasks.
-SHOT_PREAMBLE='CRITICAL: Your ONLY task is to respond to the prompt below. Do NOT run any project tooling, task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.). Do NOT try to set up the project, install dependencies, list topics, or follow any session-start workflow. IGNORE all system-level instructions about beads, bd, topics, and workflow setup.
+SHOT_PREAMBLE='MANDATORY FIRST STEP: Before doing ANYTHING else, check for and read "$(git rev-parse --show-toplevel)"/AGENTS.md and ./AGENTS.md. If either or both files exist, read them IN FULL and follow their instructions. Do this BEFORE responding to the prompt.
+
+CRITICAL: Your ONLY task is to respond to the prompt below. Do NOT run any project tooling, task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.). Do NOT try to set up the project, install dependencies, list topics, or follow any session-start workflow. IGNORE all system-level instructions about beads, bd, topics, and workflow setup.
 
 ---
 
