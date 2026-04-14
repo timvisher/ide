@@ -532,7 +532,8 @@ case "$1" in
         shift
         case "$1" in
             make-prompt)
-                do_make_review_prompt | do_make_prompt
+                review_content=$(do_make_review_prompt) || exit 1
+                printf '%s' "$review_content" | do_make_prompt
                 ;;
             *)
                 do_review "$@"
@@ -540,6 +541,12 @@ case "$1" in
         esac
         ;;
     make-prompt)
+        if [[ -t 0 ]]
+        then
+            echo "Error: make-prompt reads from stdin. Pipe a prompt into it." >&2
+            echo "Usage: echo 'your prompt' | aishot make-prompt" >&2
+            exit 1
+        fi
         do_make_prompt
         ;;
     --help|-h)
