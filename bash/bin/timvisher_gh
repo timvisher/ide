@@ -46,7 +46,7 @@ usage() {
     - Requires pr.md.url to exist
     - Polls CI checks until all pass, then runs 'gh pr ready'
     - Per-repo exclude patterns in:
-        ~/.config/timvisher/ide/gh-pr-ready-exclude-checks/OWNER/REPO
+        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt
       One regex pattern per line; matching check names are ignored.
       Lines starting with '#' and blank lines are skipped.
     - Set TIMVISHER_GH_PR_READY_POLL_INTERVAL to override the default
@@ -128,11 +128,11 @@ gh_pr_ready() {
 
   # Load per-repo exclude patterns for checks that should be ignored
   # (e.g. mergegate, which never completes until all others pass).
-  local exclude_checks_dir="${HOME}/.config/timvisher/ide/gh-pr-ready-exclude-checks"
+  local config_dir="${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config"
   local repo_slug_from_url=${pr_url#https://github.com/}
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
 
-  local exclude_file="${exclude_checks_dir}/${repo_slug_from_url}"
+  local exclude_file="${config_dir}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
   local -a exclude_patterns=()
   if [[ -r $exclude_file ]]
   then

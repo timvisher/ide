@@ -496,9 +496,9 @@ export MOCK_LOG="$tmpdir/log_pr_ready_exclude"
 touch "$MOCK_LOG"
 # Set up fake HOME with .functions symlink and exclude config
 exclude_home="$tmpdir/exclude_home1"
-mkdir -p "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser"
+mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-printf 'mergegate\n' > "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser/testrepo"
+printf 'mergegate\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
 # mergegate is pending but should be excluded; other checks pass
 export MOCK_CHECKS_FILE="$tmpdir/checks_with_excluded.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
@@ -518,9 +518,9 @@ unset MOCK_CHECKS_FILE
 # Test: pr ready - exclude patterns with comments and blank lines
 run_test
 exclude_home="$tmpdir/exclude_home2"
-mkdir -p "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser"
+mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-cat > "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser/testrepo" <<'EXCL'
+cat > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt" <<'EXCL'
 # This is a comment
 mergegate
 
@@ -545,13 +545,13 @@ rm -f "$tmpdir/repo/pr.md.url"
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
-# Test: pr ready - uses configurable exclude-checks directory
+# Test: pr ready - uses configurable exclude-checks config path
 run_test
-if grep -q 'gh-pr-ready-exclude-checks' "$script"
+if grep -q 'timvisher_gh.config/repos' "$script"
 then
-  pass "pr ready: uses configurable exclude-checks directory"
+  pass "pr ready: uses configurable exclude-checks config path"
 else
-  fail "pr ready: does not reference gh-pr-ready-exclude-checks config"
+  fail "pr ready: does not reference timvisher_gh.config/repos config path"
 fi
 
 # --- comment tests ---
