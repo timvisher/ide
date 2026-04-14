@@ -86,6 +86,16 @@ timvisher_gh issue
 
 The URL is stored in `issue.md.url`.
 
+## Workflow — marking a PR ready for review
+
+Wait for CI checks to pass, then remove draft status:
+
+```bash
+timvisher_gh pr ready
+```
+
+This polls `gh pr checks` until all checks pass (or fails immediately on any failure), then runs `gh pr ready`. Per-repo exclude patterns at `~/.config/timvisher/ide/gh-pr-ready-exclude-checks/OWNER/REPO` let you ignore meta-checks (like mergegate) that never complete until all other checks pass. One regex pattern per line; `#` comments and blank lines are skipped. Override the 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`.
+
 ## Workflow — editing an existing PR or issue
 
 After modifying `pr.md` or `issue.md`, push the updates to GitHub:

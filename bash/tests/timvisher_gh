@@ -68,6 +68,18 @@ then
 elif [[ $1 == pr && $2 == edit ]]
 then
   echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks ]]
+then
+  # Return contents of MOCK_CHECKS_FILE if set, otherwise empty array
+  if [[ -r ${MOCK_CHECKS_FILE:-} ]]
+  then
+    cat "$MOCK_CHECKS_FILE"
+  else
+    echo '[]'
+  fi
+elif [[ $1 == pr && $2 == ready ]]
+then
+  echo "mock-pr-ready"
 elif [[ $1 == issue && $2 == create ]]
 then
   echo "https://github.com/testuser/testrepo/issues/1"
@@ -414,6 +426,132 @@ then
   pass "pr merge: exits if pr.md.url is missing"
 else
   fail "pr merge: exits if pr.md.url missing: got '${result}'"
+fi
+
+# --- pr ready tests ---
+
+# Test: pr ready - exits if pr.md.url is missing
+run_test
+rm -f "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_nourl"
+touch "$MOCK_LOG"
+result=$(TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true)
+if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+then
+  pass "pr ready: exits if pr.md.url is missing"
+else
+  fail "pr ready: exits if pr.md.url missing: got '${result}'"
+fi
+
+# Test: pr ready - all checks passing calls gh pr ready
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_pass"
+touch "$MOCK_LOG"
+export MOCK_CHECKS_FILE="$tmpdir/checks_all_pass.json"
+cat > "$MOCK_CHECKS_FILE" <<'JSON'
+[{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"pass"}]
+JSON
+TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "pr ready: calls gh pr ready when all checks pass"
+else
+  fail "pr ready: calls gh pr ready when all checks pass: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+unset MOCK_CHECKS_FILE
+
+# Test: pr ready - fails fast on failed checks
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_fail"
+touch "$MOCK_LOG"
+export MOCK_CHECKS_FILE="$tmpdir/checks_with_fail.json"
+cat > "$MOCK_CHECKS_FILE" <<'JSON'
+[{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"fail"}]
+JSON
+result=$(TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true)
+if [[ $result == *"CI checks failed"* ]]
+then
+  pass "pr ready: dies on failed checks"
+else
+  fail "pr ready: dies on failed checks: got '${result}'"
+fi
+# Should NOT have called gh pr ready
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  fail "pr ready: should not call gh pr ready on failure"
+else
+  pass "pr ready: does not call gh pr ready on failure"
+  ((tests++)) || true
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+unset MOCK_CHECKS_FILE
+
+# Test: pr ready - exclude patterns filter out matching checks
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_exclude"
+touch "$MOCK_LOG"
+# Set up fake HOME with .functions symlink and exclude config
+exclude_home="$tmpdir/exclude_home1"
+mkdir -p "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser"
+ln -s "$funcs_dir" "$exclude_home/.functions"
+printf 'mergegate\n' > "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser/testrepo"
+# mergegate is pending but should be excluded; other checks pass
+export MOCK_CHECKS_FILE="$tmpdir/checks_with_excluded.json"
+cat > "$MOCK_CHECKS_FILE" <<'JSON'
+[{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"pass"},{"name":"mergegate","bucket":"pending"}]
+JSON
+HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "pr ready: exclude patterns allow ignoring pending checks"
+else
+  fail "pr ready: exclude patterns allow ignoring pending checks: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+rm -rf "$exclude_home"
+unset MOCK_CHECKS_FILE
+
+# Test: pr ready - exclude patterns with comments and blank lines
+run_test
+exclude_home="$tmpdir/exclude_home2"
+mkdir -p "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser"
+ln -s "$funcs_dir" "$exclude_home/.functions"
+cat > "$exclude_home/.config/timvisher/ide/gh-pr-ready-exclude-checks/testuser/testrepo" <<'EXCL'
+# This is a comment
+mergegate
+
+# Another comment
+other-meta-check
+EXCL
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_exclude_comments"
+touch "$MOCK_LOG"
+export MOCK_CHECKS_FILE="$tmpdir/checks_exclude_comments.json"
+cat > "$MOCK_CHECKS_FILE" <<'JSON'
+[{"name":"ci/build","bucket":"pass"},{"name":"mergegate","bucket":"pending"},{"name":"other-meta-check","bucket":"pending"}]
+JSON
+HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "pr ready: exclude file skips comments and blank lines"
+else
+  fail "pr ready: exclude file skips comments and blank lines: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+rm -rf "$exclude_home"
+unset MOCK_CHECKS_FILE
+
+# Test: pr ready - uses configurable exclude-checks directory
+run_test
+if grep -q 'gh-pr-ready-exclude-checks' "$script"
+then
+  pass "pr ready: uses configurable exclude-checks directory"
+else
+  fail "pr ready: does not reference gh-pr-ready-exclude-checks config"
 fi
 
 # --- comment tests ---

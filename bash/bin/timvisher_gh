@@ -14,6 +14,7 @@ usage() {
     timvisher_gh pr              Create a PR from pr.md (or open existing)
     timvisher_gh pr edit         Edit an existing PR from pr.md
     timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
+    timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
     timvisher_gh issue edit      Edit an existing issue from issue.md
     timvisher_gh comment [--pull-request=URL] <file>
@@ -40,6 +41,16 @@ usage() {
     - Repos listed in ~/.config/timvisher/ide/gh-pr-merge-comment-repos
       are merged by posting a '/merge' comment instead
     - Extra arguments are passed to 'gh pr merge'
+
+  pr ready subcommand:
+    - Requires pr.md.url to exist
+    - Polls CI checks until all pass, then runs 'gh pr ready'
+    - Per-repo exclude patterns in:
+        ~/.config/timvisher/ide/gh-pr-ready-exclude-checks/OWNER/REPO
+      One regex pattern per line; matching check names are ignored.
+      Lines starting with '#' and blank lines are skipped.
+    - Set TIMVISHER_GH_PR_READY_POLL_INTERVAL to override the default
+      10-second poll interval
 
   issue subcommand:
     - Reads title from line 1 and body from line 3+ of issue.md
@@ -106,6 +117,91 @@ repo_spec=$(git remote get-url "$target_remote" | sed -E 's#^https?://github.com
   die "Could not determine repository spec for remote '%s'" "$target_remote"
 
 # --- subcommand: pr ---
+
+gh_pr_ready() {
+  local pr_url
+  pr_url=$(< "${toplevel}/pr.md.url") ||
+    die 'pr.md.url unreadable'
+
+  [[ -n $pr_url ]] ||
+    die 'pr_url unset. Does pr.md.url exist at top level?'
+
+  # Load per-repo exclude patterns for checks that should be ignored
+  # (e.g. mergegate, which never completes until all others pass).
+  local exclude_checks_dir="${HOME}/.config/timvisher/ide/gh-pr-ready-exclude-checks"
+  local repo_slug_from_url=${pr_url#https://github.com/}
+  repo_slug_from_url=${repo_slug_from_url%%/pull/*}
+
+  local exclude_file="${exclude_checks_dir}/${repo_slug_from_url}"
+  local -a exclude_patterns=()
+  if [[ -r $exclude_file ]]
+  then
+    while IFS= read -r line
+    do
+      # Skip blank lines and comments
+      [[ -n $line && $line != '#'* ]] && exclude_patterns+=("$line")
+    done < "$exclude_file"
+    info 'Loaded %d exclude pattern(s) from %s' "${#exclude_patterns[@]}" "$exclude_file"
+  fi
+
+  local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
+
+  while true
+  do
+    local checks_json
+    checks_json=$(
+      command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>&1
+    ) || true
+
+    if [[ -z $checks_json || $checks_json == *"no checks"* ]]
+    then
+      info 'No checks found yet; retrying in %ds' "$poll_interval"
+      sleep "$poll_interval"
+      continue
+    fi
+
+    # Filter out excluded checks
+    local filtered_json=$checks_json
+    for pattern in "${exclude_patterns[@]}"
+    do
+      filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json")
+    done
+
+    local total pending_count fail_count pass_count
+    total=$(jq 'length' <<<"$filtered_json")
+    pending_count=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$filtered_json")
+    fail_count=$(jq '[.[] | select(.bucket == "fail")] | length' <<<"$filtered_json")
+    pass_count=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$filtered_json")
+
+    info 'Checks: %d total, %d pass, %d pending, %d fail' \
+         "$total" "$pass_count" "$pending_count" "$fail_count"
+
+    if (( 0 < fail_count ))
+    then
+      # Show which checks failed
+      jq -r '.[] | select(.bucket == "fail") | .name' <<<"$filtered_json" |
+        while IFS= read -r name
+        do
+          error 'Failed check: %s' "$name"
+        done
+      die 'CI checks failed; not marking as ready'
+    fi
+
+    if (( 0 < total && pending_count == 0 ))
+    then
+      info 'All %d checks passed' "$total"
+      break
+    fi
+
+    info 'Waiting for %d pending check(s); retrying in %ds' "$pending_count" "$poll_interval"
+    sleep "$poll_interval"
+  done
+
+  command gh pr ready "$pr_url" --repo "$repo_spec" ||
+    die 'Unable to mark PR as ready'
+
+  info 'PR marked as ready for review: %s' "$pr_url"
+}
 
 gh_pr_edit() {
   [[ -r pr.md.url ]] ||
@@ -213,6 +309,11 @@ gh_pr() {
     merge)
       shift
       gh_pr_merge "$@"
+      return
+      ;;
+    ready)
+      shift
+      gh_pr_ready "$@"
       return
       ;;
   esac
