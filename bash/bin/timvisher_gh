@@ -138,6 +138,9 @@ gh_pr_ready() {
   then
     while IFS= read -r line
     do
+      # Trim leading/trailing whitespace
+      line=${line#"${line%%[![:space:]]*}"}
+      line=${line%"${line##*[![:space:]]}"}
       # Skip blank lines and comments
       [[ -n $line && $line != '#'* ]] && exclude_patterns+=("$line")
     done < "$exclude_file"
@@ -145,15 +148,14 @@ gh_pr_ready() {
   fi
 
   local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
+  local checks_json filtered_json total pending_count fail_count pass_count
 
   while true
   do
-    local checks_json
-    checks_json=$(
-      command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>&1
-    ) || true
+    checks_json=$(command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>/dev/null) || true
 
-    if [[ -z $checks_json || $checks_json == *"no checks"* ]]
+    # Validate we got parseable JSON; empty output or error text means no checks yet
+    if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
     then
       info 'No checks found yet; retrying in %ds' "$poll_interval"
       sleep "$poll_interval"
@@ -161,13 +163,12 @@ gh_pr_ready() {
     fi
 
     # Filter out excluded checks
-    local filtered_json=$checks_json
+    filtered_json=$checks_json
     for pattern in "${exclude_patterns[@]}"
     do
       filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json")
     done
 
-    local total pending_count fail_count pass_count
     total=$(jq 'length' <<<"$filtered_json")
     pending_count=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$filtered_json")
     fail_count=$(jq '[.[] | select(.bucket == "fail")] | length' <<<"$filtered_json")
@@ -178,7 +179,6 @@ gh_pr_ready() {
 
     if (( 0 < fail_count ))
     then
-      # Show which checks failed
       jq -r '.[] | select(.bucket == "fail") | .name' <<<"$filtered_json" |
         while IFS= read -r name
         do
@@ -187,9 +187,9 @@ gh_pr_ready() {
       die 'CI checks failed; not marking as ready'
     fi
 
-    if (( 0 < total && pending_count == 0 ))
+    if (( pending_count == 0 ))
     then
-      info 'All %d checks passed' "$total"
+      info 'All %d check(s) passed (or excluded)' "$total"
       break
     fi
 

@@ -94,7 +94,11 @@ Wait for CI checks to pass, then remove draft status:
 timvisher_gh pr ready
 ```
 
-This polls `gh pr checks` until all checks pass (or fails immediately on any failure), then runs `gh pr ready`. Per-repo exclude patterns at `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt` let you ignore meta-checks (like mergegate) that never complete until all other checks pass. One regex pattern per line; `#` comments and blank lines are skipped. Override the 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`.
+- Polls `gh pr checks` until all non-excluded checks pass, then runs `gh pr ready`
+- Fails immediately if any check has `bucket == "fail"`
+- Per-repo exclude patterns at `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt` ignore meta-checks (like mergegate) that never complete until all other checks pass
+- One regex pattern per line; `#` comments and blank lines are skipped
+- Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
 
 ## Workflow — editing an existing PR or issue
 

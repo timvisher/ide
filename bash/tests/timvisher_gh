@@ -554,6 +554,118 @@ else
   fail "pr ready: does not reference timvisher_gh.config/repos config path"
 fi
 
+# Test: pr ready - non-JSON output from gh pr checks retries (does not infinite loop)
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_nonjson"
+touch "$MOCK_LOG"
+# First call returns error text, mock will return it every time so we need
+# a mock that returns error once then valid JSON. Use a counter file.
+counter_file="$tmpdir/checks_counter"
+echo "0" > "$counter_file"
+cat > "$tmpdir/mockbin/gh" <<MOCK
+#!/usr/bin/env bash
+echo "mock-gh \$*" >> "\$MOCK_LOG"
+if [[ \$1 == pr && \$2 == checks ]]
+then
+  count=\$(< "$counter_file")
+  if (( count < 1 ))
+  then
+    echo \$((count + 1)) > "$counter_file"
+    echo "error: no checks reported" >&2
+    exit 1
+  else
+    echo '[{"name":"ci/build","bucket":"pass"}]'
+  fi
+elif [[ \$1 == pr && \$2 == ready ]]
+then
+  echo "mock-pr-ready"
+elif [[ \$1 == repo && \$2 == view ]]
+then
+  echo "main"
+else
+  "$real_git" "\$@" 2>/dev/null || true
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/gh"
+TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "pr ready: recovers from non-JSON gh output"
+else
+  fail "pr ready: recovers from non-JSON gh output: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$counter_file"
+# Restore original mock
+cat > "$tmpdir/mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "mock-gh $*" >> "$MOCK_LOG"
+if [[ $1 == repo && $2 == view ]]
+then
+  echo "main"
+elif [[ $1 == pr && $2 == create ]]
+then
+  echo "https://github.com/testuser/testrepo/pull/1"
+elif [[ $1 == pr && $2 == edit ]]
+then
+  echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks ]]
+then
+  if [[ -r ${MOCK_CHECKS_FILE:-} ]]
+  then
+    cat "$MOCK_CHECKS_FILE"
+  else
+    echo '[]'
+  fi
+elif [[ $1 == pr && $2 == ready ]]
+then
+  echo "mock-pr-ready"
+elif [[ $1 == issue && $2 == create ]]
+then
+  echo "https://github.com/testuser/testrepo/issues/1"
+elif [[ $1 == issue && $2 == edit ]]
+then
+  echo "mock-issue-edit"
+elif [[ $1 == pr && $2 == comment ]]
+then
+  echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
+then
+  echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
+elif [[ $1 == api && $2 == --method && $3 == HEAD ]]
+then
+  true
+elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
+then
+  true
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/gh"
+
+# Test: pr ready - all checks excluded proceeds immediately
+run_test
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_all_excluded"
+touch "$MOCK_LOG"
+exclude_home="$tmpdir/exclude_home3"
+mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+ln -s "$funcs_dir" "$exclude_home/.functions"
+printf '.*\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+export MOCK_CHECKS_FILE="$tmpdir/checks_all_excluded.json"
+cat > "$MOCK_CHECKS_FILE" <<'JSON'
+[{"name":"ci/build","bucket":"pending"},{"name":"ci/test","bucket":"pending"}]
+JSON
+HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "pr ready: all checks excluded proceeds immediately"
+else
+  fail "pr ready: all checks excluded proceeds immediately: got $(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+rm -rf "$exclude_home"
+unset MOCK_CHECKS_FILE
+
 # --- comment tests ---
 
 # Test: comment exits if no file argument given
