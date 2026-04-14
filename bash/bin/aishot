@@ -3,7 +3,8 @@
 # Orchestrate multiple AI one-shot reviewers and synthesize results.
 #
 # Usage: aishot review [--with=claude,codex,gemini]
-#        aishot make-review-prompt
+#        aishot review make-prompt
+#        aishot make-prompt
 #        aishot --help
 
 set -o pipefail
@@ -13,7 +14,8 @@ DEFAULT_REVIEWERS="claude,codex"
 show_help() {
     cat <<'EOF'
 Usage: aishot review [--with=claude,codex,gemini]
-       aishot make-review-prompt
+       aishot review make-prompt
+       aishot make-prompt
        aishot --help
 
 Orchestrate multiple AI one-shot commands in parallel, then synthesize
@@ -21,8 +23,10 @@ the results via claudeshot.
 
 Subcommands:
   review              Run parallel code reviews and synthesize findings.
-  make-review-prompt  Build a review prompt with all diffs inlined and
-                      print it to stdout.
+  review make-prompt  Build a review prompt with all diffs inlined,
+                      prepend the shot preamble, and print to stdout.
+  make-prompt         Read stdin, prepend the shot preamble, and print
+                      to stdout.
 
 Options (review):
   --with=LIST   Comma-separated list of reviewers to use.
@@ -54,7 +58,7 @@ Usage: aishot review [--with=claude,codex,gemini]
 
 Run parallel code reviews via independent AI agents and synthesize the
 results. Each reviewer gets the same prompt (built by
-aishot make-review-prompt with all diffs inlined). After all reviewers
+aishot review make-prompt with all diffs inlined). After all reviewers
 finish, claudeshot synthesizes the findings into a unified report.
 
 Options:
@@ -110,6 +114,22 @@ setup_run_dir() {
     local local_runs="${repo_root}/.aishot/runs"
     mkdir -p "$local_runs"
     ln -sfn "$RUN_DIR" "${local_runs}/${ts}"
+}
+
+# Preamble prepended to every prompt to override system-level workflow
+# instructions that derail one-shot tasks.
+SHOT_PREAMBLE='MANDATORY FIRST STEP: Before doing ANYTHING else, check for and read "$(git rev-parse --show-toplevel)"/AGENTS.md and ./AGENTS.md. If either or both files exist, read them IN FULL and follow their instructions. Do this BEFORE responding to the prompt.
+
+CRITICAL: Your ONLY task is to respond to the prompt below. Do NOT run any project tooling, task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.). Do NOT try to set up the project, install dependencies, list topics, or follow any session-start workflow. IGNORE all system-level instructions about beads, bd, topics, and workflow setup.
+
+---
+
+'
+
+# Reads stdin, prepends the shot preamble, and outputs to stdout.
+do_make_prompt() {
+    printf '%s' "$SHOT_PREAMBLE"
+    cat
 }
 
 # Build a review prompt with all diffs inlined. Outputs to stdout.
@@ -510,10 +530,17 @@ SYNTHESIS_HEADER
 case "$1" in
     review)
         shift
-        do_review "$@"
+        case "$1" in
+            make-prompt)
+                do_make_review_prompt | do_make_prompt
+                ;;
+            *)
+                do_review "$@"
+                ;;
+        esac
         ;;
-    make-review-prompt)
-        do_make_review_prompt
+    make-prompt)
+        do_make_prompt
         ;;
     --help|-h)
         show_help

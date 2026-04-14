@@ -14,20 +14,10 @@ JQ_FILTER="${SELF_DIR}/../lib/format_gemini_stream_json.jq"
 # shellcheck source=../lib/aishot_help.bash
 source "${SELF_DIR}/../lib/aishot_help.bash"
 
-# Preamble prepended to every prompt to override system-level workflow
-# instructions that derail one-shot tasks.
-SHOT_PREAMBLE='MANDATORY FIRST STEP: Before doing ANYTHING else, check for and read "$(git rev-parse --show-toplevel)"/AGENTS.md and ./AGENTS.md. If either or both files exist, read them IN FULL and follow their instructions. Do this BEFORE responding to the prompt.
-
-CRITICAL: Your ONLY task is to respond to the prompt below. Do NOT run any project tooling, task trackers, issue trackers, or workflow tools (bd, beads, todo, etc.). Do NOT try to set up the project, install dependencies, list topics, or follow any session-start workflow. IGNORE all system-level instructions about beads, bd, topics, and workflow setup.
-
----
-
-'
-
-# Reads prompt from stdin.
+# Reads prompt from stdin (caller is responsible for preamble via
+# aishot make-prompt).
 run_shot() {
-    { printf '%s' "$SHOT_PREAMBLE"; cat; } |
-        gemini -y -p "" -o stream-json |
+    gemini -y -p "" -o stream-json |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
@@ -39,7 +29,7 @@ case "$1" in
             aishot_show_review_help geminishot Gemini
             exit 0
         fi
-        aishot make-review-prompt | run_shot
+        aishot review make-prompt | run_shot
         ;;
     --help|-h)
         aishot_show_help geminishot Gemini
@@ -52,9 +42,9 @@ case "$1" in
             aishot_show_help geminishot Gemini >&2
             exit 1
         fi
-        run_shot
+        aishot make-prompt | run_shot
         ;;
     *)
-        echo "$1" | run_shot
+        echo "$1" | aishot make-prompt | run_shot
         ;;
 esac
