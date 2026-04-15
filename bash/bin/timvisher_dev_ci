@@ -821,6 +821,19 @@ PROMPT_EOF
         fi
     fi
 
+    # Run post-sync hook if tests passed.
+    if [[ $final_status == pass ]] &&
+       find_hook "$worktree_path" "post-integrate.sh" >/dev/null 2>&1
+    then
+        info "sync: running post-integrate hook"
+        run_ext_hook "$worktree_path" "pre-post-integrate.sh"
+        if ! run_hooks "$worktree_path" "post-integrate.sh"
+        then
+            error "sync: post-integrate hook failed"
+            final_status=fail
+        fi
+    fi
+
     # Write the final status only after all verification is complete.
     echo "$final_status" > "$status_file"
 
