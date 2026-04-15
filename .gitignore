@@ -3,6 +3,7 @@ todo.org
 pull_request.md
 issue.md
 pr.md
+__pycache__/
 .DS_Store
 emacs/emacs.d/agent/
 !AGENTS.md
