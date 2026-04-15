@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+"""bd-to-org - Render a beads database as an Org-mode file.
+
+Usage: bd-to-org [OPTIONS] [-- BD_FLAGS...]
+
+Options:
+  --topic TOPIC   Read beads from a specific topic (via timvisher_bd_topics)
+  --all           Include closed beads (default: open + in_progress only)
+  --stdin         Read JSON from stdin instead of running bd
+  --              Remaining args are passed to bd list
+
+Output goes to stdout. Pipe to a file and open in Emacs:
+  bd-to-org --topic ide > /tmp/ide-beads.org
+  bd list --json --flat --limit 0 | bd-to-org --stdin
+"""
+
+import json
+import subprocess
+import sys
+import textwrap
+from datetime import datetime, timezone
+
+
+# -- Status -> Org TODO keyword ------------------------------------------
+
+_STATUS_KEYWORD = {
+    "open": "TODO",
+    "in_progress": "IN_PROGRESS",
+    "blocked": "TODO",
+    "deferred": "TODO",
+    "closed": "DONE",
+}
+
+# Statuses that get an extra tag because they share a keyword with "open"
+_STATUS_TAGS = {"blocked", "deferred"}
+
+# Sort order for status groups (lower = earlier in file)
+_STATUS_ORDER = {
+    "in_progress": 0,
+    "open": 1,
+    "blocked": 2,
+    "deferred": 3,
+    "closed": 4,
+}
+
+# Section a root bead belongs to, keyed by issue_type.
+# Children inherit their parent's section.
+_TYPE_SECTION = {
+    "epic": "Epics",
+    "bug": "Bugs",
+    "feature": "Stories",
+    "task": "Stories",
+    "chore": "Chores",
+    "decision": "Decisions",
+}
+
+# Render order for sections (lower = earlier in file)
+_SECTION_ORDER = {
+    "Epics": 0,
+    "Bugs": 1,
+    "Stories": 2,
+    "Chores": 3,
+    "Decisions": 4,
+    "Other": 5,
+    "Memories": 6,
+}
+
+
+# -- Text wrapping -------------------------------------------------------
+
+def wrap_body(text, indent):
+    """Wrap text to 72 columns, respecting the given indent string.
+
+    Preserves paragraph breaks (blank lines) and pre-formatted blocks
+    (lines that start with whitespace beyond the indent).
+    """
+    width = 72 - len(indent)
+    if width < 20:
+        width = 20
+
+    out_lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            # Blank line — preserve as paragraph break
+            out_lines.append("")
+        elif paragraph[0] in (" ", "\t") or paragraph.startswith("- "):
+            # Pre-formatted or list item — indent but don't reflow
+            out_lines.append(f"{indent}{paragraph}")
+        else:
+            wrapped = textwrap.fill(
+                paragraph,
+                width=72,
+                initial_indent=indent,
+                subsequent_indent=indent,
+            )
+            out_lines.append(wrapped)
+    return "\n".join(out_lines)
+
+
+# -- Priority -> Org priority cookie ------------------------------------
+
+def priority_cookie(pri):
+    """Map beads priority (0-4) to org priority cookie string."""
+    if pri == 0:
+        return " [#A]"
+    if pri == 1:
+        return " [#B]"
+    if 3 <= pri:
+        return " [#C]"
+    # pri == 2 is default; no cookie
+    return ""
+
+
+# -- Timestamp formatting ------------------------------------------------
+
+def iso_to_org_ts(iso_str):
+    """Convert an ISO-8601 / RFC-3339 string to an Org inactive timestamp.
+
+    Returns e.g. [2026-03-17 Tue 20:37] or empty string if input is
+    falsy.
+    """
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("[%Y-%m-%d %a %H:%M]")
+    except (ValueError, TypeError):
+        return ""
+
+
+# -- Tag formatting -------------------------------------------------------
+
+def sanitize_tag(raw):
+    """Make a string safe for use as an Org tag.
+
+    Org tags must be alphanumeric, underscore, @, #, or %.  Replace
+    everything else with underscore and collapse runs.
+    """
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in ("_", "@", "#", "%"):
+            out.append(ch)
+        else:
+            if not out or out[-1] != "_":
+                out.append("_")
+    tag = "".join(out).strip("_")
+    return tag if tag else None
+
+
+def build_tags(bead):
+    """Return a list of Org tag strings for a bead."""
+    tags = []
+    itype = bead.get("issue_type")
+    if itype:
+        t = sanitize_tag(itype)
+        if t:
+            tags.append(t)
+    status = bead.get("status", "")
+    if status in _STATUS_TAGS:
+        tags.append(status)
+    for label in bead.get("labels") or []:
+        t = sanitize_tag(label)
+        if t and t not in tags:
+            tags.append(t)
+    return tags
+
+
+def format_tags(tags):
+    """Format a list of tags into the Org :tag1:tag2: suffix."""
+    if not tags:
+        return ""
+    return ":" + ":".join(tags) + ":"
+
+
+# -- Heading generation ---------------------------------------------------
+
+def close_keyword(bead):
+    """Determine the TODO keyword for a closed bead."""
+    reason = (bead.get("close_reason") or "").lower()
+    if "cancel" in reason:
+        return "CANCELLED"
+    return "DONE"
+
+
+def bead_keyword(bead):
+    """Return the Org TODO keyword for a bead."""
+    status = bead.get("status", "open")
+    if status == "closed":
+        return close_keyword(bead)
+    return _STATUS_KEYWORD.get(status, "TODO")
+
+
+def render_bead(bead, depth=2):
+    """Render a single bead as Org-mode text at the given heading depth.
+
+    depth=2 means ** (inside a top-level section).
+    """
+    lines = []
+    stars = "*" * depth
+    indent = "  " * depth
+
+    # -- Heading line -----------------------------------------------------
+    keyword = bead_keyword(bead)
+    cookie = priority_cookie(bead.get("priority", 2))
+    title = bead.get("title", "(untitled)")
+    tags = build_tags(bead)
+    tag_str = format_tags(tags)
+
+    heading = f"{stars} {keyword}{cookie} {title}"
+    if tag_str:
+        heading = f"{heading} {tag_str}"
+    lines.append(heading)
+
+    # -- Properties drawer ------------------------------------------------
+    lines.append(f"{indent}:PROPERTIES:")
+
+    props = [
+        ("BEAD_ID", bead.get("id")),
+        ("BEAD_TYPE", bead.get("issue_type")),
+        ("BEAD_STATUS", bead.get("status")),
+        ("ASSIGNEE", bead.get("assignee")),
+        ("OWNER", bead.get("owner")),
+        ("CREATED", iso_to_org_ts(bead.get("created_at"))),
+        ("UPDATED", iso_to_org_ts(bead.get("updated_at"))),
+        ("CLOSED", iso_to_org_ts(bead.get("closed_at"))),
+        ("DUE", iso_to_org_ts(bead.get("due_at"))),
+        ("DEFER_UNTIL", iso_to_org_ts(bead.get("defer_until"))),
+        ("ESTIMATE", bead.get("estimate")),
+        ("EXTERNAL_REF", bead.get("external_ref")),
+        ("CLOSE_REASON", bead.get("close_reason")),
+    ]
+    for key, val in props:
+        if val:
+            lines.append(f"{indent}:{key}: {val}")
+    lines.append(f"{indent}:END:")
+
+    # -- Body (description) -----------------------------------------------
+    desc = (bead.get("description") or "").strip()
+    if desc:
+        lines.append("")
+        lines.append(wrap_body(desc, indent))
+
+    # -- Notes ------------------------------------------------------------
+    notes = (bead.get("notes") or "").strip()
+    if notes:
+        lines.append("")
+        lines.append(wrap_body(notes, indent))
+
+    return "\n".join(lines)
+
+
+def render_bead_tree(bead, children_map, depth=2):
+    """Render a bead and its children recursively."""
+    parts = [render_bead(bead, depth)]
+    bead_id = bead.get("id")
+    for child in children_map.get(bead_id, []):
+        parts.append("")
+        parts.append(render_bead_tree(child, children_map, depth + 1))
+    return "\n".join(parts)
+
+
+# -- Sorting --------------------------------------------------------------
+
+def sort_key(bead):
+    """Sort by status group, then priority (ascending), then title."""
+    status = bead.get("status", "open")
+    return (
+        _STATUS_ORDER.get(status, 99),
+        bead.get("priority", 2),
+        (bead.get("title") or "").lower(),
+    )
+
+
+# -- Tree building ---------------------------------------------------------
+
+def build_tree(beads):
+    """Partition beads into root beads and a children map.
+
+    Returns (roots, children_map) where children_map is
+    {parent_id: [child_beads...]}.
+    """
+    by_id = {b["id"]: b for b in beads}
+    children_map = {}
+    roots = []
+    for bead in beads:
+        parent = bead.get("parent")
+        if parent and parent in by_id:
+            children_map.setdefault(parent, []).append(bead)
+        else:
+            roots.append(bead)
+    # Sort children within each parent
+    for pid in children_map:
+        children_map[pid].sort(key=sort_key)
+    return roots, children_map
+
+
+def section_for(bead):
+    """Return the section name a root bead belongs to."""
+    itype = bead.get("issue_type", "")
+    return _TYPE_SECTION.get(itype, "Other")
+
+
+# -- Data fetching ---------------------------------------------------------
+
+def run_bd(cmd_parts):
+    """Run a bd command and return (stdout, success)."""
+    result = subprocess.run(cmd_parts, capture_output=True, text=True)
+    if result.returncode != 0 and not result.stdout.strip():
+        return "", False
+    return result.stdout, True
+
+
+def get_beads_json(topic, include_all, extra_args):
+    """Run bd list --json and return the parsed list."""
+    if topic:
+        cmd = [
+            "timvisher_bd_topics", "bd", topic, "--",
+            "list", "--json", "--flat", "--limit", "0",
+        ]
+    else:
+        cmd = ["bd", "list", "--json", "--flat", "--limit", "0"]
+
+    if include_all:
+        cmd.append("--all")
+
+    cmd.extend(extra_args)
+
+    stdout, ok = run_bd(cmd)
+    if not ok:
+        print(f"bd-to-org: bd list failed", file=sys.stderr)
+        sys.exit(1)
+
+    return json.loads(stdout)
+
+
+def get_memories_json(topic):
+    """Run bd memories --json and return the parsed dict (or {})."""
+    if topic:
+        cmd = [
+            "timvisher_bd_topics", "bd", topic, "--",
+            "memories", "--json",
+        ]
+    else:
+        cmd = ["bd", "memories", "--json"]
+
+    stdout, ok = run_bd(cmd)
+    if not ok or not stdout.strip():
+        return {}
+
+    try:
+        data = json.loads(stdout)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def skip_bead(bead):
+    """Return True for beads that should not appear in the org output."""
+    itype = bead.get("issue_type", "")
+    if itype in ("event", "gate"):
+        return True
+    return False
+
+
+# -- Rendering sections ----------------------------------------------------
+
+def render_section(section_name, beads, children_map):
+    """Render a full section: top-level heading + beads at depth 2."""
+    lines = [f"* {section_name}"]
+    for bead in beads:
+        lines.append("")
+        lines.append(render_bead_tree(bead, children_map, depth=2))
+    return "\n".join(lines)
+
+
+def memory_heading(value):
+    """Extract a short heading from a memory value.
+
+    Uses the first sentence (up to the first '. ' or ': ') or the
+    first 72 characters, whichever is shorter.
+    """
+    first_line = value.split("\n")[0]
+    # Try to split on first sentence boundary
+    for sep in (". ", ": "):
+        pos = first_line.find(sep)
+        if 0 < pos and pos < 72:
+            return first_line[:pos]
+    # Fall back to truncation
+    if 72 < len(first_line):
+        return first_line[:69] + "..."
+    return first_line
+
+
+def render_memories(memories):
+    """Render the Memories section from a {key: value} dict."""
+    if not memories:
+        return None
+    indent = "   "
+    lines = ["* Memories"]
+    for key in sorted(memories):
+        value = memories[key]
+        heading = memory_heading(value)
+        lines.append("")
+        lines.append(f"** {heading} :memory:")
+        lines.append(f"{indent}:PROPERTIES:")
+        lines.append(f"{indent}:MEMORY_KEY: {key}")
+        lines.append(f"{indent}:END:")
+        lines.append("")
+        lines.append(wrap_body(value, indent))
+    return "\n".join(lines)
+
+
+# -- Main -----------------------------------------------------------------
+
+def main():
+    topic = None
+    include_all = False
+    use_stdin = False
+    extra_args = []
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--topic" and i + 1 < len(args):
+            topic = args[i + 1]
+            i += 2
+        elif args[i] == "--all":
+            include_all = True
+            i += 1
+        elif args[i] == "--stdin":
+            use_stdin = True
+            i += 1
+        elif args[i] == "--help" or args[i] == "-h":
+            print(__doc__.strip())
+            sys.exit(0)
+        elif args[i] == "--":
+            extra_args = args[i + 1:]
+            break
+        else:
+            extra_args.append(args[i])
+            i += 1
+
+    # -- Load beads
+    if use_stdin:
+        beads = json.load(sys.stdin)
+    else:
+        beads = get_beads_json(topic, include_all, extra_args)
+    beads = [b for b in beads if not skip_bead(b)]
+
+    # -- Build tree and partition into sections
+    roots, children_map = build_tree(beads)
+    roots.sort(key=sort_key)
+
+    sections = {}
+    for bead in roots:
+        sec = section_for(bead)
+        sections.setdefault(sec, []).append(bead)
+
+    # -- Load memories (skip in stdin mode — no bd to call)
+    memories = {}
+    if not use_stdin:
+        memories = get_memories_json(topic)
+
+    # -- File header
+    topic_label = topic or "current"
+    print(f"#+TITLE: Beads — {topic_label}")
+    print("#+STARTUP: showeverything")
+    ts = datetime.now(timezone.utc).strftime("[%Y-%m-%d %a %H:%M]")
+    print(f"#+GENERATED: {ts}")
+
+    # -- Render sections in order
+    ordered = sorted(
+        sections.items(),
+        key=lambda kv: _SECTION_ORDER.get(kv[0], 99),
+    )
+    for sec_name, sec_beads in ordered:
+        print()
+        print(render_section(sec_name, sec_beads, children_map))
+
+    # -- Memories section
+    if memories:
+        print()
+        print(render_memories(memories))
+
+    # Trailing newline
+    print()
+
+
+if __name__ == "__main__":
+    main()
