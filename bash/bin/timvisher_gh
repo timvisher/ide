@@ -11,6 +11,7 @@ usage() {
   timvisher_gh - GitHub workflow commands
 
   Usage:
+    timvisher_gh info <field>    Query repository metadata
     timvisher_gh pr              Create a PR from pr.md (or open existing)
     timvisher_gh pr edit         Edit an existing PR from pr.md
     timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
@@ -79,6 +80,14 @@ usage() {
     - Deletes the PR comment tracked by <file>.url
     - Prompts for confirmation before deleting
     - Removes <file>.url on successful deletion
+
+  info subcommand:
+    - Queries metadata about the current repository via GitHub API
+    - <field> is a virtual field name (not raw jq):
+        .forkNetwork.mainRepo   OWNER/REPO of the fork network root
+                                (the repo itself if not a fork)
+        .forkNetwork.mainOwner  Owner of the fork network root
+        .me                     Authenticated GitHub username
 
   Both pr/issue create subcommands:
     - Store the resulting URL in <file>.url
@@ -660,6 +669,47 @@ gh_comment() {
   tee <<<"$comment_url" "${comment_file}.url"
 }
 
+# --- subcommand: info ---
+
+gh_info() {
+  local field=${1-}
+
+  [[ -n $field ]] ||
+    die 'info requires a <field> argument'
+
+  case $field in
+    .forkNetwork.mainRepo)
+      local repo_json
+      repo_json=$(command gh api "repos/${repo_spec}" --jq '{fork, source: .source.full_name}') ||
+        die 'Unable to query repo metadata for %s' "$repo_spec"
+
+      local is_fork source_repo
+      is_fork=$(jq -r .fork <<<"$repo_json")
+      source_repo=$(jq -r .source <<<"$repo_json")
+
+      if [[ $is_fork == true && $source_repo != null ]]
+      then
+        printf '%s\n' "$source_repo"
+      else
+        printf '%s\n' "$repo_spec"
+      fi
+      ;;
+    .forkNetwork.mainOwner)
+      local main_repo
+      main_repo=$(gh_info .forkNetwork.mainRepo) ||
+        return $?
+      printf '%s\n' "${main_repo%%/*}"
+      ;;
+    .me)
+      command gh api user --jq .login ||
+        die 'Unable to query authenticated user'
+      ;;
+    *)
+      die "Unknown info field: '%s'" "$field"
+      ;;
+  esac
+}
+
 # --- dispatch ---
 
 if [[ $# -eq 0 ]]
@@ -679,6 +729,9 @@ cmd=$1
 shift
 
 case $cmd in
+  info)
+    gh_info "$@"
+    ;;
   pr)
     gh_pr "$@"
     ;;
