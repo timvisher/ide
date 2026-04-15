@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Tests for bd-to-org
+# Tests for bd-org-sync
 # Uses --stdin to test the formatter without a live beads database.
 
 set -euo pipefail
@@ -22,7 +22,7 @@ run_test() {
 }
 
 bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
-bd_to_org="$bin_dir/bd-to-org"
+bd_org_sync="$bin_dir/bd-org-sync"
 
 # -- Fixtures ---------------------------------------------------------------
 
@@ -127,7 +127,7 @@ parent_child='[
 
 # Test 1: script is executable
 run_test
-if [[ -x $bd_to_org ]]
+if [[ -x $bd_org_sync ]]
 then
   pass "bd-to-org is executable"
 else
@@ -136,7 +136,7 @@ fi
 
 # Test 2: --help works
 run_test
-help_output=$("$bd_to_org" --help 2>&1)
+help_output=$("$bd_org_sync" --help 2>&1)
 if [[ $help_output == *"Usage"* ]]
 then
   pass "--help shows usage"
@@ -146,7 +146,7 @@ fi
 
 # Test 3: open task renders with TODO keyword and [#B] priority
 run_test
-output=$(echo "$open_task" | "$bd_to_org" --stdin)
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
 if [[ $output == *'** TODO [#B] Fix the thing'* ]]
 then
   pass "open task renders as ** TODO [#B]"
@@ -156,7 +156,7 @@ fi
 
 # Test 4: in_progress renders with IN_PROGRESS keyword, no priority cookie
 run_test
-output=$(echo "$in_progress_feature" | "$bd_to_org" --stdin)
+output=$(echo "$in_progress_feature" | "$bd_org_sync" --stdin)
 if [[ $output == *'** IN_PROGRESS Add new widget'* ]]
 then
   pass "in_progress renders as IN_PROGRESS (no priority cookie for P2)"
@@ -166,7 +166,7 @@ fi
 
 # Test 5: description appears indented in body
 run_test
-output=$(echo "$in_progress_feature" | "$bd_to_org" --stdin)
+output=$(echo "$in_progress_feature" | "$bd_org_sync" --stdin)
 if [[ $output == *'    A multi-line'* && $output == *'    description here.'* ]]
 then
   pass "description renders indented at depth 2"
@@ -176,7 +176,7 @@ fi
 
 # Test 6: closed bead with "Completed" renders as DONE
 run_test
-output=$(echo "$closed_done" | "$bd_to_org" --stdin)
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
 if [[ $output == *'** DONE [#C] Old bug'* ]]
 then
   pass "closed/Completed renders as DONE [#C]"
@@ -186,7 +186,7 @@ fi
 
 # Test 7: closed bead with "Cancelled" renders as CANCELLED
 run_test
-output=$(echo "$closed_cancelled" | "$bd_to_org" --stdin)
+output=$(echo "$closed_cancelled" | "$bd_org_sync" --stdin)
 if [[ $output == *'** CANCELLED Cancelled work'* ]]
 then
   pass "closed/Cancelled renders as CANCELLED"
@@ -196,7 +196,7 @@ fi
 
 # Test 8: blocked status adds :blocked: tag
 run_test
-output=$(echo "$blocked_bead" | "$bd_to_org" --stdin)
+output=$(echo "$blocked_bead" | "$bd_org_sync" --stdin)
 if [[ $output == *':blocked:'* ]]
 then
   pass "blocked bead has :blocked: tag"
@@ -206,7 +206,7 @@ fi
 
 # Test 9: blocked bead uses TODO keyword (not a separate keyword)
 run_test
-output=$(echo "$blocked_bead" | "$bd_to_org" --stdin)
+output=$(echo "$blocked_bead" | "$bd_org_sync" --stdin)
 if [[ $output == *'** TODO [#A] Blocked item'* ]]
 then
   pass "blocked bead uses TODO keyword with [#A]"
@@ -216,7 +216,7 @@ fi
 
 # Test 10: labels become org tags with sanitized names
 run_test
-output=$(echo "$labeled_bead" | "$bd_to_org" --stdin)
+output=$(echo "$labeled_bead" | "$bd_org_sync" --stdin)
 if [[ $output == *':status_in_progress:'* && $output == *':tech_debt:'* ]]
 then
   pass "labels render as sanitized org tags"
@@ -226,7 +226,7 @@ fi
 
 # Test 11: issue_type appears as first tag
 run_test
-output=$(echo "$open_task" | "$bd_to_org" --stdin)
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
 if [[ $output == *':task:'* ]]
 then
   pass "issue_type appears as org tag"
@@ -236,7 +236,7 @@ fi
 
 # Test 12: properties drawer contains BEAD_ID
 run_test
-output=$(echo "$open_task" | "$bd_to_org" --stdin)
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
 if [[ $output == *':BEAD_ID: test-001'* ]]
 then
   pass "properties drawer contains BEAD_ID"
@@ -246,7 +246,7 @@ fi
 
 # Test 13: timestamps render in org format
 run_test
-output=$(echo "$open_task" | "$bd_to_org" --stdin)
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
 if [[ $output == *':CREATED: [2026-01-15'* ]]
 then
   pass "timestamps render in org inactive format"
@@ -256,7 +256,7 @@ fi
 
 # Test 14: event beads are filtered out
 run_test
-output=$(echo "$event_bead" | "$bd_to_org" --stdin)
+output=$(echo "$event_bead" | "$bd_org_sync" --stdin)
 if [[ $output != *'State change'* ]]
 then
   pass "event beads are filtered out"
@@ -266,7 +266,7 @@ fi
 
 # Test 15: file header includes #+TITLE
 run_test
-output=$(echo '[]' | "$bd_to_org" --stdin)
+output=$(echo '[]' | "$bd_org_sync" --stdin)
 if [[ $output == *'#+TITLE:'* ]]
 then
   pass "output includes #+TITLE header"
@@ -276,7 +276,7 @@ fi
 
 # Test 16: CLOSED timestamp appears for closed beads
 run_test
-output=$(echo "$closed_done" | "$bd_to_org" --stdin)
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
 if [[ $output == *':CLOSED: [2025-12-02'* ]]
 then
   pass "CLOSED timestamp present for closed bead"
@@ -286,7 +286,7 @@ fi
 
 # Test 17: CLOSE_REASON in properties
 run_test
-output=$(echo "$closed_done" | "$bd_to_org" --stdin)
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
 if [[ $output == *':CLOSE_REASON: Completed'* ]]
 then
   pass "CLOSE_REASON in properties drawer"
@@ -301,7 +301,7 @@ mixed='[
   {"id":"b","title":"Aaa closed","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":"2026-01-01T00:00:00Z"},
   {"id":"c","title":"Mmm active","status":"in_progress","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
 ]'
-output=$(echo "$mixed" | "$bd_to_org" --stdin)
+output=$(echo "$mixed" | "$bd_org_sync" --stdin)
 headings=$(echo "$output" | grep '^\*\* ')
 first=$(echo "$headings" | head -1)
 last=$(echo "$headings" | tail -1)
@@ -319,7 +319,7 @@ found_leak=false
 if [[ -r $employer_patterns_file ]]
 then
   patterns=$(paste -sd '|' "$employer_patterns_file")
-  if grep -qiE "$patterns" "$bd_to_org"
+  if grep -qiE "$patterns" "$bd_org_sync"
   then
     found_leak=true
   fi
@@ -333,7 +333,7 @@ fi
 
 # Test 20: bugs go in Bugs section, features/tasks in Stories
 run_test
-output=$(echo "$mixed_types" | "$bd_to_org" --stdin)
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
 # Bugs section should appear before Stories
 bugs_line=$(echo "$output" | grep -n '^\* Bugs$' | head -1 | cut -d: -f1)
 stories_line=$(echo "$output" | grep -n '^\* Stories$' | head -1 | cut -d: -f1)
@@ -348,7 +348,7 @@ fi
 
 # Test 21: bug bead appears under Bugs section
 run_test
-output=$(echo "$mixed_types" | "$bd_to_org" --stdin)
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
 # Extract content between "* Bugs" and the next "* " section
 bugs_section=$(echo "$output" | sed -n '/^\* Bugs$/,/^\* [A-Z]/p' | head -n -1)
 if [[ $bugs_section == *'A bug'* ]]
@@ -360,7 +360,7 @@ fi
 
 # Test 22: feature and task appear under Stories section
 run_test
-output=$(echo "$mixed_types" | "$bd_to_org" --stdin)
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
 stories_section=$(echo "$output" | sed -n '/^\* Stories$/,/^\* [A-Z]/p' | head -n -1)
 if [[ $stories_section == *'A feature'* && $stories_section == *'A task'* ]]
 then
@@ -371,7 +371,7 @@ fi
 
 # Test 23: epic and children nest correctly
 run_test
-output=$(echo "$epic_with_children" | "$bd_to_org" --stdin)
+output=$(echo "$epic_with_children" | "$bd_org_sync" --stdin)
 if [[ $output == *'* Epics'* ]] &&
    [[ $output == *'** IN_PROGRESS [#B] Big epic'* ]] &&
    [[ $output == *'*** TODO Epic subtask'* ]] &&
@@ -384,7 +384,7 @@ fi
 
 # Test 24: children of non-epic parents nest under parent
 run_test
-output=$(echo "$parent_child" | "$bd_to_org" --stdin)
+output=$(echo "$parent_child" | "$bd_org_sync" --stdin)
 if [[ $output == *'** IN_PROGRESS Parent task'* ]] &&
    [[ $output == *'*** TODO Child task'* ]]
 then
@@ -395,7 +395,7 @@ fi
 
 # Test 25: children go into parent's section, not their own type's section
 run_test
-output=$(echo "$epic_with_children" | "$bd_to_org" --stdin)
+output=$(echo "$epic_with_children" | "$bd_org_sync" --stdin)
 # The bug child should be under Epics, not a separate Bugs section
 if [[ $output != *'* Bugs'* ]]
 then
@@ -406,7 +406,7 @@ fi
 
 # Test 26: empty input produces only header
 run_test
-output=$(echo '[]' | "$bd_to_org" --stdin)
+output=$(echo '[]' | "$bd_org_sync" --stdin)
 line_count=$(echo "$output" | grep -c '^\*' || true)
 if [[ $line_count == 0 ]]
 then
