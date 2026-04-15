@@ -1594,6 +1594,221 @@ status__all_published() {
   info "All changes published"
 }
 
+# ---------------------------------------------------------------------------
+# worktree gc: remove merged worktrees, archiving workflow files first
+# ---------------------------------------------------------------------------
+
+worktree_gc__archive_dir="${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/worktree/archives"
+
+worktree_gc__should_archive() {
+  local file=$1
+
+  # Skip: caches and regenerable artifacts
+  case "$file" in
+    .terraform/*|*/.terraform/*) return 1 ;;
+    .cfctl/*|*/.cfctl/*) return 1 ;;
+    bazel-*) return 1 ;;
+    x.upstream-configured) return 1 ;;
+    x.active-worktrees) return 1 ;;
+    x.timvisher.terraform.cookie.*) return 1 ;;
+    */x.timvisher.terraform.cookie.*) return 1 ;;
+    x.timvisher_EXP_terraform_export_format_init_plan*) return 1 ;;
+    applied.*|*/applied.*) return 1 ;;
+    current.*|*/current.*) return 1 ;;
+    *.auto.tfvars*|*/*.auto.tfvars*) return 1 ;;
+    x.home|x.home/*) return 1 ;;
+    x.config|x.config/*) return 1 ;;
+    joblog|*/joblog) return 1 ;;
+  esac
+
+  # Preserve: known workflow directories
+  case "$file" in
+    .agent-shell/transcripts/*) return 0 ;;
+    .beads/*) return 0 ;;
+    .timvisher_bd_topics/*) return 0 ;;
+  esac
+
+  # Preserve: workflow files by first path component
+  local top="${file%%/*}"
+  case "$top" in
+    pr.md|pr.md.url|todo.org) return 0 ;;
+    [xyz]|[xyz].*) return 0 ;;
+  esac
+
+  return 1
+}
+
+worktree_gc__count_archivable() {
+  local wt_path=$1
+  local count=0
+
+  while IFS= read -r file; do
+    worktree_gc__should_archive "$file" || continue
+    (( count++ )) || true
+  done < <(git -C "$wt_path" ls-files --others --ignored --exclude-standard 2>/dev/null)
+
+  printf '%d' "$count"
+}
+
+worktree_gc__do_archive() {
+  local wt_path=$1
+  local rel="${wt_path#"${live_repo_dir}/"}"
+  local dest="${worktree_gc__archive_dir}/${rel}"
+
+  while IFS= read -r file; do
+    worktree_gc__should_archive "$file" || continue
+
+    local file_dest="${dest}/${file}"
+    mkdir -p "$(dirname "$file_dest")" || return 1
+    cp -a "${wt_path}/${file}" "$file_dest" || return 1
+  done < <(git -C "$wt_path" ls-files --others --ignored --exclude-standard 2>/dev/null)
+}
+
+worktree_gc() {
+  local dry_run=0
+  local cutoff_spec="2 weeks ago"
+
+  while (( 0 < $# )); do
+    case $1 in
+      --dry-run|-n) dry_run=1; shift ;;
+      --cutoff)     [[ -n ${2:-} ]] || die "worktree gc: --cutoff requires a value"
+                    cutoff_spec=$2; shift 2 ;;
+      --cutoff=*)   cutoff_spec=${1#--cutoff=}; shift ;;
+      -*)           die "worktree gc: unknown option '%s'" "$1" ;;
+      *)            die "worktree gc: unexpected argument '%s'" "$1" ;;
+    esac
+  done
+
+  local cutoff
+  cutoff=$(gdate -d "$cutoff_spec" +%s) ||
+    die "worktree gc: invalid cutoff '%s'" "$cutoff_spec"
+
+  info "Cutoff: %s (%s)" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
+  if (( dry_run )); then
+    info "Dry run — no changes will be made"
+  fi
+  echo
+
+  # Parallel arrays: trunk_cache|wt_path, and archive file counts
+  local to_remove=()
+  local archive_counts=()
+  local archive_labels=()
+
+  local trunk_cache
+  for trunk_cache in "${repo_trunks_dir}"/*/*; do
+    [[ -d $trunk_cache ]] || continue
+
+    local label="${trunk_cache#"${repo_trunks_dir}/"}"
+
+    local trunk_branch
+    trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache" 2>/dev/null) || continue
+
+    # Fetch to ensure merge-base checks are current
+    command git -C "$trunk_cache" fetch origin "$trunk_branch" --quiet 2>/dev/null || continue
+
+    local found_any=0
+
+    while IFS=$'\t' read -r wt_path branch_ref; do
+      local branch="${branch_ref#refs/heads/}"
+      [[ $branch == "$trunk_branch" ]] && continue
+
+      local last_epoch
+      last_epoch=$(git -C "$wt_path" log -1 --format='%at' 2>/dev/null) || continue
+      if (( cutoff < last_epoch )); then
+        continue
+      fi
+
+      if git -C "$trunk_cache" merge-base --is-ancestor "$branch_ref" "origin/${trunk_branch}" 2>/dev/null; then
+        if (( ! found_any )); then
+          info "--- %s ---" "$label"
+          found_any=1
+        fi
+
+        local last_date
+        last_date=$(git -C "$wt_path" log -1 --format='%ai' 2>/dev/null | cut -d' ' -f1)
+        info "  MERGED  %s  %s" "$last_date" "$branch"
+
+        local file_count
+        file_count=$(worktree_gc__count_archivable "$wt_path")
+        local wt_rel="${wt_path#"${live_repo_dir}/"}"
+
+        to_remove+=("${trunk_cache}|${wt_path}")
+        archive_counts+=("$file_count")
+        archive_labels+=("$wt_rel")
+      fi
+    done < <(git -C "$trunk_cache" worktree list --porcelain \
+      | awk '/^worktree /{wt=$2} /^branch /{br=$2; print wt"\t"br}')
+
+    if (( found_any )); then
+      echo
+    fi
+  done
+
+  if (( ${#to_remove[@]} < 1 )); then
+    info "Nothing to remove."
+    return 0
+  fi
+
+  # Build archive summary
+  local total_archive_files=0
+  local archive_summary=""
+  local i
+  for (( i = 0; i < ${#to_remove[@]}; i++ )); do
+    (( total_archive_files += archive_counts[i] )) || true
+    if (( 0 < archive_counts[i] )); then
+      archive_summary+=$(printf '%d\t%s\n' "${archive_counts[i]}" "${archive_labels[i]}")
+    fi
+  done
+
+  echo
+  info "========================================"
+  info "Will remove %d worktree(s)." "${#to_remove[@]}"
+  echo
+  if (( 0 < total_archive_files )); then
+    info "Will archive %d file(s):" "$total_archive_files"
+    printf '%s' "$archive_summary" | sort -t$'\t' -k2 | column -t >&2
+  else
+    info "Nothing to archive."
+  fi
+  echo
+  info "Archive base: %s" "$worktree_gc__archive_dir"
+  info "========================================"
+
+  if (( dry_run )); then
+    return 0
+  fi
+
+  printf 'Proceed? [y/N] ' >&2
+  local confirm
+  read -r confirm
+  if [[ $confirm != [yY] ]]; then
+    info "Aborted."
+    return 1
+  fi
+
+  local entry
+  for (( i = 0; i < ${#to_remove[@]}; i++ )); do
+    entry="${to_remove[i]}"
+    local trunk="${entry%%|*}"
+    local wt="${entry#*|}"
+    if (( 0 < archive_counts[i] )); then
+      if ! worktree_gc__do_archive "$wt"; then
+        error "Archive failed for %s — skipping removal" "${archive_labels[i]}"
+        continue
+      fi
+      info "Archived %d file(s) from %s" "${archive_counts[i]}" "${archive_labels[i]}"
+    fi
+    info "Removing %s ..." "$wt"
+    git -C "$trunk" worktree remove --force "$wt" && info "  done" || warn "  FAILED"
+  done
+
+  info "Cleanup complete. Archives at: %s" "$worktree_gc__archive_dir"
+}
+
+# ---------------------------------------------------------------------------
+# Main entry point dispatch
+# ---------------------------------------------------------------------------
+
 case $1 in
   clone)        clone "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
@@ -1604,5 +1819,11 @@ case $1 in
     esac
     ;;
   sync-trunk)   sync_trunk "${@:2}" ;;
+  worktree)
+    case ${2:-} in
+      gc) worktree_gc "${@:3}" ;;
+      *)  git "$@" ;;
+    esac
+    ;;
   *)            git "$@" ;;
 esac
