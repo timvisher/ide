@@ -81,10 +81,6 @@ _SECTION_ORDER = {
 
 def wrap_body(text, indent):
     """Wrap text to 72 columns, respecting the given indent string."""
-    width = 72 - len(indent)
-    if width < 20:
-        width = 20
-
     out_lines = []
     for paragraph in text.split("\n"):
         if not paragraph:
@@ -272,10 +268,7 @@ def section_for(bead):
 
 
 def skip_bead(bead):
-    itype = bead.get("issue_type", "")
-    if itype in ("event", "gate"):
-        return True
-    return False
+    return bead.get("issue_type", "") in ("event", "gate")
 
 
 # -- Memory helpers --------------------------------------------------------
@@ -398,14 +391,15 @@ def check_lock():
     """Verify our lock is still intact.  Die if it was removed or replaced."""
     if not _lock_dir:
         return
-    if not _lock_dir.exists():
+    try:
+        current_mtime = _lock_dir.stat().st_mtime
+    except FileNotFoundError:
         print(
             "bd-org-sync: lock directory removed out from under us, "
             "exiting",
             file=sys.stderr,
         )
         sys.exit(1)
-    current_mtime = _lock_dir.stat().st_mtime
     if current_mtime != _lock_mtime:
         print(
             "bd-org-sync: lock directory mtime changed (another "
@@ -446,7 +440,7 @@ def render_section(section_name, beads, children_map):
 def render_memories(memories):
     if not memories:
         return None
-    indent = "   "
+    indent = "    "
     lines = ["* Memories"]
     for key in sorted(memories):
         value = memories[key]
@@ -524,7 +518,7 @@ def build_manifest(beads, memories, topic):
     manifest_memories = []
     if memories:
         sections.append({"name": "Memories", "order": 6})
-        indent = "   "
+        indent = "    "
         for key in sorted(memories):
             value = memories[key]
             heading = memory_heading(value)
@@ -690,7 +684,8 @@ def main():
         beads = get_beads_json(topic, include_all, [])
         memories = get_memories_json(topic)
         manifest = build_manifest(beads, memories, topic)
-        apply_manifest(str(org_file), manifest)
+        if not apply_manifest(str(org_file), manifest):
+            sys.exit(1)
         return
 
     # -- Daemon loop -------------------------------------------------------

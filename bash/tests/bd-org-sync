@@ -129,9 +129,9 @@ parent_child='[
 run_test
 if [[ -x $bd_org_sync ]]
 then
-  pass "bd-to-org is executable"
+  pass "bd-org-sync is executable"
 else
-  fail "bd-to-org is not executable"
+  fail "bd-org-sync is not executable"
 fi
 
 # Test 2: --help works
@@ -302,7 +302,7 @@ mixed='[
   {"id":"c","title":"Mmm active","status":"in_progress","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
 ]'
 output=$(echo "$mixed" | "$bd_org_sync" --stdin)
-headings=$(echo "$output" | grep '^\*\* ')
+headings=$(echo "$output" | grep '^\*\* ' || true)
 first=$(echo "$headings" | head -1)
 last=$(echo "$headings" | tail -1)
 if [[ $first == *'Mmm active'* && $last == *'Aaa closed'* ]]
@@ -328,7 +328,7 @@ if [[ $found_leak == false ]]
 then
   pass "no employer-specific references"
 else
-  fail "found employer-specific reference in bd-to-org"
+  fail "found employer-specific reference in bd-org-sync"
 fi
 
 # Test 20: bugs go in Bugs section, features/tasks in Stories
