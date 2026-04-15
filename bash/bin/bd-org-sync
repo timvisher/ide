@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""bd-org-sync - Persistent daemon that syncs beads into beads.org.
+
+Watches the beads DB for changes and incrementally updates
+beads.org at the worktree root using emacs --batch.  Only entries
+that actually changed are touched.
+
+Usage: bd-org-sync [OPTIONS]
+
+Options:
+  --topic TOPIC      Override topic (default: auto-detect from worktree)
+  --all              Include closed beads
+  --once             Sync once and exit (no polling loop)
+  --interval SECS    Poll interval in seconds (default: 5)
+
+The daemon:
+  - Auto-detects topic and beads.org path from the worktree
+  - Acquires .beads/bd-org-sync.lock/ (mkdir lock, one daemon per worktree)
+  - Polls bd list --json; syncs only when the data changes
+  - Cleans up the lock on exit (SIGINT, SIGTERM, normal exit)
+"""
+
+import atexit
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+# -- Import render functions from bd-to-org --------------------------------
+
+_bin_dir = Path(__file__).resolve().parent
+_bd_to_org_path = _bin_dir / "bd-to-org"
+
+
+def _load_bd_to_org():
+    """Import bd-to-org as a module (it has no .py extension)."""
+    loader = importlib.machinery.SourceFileLoader(
+        "bd_to_org", str(_bd_to_org_path),
+    )
+    spec = importlib.util.spec_from_file_location(
+        "bd_to_org", str(_bd_to_org_path), loader=loader,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_bd = _load_bd_to_org()
+
+render_bead_tree = _bd.render_bead_tree
+build_tree = _bd.build_tree
+sort_key = _bd.sort_key
+skip_bead = _bd.skip_bead
+section_for = _bd.section_for
+get_beads_json = _bd.get_beads_json
+get_memories_json = _bd.get_memories_json
+memory_heading = _bd.memory_heading
+wrap_body = _bd.wrap_body
+_SECTION_ORDER = _bd._SECTION_ORDER
+
+
+# -- Worktree / topic detection -------------------------------------------
+
+def repo_root():
+    """Return the git worktree root, or None."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return Path(result.stdout.strip())
+    return None
+
+
+def detect_topic():
+    """Auto-detect the current beads topic from the worktree."""
+    result = subprocess.run(
+        ["timvisher_bd_topics", "current"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+# -- Lock management -------------------------------------------------------
+
+_lock_dir = None
+_lock_mtime = None
+
+
+def acquire_lock(beads_dir):
+    """Acquire .beads/bd-org-sync.lock/ via mkdir (atomic).
+
+    mkdir is the only reliable atomic lock primitive available from
+    userspace (BashFAQ/045).  If the process is SIGKILL'd the lock
+    stays — the human removes it with rmdir.
+
+    Records the mtime so the daemon can detect if someone removes
+    and recreates the lock (which means another instance took over).
+    """
+    global _lock_dir, _lock_mtime
+    lock = Path(beads_dir) / "bd-org-sync.lock"
+    try:
+        lock.mkdir()
+    except FileExistsError:
+        print(
+            f"bd-org-sync: lock exists at {lock}\n"
+            f"  If no other instance is running:\n"
+            f"    rmdir '{lock}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _lock_dir = lock
+    _lock_mtime = lock.stat().st_mtime
+    return lock
+
+
+def check_lock():
+    """Verify our lock is still intact.  Die if it was removed or replaced."""
+    if not _lock_dir:
+        return
+    if not _lock_dir.exists():
+        print(
+            "bd-org-sync: lock directory removed out from under us, "
+            "exiting",
+            file=sys.stderr,
+        )
+        # Don't release — it's already gone
+        sys.exit(1)
+    current_mtime = _lock_dir.stat().st_mtime
+    if current_mtime != _lock_mtime:
+        print(
+            "bd-org-sync: lock directory mtime changed (another "
+            "instance took over), exiting",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def release_lock():
+    """Remove the lock directory."""
+    global _lock_dir
+    if _lock_dir and _lock_dir.exists():
+        try:
+            _lock_dir.rmdir()
+        except OSError:
+            pass
+        _lock_dir = None
+
+
+def _signal_handler(signum, frame):
+    """Clean up lock on signal, then re-raise so the parent sees it."""
+    release_lock()
+    # Restore default handler and re-raise so exit status reflects
+    # the signal (e.g. 128+signum) rather than a clean exit(0).
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+# -- Manifest generation ---------------------------------------------------
+
+def build_manifest(beads, memories, topic):
+    """Build a manifest dict for the elisp sync."""
+    beads = [b for b in beads if not skip_bead(b)]
+    roots, children_map = build_tree(beads)
+    roots.sort(key=sort_key)
+
+    sections_seen = set()
+    manifest_beads = []
+
+    for bead in roots:
+        sec = section_for(bead)
+        sections_seen.add(sec)
+        rendered = render_bead_tree(bead, children_map, depth=2)
+        manifest_beads.append({
+            "bead_id": bead["id"],
+            "section": sec,
+            "section_order": _SECTION_ORDER.get(sec, 99),
+            "rendered": rendered,
+        })
+
+    sections = []
+    for name in sorted(sections_seen,
+                       key=lambda n: _SECTION_ORDER.get(n, 99)):
+        sections.append({
+            "name": name,
+            "order": _SECTION_ORDER.get(name, 99),
+        })
+
+    manifest_memories = []
+    if memories:
+        sections.append({"name": "Memories", "order": 6})
+        indent = "   "
+        for key in sorted(memories):
+            value = memories[key]
+            heading = memory_heading(value)
+            lines = [
+                f"** {heading} :memory:",
+                f"{indent}:PROPERTIES:",
+                f"{indent}:MEMORY_KEY: {key}",
+                f"{indent}:END:",
+                "",
+                wrap_body(value, indent),
+            ]
+            manifest_memories.append({
+                "memory_key": key,
+                "rendered": "\n".join(lines),
+            })
+
+    topic_label = topic or "current"
+    ts = datetime.now(timezone.utc).strftime("[%Y-%m-%d %a %H:%M]")
+    file_header = (
+        f"#+TITLE: Beads — {topic_label}\n"
+        f"#+STARTUP: showeverything\n"
+        f"#+GENERATED: {ts}"
+    )
+
+    return {
+        "file_header": file_header,
+        "sections": sections,
+        "beads": manifest_beads,
+        "memories": manifest_memories,
+    }
+
+
+# -- Emacs batch invocation ------------------------------------------------
+
+_elisp_path = (
+    Path(__file__).resolve().parent.parent.parent
+    / "emacs" / "emacs.d" / "bd-org.el"
+)
+
+
+def apply_manifest(org_file, manifest):
+    """Write manifest to temp file and call emacs --batch to apply it."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False,
+    ) as f:
+        json.dump(manifest, f, ensure_ascii=False)
+        manifest_path = f.name
+
+    try:
+        result = subprocess.run(
+            [
+                "emacs", "--batch",
+                "--eval", "(require 'package)",
+                "--eval", "(package-initialize)",
+                "--eval", '(load "~/.config/emacs/init.el")',
+                "-l", str(_elisp_path),
+                "-f", "bd-org-sync-batch",
+                str(org_file),
+                manifest_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            print(f"bd-org-sync: emacs batch failed:\n{stderr}",
+                  file=sys.stderr)
+            return False
+        for line in result.stderr.strip().split("\n"):
+            if line.startswith("bd-org-sync:"):
+                print(line, file=sys.stderr)
+        return True
+    finally:
+        os.unlink(manifest_path)
+
+
+# -- Change detection ------------------------------------------------------
+
+def data_hash(beads_json, memories_json):
+    """Return a hash of the current beads + memories state."""
+    blob = json.dumps(
+        {"beads": beads_json, "memories": memories_json},
+        sort_keys=True, ensure_ascii=False,
+    ).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+# -- Main ------------------------------------------------------------------
+
+def main():
+    topic = None
+    include_all = False
+    once = False
+    interval = 5
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--topic" and i + 1 < len(args):
+            topic = args[i + 1]
+            i += 2
+        elif args[i] == "--all":
+            include_all = True
+            i += 1
+        elif args[i] == "--once":
+            once = True
+            i += 1
+        elif args[i] == "--interval" and i + 1 < len(args):
+            interval = int(args[i + 1])
+            i += 2
+        elif args[i] in ("--help", "-h"):
+            print(__doc__.strip())
+            sys.exit(0)
+        else:
+            print(f"Unknown option: {args[i]}", file=sys.stderr)
+            sys.exit(1)
+
+    # Auto-detect worktree root
+    root = repo_root()
+    if not root:
+        print("bd-org-sync: not in a git worktree", file=sys.stderr)
+        sys.exit(1)
+
+    # Auto-detect topic
+    if not topic:
+        topic = detect_topic()
+
+    # Resolve paths
+    beads_dir = root / ".beads"
+    org_file = root / "beads.org"
+
+    if not beads_dir.exists():
+        print(
+            f"bd-org-sync: no .beads/ directory at {root}\n"
+            f"  Run: timvisher_bd_topics set <topic>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Acquire lock
+    acquire_lock(beads_dir)
+    atexit.register(release_lock)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGHUP, _signal_handler)
+
+    if once:
+        beads = get_beads_json(topic, include_all, [])
+        memories = get_memories_json(topic)
+        manifest = build_manifest(beads, memories, topic)
+        apply_manifest(str(org_file), manifest)
+        return
+
+    # -- Daemon loop -------------------------------------------------------
+    # Always fetch --all so we see status transitions (open → closed
+    # renders as DONE).  The --all CLI flag only affects --once mode.
+    last_hash = None
+    print(
+        f"bd-org-sync: watching topic={topic or '(auto)'} "
+        f"→ {org_file}  (every {interval}s)",
+        file=sys.stderr,
+    )
+
+    while True:
+        check_lock()
+        try:
+            beads = get_beads_json(topic, True, [])
+            memories = get_memories_json(topic)
+        except (json.JSONDecodeError, SystemExit):
+            # bd might be temporarily unavailable; retry next cycle
+            time.sleep(interval)
+            continue
+
+        h = data_hash(beads, memories)
+        if h != last_hash:
+            manifest = build_manifest(beads, memories, topic)
+            if apply_manifest(str(org_file), manifest):
+                last_hash = h
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    main()
