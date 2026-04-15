@@ -32,7 +32,7 @@ Then register the worktree in the dev-ci registry so `timvisher_dev_ci`
 discovers it:
 
 ```bash
-echo '~/git/org/repo/dev' >> ~/.config/timvisher/dev-ci/branches
+echo '~/git/org/repo/dev' >> ~/.config/timvisher/ide/timvisher_dev_ci/branches
 ```
 
 The registry file uses the same format as `x.active-worktrees`: one

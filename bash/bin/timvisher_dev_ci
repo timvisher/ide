@@ -5,7 +5,7 @@
 # Local CI orchestrator for dev integration branches.
 #
 # Discovers dev integration worktrees from a registry file
-# (~/.config/timvisher/dev-ci/branches) listing worktree paths.
+# (~/.config/timvisher/ide/timvisher_dev_ci/branches) listing worktree paths.
 # Resets+rebases their feature branches in parallel, then integrates
 # and tests.  Uses ntmux3 -d to create standard tmux sessions and
 # sends work to the :admin window.
@@ -21,15 +21,18 @@
 #   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
 #
-# Hook scripts (run-tests.sh, post-integrate.sh) are stored in:
-#   bash/bin/timvisher_dev_ci.config/repo scripts/<org>/<repo>/<branch>/
+# Hook scripts (run-tests.sh, post-integrate.sh) are resolved from two
+# locations, checked in order:
+#   1. bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>/<branch>/
+#   2. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/<org>/<repo>/<branch>/
+# Use (1) for hooks that should be checked in to timvisher/ide.
+# Use (2) for machine-specific hooks (e.g. DataDog-internal repos).
 # If a legacy x.<hook> file exists in a worktree, it is auto-migrated
-# to the config dir on first use.
+# to the checked-in config dir (1) on first use.
 #
-# Extension hooks (pre-run-tests.sh, pre-post-integrate.sh) are loaded
-# from ~/.config/timvisher/ide/dev_ci_hooks/<org>/<repo>/<branch>/ and
-# run before the base hook.  Use these for environment-specific setup
-# like VPN connectivity waits.
+# Extension hooks (pre-run-tests.sh, pre-post-integrate.sh) follow the
+# same two-location search and are sourced before the base hook.  Use
+# these for environment-specific setup like VPN connectivity waits.
 
 source ~/.functions/logging.bash ||
     {
@@ -44,13 +47,13 @@ parallel git -C '{}' pull ::: ~/git/xenodium/*/main ||
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEV_CI_REGISTRY=${TIMVISHER_DEV_CI_REGISTRY:-${HOME}/.config/timvisher/ide/dev-ci/branches}
+DEV_CI_REGISTRY=${TIMVISHER_DEV_CI_REGISTRY:-${HOME}/.config/timvisher/ide/timvisher_dev_ci/branches}
 STATUS_FILENAME=x.dev-ci.status
 POLL_INTERVAL_SECONDS=5
 SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
 SELF_DIR=$(dirname "$SELF")
-REPO_SCRIPTS_DIR="${SELF_DIR}/timvisher_dev_ci.config/repo scripts"
-REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/dev_ci_hooks"
+REPO_HOOKS_DIR="${SELF_DIR}/timvisher_dev_ci.config/hooks"
+REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/timvisher_dev_ci/hooks"
 
 BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli)
 
@@ -112,47 +115,68 @@ read_active_worktrees() {
 }
 
 # ---------------------------------------------------------------------------
-# Repo script helpers: map worktree paths to checked-in config scripts
+# Hook helpers: map worktree paths to hook scripts
 # ---------------------------------------------------------------------------
 
-# Given a worktree path under ~/git/<org>/<repo>/<branch-parts...>/,
-# emit the corresponding config-dir path for a hook script.
-# Usage: repo_script_path "/path/to/worktree" "run-tests.sh"
-repo_script_path() {
+# Resolve the org/repo/branch-parts relative path for a worktree.
+# Usage: worktree_rel_path "/path/to/worktree"
+worktree_rel_path() {
     local worktree_path=$1
-    local script_name=$2
 
-    # Strip $TIMVISHER_GIT_HOME/ prefix to get org/repo/branch-parts.
     local git_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/"
     if [[ $worktree_path != "${git_base}"* ]]
     then
-        error "repo_script_path: '%s' is not under '%s'" "$worktree_path" "$git_base"
+        error "worktree_rel_path: '%s' is not under '%s'" "$worktree_path" "$git_base"
         return 1
     fi
 
     local rel=${worktree_path#"$git_base"}
-    # Strip trailing slash if present.
     rel=${rel%/}
-
-    printf '%s/%s/%s' "$REPO_SCRIPTS_DIR" "$rel" "$script_name"
+    printf '%s' "$rel"
 }
 
-# Ensure a repo script exists at the config path.  If an x.<name> file
-# exists in the worktree, migrate it to the config dir.
-# Returns 0 if the script exists (and is executable) after migration,
-# 1 otherwise.
+# Find a hook script by searching REPO_HOOKS_DIR then REPO_HOOKS_EXT_DIR.
+# Prints the first executable path found; returns 1 if neither exists.
+# Usage: find_hook "/path/to/worktree" "run-tests.sh"
+find_hook() {
+    local worktree_path=$1
+    local hook_name=$2
+
+    local rel
+    rel=$(worktree_rel_path "$worktree_path") || return 1
+
+    local path
+    for path in \
+        "${REPO_HOOKS_DIR}/${rel}/${hook_name}" \
+        "${REPO_HOOKS_EXT_DIR}/${rel}/${hook_name}"
+    do
+        if [[ -x $path ]]
+        then
+            printf '%s' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Ensure a hook script exists.  If a legacy x.<name> file exists in the
+# worktree, migrate it to the checked-in config dir (REPO_HOOKS_DIR).
+# Returns 0 if the script is found (after migration), 1 otherwise.
 # Usage: ensure_repo_script "/path/to/worktree" "run-tests.sh"
 ensure_repo_script() {
     local worktree_path=$1
     local script_name=$2
 
-    local config_path
-    config_path=$(repo_script_path "$worktree_path" "$script_name") || return 1
+    local rel
+    rel=$(worktree_rel_path "$worktree_path") || return 1
 
+    local config_path="${REPO_HOOKS_DIR}/${rel}/${script_name}"
     local legacy_path="${worktree_path}/x.${script_name}"
 
-    # Migrate legacy x. file if it exists and config version does not.
-    if [[ ! -f $config_path && -f $legacy_path ]]
+    # Migrate legacy x. file if it exists and no config version exists
+    # in either location.
+    if ! find_hook "$worktree_path" "$script_name" >/dev/null 2>&1 &&
+       [[ -f $legacy_path ]]
     then
         info "Migrating '%s' → '%s'" "$legacy_path" "$config_path"
         mkdir -p "$(dirname "$config_path")"
@@ -160,32 +184,23 @@ ensure_repo_script() {
         chmod +x "$config_path"
     fi
 
-    [[ -x $config_path ]]
+    find_hook "$worktree_path" "$script_name" >/dev/null 2>&1
 }
 
-# Run an extension hook if one exists.  Extension hooks live in
-# ~/.config/timvisher/ide/dev_ci_hooks/<org>/<repo>/<branch>/<hook-name>
-# and are sourced (not exec'd) so they can set env vars, wait for
-# connectivity, etc.  Returns 0 even if no hook exists.
+# Run an extension hook if one exists.  Extension hooks (pre-run-tests.sh,
+# pre-post-integrate.sh) are searched across both hook directories and
+# sourced (not exec'd) so they can set env vars, wait for connectivity, etc.
+# Returns 0 even if no hook exists.
 # Usage: run_ext_hook "/path/to/worktree" "pre-run-tests.sh"
 run_ext_hook() {
     local worktree_path=$1
     local hook_name=$2
 
-    [[ -d ${REPO_HOOKS_EXT_DIR:-} ]] || return 0
+    local hook_path
+    hook_path=$(find_hook "$worktree_path" "$hook_name") || return 0
 
-    local git_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/"
-    [[ $worktree_path == "${git_base}"* ]] || return 0
-
-    local rel=${worktree_path#"$git_base"}
-    rel=${rel%/}
-
-    local hook_path="${REPO_HOOKS_EXT_DIR}/${rel}/${hook_name}"
-    if [[ -x $hook_path ]]
-    then
-        info "ext hook: running '%s'" "$hook_path"
-        bash "$hook_path"
-    fi
+    info "ext hook: running '%s'" "$hook_path"
+    bash "$hook_path"
 }
 
 # ---------------------------------------------------------------------------
@@ -516,22 +531,31 @@ PROMPT_EOF
 
     rm -f "$prompt_file"
 
-    if [[ ! -f $status_file ]]
+    # Capture the agent's verdict and remove the status file to prevent
+    # the outer polling loop from reading a premature result.
+    local final_status
+    if [[ -f $status_file ]]
     then
+        final_status=$(cat "$status_file")
+        rm -f "$status_file"
+    else
         warn "sync_trunk_resolve: agent did not write status file; marking fail"
-        echo 'fail' > "$status_file"
+        final_status=fail
     fi
 
     # Push after successful agent resolution (agents cannot push).
-    if [[ -f $status_file && $(cat "$status_file") == pass ]]
+    if [[ $final_status == pass ]]
     then
         info "sync_trunk_resolve: pushing '%s' to origin" "$trunk_branch"
         if ! push_to_remote "$worktree_path"
         then
             warn "sync_trunk_resolve: push failed for '%s'" "$worktree_path"
-            echo 'fail' > "$status_file"
+            final_status=fail
         fi
     fi
+
+    # Write the final status only after push completes.
+    echo "$final_status" > "$status_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -566,10 +590,10 @@ cmd__sync() {
     local pull_cmd="git pull --rebase"
 
     local run_tests
-    run_tests=$(repo_script_path "$worktree_path" "run-tests.sh") || true
+    run_tests=$(find_hook "$worktree_path" "run-tests.sh") || true
 
     local test_instruction=""
-    if [[ -x $run_tests ]]
+    if [[ -n $run_tests ]]
     then
         test_instruction="After syncing, run 'bash ${run_tests}' and verify it passes.
 If tests fail, investigate and fix the issue."
@@ -611,30 +635,40 @@ PROMPT_EOF
 
     rm -f "$prompt_file"
 
-    if [[ ! -f $status_file ]]
+    # Capture the agent's verdict and remove the status file to prevent
+    # the outer polling loop from reading a premature result (same race
+    # fix as cmd__integrate).
+    local final_status
+    if [[ -f $status_file ]]
     then
+        final_status=$(cat "$status_file")
+        rm -f "$status_file"
+    else
         warn "sync: agent did not write status file; marking fail"
-        echo 'fail' > "$status_file"
+        final_status=fail
     fi
 
     # Verify tests deterministically -- don't rely solely on the agent.
-    if [[ $(cat "$status_file") == pass ]]
+    if [[ $final_status == pass ]]
     then
-        if [[ -x $run_tests ]]
+        if [[ -n $run_tests ]]
         then
             info "sync: verifying tests in '%s'" "$worktree_path"
             run_ext_hook "$worktree_path" "pre-run-tests.sh"
             if ! bash "$run_tests"
             then
                 warn "sync: tests failed in '%s'" "$worktree_path"
-                echo 'fail' > "$status_file"
+                final_status=fail
             fi
         else
             info "sync: no run-tests.sh; skipping test verification"
         fi
     fi
 
-    if [[ $(cat "$status_file") == pass ]]
+    # Write the final status only after all verification is complete.
+    echo "$final_status" > "$status_file"
+
+    if [[ $final_status == pass ]]
     then
         if ! push_to_remote "$worktree_path"
         then
@@ -691,7 +725,7 @@ cmd__integrate() {
     fi
 
     local run_tests
-    run_tests=$(repo_script_path "$dev_path" "run-tests.sh") || true
+    run_tests=$(find_hook "$dev_path" "run-tests.sh") || true
 
     # Run baseline tests on @{u}.  Capture output rather than
     # failing hard -- pre-existing upstream failures should not block
@@ -700,7 +734,7 @@ cmd__integrate() {
     local baseline_log="${dev_path}/x.dev-ci-baseline.log"
     local baseline_clean=true
 
-    if [[ -x $run_tests ]]
+    if [[ -n $run_tests ]]
     then
         info "integrate: running baseline tests on @{u}"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
@@ -731,11 +765,11 @@ cmd__integrate() {
         fi
 
         # Run post-integration hook even with no worktrees (e.g. build+install).
-        local post_integrate
-        post_integrate=$(repo_script_path "$dev_path" "post-integrate.sh") || true
         ensure_repo_script "$dev_path" "post-integrate.sh" || true
+        local post_integrate
+        post_integrate=$(find_hook "$dev_path" "post-integrate.sh") || true
 
-        if [[ -x $post_integrate ]]
+        if [[ -n $post_integrate ]]
         then
             info "integrate: running post-integration hook"
             run_ext_hook "$dev_path" "pre-post-integrate.sh"
@@ -774,7 +808,7 @@ cmd__integrate() {
 
     local test_instruction=""
     local baseline_context=""
-    if [[ -x $run_tests ]]
+    if [[ -n $run_tests ]]
     then
         test_instruction="After the merge, run 'bash ${run_tests}' and verify it passes."
         if [[ $baseline_clean == false ]]
@@ -839,44 +873,67 @@ PROMPT_EOF
         warn "integrate: agent exited with error"
     fi
 
-    rm -f "$prompt_file" "$baseline_log"
+    rm -f "$prompt_file"
 
-    # The agent should have written the status file.
-    if [[ ! -f $status_file ]]
+    # Capture the agent's verdict and remove the status file so the
+    # outer polling loop cannot read a premature "pass" while we are
+    # still running verification steps (race condition: the polling
+    # loop could read the agent's "pass" before verification runs).
+    local final_status
+    if [[ -f $status_file ]]
     then
+        final_status=$(cat "$status_file")
+        rm -f "$status_file"
+    else
         warn "integrate: agent did not write status file; marking fail"
-        echo 'fail' > "$status_file"
+        final_status=fail
     fi
 
     # Verify tests deterministically -- don't rely solely on the agent.
-    if [[ $(cat "$status_file") == pass && -x $run_tests ]]
+    if [[ $final_status == pass && -x $run_tests ]]
     then
         info "integrate: verifying tests post-merge"
+        local verify_log="${dev_path}/x.dev-ci-verify.log"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
-        if ! bash "$run_tests"
+        if ! bash "$run_tests" > "$verify_log" 2>&1
         then
-            error "integrate: tests failed post-merge"
-            echo 'fail' > "$status_file"
+            # If baseline already had failures, check whether the
+            # post-merge failures are the same.  Identical output means
+            # no new regressions were introduced by the merge.
+            if [[ $baseline_clean == false ]] && diff -q "$baseline_log" "$verify_log" >/dev/null 2>&1
+            then
+                info "integrate: post-merge failures match baseline; treating as pass"
+            else
+                error "integrate: tests failed post-merge"
+                final_status=fail
+            fi
         fi
+        rm -f "$verify_log"
     fi
 
-    # Run post-integration hook if integration passed.
-    local post_integrate
-    post_integrate=$(repo_script_path "$dev_path" "post-integrate.sh") || true
-    ensure_repo_script "$dev_path" "post-integrate.sh" || true
+    rm -f "$baseline_log"
 
-    if [[ $(cat "$status_file") == pass && -x $post_integrate ]]
+    # Run post-integration hook if integration passed.
+    ensure_repo_script "$dev_path" "post-integrate.sh" || true
+    local post_integrate
+    post_integrate=$(find_hook "$dev_path" "post-integrate.sh") || true
+
+    if [[ $final_status == pass && -n $post_integrate ]]
     then
         info "integrate: running post-integration hook"
         run_ext_hook "$dev_path" "pre-post-integrate.sh"
         if ! bash "$post_integrate"
         then
             error "integrate: post-integration hook failed"
-            echo 'fail' > "$status_file"
+            final_status=fail
         fi
     fi
 
-    if [[ $(cat "$status_file") == pass ]]
+    # Write the final status only after all verification is complete.
+    # This is what the outer polling loop reads.
+    echo "$final_status" > "$status_file"
+
+    if [[ $final_status == pass ]]
     then
         if ! push_to_remote "$dev_path"
         then
@@ -895,17 +952,20 @@ cmd__ensure_tests() {
     cd "$worktree_path" ||
         die "Cannot cd to '%s'" "$worktree_path"
 
-    local target_path
-    target_path=$(repo_script_path "$worktree_path" "run-tests.sh") || {
-        warn "ensure_tests: cannot determine config path for '%s'" "$worktree_path"
-        return 1
-    }
-
-    if [[ -x $target_path ]]
+    # Check if a hook already exists in either location.
+    if find_hook "$worktree_path" "run-tests.sh" >/dev/null 2>&1
     then
-        info "ensure_tests: run-tests.sh already exists at '%s'" "$target_path"
+        info "ensure_tests: run-tests.sh already exists"
         return 0
     fi
+
+    # New hooks created by the agent go into the checked-in config dir.
+    local rel
+    rel=$(worktree_rel_path "$worktree_path") || {
+        warn "ensure_tests: cannot determine rel path for '%s'" "$worktree_path"
+        return 1
+    }
+    local target_path="${REPO_HOOKS_DIR}/${rel}/run-tests.sh"
 
     mkdir -p "$(dirname "$target_path")"
 
