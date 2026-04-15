@@ -44,20 +44,42 @@ def _ts():
     return datetime.now().astimezone().strftime("%FT%T%z")
 
 
+_on_status_line = False
+
+
+def _cols():
+    """Return terminal width, or 80 if stderr is not a tty."""
+    try:
+        return os.get_terminal_size(sys.stderr.fileno()).columns
+    except (ValueError, OSError):
+        return 80
+
+
+def _clear_status():
+    """If a transient status line is active, clear it before printing."""
+    global _on_status_line
+    if _on_status_line:
+        print(f"\r{' ' * _cols()}\r", end="", file=sys.stderr, flush=True)
+        _on_status_line = False
+
+
 def log_info(msg):
+    _clear_status()
     print(f"{_ts()} INFO bd-org-sync: {msg}", file=sys.stderr)
 
 
 def log_error(msg):
+    _clear_status()
     print(f"{_ts()} ERROR bd-org-sync: {msg}", file=sys.stderr)
 
 
 def _status_line(msg):
     """Overwrite the current terminal line with a transient status."""
-    print(
-        f"\r{_ts()} INFO bd-org-sync: {msg:<40}",
-        end="", file=sys.stderr, flush=True,
-    )
+    global _on_status_line
+    cols = _cols()
+    line = f"\r{_ts()} INFO bd-org-sync: {msg}"
+    print(line[:cols].ljust(cols), end="", file=sys.stderr, flush=True)
+    _on_status_line = True
 
 
 # -- Status -> Org TODO keyword ------------------------------------------
