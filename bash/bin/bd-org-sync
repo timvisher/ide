@@ -37,6 +37,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+# -- Logging ---------------------------------------------------------------
+
+def _ts():
+    """Return a timestamp matching the logging.bash convention."""
+    return datetime.now().astimezone().strftime("%FT%T%z")
+
+
+def log_info(msg):
+    print(f"{_ts()} INFO bd-org-sync: {msg}", file=sys.stderr)
+
+
+def log_error(msg):
+    print(f"{_ts()} ERROR bd-org-sync: {msg}", file=sys.stderr)
+
+
 # -- Status -> Org TODO keyword ------------------------------------------
 
 _STATUS_KEYWORD = {
@@ -308,7 +323,7 @@ def get_beads_json(topic, include_all, extra_args):
 
     stdout, ok = run_bd(cmd)
     if not ok:
-        print("bd-org-sync: bd list failed", file=sys.stderr)
+        log_error("bd list failed")
         sys.exit(1)
     return json.loads(stdout)
 
@@ -375,12 +390,9 @@ def acquire_lock(beads_dir):
     try:
         lock.mkdir()
     except FileExistsError:
-        print(
-            f"bd-org-sync: lock exists at {lock}\n"
-            f"  If no other instance is running:\n"
-            f"    rmdir '{lock}'",
-            file=sys.stderr,
-        )
+        log_error(f"lock exists at {lock}")
+        log_error(f"  If no other instance is running:")
+        log_error(f"    rmdir '{lock}'")
         sys.exit(1)
     _lock_dir = lock
     _lock_mtime = lock.stat().st_mtime
@@ -394,18 +406,11 @@ def check_lock():
     try:
         current_mtime = _lock_dir.stat().st_mtime
     except FileNotFoundError:
-        print(
-            "bd-org-sync: lock directory removed out from under us, "
-            "exiting",
-            file=sys.stderr,
-        )
+        log_error("lock directory removed out from under us, exiting")
         sys.exit(1)
     if current_mtime != _lock_mtime:
-        print(
-            "bd-org-sync: lock directory mtime changed (another "
-            "instance took over), exiting",
-            file=sys.stderr,
-        )
+        log_error("lock directory mtime changed (another instance "
+                  "took over), exiting")
         sys.exit(1)
 
 
@@ -582,13 +587,13 @@ def apply_manifest(org_file, manifest):
             text=True,
         )
         if result.returncode != 0:
-            stderr = result.stderr.strip()
-            print(f"bd-org-sync: emacs batch failed:\n{stderr}",
-                  file=sys.stderr)
+            log_error(f"emacs batch failed:\n{result.stderr.strip()}")
             return False
         for line in result.stderr.strip().split("\n"):
             if line.startswith("bd-org-sync:"):
-                print(line, file=sys.stderr)
+                # Relay the emacs-side message with our timestamp
+                msg = line.split(":", 1)[1].strip() if ":" in line else line
+                log_info(msg)
         return True
     finally:
         os.unlink(manifest_path)
@@ -641,7 +646,7 @@ def main():
         elif args[i] == "--":
             break
         else:
-            print(f"Unknown option: {args[i]}", file=sys.stderr)
+            log_error(f"unknown option: {args[i]}")
             sys.exit(1)
 
     # -- stdout mode: render and exit, no lock needed
@@ -657,7 +662,7 @@ def main():
     # -- file modes (--once and daemon) need a worktree
     root = repo_root()
     if not root:
-        print("bd-org-sync: not in a git worktree", file=sys.stderr)
+        log_error("not in a git worktree")
         sys.exit(1)
 
     if not topic:
@@ -667,11 +672,8 @@ def main():
     org_file = root / "beads.org"
 
     if not beads_dir.exists():
-        print(
-            f"bd-org-sync: no .beads/ directory at {root}\n"
-            f"  Run: timvisher_bd_topics set <topic>",
-            file=sys.stderr,
-        )
+        log_error(f"no .beads/ directory at {root}")
+        log_error(f"  Run: timvisher_bd_topics set <topic>")
         sys.exit(1)
 
     acquire_lock(beads_dir)
@@ -692,11 +694,8 @@ def main():
     # Always fetch --all so we see status transitions (open → closed
     # renders as DONE).  The --all CLI flag only affects --once mode.
     last_hash = None
-    print(
-        f"bd-org-sync: watching topic={topic or '(auto)'} "
-        f"→ {org_file}  (every {interval}s)",
-        file=sys.stderr,
-    )
+    log_info(f"watching topic={topic or '(auto)'} "
+             f"→ {org_file}  (every {interval}s)")
 
     while True:
         check_lock()
@@ -712,7 +711,17 @@ def main():
             manifest = build_manifest(beads, memories, topic)
             if apply_manifest(str(org_file), manifest):
                 last_hash = h
-        time.sleep(interval)
+
+        # Countdown with \r overwrite so the terminal shows activity
+        for remaining in range(interval, 0, -1):
+            print(
+                f"\r{_ts()} INFO bd-org-sync: "
+                f"next check in {remaining}s  ",
+                end="", file=sys.stderr, flush=True,
+            )
+            time.sleep(1)
+        # Clear the countdown line before next cycle's output
+        print("\r" + " " * 60 + "\r", end="", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
