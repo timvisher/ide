@@ -21,18 +21,28 @@
 #   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
 #
-# Hook scripts (run-tests.sh, post-integrate.sh) are resolved from two
-# locations, checked in order:
-#   1. bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>/<branch>/
-#   2. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/<org>/<repo>/<branch>/
-# Use (1) for hooks that should be checked in to timvisher/ide.
-# Use (2) for machine-specific hooks (e.g. DataDog-internal repos).
-# If a legacy x.<hook> file exists in a worktree, it is auto-migrated
-# to the checked-in config dir (1) on first use.
+# Hook scripts (run-tests.sh, post-integrate.sh) cascade across 4 levels,
+# from general to specific.  For a fork of ByteNess/aws-vault checked
+# out as timvisher-dd/aws-vault with branch "dev":
 #
-# Extension hooks (pre-run-tests.sh, pre-post-integrate.sh) follow the
-# same two-location search and are sourced before the base hook.  Use
-# these for environment-specific setup like VPN connectivity waits.
+#   Level 1 (fork-network repo):   ByteNess/aws-vault/<hook>
+#   Level 2 (my repo):             timvisher-dd/aws-vault/<hook>
+#   Level 3 (fork-network branch): ByteNess/aws-vault/dev/<hook>
+#   Level 4 (my branch):           timvisher-dd/aws-vault/dev/<hook>
+#
+# At each level, two directories are checked in order:
+#   a. bash/bin/timvisher_dev_ci.config/hooks/  (checked-in, timvisher/ide)
+#   b. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/  (machine-specific)
+#
+# ALL matching hooks run (they cascade, not shadow).  Resolved paths
+# are deduplicated, so when "me" equals the fork-network main owner
+# the same file is not executed twice.
+#
+# Fork-network main owner is resolved via timvisher_gh info and cached.
+#
+# If a legacy x.<hook> file exists in a worktree and no hook is found
+# at any cascade level, it is auto-migrated to the checked-in config
+# dir (a) under the fork network path.
 
 source ~/.functions/logging.bash ||
     {
@@ -117,6 +127,23 @@ read_active_worktrees() {
 # ---------------------------------------------------------------------------
 # Hook helpers: map worktree paths to hook scripts
 # ---------------------------------------------------------------------------
+#
+# Hooks are resolved across a 4-level cascade, from general to specific.
+# For a worktree at ~/git/timvisher-dd/aws-vault/dev/ where the fork
+# network main is ByteNess/aws-vault and "me" is timvisher-dd:
+#
+#   1. fork-network repo:   <main-owner>/aws-vault/<hook>
+#   2. my repo:             timvisher-dd/aws-vault/<hook>
+#   3. fork-network branch: <main-owner>/aws-vault/dev/<hook>
+#   4. my branch:           timvisher-dd/aws-vault/dev/<hook>
+#
+# At each level, both REPO_HOOKS_DIR and REPO_HOOKS_EXT_DIR are checked
+# (in that order).  All matching hooks run; they do not shadow each
+# other.  Resolved paths are deduplicated so the same file is never
+# executed twice.
+
+# Cache for fork_network_main_owner lookups.  Keyed by "org/repo".
+declare -A _fork_network_cache
 
 # Resolve the org/repo/branch-parts relative path for a worktree.
 # Usage: worktree_rel_path "/path/to/worktree"
@@ -135,33 +162,154 @@ worktree_rel_path() {
     printf '%s' "$rel"
 }
 
-# Find a hook script by searching REPO_HOOKS_DIR then REPO_HOOKS_EXT_DIR.
-# Prints the first executable path found; returns 1 if neither exists.
-# Usage: find_hook "/path/to/worktree" "run-tests.sh"
-find_hook() {
+# Decompose a worktree rel path into org, repo, and branch parts.
+# Sets the caller's local variables: _wt_org, _wt_repo, _wt_branch.
+# Usage: decompose_rel "timvisher-dd/aws-vault/dev"
+decompose_rel() {
+    local rel=$1
+    _wt_org=${rel%%/*}
+    local rest=${rel#*/}
+    _wt_repo=${rest%%/*}
+    local branch_part=${rest#*/}
+    # If rest == _wt_repo there are no branch parts.
+    if [[ $branch_part == "$_wt_repo" ]]
+    then
+        _wt_branch=""
+    else
+        _wt_branch=$branch_part
+    fi
+}
+
+# Return the fork network main owner for a worktree.  Caches the result
+# so the GitHub API is queried at most once per org/repo.
+# Usage: fork_network_main_owner "/path/to/worktree"
+fork_network_main_owner() {
+    local worktree_path=$1
+
+    local rel
+    rel=$(worktree_rel_path "$worktree_path") || return 1
+
+    local _wt_org _wt_repo _wt_branch
+    decompose_rel "$rel"
+
+    local cache_key="${_wt_org}/${_wt_repo}"
+    if [[ -n ${_fork_network_cache[$cache_key]+set} ]]
+    then
+        printf '%s' "${_fork_network_cache[$cache_key]}"
+        return 0
+    fi
+
+    local main_owner
+    main_owner=$(
+        cd "$worktree_path" &&
+        timvisher_gh info .forkNetwork.mainOwner
+    ) || {
+        warn "fork_network_main_owner: API lookup failed for '%s'; falling back to '%s'" \
+            "$cache_key" "$_wt_org"
+        main_owner=$_wt_org
+    }
+
+    _fork_network_cache[$cache_key]=$main_owner
+    printf '%s' "$main_owner"
+}
+
+# Return the authenticated GitHub username.  Cached after first call.
+_gh_me=""
+gh_me() {
+    if [[ -z $_gh_me ]]
+    then
+        _gh_me=$(timvisher_gh info .me) ||
+            die "gh_me: unable to determine GitHub user; hook resolution requires GH auth"
+    fi
+    printf '%s' "$_gh_me"
+}
+
+# Collect all matching hook scripts across the 4-level cascade.
+# Prints one path per line.  Returns 1 if no hooks found.
+# Usage: find_hooks "/path/to/worktree" "run-tests.sh"
+find_hooks() {
     local worktree_path=$1
     local hook_name=$2
 
     local rel
     rel=$(worktree_rel_path "$worktree_path") || return 1
 
-    local path
-    for path in \
-        "${REPO_HOOKS_DIR}/${rel}/${hook_name}" \
-        "${REPO_HOOKS_EXT_DIR}/${rel}/${hook_name}"
+    local _wt_org _wt_repo _wt_branch
+    decompose_rel "$rel"
+
+    local main_owner me
+    main_owner=$(fork_network_main_owner "$worktree_path") || return 1
+    me=$(gh_me) || return 1
+
+    # Build the search order: 4 levels × 2 dirs.
+    local -a candidates=()
+
+    # Level 1: fork-network repo
+    candidates+=("${main_owner}/${_wt_repo}/${hook_name}")
+
+    # Level 2: my repo
+    candidates+=("${me}/${_wt_repo}/${hook_name}")
+
+    # Levels 3 and 4 only apply when there are branch parts.
+    if [[ -n $_wt_branch ]]
+    then
+        # Level 3: fork-network branch
+        candidates+=("${main_owner}/${_wt_repo}/${_wt_branch}/${hook_name}")
+
+        # Level 4: my branch
+        candidates+=("${me}/${_wt_repo}/${_wt_branch}/${hook_name}")
+    fi
+
+    # Deduplicate resolved paths (e.g. when me == main_owner) while
+    # preserving cascade order.
+    local -A seen=()
+    local found=false
+    local candidate dir full_path
+    for candidate in "${candidates[@]}"
     do
-        if [[ -x $path ]]
-        then
-            printf '%s' "$path"
-            return 0
-        fi
+        for dir in "$REPO_HOOKS_DIR" "$REPO_HOOKS_EXT_DIR"
+        do
+            full_path="${dir}/${candidate}"
+            if [[ -x $full_path && -z ${seen[$full_path]+set} ]]
+            then
+                seen[$full_path]=1
+                printf '%s\n' "$full_path"
+                found=true
+            fi
+        done
     done
-    return 1
+
+    $found
+}
+
+# Find the first matching hook (for migration/existence checks).
+# Usage: find_hook "/path/to/worktree" "run-tests.sh"
+find_hook() {
+    local all
+    all=$(find_hooks "$@") || return 1
+    [[ -n $all ]] || return 1
+    head -n1 <<<"$all"
+}
+
+# Run all matching hooks for a given hook name.  Each hook is executed
+# in a separate bash process.  Fails on the first hook that fails.
+# Usage: run_hooks "/path/to/worktree" "run-tests.sh"
+run_hooks() {
+    local worktree_path=$1
+    local hook_name=$2
+
+    local hook_path
+    while IFS= read -r hook_path
+    do
+        info "hook: running '%s'" "$hook_path"
+        bash "$hook_path" || return $?
+    done < <(find_hooks "$worktree_path" "$hook_name")
 }
 
 # Ensure a hook script exists.  If a legacy x.<name> file exists in the
-# worktree, migrate it to the checked-in config dir (REPO_HOOKS_DIR).
-# Returns 0 if the script is found (after migration), 1 otherwise.
+# worktree and no hook is found at any cascade level, migrate it to the
+# checked-in config dir (REPO_HOOKS_DIR) under the fork network path.
+# Returns 0 if a hook is found (after migration), 1 otherwise.
 # Usage: ensure_repo_script "/path/to/worktree" "run-tests.sh"
 ensure_repo_script() {
     local worktree_path=$1
@@ -170,11 +318,19 @@ ensure_repo_script() {
     local rel
     rel=$(worktree_rel_path "$worktree_path") || return 1
 
-    local config_path="${REPO_HOOKS_DIR}/${rel}/${script_name}"
+    # Migration target uses the fork network main owner path.
+    local _wt_org _wt_repo _wt_branch
+    decompose_rel "$rel"
+    local main_owner
+    main_owner=$(fork_network_main_owner "$worktree_path") || main_owner=$_wt_org
+    local target_rel="${main_owner}/${_wt_repo}"
+    [[ -n $_wt_branch ]] && target_rel="${target_rel}/${_wt_branch}"
+
+    local config_path="${REPO_HOOKS_DIR}/${target_rel}/${script_name}"
     local legacy_path="${worktree_path}/x.${script_name}"
 
     # Migrate legacy x. file if it exists and no config version exists
-    # in either location.
+    # in any cascade level.
     if ! find_hook "$worktree_path" "$script_name" >/dev/null 2>&1 &&
        [[ -f $legacy_path ]]
     then
@@ -187,20 +343,16 @@ ensure_repo_script() {
     find_hook "$worktree_path" "$script_name" >/dev/null 2>&1
 }
 
-# Run an extension hook if one exists.  Extension hooks (pre-run-tests.sh,
-# pre-post-integrate.sh) are searched across both hook directories and
-# sourced (not exec'd) so they can set env vars, wait for connectivity, etc.
-# Returns 0 even if no hook exists.
+# Run all extension hooks matching a given name.  Extension hooks
+# (pre-run-tests.sh, pre-post-integrate.sh) cascade the same way
+# as base hooks.  Returns 0 even if no hooks exist.
 # Usage: run_ext_hook "/path/to/worktree" "pre-run-tests.sh"
 run_ext_hook() {
     local worktree_path=$1
     local hook_name=$2
 
-    local hook_path
-    hook_path=$(find_hook "$worktree_path" "$hook_name") || return 0
-
-    info "ext hook: running '%s'" "$hook_path"
-    bash "$hook_path"
+    find_hook "$worktree_path" "$hook_name" >/dev/null 2>&1 || return 0
+    run_hooks "$worktree_path" "$hook_name"
 }
 
 # ---------------------------------------------------------------------------
@@ -589,14 +741,18 @@ cmd__sync() {
     # follows the tracking branch.
     local pull_cmd="git pull --rebase"
 
-    local run_tests
-    run_tests=$(find_hook "$worktree_path" "run-tests.sh") || true
+    local has_run_tests=false
+    find_hook "$worktree_path" "run-tests.sh" >/dev/null 2>&1 && has_run_tests=true
 
     local test_instruction=""
-    if [[ -n $run_tests ]]
+    local hook_list
+    if $has_run_tests
     then
-        test_instruction="After syncing, run 'bash ${run_tests}' and verify it passes.
-If tests fail, investigate and fix the issue."
+        hook_list=$(find_hooks "$worktree_path" "run-tests.sh")
+        test_instruction="After syncing, run each of these test hooks in order and verify they pass.
+If tests fail, investigate and fix the issue.
+Hooks:
+${hook_list}"
     else
         test_instruction="No run-tests.sh is available, so skip testing."
     fi
@@ -651,11 +807,11 @@ PROMPT_EOF
     # Verify tests deterministically -- don't rely solely on the agent.
     if [[ $final_status == pass ]]
     then
-        if [[ -n $run_tests ]]
+        if $has_run_tests
         then
             info "sync: verifying tests in '%s'" "$worktree_path"
             run_ext_hook "$worktree_path" "pre-run-tests.sh"
-            if ! bash "$run_tests"
+            if ! run_hooks "$worktree_path" "run-tests.sh"
             then
                 warn "sync: tests failed in '%s'" "$worktree_path"
                 final_status=fail
@@ -724,8 +880,8 @@ cmd__integrate() {
         cmd__ensure_tests "$dev_path"
     fi
 
-    local run_tests
-    run_tests=$(find_hook "$dev_path" "run-tests.sh") || true
+    local has_run_tests=false
+    find_hook "$dev_path" "run-tests.sh" >/dev/null 2>&1 && has_run_tests=true
 
     # Run baseline tests on @{u}.  Capture output rather than
     # failing hard -- pre-existing upstream failures should not block
@@ -734,11 +890,11 @@ cmd__integrate() {
     local baseline_log="${dev_path}/x.dev-ci-baseline.log"
     local baseline_clean=true
 
-    if [[ -n $run_tests ]]
+    if $has_run_tests
     then
         info "integrate: running baseline tests on @{u}"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
-        if bash "$run_tests" > "$baseline_log" 2>&1
+        if run_hooks "$dev_path" "run-tests.sh" > "$baseline_log" 2>&1
         then
             info "integrate: baseline tests passed"
         else
@@ -766,14 +922,11 @@ cmd__integrate() {
 
         # Run post-integration hook even with no worktrees (e.g. build+install).
         ensure_repo_script "$dev_path" "post-integrate.sh" || true
-        local post_integrate
-        post_integrate=$(find_hook "$dev_path" "post-integrate.sh") || true
-
-        if [[ -n $post_integrate ]]
+        if find_hook "$dev_path" "post-integrate.sh" >/dev/null 2>&1
         then
             info "integrate: running post-integration hook"
             run_ext_hook "$dev_path" "pre-post-integrate.sh"
-            if ! bash "$post_integrate"
+            if ! run_hooks "$dev_path" "post-integrate.sh"
             then
                 error "integrate: post-integration hook failed"
                 echo 'fail' > "$status_file"
@@ -808,9 +961,12 @@ cmd__integrate() {
 
     local test_instruction=""
     local baseline_context=""
-    if [[ -n $run_tests ]]
+    local hook_list
+    if $has_run_tests
     then
-        test_instruction="After the merge, run 'bash ${run_tests}' and verify it passes."
+        hook_list=$(find_hooks "$dev_path" "run-tests.sh")
+        test_instruction="After the merge, run each of these test hooks in order and verify they pass:
+${hook_list}"
         if [[ $baseline_clean == false ]]
         then
             baseline_context="
@@ -890,12 +1046,12 @@ PROMPT_EOF
     fi
 
     # Verify tests deterministically -- don't rely solely on the agent.
-    if [[ $final_status == pass && -x $run_tests ]]
+    if [[ $final_status == pass ]] && $has_run_tests
     then
         info "integrate: verifying tests post-merge"
         local verify_log="${dev_path}/x.dev-ci-verify.log"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
-        if ! bash "$run_tests" > "$verify_log" 2>&1
+        if ! run_hooks "$dev_path" "run-tests.sh" > "$verify_log" 2>&1
         then
             # If baseline already had failures, check whether the
             # post-merge failures are the same.  Identical output means
@@ -915,14 +1071,12 @@ PROMPT_EOF
 
     # Run post-integration hook if integration passed.
     ensure_repo_script "$dev_path" "post-integrate.sh" || true
-    local post_integrate
-    post_integrate=$(find_hook "$dev_path" "post-integrate.sh") || true
-
-    if [[ $final_status == pass && -n $post_integrate ]]
+    if [[ $final_status == pass ]] &&
+       find_hook "$dev_path" "post-integrate.sh" >/dev/null 2>&1
     then
         info "integrate: running post-integration hook"
         run_ext_hook "$dev_path" "pre-post-integrate.sh"
-        if ! bash "$post_integrate"
+        if ! run_hooks "$dev_path" "post-integrate.sh"
         then
             error "integrate: post-integration hook failed"
             final_status=fail
@@ -959,13 +1113,20 @@ cmd__ensure_tests() {
         return 0
     fi
 
-    # New hooks created by the agent go into the checked-in config dir.
+    # New hooks created by the agent go into the checked-in config dir
+    # under the fork network main owner (level 3: fork-network branch).
     local rel
     rel=$(worktree_rel_path "$worktree_path") || {
         warn "ensure_tests: cannot determine rel path for '%s'" "$worktree_path"
         return 1
     }
-    local target_path="${REPO_HOOKS_DIR}/${rel}/run-tests.sh"
+    local _wt_org _wt_repo _wt_branch
+    decompose_rel "$rel"
+    local main_owner
+    main_owner=$(fork_network_main_owner "$worktree_path") || main_owner=$_wt_org
+    local target_rel="${main_owner}/${_wt_repo}"
+    [[ -n $_wt_branch ]] && target_rel="${target_rel}/${_wt_branch}"
+    local target_path="${REPO_HOOKS_DIR}/${target_rel}/run-tests.sh"
 
     mkdir -p "$(dirname "$target_path")"
 
