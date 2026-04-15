@@ -52,6 +52,14 @@ def log_error(msg):
     print(f"{_ts()} ERROR bd-org-sync: {msg}", file=sys.stderr)
 
 
+def _status_line(msg):
+    """Overwrite the current terminal line with a transient status."""
+    print(
+        f"\r{_ts()} INFO bd-org-sync: {msg:<40}",
+        end="", file=sys.stderr, flush=True,
+    )
+
+
 # -- Status -> Org TODO keyword ------------------------------------------
 
 _STATUS_KEYWORD = {
@@ -706,22 +714,22 @@ def main():
             time.sleep(interval)
             continue
 
+        # Overwrite the countdown with a "checking" line
+        _status_line(f"checking beads...")
+
         h = data_hash(beads, memories)
         if h != last_hash:
             manifest = build_manifest(beads, memories, topic)
             if apply_manifest(str(org_file), manifest):
                 last_hash = h
+                # Activity happened — leave the log_info line visible
+                # (apply_manifest already printed it)
+            continue
 
-        # Countdown with \r overwrite so the terminal shows activity
+        # No changes — countdown replaces the "checking" line
         for remaining in range(interval, 0, -1):
-            print(
-                f"\r{_ts()} INFO bd-org-sync: "
-                f"next check in {remaining}s  ",
-                end="", file=sys.stderr, flush=True,
-            )
+            _status_line(f"next check in {remaining}s")
             time.sleep(1)
-        # Clear the countdown line before next cycle's output
-        print("\r" + " " * 60 + "\r", end="", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
