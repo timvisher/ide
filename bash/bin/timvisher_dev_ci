@@ -50,7 +50,7 @@ source ~/.functions/logging.bash ||
         exit 1
     }
 
-parallel git -C '{}' pull ::: ~/git/xenodium/*/main ||
+parallel git -C '{}' pull ::: ~/git/xenodium/*/main >&2 ||
   die "Couldn't pull xenodium mains"
 
 # ---------------------------------------------------------------------------
@@ -834,16 +834,17 @@ PROMPT_EOF
         fi
     fi
 
-    # Write the final status only after all verification is complete.
-    echo "$final_status" > "$status_file"
-
+    # Push before writing the status file so the polling loop never
+    # sees a premature "pass" that gets overwritten by a push failure.
     if [[ $final_status == pass ]]
     then
         if ! push_to_remote "$worktree_path"
         then
-            echo 'fail' > "$status_file"
+            final_status=fail
         fi
     fi
+
+    echo "$final_status" > "$status_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -924,12 +925,11 @@ cmd__integrate() {
     # If there are no worktrees to integrate, we're done after baseline tests.
     if [[ ${#worktree_paths[@]} == 0 ]]
     then
+        local early_status=pass
         if [[ $baseline_clean == true ]]
         then
-            echo 'pass' > "$status_file"
             info "integrate: no worktrees to integrate; baseline tests passed; done"
         else
-            echo 'pass' > "$status_file"
             warn "integrate: no worktrees to integrate; baseline has pre-existing failures (ignored)"
         fi
 
@@ -942,19 +942,21 @@ cmd__integrate() {
             if ! run_hooks "$dev_path" "post-integrate.sh"
             then
                 error "integrate: post-integration hook failed"
-                echo 'fail' > "$status_file"
+                early_status=fail
             fi
         fi
 
-        if [[ $(cat "$status_file") == pass ]]
+        if [[ $early_status == pass ]]
         then
             if ! push_to_remote "$dev_path"
             then
-                echo 'fail' > "$status_file"
+                early_status=fail
             fi
         fi
 
-        return 0
+        echo "$early_status" > "$status_file"
+        [[ $early_status == pass ]]
+        return
     fi
 
     # Build branch lists for the agent prompt.
@@ -1096,17 +1098,18 @@ PROMPT_EOF
         fi
     fi
 
-    # Write the final status only after all verification is complete.
-    # This is what the outer polling loop reads.
-    echo "$final_status" > "$status_file"
-
+    # Push before writing the status file so the polling loop never
+    # sees a premature "pass" that gets overwritten by a push failure.
     if [[ $final_status == pass ]]
     then
         if ! push_to_remote "$dev_path"
         then
-            echo 'fail' > "$status_file"
+            final_status=fail
         fi
     fi
+
+    echo "$final_status" > "$status_file"
+    [[ $final_status == pass ]]
 }
 
 # ---------------------------------------------------------------------------
