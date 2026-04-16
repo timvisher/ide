@@ -1583,6 +1583,30 @@ cmd_status() {
     done
 }
 
+# Print all active worktree paths (dev branches + their feature worktrees).
+# One absolute path per line (~/‑expanded, not necessarily symlink-resolved).
+cmd_worktrees_active() {
+    # When called with no args and no registry, there are simply no active
+    # worktrees — return empty (exit 0).  This lets worktree gc proceed
+    # safely in environments without dev_ci configured.
+    if [[ $# == 0 ]] && [[ ! -f $DEV_CI_REGISTRY ]]
+    then
+        return 0
+    fi
+
+    discover "$@"
+
+    for dev in "${!dev_branches[@]}"
+    do
+        printf '%s\n' "$dev"
+    done
+
+    for wt in "${!all_worktrees[@]}"
+    do
+        printf '%s\n' "$wt"
+    done
+}
+
 cmd_clean() {
     discover "$@"
     clean_status_files
@@ -1601,12 +1625,18 @@ else
         run)             cmd_run "${@:2}" ;;
         status)          cmd_status "${@:2}" ;;
         clean)           cmd_clean "${@:2}" ;;
+        worktrees)
+            case ${2:-} in
+                active) cmd_worktrees_active "${@:3}" ;;
+                *)      die "worktrees: unknown subcommand '%s' (available: active)" "${2:-}" ;;
+            esac
+            ;;
         __sync_trunk_resolve) cmd__sync_trunk_resolve "${@:2}" ;;
         __sync)          cmd__sync "${@:2}" ;;
         __integrate)     cmd__integrate "${@:2}" ;;
         __ensure_tests)  cmd__ensure_tests "${@:2}" ;;
         *)
-            echo "Usage: timvisher_dev_ci [run|status|clean] [dev_path ...]" >&2
+            echo "Usage: timvisher_dev_ci [run|status|clean|worktrees active] [dev_path ...]" >&2
             exit 1
             ;;
     esac
