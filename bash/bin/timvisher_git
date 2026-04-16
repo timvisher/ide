@@ -1599,6 +1599,36 @@ status__all_published() {
 # ---------------------------------------------------------------------------
 
 worktree_gc__archive_dir="${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/worktree/archives"
+worktree_gc__protect_dir="${config_dir}/timvisher_git.config/worktree/gc"
+
+# Collect dev_ci active worktree paths that should be protected from gc.
+# Delegates to timvisher_dev_ci worktrees active.
+# Populates the associative array whose name is passed as $1.
+# Per-worktree keep files are checked inline in the gc loop.
+# Returns 1 if dev_ci is available but fails (caller should abort gc).
+worktree_gc__collect_protected() {
+  local -n __protected=$1
+
+  command -v timvisher_dev_ci &>/dev/null || return 0
+
+  local output
+  local stderr_file
+  stderr_file=$(mktemp) || return 1
+  if ! output=$(timvisher_dev_ci worktrees active 2>"$stderr_file"); then
+    error "timvisher_dev_ci worktrees active failed — refusing to gc without protection list:\n%s" "$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+
+  local wt
+  while IFS= read -r wt; do
+    [[ -n $wt ]] || continue
+    [[ -d $wt ]] || continue
+    wt=$(cd "$wt" && pwd -P 2>/dev/null) || continue
+    __protected["$wt"]=1
+  done <<< "$output"
+}
 
 worktree_gc__should_archive() {
   local file=$1
@@ -1689,6 +1719,15 @@ worktree_gc() {
   fi
   echo
 
+  # Collect worktree paths protected by dev_ci; abort if the query fails.
+  local -A gc_protected=()
+  worktree_gc__collect_protected gc_protected || return 1
+
+  if (( 0 < ${#gc_protected[@]} )); then
+    info "Protected worktrees: %d (from dev_ci active worktrees)" "${#gc_protected[@]}"
+    echo
+  fi
+
   # Parallel arrays: trunk_cache|wt_path, and archive file counts
   local to_remove=()
   local archive_counts=()
@@ -1712,6 +1751,17 @@ worktree_gc() {
       local branch="${branch_ref#refs/heads/}"
       [[ $branch == "$trunk_branch" ]] && continue
 
+      # Skip worktrees protected by dev_ci or per-worktree keep file
+      local resolved_wt
+      resolved_wt=$(cd "$wt_path" && pwd -P 2>/dev/null) || resolved_wt="$wt_path"
+      if [[ -n ${gc_protected["$resolved_wt"]+x} ]]; then
+        continue
+      fi
+      local wt_rel="${wt_path#"${live_repo_dir}/"}"
+      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/keep" ]]; then
+        continue
+      fi
+
       local last_epoch
       last_epoch=$(git -C "$wt_path" log -1 --format='%at' 2>/dev/null) || continue
       if (( cutoff < last_epoch )); then
@@ -1730,7 +1780,6 @@ worktree_gc() {
 
         local file_count
         file_count=$(worktree_gc__count_archivable "$wt_path")
-        local wt_rel="${wt_path#"${live_repo_dir}/"}"
 
         to_remove+=("${trunk_cache}|${wt_path}")
         archive_counts+=("$file_count")
