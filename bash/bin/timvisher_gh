@@ -267,9 +267,9 @@ gh_pr_merge() {
   )
 
   local strategies=()
-  jq -e '.rebaseMergeAllowed'  <<<"$capabilities_json" >/dev/null && strategies+=(rebase)
-  jq -e '.squashMergeAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(squash)
   jq -e '.mergeCommitAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(merge)
+  jq -e '.squashMergeAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(squash)
+  jq -e '.rebaseMergeAllowed'  <<<"$capabilities_json" >/dev/null && strategies+=(rebase)
 
   (( ${#strategies[@]} )) ||
     die 'Repository allows no merge strategies: rebase, squash, and merge are all disabled.'
