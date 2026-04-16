@@ -6,7 +6,17 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-real_git="$(brew --prefix)"/bin/git
+source ~/.functions/git.bash ||
+  {
+    echo "Unable to source git functions" >&2
+    exit 1
+  }
+
+real_git=$(resolve_next_git "${BASH_SOURCE[0]}") ||
+  {
+    echo "Unable to resolve next git binary in PATH" >&2
+    exit 1
+  }
 
 if [[ -n $TIMVISHER_AGENT ]]
 then
