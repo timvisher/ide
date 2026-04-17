@@ -262,6 +262,58 @@ then
     done
   fi
 
+  if [[ $subcommand == worktree ]]
+  then
+    # Detect `git worktree add` — check only the sub-subcommand position
+    # (the first non-flag arg after "worktree"), not all args, to avoid
+    # false positives on branches/paths literally named "add".
+    wt_subcmd=""
+    wt_past_worktree=false
+    for x in "$@"
+    do
+      if [[ $wt_past_worktree == true ]]
+      then
+        if [[ $x != -* ]]
+        then
+          wt_subcmd=$x
+          break
+        fi
+        continue
+      fi
+      if [[ $x == worktree ]]
+      then
+        wt_past_worktree=true
+      fi
+    done
+
+    if [[ $wt_subcmd == add ]]
+    then
+      wt_suggestions=()
+      wt_suggestions+=(--suggestion "source ~/.bashrc && ntmux3 -d org/repo/branch-name")
+
+      org_repo=""
+      if command -v timvisher_git &>/dev/null
+      then
+        wt_org=$(timvisher_git info .org 2>/dev/null) || true
+        wt_repo=$(timvisher_git info .repo 2>/dev/null) || true
+        if [[ -n ${wt_org:-} && -n ${wt_repo:-} ]]
+        then
+          org_repo="${wt_org}/${wt_repo}"
+          wt_suggestions+=(--suggestion "Current repo is ${org_repo} — example: source ~/.bashrc && ntmux3 -d ${org_repo}/your-branch-name")
+        fi
+      fi
+
+      wt_suggestions+=(--suggestion "Use timvisher_git info .org and timvisher_git info .repo to derive the org/repo prefix")
+
+      aictl_die \
+        --code "git_worktree_add_blocked" \
+        --message "Agents must use ntmux3 for worktree creation, not 'git worktree add'." \
+        --reason "ntmux3 handles cache management, tmux session setup, and worktree directory layout. Raw git worktree add bypasses all of this." \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md" \
+        "${wt_suggestions[@]}"
+    fi
+  fi
+
   if [[ $subcommand == push || $subcommand == send-pack ]]
   then
     aictl_die \

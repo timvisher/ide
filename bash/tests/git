@@ -396,6 +396,50 @@ else
   fail "blocks @{upstream} long form: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# git worktree add guard tests
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'git worktree add' when agent
+run_test
+result=$(run_wrapper_agent "worktree add /tmp/test-wt test-branch" || true)
+if [[ $result == *'"code":"git_worktree_add_blocked"'* ]]
+then
+  pass "blocks 'git worktree add' when agent"
+else
+  fail "blocks 'git worktree add': got '${result}'"
+fi
+
+# Test: worktree add guard includes ntmux3 suggestion
+run_test
+result=$(run_wrapper_agent "worktree add /tmp/test-wt test-branch" || true)
+if [[ $result == *'ntmux3'* ]]
+then
+  pass "worktree add guard mentions ntmux3"
+else
+  fail "worktree add guard ntmux3 mention: got '${result}'"
+fi
+
+# Test: 'git worktree list' is NOT blocked (only 'add' is guarded)
+run_test
+result=$(run_wrapper_agent "worktree list" || true)
+if [[ $result != *'"code":"git_worktree_add_blocked"'* ]]
+then
+  pass "'git worktree list' is not blocked"
+else
+  fail "'git worktree list' should not be blocked: got '${result}'"
+fi
+
+# Test: branch named 'add' does NOT trigger the guard for other subcommands
+run_test
+result=$(run_wrapper_agent "worktree remove add" || true)
+if [[ $result != *'"code":"git_worktree_add_blocked"'* ]]
+then
+  pass "'git worktree remove add' is not blocked (add is a path, not subcommand)"
+else
+  fail "'git worktree remove add' should not be blocked: got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
