@@ -225,7 +225,7 @@ run_wrapper_agent_nirmi() {
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 result=$(run_wrapper_agent_nirmi "log abc123..HEAD" || true)
-if [[ $result == *'"type":"bypass"'* ]] && [[ $result == *"git_range_no_upstream_ref"* ]] && [[ $result != *'"type":"warning"'* ]]
+if [[ $result == *'"level":"bypass"'* ]] && [[ $result == *"git_range_no_upstream_ref"* ]] && [[ $result != *'"level":"warning"'* ]]
 then
   pass "NIRMI bypasses range guard"
 else
@@ -242,20 +242,20 @@ else
   fail "NIRMI should not bypass push: got '${result}'"
 fi
 
-# Test: allows @{u}..HEAD for agents (not blocked)
+# Test: allows @{u}..HEAD for agents (not blocked, real git runs)
 run_test
 result=$(run_wrapper_agent "log '@{u}..HEAD'" || true)
-if [[ $result != *'"type":"error"'* ]] && [[ $result != *'"type":"warning"'* ]]
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]] && [[ $result == *"real-git log"* ]]
 then
   pass "allows 'git log @{u}..HEAD' for agents"
 else
   fail "allows 'git log @{u}..HEAD': got '${result}'"
 fi
 
-# Test: allows @{upstream}...HEAD for agents (not blocked)
+# Test: allows @{upstream}...HEAD for agents (not blocked, real git runs)
 run_test
 result=$(run_wrapper_agent "diff '@{upstream}...HEAD'" || true)
-if [[ $result != *'"type":"error"'* ]] && [[ $result != *'"type":"warning"'* ]]
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]] && [[ $result == *"real-git diff"* ]]
 then
   pass "allows 'git diff @{upstream}...HEAD' for agents"
 else
@@ -265,7 +265,7 @@ fi
 # Test: allows 'git log master..HEAD' for non-agents
 run_test
 result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log master..HEAD" 2>&1)
-if [[ $result != *'"type":"error"'* ]] && [[ $result != *'"type":"warning"'* ]]
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
 then
   pass "allows 'git log master..HEAD' for non-agents"
 else
@@ -379,7 +379,7 @@ run_test
 setup_tracking_repo "has-upstream" "feature2"
 
 result=$(cd "${tmpdir}/has-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
-if [[ $result != *'"type":"error"'* ]] && [[ $result != *'"type":"warning"'* ]]
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
 then
   pass "allows 'git log @{u}..HEAD' when upstream exists"
 else

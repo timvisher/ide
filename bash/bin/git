@@ -24,17 +24,27 @@ then
     }
 elif [[ -z ${_aictl_loaded:-} ]]
 then
+  # Minimal stubs — positional-only, no --flag parsing.
+  # Uses timvisher_logging__json_escape from logging.bash (already sourced).
   aictl_die() {
-    printf '{"type":"error","code":"%s","message":"%s","retryable":false}\n' "$1" "$2" >&2
+    local ec em
+    ec=$(timvisher_logging__json_escape "$1")
+    em=$(timvisher_logging__json_escape "$2")
+    printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$ec" "$em" >&2
     exit 1
   }
   aictl_warn() {
     if [[ -n ${TIMVISHER_AGENT_NIRMI:-} ]]
     then
-      printf '{"type":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' "$1" >&2
+      local bc
+      bc=$(timvisher_logging__json_escape "$1")
+      printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' "$bc" >&2
       return 0
     fi
-    printf '{"type":"warning","code":"%s","message":"%s","retryable":true,"bypass":"TIMVISHER_AGENT_NIRMI=1"}\n' "$1" "$2" >&2
+    local wc wm
+    wc=$(timvisher_logging__json_escape "$1")
+    wm=$(timvisher_logging__json_escape "$2")
+    printf '{"type":"instruction","level":"warning","code":"%s","message":"%s","retryable":true}\n' "$wc" "$wm" >&2
     exit 1
   }
 fi
@@ -132,10 +142,11 @@ then
     then
       if [[ $commit_message_file == "-" ]]
       then
-        aictl_die "git_commit_stdin_unsupported" \
-          "Agent git commit from stdin is not supported." \
-          "Use -m/--message or -F/--file with a real file path" \
-          "See ai/HOME/.agents/skills/git/SKILL.md for commit guidelines"
+        aictl_die \
+          --code "git_commit_stdin_unsupported" \
+          --message "Agent git commit from stdin is not supported." \
+          --doc "ai/HOME/.agents/skills/git/SKILL.md" \
+          --suggestion "Use -m/--message or -F/--file with a real file path"
       fi
       if [[ -r $commit_message_file ]]
       then
@@ -145,10 +156,11 @@ then
 
     if [[ -z $commit_message ]]
     then
-      aictl_die "git_commit_no_message" \
-        "Agent git commit must include a commit message with Co-authored-by trailer." \
-        "Use -m/--message or -F/--file to provide the message" \
-        "See ai/HOME/.agents/skills/git/SKILL.md for the required trailer format"
+      aictl_die \
+        --code "git_commit_no_message" \
+        --message "Agent git commit must include a commit message with Co-authored-by trailer." \
+        --doc "ai/HOME/.agents/skills/git/SKILL.md" \
+        --suggestion "Use -m/--message or -F/--file to provide the message"
     fi
 
     required_trailer=""
@@ -166,10 +178,12 @@ then
     if [[ -n $required_trailer ]] &&
          ! printf '%s\n' "$commit_message" | grep -E -i -q "^Co-authored-by:[[:space:]].*${required_trailer}\$"
     then
-      aictl_die "git_commit_missing_trailer" \
-        "Missing required Co-authored-by trailer matching: ${required_trailer}" \
-        "Add the trailer to your commit message" \
-        "See ai/HOME/.agents/skills/git/SKILL.md for the exact format"
+      aictl_die \
+        --code "git_commit_missing_trailer" \
+        --message "Missing required Co-authored-by trailer matching: ${required_trailer}" \
+        --reason "Agent commits must be attributed for auditability." \
+        --doc "ai/HOME/.agents/skills/git/SKILL.md" \
+        --suggestion "Add the trailer to your commit message"
     fi
   fi
 
@@ -207,16 +221,21 @@ then
           # Valid form — verify @{u} actually resolves
           if ! "$real_git" rev-parse --verify '@{u}' >/dev/null 2>&1
           then
-            aictl_die "git_upstream_not_configured" \
-              "@{u} does not resolve — this branch has no upstream tracking configured." \
-              "Ask the human what the upstream should be set to" \
-              "Once told, run: git branch --set-upstream-to=<remote>/<branch>"
+            aictl_die \
+              --code "git_upstream_not_configured" \
+              --message "@{u} does not resolve — this branch has no upstream tracking configured." \
+              --suggestion "Ask the human what the upstream should be set to" \
+              --suggestion "Once told, run: git branch --set-upstream-to=<remote>/<branch>"
           fi
         else
-          aictl_warn "git_range_no_upstream_ref" \
-            "You almost certainly didn't mean to use '${x}' if what you were looking for is this branch's diff. Agents should always compare against @{u} (upstream tracking ref)." \
-            "git diff @{u}...     (three-dot: changes on this branch only)" \
-            "git log @{u}...      (three-dot: commits on this branch only)"
+          aictl_warn \
+            --code "git_range_no_upstream_ref" \
+            --message "You almost certainly didn't mean to use '${x}' if what you were looking for is this branch's diff." \
+            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream." \
+            --command "git $*" \
+            --doc "ai/HOME/.agents/skills/git/references/git.md" \
+            --suggestion "git diff @{u}...     (three-dot: changes on this branch only)" \
+            --suggestion "git log @{u}...      (three-dot: commits on this branch only)"
           # If we reach here, NIRMI bypassed the warning
         fi
       fi
@@ -229,19 +248,22 @@ then
     do
       if [[ $x == -f || $x == --force ]]
       then
-        aictl_die "git_add_force_blocked" \
-          "Agents must NEVER use 'git add -f'. Files ignored by .gitignore are ignored for a reason." \
-          "Ask the human to add the file manually if it should be tracked"
+        aictl_die \
+          --code "git_add_force_blocked" \
+          --message "Agents must NEVER use 'git add -f'. Files ignored by .gitignore are ignored for a reason." \
+          --suggestion "Ask the human to add the file manually if it should be tracked"
       fi
     done
   fi
 
   if [[ $subcommand == push || $subcommand == send-pack ]]
   then
-    aictl_die "git_push_blocked" \
-      "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
-      "Ask the human to run 'git push'" \
-      "See git skill docs for allowed remote operations"
+    aictl_die \
+      --code "git_push_blocked" \
+      --message "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
+      --reason "Remote mutations are human-only operations." \
+      --doc "ai/HOME/.agents/skills/git/SKILL.md" \
+      --suggestion "Ask the human to run 'git push'"
   fi
 fi
 

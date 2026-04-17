@@ -24,8 +24,18 @@ timvisher_logging__json_escape() {
   s=${s//$'\n'/\\n}
   s=${s//$'\t'/\\t}
   s=${s//$'\r'/\\r}
+  s=${s//$'\b'/\\b}
+  s=${s//$'\f'/\\f}
   printf '%s' "$s"
 }
+
+# Cache jq availability at source time
+if command -v jq >/dev/null 2>&1
+then
+  timvisher_logging__has_jq=true
+else
+  timvisher_logging__has_jq=false
+fi
 
 timvisher_logging__should_log() {
   local level=$1
@@ -82,35 +92,71 @@ timvisher_logging__log() {
       # shellcheck disable=SC2059
       printf -v formatted_message "${1}" "${@:2}"
 
-      local -a jq_args=(
-        --arg type log
-        --arg level "$level"
-        --arg caller "${FUNCNAME[2]:-main}"
-        --arg message "$formatted_message"
-      )
-      local jq_filter='{type: $type, level: $level, caller: $caller, message: $message}'
-
-      if (( 0 < ${#timvisher_logging_data[@]} ))
+      if [[ $timvisher_logging__has_jq == true ]]
       then
-        local data_json='{' first=true ek ev key
-        for key in "${!timvisher_logging_data[@]}"
-        do
-          ek=$(timvisher_logging__json_escape "$key")
-          ev=$(timvisher_logging__json_escape "${timvisher_logging_data[$key]}")
-          if [[ $first == true ]]
-          then
-            data_json+="\"${ek}\":\"${ev}\""
-            first=false
-          else
-            data_json+=",\"${ek}\":\"${ev}\""
-          fi
-        done
-        data_json+='}'
-        jq_args+=(--argjson data "$data_json")
-        jq_filter+=' | .data = $data'
-      fi
+        local -a jq_args=(
+          --arg type log
+          --arg level "$level"
+          --arg caller "${FUNCNAME[2]:-main}"
+          --arg message "$formatted_message"
+        )
+        local jq_filter='{type: $type, level: $level, caller: $caller, message: $message}'
 
-      jq -n -c "${jq_args[@]}" "$jq_filter" >&2
+        if (( 0 < ${#timvisher_logging_data[@]} ))
+        then
+          local -i di=0
+          local key
+          for key in "${!timvisher_logging_data[@]}"
+          do
+            jq_args+=(--arg "dk${di}" "$key" --arg "dv${di}" "${timvisher_logging_data[$key]}")
+            ((di++))
+          done
+          local data_expr='{' first=true j
+          for ((j=0; j<di; j++))
+          do
+            if [[ $first == true ]]
+            then
+              data_expr+="(\$dk${j}): \$dv${j}"
+              first=false
+            else
+              data_expr+=", (\$dk${j}): \$dv${j}"
+            fi
+          done
+          data_expr+='}'
+          jq_filter+=" | .data = ${data_expr}"
+        fi
+
+        jq -n -c "${jq_args[@]}" "$jq_filter" >&2
+      else
+        # Fallback: printf-based JSON when jq is not available
+        local escaped_message
+        escaped_message=$(timvisher_logging__json_escape "$formatted_message")
+        local json
+        printf -v json '{"type":"log","level":"%s","caller":"%s","message":"%s"' \
+          "$level" "${FUNCNAME[2]:-main}" "$escaped_message"
+
+        if (( 0 < ${#timvisher_logging_data[@]} ))
+        then
+          json+=',"data":{'
+          local first=true ek ev key
+          for key in "${!timvisher_logging_data[@]}"
+          do
+            ek=$(timvisher_logging__json_escape "$key")
+            ev=$(timvisher_logging__json_escape "${timvisher_logging_data[$key]}")
+            if [[ $first == true ]]
+            then
+              json+="\"${ek}\":\"${ev}\""
+              first=false
+            else
+              json+=",\"${ek}\":\"${ev}\""
+            fi
+          done
+          json+='}'
+        fi
+
+        json+='}'
+        printf '%s\n' "$json" >&2
+      fi
     else
       # Format: timestamp LEVEL caller_function: message
       printf "%s %s %s: ${1}\n" "$(date -u '+%FT%T%z')" "$level" "${FUNCNAME[2]:-main}" "${@:2}" >&2

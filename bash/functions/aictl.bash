@@ -9,11 +9,16 @@
 #   aictl_die  - Fatal error, always exits non-zero (not bypassable)
 #   aictl_warn - Blocking warning, exits unless TIMVISHER_AGENT_NIRMI=1
 #
-# Output is JSON to stderr with stable error codes, recovery
-# suggestions, retryable flag, and bypass instructions.
+# Output is JSON to stderr:
+#   {"type":"instruction","level":"error|warning|bypass","code":"...","message":"...", ...}
+#
+# Both functions accept --flag arguments for rich fields:
+#   --code, --message, --reason, --doc, --suggestion, --command
+#
+# Positional fallback: <code> <message> [suggestion...]
 #
 # Environment:
-#   TIMVISHER_AGENT_NIRMI=1  Bypass aictl_warn guards (prints notice, continues)
+#   TIMVISHER_AGENT_NIRMI=1  Bypass aictl_warn guards
 
 _aictl_loaded=true
 
@@ -27,67 +32,141 @@ aictl__json_escape() {
   printf '%s' "$s"
 }
 
+# Parse --flag args into variables. Sets: _code, _message, _reason,
+# _doc, _command, _suggestions array.
+aictl__parse_args() {
+  _code=""
+  _message=""
+  _reason=""
+  _doc=""
+  _command=""
+  _suggestions=()
+
+  while (( 0 < $# ))
+  do
+    case "$1" in
+      --code) _code=$2; shift 2 ;;
+      --message) _message=$2; shift 2 ;;
+      --reason) _reason=$2; shift 2 ;;
+      --doc) _doc=$2; shift 2 ;;
+      --command) _command=$2; shift 2 ;;
+      --suggestion) _suggestions+=("$2"); shift 2 ;;
+      --)
+        shift
+        _suggestions+=("$@")
+        break
+        ;;
+      *)
+        # Positional fallback: code, message, then suggestions
+        if [[ -z $_code ]]; then
+          _code=$1
+        elif [[ -z $_message ]]; then
+          _message=$1
+        else
+          _suggestions+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
 aictl__emit() {
-  local type=$1 code=$2 message=$3
-  shift 3
+  local level=$1
+  shift
+
+  aictl__parse_args "$@"
 
   local escaped_message
-  escaped_message=$(aictl__json_escape "$message")
+  escaped_message=$(aictl__json_escape "$_message")
 
-  printf '{"type":"%s","code":"%s","message":"%s"' "$type" "$code" "$escaped_message" >&2
+  printf '{"type":"instruction","level":"%s","code":"%s","message":"%s"' \
+    "$level" "$_code" "$escaped_message" >&2
 
-  if [[ $type == error ]]
+  if [[ -n $_reason ]]
   then
-    printf ',"retryable":false' >&2
-  elif [[ $type == warning ]]
-  then
-    printf ',"retryable":true,"bypass":"TIMVISHER_AGENT_NIRMI=1"' >&2
+    printf ',"reason":"%s"' "$(aictl__json_escape "$_reason")" >&2
   fi
 
-  if (( 0 < $# ))
+  if [[ $level == error ]]
+  then
+    printf ',"retryable":false' >&2
+  elif [[ $level == warning ]]
+  then
+    printf ',"retryable":true' >&2
+
+    # Build structured bypass object (always NIRMI for warnings)
+    printf ',"bypass":{"mechanism":"environment_variable","name":"TIMVISHER_AGENT_NIRMI","value":"1"' >&2
+    if [[ -n $_command ]]
+    then
+      printf ',"command":"TIMVISHER_AGENT_NIRMI=1 %s"' "$(aictl__json_escape "$_command")" >&2
+    fi
+    printf '}' >&2
+  fi
+
+  if (( 0 < ${#_suggestions[@]} ))
   then
     printf ',"suggestions":[' >&2
-    local first=true s escaped_s
-    for s in "$@"
+    local first=true s
+    for s in "${_suggestions[@]}"
     do
-      escaped_s=$(aictl__json_escape "$s")
-      if [[ $first == true ]]
-      then
-        printf '"%s"' "$escaped_s" >&2
-        first=false
-      else
-        printf ',"%s"' "$escaped_s" >&2
-      fi
+      if [[ $first == true ]]; then first=false; else printf ',' >&2; fi
+      printf '"%s"' "$(aictl__json_escape "$s")" >&2
     done
     printf ']' >&2
+  fi
+
+  if [[ -n $_doc ]]
+  then
+    printf ',"doc":"%s"' "$(aictl__json_escape "$_doc")" >&2
   fi
 
   printf '}\n' >&2
 }
 
 # Fatal error — always exits non-zero. Not bypassable.
-# Usage: aictl_die <code> <message> [suggestion...]
+# Usage: aictl_die [--code C] [--message M] [--reason R] [--doc D] [--suggestion S]...
+#    or: aictl_die <code> <message> [suggestion...]
 aictl_die() {
-  local code=$1 message=$2
-  shift 2
-  aictl__emit error "$code" "$message" "$@"
+  aictl__emit error "$@"
   exit 1
 }
 
 # Blocking warning — exits unless TIMVISHER_AGENT_NIRMI=1.
 # With NIRMI: prints bypass JSON to stderr, returns 0.
-# Without NIRMI: prints warning JSON with suggestions, exits non-zero.
-# Usage: aictl_warn <code> <message> [suggestion...]
+# Without NIRMI: prints warning JSON, exits non-zero.
+# Usage: aictl_warn [--code C] [--message M] [--command CMD] [--reason R] [--doc D] [--suggestion S]...
+#    or: aictl_warn <code> <message> [suggestion...]
 aictl_warn() {
-  local code=$1 message=$2
-  shift 2
+  # Parse just enough to get the code for the bypass message
+  local _bypass_code=""
+  local arg
+  for arg in "$@"
+  do
+    case "$arg" in
+      --code) ;;
+      *)
+        if [[ $_bypass_code == __next ]]
+        then
+          _bypass_code=$arg
+          break
+        elif [[ $arg != --* ]]
+        then
+          _bypass_code=$arg
+          break
+        fi
+        ;;
+    esac
+    if [[ $arg == --code ]]; then _bypass_code=__next; fi
+  done
 
   if [[ -n ${TIMVISHER_AGENT_NIRMI:-} ]]
   then
-    printf '{"type":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' "$code" >&2
+    printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' \
+      "$_bypass_code" >&2
     return 0
   fi
 
-  aictl__emit warning "$code" "$message" "$@"
+  aictl__emit warning "$@"
   exit 1
 }
