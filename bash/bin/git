@@ -25,19 +25,16 @@ then
 elif [[ -z ${_aictl_loaded:-} ]]
 then
   aictl_die() {
-    printf '\n[aictl:error:%s]\n%s\n' "$1" "$2" >&2
-    local s; for s in "${@:3}"; do printf '  → %s\n' "$s" >&2; done
+    printf '{"type":"error","code":"%s","message":"%s","retryable":false}\n' "$1" "$2" >&2
     exit 1
   }
   aictl_warn() {
     if [[ -n ${TIMVISHER_AGENT_NIRMI:-} ]]
     then
-      printf '[aictl:bypass:%s] GUARDRAIL SKIPPED — be sure you know what you are doing.\n' "$1" >&2
+      printf '{"type":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' "$1" >&2
       return 0
     fi
-    printf '\n[aictl:warning:%s]\n%s\n' "$1" "$2" >&2
-    local s; for s in "${@:3}"; do printf '  → %s\n' "$s" >&2; done
-    printf '\nBypass: re-run with TIMVISHER_AGENT_NIRMI=1 to skip this guard\n' >&2
+    printf '{"type":"warning","code":"%s","message":"%s","retryable":true,"bypass":"TIMVISHER_AGENT_NIRMI=1"}\n' "$1" "$2" >&2
     exit 1
   }
 fi
@@ -218,9 +215,8 @@ then
         else
           aictl_warn "git_range_no_upstream_ref" \
             "You almost certainly didn't mean to use '${x}' if what you were looking for is this branch's diff. Agents should always compare against @{u} (upstream tracking ref)." \
-            "git diff @{u}...HEAD    (three-dot: changes on this branch only)" \
-            "git log @{u}..HEAD      (two-dot: commits on this branch only)" \
-            "git diff @{u}...        (implied HEAD on right side)"
+            "git diff @{u}...     (three-dot: changes on this branch only)" \
+            "git log @{u}...      (three-dot: commits on this branch only)"
           # If we reach here, NIRMI bypassed the warning
         fi
       fi

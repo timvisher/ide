@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Tests for aictl structured messaging functions
+# Tests for aictl structured messaging functions (JSON output)
 
 set -euo pipefail
 
@@ -26,12 +26,12 @@ funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 # aictl_die tests
 # ---------------------------------------------------------------------------
 
-# Test: aictl_die outputs error code and exits non-zero
+# Test: aictl_die outputs JSON with error type and code
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'test message'" 2>&1 || true)
-if [[ $result == *"[aictl:error:test_code]"* ]] && [[ $result == *"test message"* ]]
+if [[ $result == *'"type":"error"'* ]] && [[ $result == *'"code":"test_code"'* ]] && [[ $result == *'"message":"test message"'* ]]
 then
-  pass "aictl_die outputs error code and message"
+  pass "aictl_die outputs JSON with type, code, message"
 else
   fail "aictl_die output: got '${result}'"
 fi
@@ -47,10 +47,20 @@ else
   fail "aictl_die should exit non-zero, got rc=$rc"
 fi
 
-# Test: aictl_die includes suggestions
+# Test: aictl_die includes retryable:false
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg' 'suggestion one' 'suggestion two'" 2>&1 || true)
-if [[ $result == *"suggestion one"* ]] && [[ $result == *"suggestion two"* ]]
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
+if [[ $result == *'"retryable":false'* ]]
+then
+  pass "aictl_die includes retryable:false"
+else
+  fail "aictl_die retryable: got '${result}'"
+fi
+
+# Test: aictl_die includes suggestions array
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg' 'fix one' 'fix two'" 2>&1 || true)
+if [[ $result == *'"suggestions":'* ]] && [[ $result == *'"fix one"'* ]] && [[ $result == *'"fix two"'* ]]
 then
   pass "aictl_die includes suggestions"
 else
@@ -60,23 +70,33 @@ fi
 # Test: aictl_die is NOT bypassed by NIRMI
 run_test
 result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
-if [[ $result == *"[aictl:error:test_code]"* ]]
+if [[ $result == *'"type":"error"'* ]]
 then
   pass "aictl_die not bypassed by NIRMI"
 else
   fail "aictl_die NIRMI: got '${result}'"
 fi
 
+# Test: aictl_die escapes quotes in message
+run_test
+result=$(bash -c 'source "'"${funcs_dir}"'/aictl.bash"; aictl_die test_code "say \"hello\""' 2>&1 || true)
+if [[ $result == *'say \\"hello\\"'* ]] || [[ $result == *'say \"hello\"'* ]]
+then
+  pass "aictl_die escapes quotes in message"
+else
+  fail "aictl_die escaping: got '${result}'"
+fi
+
 # ---------------------------------------------------------------------------
 # aictl_warn tests
 # ---------------------------------------------------------------------------
 
-# Test: aictl_warn outputs warning code and exits non-zero (no NIRMI)
+# Test: aictl_warn outputs JSON with warning type
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'warn message'" 2>&1 || true)
-if [[ $result == *"[aictl:warning:test_warn]"* ]] && [[ $result == *"warn message"* ]]
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'warn msg'" 2>&1 || true)
+if [[ $result == *'"type":"warning"'* ]] && [[ $result == *'"code":"test_warn"'* ]]
 then
-  pass "aictl_warn outputs warning code and message"
+  pass "aictl_warn outputs JSON with warning type"
 else
   fail "aictl_warn output: got '${result}'"
 fi
@@ -92,30 +112,30 @@ else
   fail "aictl_warn should exit non-zero, got rc=$rc"
 fi
 
-# Test: aictl_warn includes bypass instruction
+# Test: aictl_warn includes retryable:true and bypass field
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1 || true)
-if [[ $result == *"TIMVISHER_AGENT_NIRMI"* ]]
+if [[ $result == *'"retryable":true'* ]] && [[ $result == *'"bypass":"TIMVISHER_AGENT_NIRMI=1"'* ]]
 then
-  pass "aictl_warn includes bypass instruction"
+  pass "aictl_warn includes retryable:true and bypass"
 else
-  fail "aictl_warn bypass instruction: got '${result}'"
+  fail "aictl_warn retryable/bypass: got '${result}'"
 fi
 
-# Test: aictl_warn is bypassed by NIRMI
+# Test: aictl_warn NIRMI bypass outputs bypass JSON and continues
 run_test
 result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
-if [[ $result == *"[aictl:bypass:test_warn]"* ]] && [[ $result == *"continued"* ]]
+if [[ $result == *'"type":"bypass"'* ]] && [[ $result == *"continued"* ]]
 then
-  pass "aictl_warn bypassed by NIRMI (returns 0, continues)"
+  pass "aictl_warn NIRMI bypass outputs JSON and continues"
 else
   fail "aictl_warn NIRMI bypass: got '${result}'"
 fi
 
-# Test: aictl_warn NIRMI bypass does NOT emit warning
+# Test: aictl_warn NIRMI bypass does NOT emit warning type
 run_test
 result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
-if [[ $result != *"[aictl:warning:"* ]]
+if [[ $result != *'"type":"warning"'* ]]
 then
   pass "aictl_warn NIRMI bypass does not emit warning"
 else
@@ -125,7 +145,7 @@ fi
 # Test: aictl_warn includes suggestions
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg' 'fix this' 'or that'" 2>&1 || true)
-if [[ $result == *"fix this"* ]] && [[ $result == *"or that"* ]]
+if [[ $result == *'"fix this"'* ]] && [[ $result == *'"or that"'* ]]
 then
   pass "aictl_warn includes suggestions"
 else

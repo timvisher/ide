@@ -53,8 +53,7 @@ upstream tracking ref).  Never hardcode `main..HEAD`, never use
 raw SHAs in range expressions.  The git wrapper enforces this.
 
 ```bash
-git log --oneline '@{u}...'
-git diff --stat '@{u}...'
+git log '@{u}...'
 git diff '@{u}...'
 ```
 
