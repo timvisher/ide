@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+# aictl - Agent-friendly CLI messaging tool
+#
+# Usage:
+#   aictl die <code> <message> [suggestion...]
+#   aictl warn <code> <message> [suggestion...]
+#
+# Environment:
+#   TIMVISHER_AGENT_NIRMI=1  Bypass warn guards (prints notice, continues)
+
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
+case "${1:-}" in
+  die)
+    shift
+    aictl_die "$@"
+    ;;
+  warn)
+    shift
+    aictl_warn "$@"
+    ;;
+  *)
+    cat >&2 <<'USAGE'
+Usage: aictl {die|warn} <code> <message> [suggestion...]
+
+Commands:
+  die   Fatal error, always exits non-zero (not bypassable)
+  warn  Blocking warning, exits unless TIMVISHER_AGENT_NIRMI=1
+
+Environment:
+  TIMVISHER_AGENT_NIRMI=1  Bypass warn guards (prints notice, continues)
+USAGE
+    exit 2
+    ;;
+esac

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+
+# Tests for aictl structured messaging functions
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+# ---------------------------------------------------------------------------
+# aictl_die tests
+# ---------------------------------------------------------------------------
+
+# Test: aictl_die outputs error code and exits non-zero
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'test message'" 2>&1 || true)
+if [[ $result == *"[aictl:error:test_code]"* ]] && [[ $result == *"test message"* ]]
+then
+  pass "aictl_die outputs error code and message"
+else
+  fail "aictl_die output: got '${result}'"
+fi
+
+# Test: aictl_die exits non-zero
+run_test
+rc=0
+bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" >/dev/null 2>&1 || rc=$?
+if (( 0 < rc ))
+then
+  pass "aictl_die exits non-zero"
+else
+  fail "aictl_die should exit non-zero, got rc=$rc"
+fi
+
+# Test: aictl_die includes suggestions
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg' 'suggestion one' 'suggestion two'" 2>&1 || true)
+if [[ $result == *"suggestion one"* ]] && [[ $result == *"suggestion two"* ]]
+then
+  pass "aictl_die includes suggestions"
+else
+  fail "aictl_die suggestions: got '${result}'"
+fi
+
+# Test: aictl_die is NOT bypassed by NIRMI
+run_test
+result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
+if [[ $result == *"[aictl:error:test_code]"* ]]
+then
+  pass "aictl_die not bypassed by NIRMI"
+else
+  fail "aictl_die NIRMI: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# aictl_warn tests
+# ---------------------------------------------------------------------------
+
+# Test: aictl_warn outputs warning code and exits non-zero (no NIRMI)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'warn message'" 2>&1 || true)
+if [[ $result == *"[aictl:warning:test_warn]"* ]] && [[ $result == *"warn message"* ]]
+then
+  pass "aictl_warn outputs warning code and message"
+else
+  fail "aictl_warn output: got '${result}'"
+fi
+
+# Test: aictl_warn exits non-zero without NIRMI
+run_test
+rc=0
+bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" >/dev/null 2>&1 || rc=$?
+if (( 0 < rc ))
+then
+  pass "aictl_warn exits non-zero without NIRMI"
+else
+  fail "aictl_warn should exit non-zero, got rc=$rc"
+fi
+
+# Test: aictl_warn includes bypass instruction
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1 || true)
+if [[ $result == *"TIMVISHER_AGENT_NIRMI"* ]]
+then
+  pass "aictl_warn includes bypass instruction"
+else
+  fail "aictl_warn bypass instruction: got '${result}'"
+fi
+
+# Test: aictl_warn is bypassed by NIRMI
+run_test
+result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
+if [[ $result == *"[aictl:bypass:test_warn]"* ]] && [[ $result == *"continued"* ]]
+then
+  pass "aictl_warn bypassed by NIRMI (returns 0, continues)"
+else
+  fail "aictl_warn NIRMI bypass: got '${result}'"
+fi
+
+# Test: aictl_warn NIRMI bypass does NOT emit warning
+run_test
+result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
+if [[ $result != *"[aictl:warning:"* ]]
+then
+  pass "aictl_warn NIRMI bypass does not emit warning"
+else
+  fail "aictl_warn NIRMI should not emit warning: got '${result}'"
+fi
+
+# Test: aictl_warn includes suggestions
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg' 'fix this' 'or that'" 2>&1 || true)
+if [[ $result == *"fix this"* ]] && [[ $result == *"or that"* ]]
+then
+  pass "aictl_warn includes suggestions"
+else
+  fail "aictl_warn suggestions: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
