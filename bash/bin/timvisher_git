@@ -1250,6 +1250,10 @@ configured fork_user (~/.config/timvisher/ide/git_fork_user):
 Other subcommands
 -----------------
 
+  timvisher_git info <field>
+    Query metadata about the current worktree.
+    Fields: .org, .repo, .branch, .absPath, .prefixPath
+
   timvisher_git sync-trunk <path>
     For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
     Finds or creates the trunk worktree, merges upstream/<trunk> into
@@ -1260,6 +1264,76 @@ Other subcommands
   timvisher_git <git-args...>
     Passes through to git (with agent safety wrappers).
 EOF
+}
+
+# ---------------------------------------------------------------------------
+# info subcommand — expose worktree metadata
+# ---------------------------------------------------------------------------
+
+info__usage() {
+  cat <<'EOF'
+Usage: timvisher_git info <field>
+
+Query metadata about the current worktree.
+
+Fields:
+  .org           Organisation component of the worktree path
+  .repo          Repository name from the worktree path
+  .branch        Current branch name (git symbolic-ref)
+  .absPath       Absolute path to the worktree root
+  .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
+EOF
+}
+
+info__cmd() {
+  local field=${1:-}
+
+  if [[ -z $field ]]
+  then
+    info__usage >&2
+    return 1
+  fi
+
+  local toplevel
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null) ||
+    die "info: not inside a git worktree"
+
+  local prefix_path
+  prefix_path=$(strip_live_prefix "$toplevel")
+
+  # If strip_live_prefix returned the path unchanged, we're not under
+  # the managed worktree root.
+  if [[ $prefix_path == "$toplevel" ]]
+  then
+    die "info: worktree '%s' is not under TIMVISHER_GIT_HOME (%s)" \
+        "$toplevel" "$live_repo_dir"
+  fi
+
+  case $field in
+    .org)
+      get_org "$prefix_path"
+      printf '\n'
+      ;;
+    .repo)
+      get_repo "$prefix_path"
+      printf '\n'
+      ;;
+    .branch)
+      local branch
+      branch=$(git symbolic-ref --short HEAD 2>/dev/null) ||
+        die "info .branch: HEAD is detached"
+      printf '%s\n' "$branch"
+      ;;
+    .absPath)
+      printf '%s\n' "$toplevel"
+      ;;
+    .prefixPath)
+      printf '%s\n' "$prefix_path"
+      ;;
+    *)
+      die "info: unknown field '%s'" "$field"
+      ;;
+  esac
 }
 
 # Strip live_repo_dir prefix from a local path, yielding an
@@ -1860,6 +1934,7 @@ worktree_gc() {
 
 case $1 in
   clone)        clone "${@:2}" ;;
+  info)         info__cmd "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
   status)
     case ${2:-} in

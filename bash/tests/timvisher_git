@@ -874,6 +874,121 @@ github_user_aliases=("myuser" "altuser")
 # setup.  The decision logic is covered via find_pushable_fork and
 # preferred_fork_user_for tests above.
 
+# ---------------------------------------------------------------------------
+# info tests
+# ---------------------------------------------------------------------------
+
+# Set up a fake worktree under live_dir for info tests
+info_org="testorg"
+info_repo="testrepo"
+info_branch="feature/my-thing"
+info_worktree="${live_dir}/${info_org}/${info_repo}/${info_branch}"
+mkdir -p "$info_worktree"
+(
+  cd "$info_worktree"
+  TIMVISHER_AGENT= git init -q
+  TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q
+  TIMVISHER_AGENT= git checkout -b "$info_branch" -q
+)
+
+# Test: info .org extracts org from worktree path
+run_test
+result=$(cd "$info_worktree" && info__cmd .org)
+if [[ $result == "$info_org" ]]
+then
+  pass "info .org extracts org"
+else
+  fail "info .org: expected '${info_org}', got '${result}'"
+fi
+
+# Test: info .repo extracts repo from worktree path
+run_test
+result=$(cd "$info_worktree" && info__cmd .repo)
+if [[ $result == "$info_repo" ]]
+then
+  pass "info .repo extracts repo"
+else
+  fail "info .repo: expected '${info_repo}', got '${result}'"
+fi
+
+# Test: info .branch returns current branch
+run_test
+result=$(cd "$info_worktree" && info__cmd .branch)
+if [[ $result == "$info_branch" ]]
+then
+  pass "info .branch returns current branch"
+else
+  fail "info .branch: expected '${info_branch}', got '${result}'"
+fi
+
+# Test: info .absPath returns absolute worktree path
+run_test
+info_worktree_real=$(cd "$info_worktree" && pwd -P)
+result=$(cd "$info_worktree" && info__cmd .absPath)
+if [[ $result == "$info_worktree_real" ]]
+then
+  pass "info .absPath returns absolute path"
+else
+  fail "info .absPath: expected '${info_worktree_real}', got '${result}'"
+fi
+
+# Test: info .prefixPath returns path relative to TIMVISHER_GIT_HOME
+run_test
+result=$(cd "$info_worktree" && info__cmd .prefixPath)
+expected_prefix="${info_org}/${info_repo}/${info_branch}"
+if [[ $result == "$expected_prefix" ]]
+then
+  pass "info .prefixPath returns relative path"
+else
+  fail "info .prefixPath: expected '${expected_prefix}', got '${result}'"
+fi
+
+# Test: info with no field prints usage and fails
+run_test
+result=$(cd "$info_worktree" && info__cmd 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Usage"* ]]
+then
+  pass "info with no field prints usage and fails"
+else
+  fail "info no field: expected failure with usage, got rc=${rc} '${result}'"
+fi
+
+# Test: info with unknown field fails
+run_test
+result=$(cd "$info_worktree" && info__cmd .bogus 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unknown field"* ]]
+then
+  pass "info with unknown field fails"
+else
+  fail "info unknown field: expected failure, got rc=${rc} '${result}'"
+fi
+
+# Test: info outside managed worktree fails
+run_test
+outside_dir="$tmpdir/outside_repo"
+mkdir -p "$outside_dir"
+(cd "$outside_dir" && TIMVISHER_AGENT= git init -q && TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q)
+result=$(cd "$outside_dir" && info__cmd .org 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"not under TIMVISHER_GIT_HOME"* ]]
+then
+  pass "info outside managed worktree fails"
+else
+  fail "info outside worktree: expected failure, got rc=${rc} '${result}'"
+fi
+
+# Test: info .branch fails on detached HEAD
+run_test
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)
+result=$(cd "$info_worktree" && info__cmd .branch 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"detached"* ]]
+then
+  pass "info .branch fails on detached HEAD"
+else
+  fail "info .branch detached: expected failure, got rc=${rc} '${result}'"
+fi
+# Restore branch for any future tests
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
