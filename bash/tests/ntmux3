@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+# Tests for ntmux3 agent shim
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/ntmux3"
+
+# ---------------------------------------------------------------------------
+# Structured output tests
+# ---------------------------------------------------------------------------
+
+# Test: shim emits aictl_die with correct code
+run_test
+result=$("$script" -d foo/bar 2>&1 || true)
+if [[ $result == *'"code":"ntmux3_not_a_binary"'* ]]
+then
+  pass "emits aictl_die with code ntmux3_not_a_binary"
+else
+  fail "expected code ntmux3_not_a_binary: got '${result}'"
+fi
+
+# Test: shim emits level:error
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *'"level":"error"'* ]]
+then
+  pass "emits level:error"
+else
+  fail "expected level:error: got '${result}'"
+fi
+
+# Test: shim mentions source ~/.bashrc in suggestions
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *'source ~/.bashrc'* ]]
+then
+  pass "mentions source ~/.bashrc"
+else
+  fail "expected source ~/.bashrc mention: got '${result}'"
+fi
+
+# Test: shim mentions timvisher_git info
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *'timvisher_git info'* ]]
+then
+  pass "mentions timvisher_git info"
+else
+  fail "expected timvisher_git info mention: got '${result}'"
+fi
+
+# Test: shim exits non-zero
+run_test
+"$script" >/dev/null 2>&1 && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "exits non-zero"
+else
+  fail "expected non-zero exit, got 0"
+fi
+
+# ---------------------------------------------------------------------------
+# Fallback aictl_die stub tests
+# ---------------------------------------------------------------------------
+
+# Test: fallback stub produces valid JSON with correct code when aictl.bash
+# is not available (simulate by unsetting HOME to break the source path)
+run_test
+result=$(HOME=/nonexistent "$script" 2>&1 || true)
+if [[ $result == *'"code":"ntmux3_not_a_binary"'* ]]
+then
+  pass "fallback stub produces correct code"
+else
+  fail "fallback stub code: got '${result}'"
+fi
+
+# Test: fallback stub produces correct message
+run_test
+result=$(HOME=/nonexistent "$script" 2>&1 || true)
+if [[ $result == *'shell function'* ]]
+then
+  pass "fallback stub produces correct message"
+else
+  fail "fallback stub message: got '${result}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

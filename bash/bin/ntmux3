@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+# ntmux3 agent shim — catches agents running ntmux3 as a binary.
+#
+# ntmux3 is a shell function (sourced from ~/.bashrc), not a binary on
+# PATH.  If this shim runs, the agent forgot to source the profile.
+# Emit a structured instruction teaching the correct invocation.
+
+# Source aictl for structured messaging.
+if [[ -f ~/.functions/aictl.bash ]]
+then
+  source ~/.functions/aictl.bash
+fi
+if ! declare -F aictl_die &>/dev/null
+then
+  # Minimal stub — parse --code/--message flags with positional fallback.
+  aictl__stub_parse() {
+    _sc="" _sm=""
+    while (( 0 < $# )); do
+      case "$1" in
+        --code) _sc=$2; shift 2 ;;
+        --message) _sm=$2; shift 2 ;;
+        --*) shift 2 ;;
+        *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
+      esac
+    done
+  }
+  aictl_die() {
+    aictl__stub_parse "$@"
+    printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$_sc" "$_sm" >&2
+    exit 1
+  }
+fi
+
+# Build dynamic suggestions using timvisher_git info when available.
+org_repo=""
+if command -v timvisher_git &>/dev/null
+then
+  org=$(timvisher_git info .org 2>/dev/null) || true
+  repo=$(timvisher_git info .repo 2>/dev/null) || true
+  if [[ -n $org && -n $repo ]]
+  then
+    org_repo="${org}/${repo}"
+  fi
+fi
+
+suggestions=()
+suggestions+=(--suggestion "ntmux3 is a shell function, not a binary. You must source the profile first.")
+suggestions+=(--suggestion "source ~/.bashrc && ntmux3 -d org/repo/branch-name")
+
+if [[ -n $org_repo ]]
+then
+  suggestions+=(--suggestion "Current repo is ${org_repo} — example: source ~/.bashrc && ntmux3 -d ${org_repo}/your-branch-name")
+fi
+
+suggestions+=(--suggestion "Use timvisher_git info .org and timvisher_git info .repo to derive the org/repo prefix")
+
+aictl_die \
+  --code "ntmux3_not_a_binary" \
+  --message "ntmux3 is a shell function sourced from ~/.bashrc, not a standalone binary. This shim caught your attempt to run it directly." \
+  --reason "ntmux3 depends on shell functions and environment set up by the interactive profile. Running it as a binary bypasses that setup." \
+  --doc "ai/HOME/.agents/skills/worktree/SKILL.md" \
+  "${suggestions[@]}"
