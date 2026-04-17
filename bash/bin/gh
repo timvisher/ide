@@ -6,6 +6,22 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+# Source aictl for structured agent messaging (with inline stubs fallback)
+if [[ -f ~/.functions/aictl.bash ]]
+then
+  source ~/.functions/aictl.bash ||
+    {
+      echo "Unable to source aictl functions" >&2
+      exit 1
+    }
+elif [[ -z ${_aictl_loaded:-} ]]
+then
+  aictl_die() {
+    printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$1" "$2" >&2
+    exit 1
+  }
+fi
+
 if [[ -n $TIMVISHER_AGENT ]]
 then
   args=("$@")
@@ -13,14 +29,11 @@ then
   do
     if [[ ${args[i]} == repo && ${args[i+1]} == create ]]
     then
-      die "STOP, AGENT!!!!
-
-DO NOT ATTEMPT TO WORK AROUND THIS ERROR BY BYPASSING THIS WRAPPER SCRIPT!!!!
-
-DON'T _*EVER*_ RUN GH REPO CREATE AGAIN.
-
-REFRESH YOUR UNDERSTANDING OF WHAT YOU'RE ALLOWED TO DO FROM THE GH
-TOOLING DOCS IN ~/.config/timvisher/ide/claude/HOME"
+      aictl_die \
+        --code "gh_repo_create_blocked" \
+        --message "Agents must NEVER create repositories." \
+        --reason "Repository creation is a human-only operation." \
+        --suggestion "Ask the human to create the repository"
     fi
   done
 fi

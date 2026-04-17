@@ -49,7 +49,7 @@ result=$(
   PATH="$tmpdir/mockbin:$PATH" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' repo create my-repo" 2>&1 || true
 )
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *'"code":"gh_repo_create_blocked"'* ]]
 then
   pass "blocks 'gh repo create' when agent"
 else
