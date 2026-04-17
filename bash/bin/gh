@@ -14,10 +14,23 @@ then
       echo "Unable to source aictl functions" >&2
       exit 1
     }
-elif [[ -z ${_aictl_loaded:-} ]]
+fi
+if ! declare -F aictl_die &>/dev/null
 then
+  aictl__stub_parse() {
+    _sc="" _sm=""
+    while (( 0 < $# )); do
+      case "$1" in
+        --code) _sc=$2; shift 2 ;;
+        --message) _sm=$2; shift 2 ;;
+        --*) shift 2 ;;
+        *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
+      esac
+    done
+  }
   aictl_die() {
-    printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$1" "$2" >&2
+    aictl__stub_parse "$@"
+    printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$_sc" "$_sm" >&2
     exit 1
   }
 fi

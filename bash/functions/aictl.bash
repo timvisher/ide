@@ -29,6 +29,8 @@ aictl__json_escape() {
   s=${s//$'\n'/\\n}
   s=${s//$'\t'/\\t}
   s=${s//$'\r'/\\r}
+  s=${s//$'\b'/\\b}
+  s=${s//$'\f'/\\f}
   printf '%s' "$s"
 }
 
