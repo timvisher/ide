@@ -12,6 +12,21 @@ declare -gA timvisher_logging__levels=(
   [DIE]=0
 )
 
+# Arbitrary tagged data merged into structured log output.
+# Set keys before calling log functions; they persist across calls.
+# Clear with: timvisher_logging_data=()
+declare -gA timvisher_logging_data
+
+timvisher_logging__json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\r'/\\r}
+  printf '%s' "$s"
+}
+
 timvisher_logging__should_log() {
   local level=$1
   local effective_log_level
@@ -61,8 +76,45 @@ timvisher_logging__log() {
   # Check if should log (returns 0 for yes, 1 for no)
   if timvisher_logging__should_log "$level"
   then
-    # Format: timestamp LEVEL caller_function: message
-    printf "%s %s %s: ${1}\n" "$(date -u '+%FT%T%z')" "$level" "${FUNCNAME[2]:-main}" "${@:2}" >&2
+    if [[ -n ${TIMVISHER_AGENT:-} ]]
+    then
+      local formatted_message
+      # shellcheck disable=SC2059
+      printf -v formatted_message "${1}" "${@:2}"
+
+      local -a jq_args=(
+        --arg type log
+        --arg level "$level"
+        --arg caller "${FUNCNAME[2]:-main}"
+        --arg message "$formatted_message"
+      )
+      local jq_filter='{type: $type, level: $level, caller: $caller, message: $message}'
+
+      if (( 0 < ${#timvisher_logging_data[@]} ))
+      then
+        local data_json='{' first=true ek ev key
+        for key in "${!timvisher_logging_data[@]}"
+        do
+          ek=$(timvisher_logging__json_escape "$key")
+          ev=$(timvisher_logging__json_escape "${timvisher_logging_data[$key]}")
+          if [[ $first == true ]]
+          then
+            data_json+="\"${ek}\":\"${ev}\""
+            first=false
+          else
+            data_json+=",\"${ek}\":\"${ev}\""
+          fi
+        done
+        data_json+='}'
+        jq_args+=(--argjson data "$data_json")
+        jq_filter+=' | .data = $data'
+      fi
+
+      jq -n -c "${jq_args[@]}" "$jq_filter" >&2
+    else
+      # Format: timestamp LEVEL caller_function: message
+      printf "%s %s %s: ${1}\n" "$(date -u '+%FT%T%z')" "$level" "${FUNCNAME[2]:-main}" "${@:2}" >&2
+    fi
   fi
 }
 
