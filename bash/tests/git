@@ -187,14 +187,34 @@ else
   fail "blocks 'git diff origin/develop...HEAD': got '${result}'"
 fi
 
-# Test: allows SHA..HEAD for agents
+# Test: blocks SHA..HEAD for agents (must use @{u})
 run_test
 result=$(run_wrapper_agent "log abc123..HEAD" || true)
-if [[ $result == *"real-git log"* ]]
+if [[ $result == *"STOP, AGENT"* ]]
 then
-  pass "allows 'git log abc123..HEAD' for agents"
+  pass "blocks 'git log abc123..HEAD' for agents"
 else
-  fail "allows SHA..HEAD: got '${result}'"
+  fail "blocks SHA..HEAD: got '${result}'"
+fi
+
+# Test: blocks HEAD..HEAD for agents (no @{u} present)
+run_test
+result=$(run_wrapper_agent "diff HEAD..HEAD" || true)
+if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"@{u}"* ]]
+then
+  pass "blocks 'git diff HEAD..HEAD' for agents (no @{u})"
+else
+  fail "blocks HEAD..HEAD: got '${result}'"
+fi
+
+# Test: blocks empty range '...' for agents (no @{u} present)
+run_test
+result=$(run_wrapper_agent "log ..." || true)
+if [[ $result == *"STOP, AGENT"* ]]
+then
+  pass "blocks 'git log ...' for agents (no @{u})"
+else
+  fail "blocks empty range: got '${result}'"
 fi
 
 # Test: allows @{u}..HEAD for agents

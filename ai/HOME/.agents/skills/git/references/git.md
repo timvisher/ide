@@ -49,7 +49,8 @@ Notes:
 When examining what a branch has changed — for commits, PRs, reviews,
 commit cleanup, or any other purpose — ALWAYS use `@{u}...` (the
 upstream tracking ref).  Never hardcode `main..HEAD`, never use
-`git merge-base`, never guess the base branch name.
+`git merge-base`, never guess the base branch name, never use
+raw SHAs in range expressions.  The git wrapper enforces this.
 
 ```bash
 git log --oneline '@{u}...'

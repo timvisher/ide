@@ -154,14 +154,14 @@ then
           range_guard__rhs=${x#*..}
         fi
 
-        # Allowed refs: empty (implied HEAD), HEAD, @{u}, @{upstream}, hex SHAs
-        range_guard__allowed='^(HEAD|@\{u(pstream)?\}|[0-9a-f]+)?$'
+        # Allowed refs in ranges: empty (implied HEAD), HEAD, @{u}, @{upstream}
+        range_guard__allowed='^(HEAD|@\{u(pstream)?\})?$'
         if [[ ! $range_guard__lhs =~ $range_guard__allowed ]] ||
            [[ ! $range_guard__rhs =~ $range_guard__allowed ]]
         then
           die "STOP, AGENT!!!!
 
-DO NOT use hardcoded branch names in range expressions.
+DO NOT use hardcoded branch names or SHAs in range expressions.
 
 You used '%s' but you MUST use @{u} (upstream tracking ref) instead.
 
@@ -170,7 +170,29 @@ Examples:
   git log @{u}..HEAD      (two-dot: commits on this branch only)
 
 @{u} automatically resolves to whatever the upstream tracking branch is.
-Hardcoding branch names is fragile and wrong.
+Hardcoding branch names or SHAs is fragile and wrong.
+
+REFRESH YOUR UNDERSTANDING FROM THE GIT SKILL DOCS." "$x"
+        fi
+
+        # At least one side of the range MUST reference @{u}
+        range_guard__upstream_re='@\{u(pstream)?\}'
+        if [[ ! $range_guard__lhs =~ $range_guard__upstream_re ]] &&
+           [[ ! $range_guard__rhs =~ $range_guard__upstream_re ]]
+        then
+          die "STOP, AGENT!!!!
+
+Range expressions MUST include @{u} (upstream tracking ref).
+
+You used '%s' but at least one side of the range MUST be @{u}.
+
+Examples:
+  git diff @{u}...HEAD    (three-dot: changes on this branch only)
+  git log @{u}..HEAD      (two-dot: commits on this branch only)
+  git diff @{u}...        (implied HEAD on right side)
+
+@{u} automatically resolves to whatever the upstream tracking branch is.
+Comparing without @{u} is almost never correct for agents.
 
 REFRESH YOUR UNDERSTANDING FROM THE GIT SKILL DOCS." "$x"
         fi
