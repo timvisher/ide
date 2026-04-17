@@ -12,6 +12,36 @@ source ~/.functions/git.bash ||
     exit 1
   }
 
+# Source aictl for structured agent messaging. If not installed yet
+# (e.g. running from a worktree before install), define inline stubs
+# with the same interface so guards still work.
+if [[ -f ~/.functions/aictl.bash ]]
+then
+  source ~/.functions/aictl.bash ||
+    {
+      echo "Unable to source aictl functions" >&2
+      exit 1
+    }
+elif [[ -z ${_aictl_loaded:-} ]]
+then
+  aictl_die() {
+    printf '\n[aictl:error:%s]\n%s\n' "$1" "$2" >&2
+    local s; for s in "${@:3}"; do printf '  → %s\n' "$s" >&2; done
+    exit 1
+  }
+  aictl_warn() {
+    if [[ -n ${TIMVISHER_AGENT_NIRMI:-} ]]
+    then
+      printf '[aictl:bypass:%s] GUARDRAIL SKIPPED — be sure you know what you are doing.\n' "$1" >&2
+      return 0
+    fi
+    printf '\n[aictl:warning:%s]\n%s\n' "$1" "$2" >&2
+    local s; for s in "${@:3}"; do printf '  → %s\n' "$s" >&2; done
+    printf '\nBypass: re-run with TIMVISHER_AGENT_NIRMI=1 to skip this guard\n' >&2
+    exit 1
+  }
+fi
+
 real_git=$(resolve_next_git "${BASH_SOURCE[0]}") ||
   {
     echo "Unable to resolve next git binary in PATH" >&2
@@ -105,7 +135,10 @@ then
     then
       if [[ $commit_message_file == "-" ]]
       then
-        die "Agent git commit from stdin is not supported. Include the trailer and check ai/HOME/.agents/skills/git/SKILL.md."
+        aictl_die "git_commit_stdin_unsupported" \
+          "Agent git commit from stdin is not supported." \
+          "Use -m/--message or -F/--file with a real file path" \
+          "See ai/HOME/.agents/skills/git/SKILL.md for commit guidelines"
       fi
       if [[ -r $commit_message_file ]]
       then
@@ -115,7 +148,10 @@ then
 
     if [[ -z $commit_message ]]
     then
-      die "Agent git commit must include a Co-authored-by trailer. Use -m/--message or -F/--file and check ai/HOME/.agents/skills/git/SKILL.md."
+      aictl_die "git_commit_no_message" \
+        "Agent git commit must include a commit message with Co-authored-by trailer." \
+        "Use -m/--message or -F/--file to provide the message" \
+        "See ai/HOME/.agents/skills/git/SKILL.md for the required trailer format"
     fi
 
     required_trailer=""
@@ -133,7 +169,10 @@ then
     if [[ -n $required_trailer ]] &&
          ! printf '%s\n' "$commit_message" | grep -E -i -q "^Co-authored-by:[[:space:]].*${required_trailer}\$"
     then
-      die "Missing Co-authored-by trailer matching '${required_trailer}'. Check ai/HOME/.agents/skills/git/SKILL.md."
+      aictl_die "git_commit_missing_trailer" \
+        "Missing required Co-authored-by trailer matching: ${required_trailer}" \
+        "Add the trailer to your commit message" \
+        "See ai/HOME/.agents/skills/git/SKILL.md for the exact format"
     fi
   fi
 
@@ -154,63 +193,35 @@ then
           range_guard__rhs=${x#*..}
         fi
 
-        # Allowed refs in ranges: empty (implied HEAD), HEAD, @{u}, @{upstream}
-        range_guard__allowed='^(HEAD|@\{u(pstream)?\})?$'
-        if [[ ! $range_guard__lhs =~ $range_guard__allowed ]] ||
-           [[ ! $range_guard__rhs =~ $range_guard__allowed ]]
-        then
-          die "STOP, AGENT!!!!
-
-DO NOT use hardcoded branch names or SHAs in range expressions.
-
-You used '%s' but you MUST use @{u} (upstream tracking ref) instead.
-
-Examples:
-  git diff @{u}...HEAD    (three-dot: changes on this branch only)
-  git log @{u}..HEAD      (two-dot: commits on this branch only)
-
-@{u} automatically resolves to whatever the upstream tracking branch is.
-Hardcoding branch names or SHAs is fragile and wrong.
-
-REFRESH YOUR UNDERSTANDING FROM THE GIT SKILL DOCS." "$x"
-        fi
-
-        # At least one side of the range MUST reference @{u}
+        # Valid range form: one side is @{u}/@{upstream}, the other is
+        # empty (implied HEAD) or literal HEAD. Anything else is almost
+        # certainly wrong for agents.
         range_guard__upstream_re='@\{u(pstream)?\}'
-        if [[ ! $range_guard__lhs =~ $range_guard__upstream_re ]] &&
-           [[ ! $range_guard__rhs =~ $range_guard__upstream_re ]]
+        range_guard__head_or_empty='^(HEAD)?$'
+
+        range_guard__lhs_is_upstream=false
+        range_guard__rhs_is_upstream=false
+        [[ $range_guard__lhs =~ $range_guard__upstream_re ]] && range_guard__lhs_is_upstream=true
+        [[ $range_guard__rhs =~ $range_guard__upstream_re ]] && range_guard__rhs_is_upstream=true
+
+        if { [[ $range_guard__lhs_is_upstream == true ]] && [[ $range_guard__rhs =~ $range_guard__head_or_empty ]]; } ||
+           { [[ $range_guard__rhs_is_upstream == true ]] && [[ $range_guard__lhs =~ $range_guard__head_or_empty ]]; }
         then
-          die "STOP, AGENT!!!!
-
-Range expressions MUST include @{u} (upstream tracking ref).
-
-You used '%s' but at least one side of the range MUST be @{u}.
-
-Examples:
-  git diff @{u}...HEAD    (three-dot: changes on this branch only)
-  git log @{u}..HEAD      (two-dot: commits on this branch only)
-  git diff @{u}...        (implied HEAD on right side)
-
-@{u} automatically resolves to whatever the upstream tracking branch is.
-Comparing without @{u} is almost never correct for agents.
-
-REFRESH YOUR UNDERSTANDING FROM THE GIT SKILL DOCS." "$x"
-        fi
-
-        if [[ $range_guard__lhs =~ @\{u(pstream)?\} ]] || [[ $range_guard__rhs =~ @\{u(pstream)?\} ]]
-        then
+          # Valid form — verify @{u} actually resolves
           if ! "$real_git" rev-parse --verify '@{u}' >/dev/null 2>&1
           then
-            die "STOP, AGENT!!!!
-
-@{u} does not resolve — this branch has no upstream tracking configured.
-
-ASK THE HUMAN what the upstream should be set to before continuing.
-Do NOT guess or set it yourself.
-
-Once they tell you, run:
-  git branch --set-upstream-to=<remote>/<branch>"
+            aictl_die "git_upstream_not_configured" \
+              "@{u} does not resolve — this branch has no upstream tracking configured." \
+              "Ask the human what the upstream should be set to" \
+              "Once told, run: git branch --set-upstream-to=<remote>/<branch>"
           fi
+        else
+          aictl_warn "git_range_no_upstream_ref" \
+            "You almost certainly didn't mean to use '${x}' if what you were looking for is this branch's diff. Agents should always compare against @{u} (upstream tracking ref)." \
+            "git diff @{u}...HEAD    (three-dot: changes on this branch only)" \
+            "git log @{u}..HEAD      (two-dot: commits on this branch only)" \
+            "git diff @{u}...        (implied HEAD on right side)"
+          # If we reach here, NIRMI bypassed the warning
         fi
       fi
     done
@@ -222,26 +233,19 @@ Once they tell you, run:
     do
       if [[ $x == -f || $x == --force ]]
       then
-        die "STOP, AGENT!!!!
-
-DO NOT use 'git add -f' or 'git add --force'.
-
-Files ignored by .gitignore are ignored for a reason. If you believe
-a file should be tracked, ASK THE HUMAN to add it manually."
+        aictl_die "git_add_force_blocked" \
+          "Agents must NEVER use 'git add -f'. Files ignored by .gitignore are ignored for a reason." \
+          "Ask the human to add the file manually if it should be tracked"
       fi
     done
   fi
 
   if [[ $subcommand == push || $subcommand == send-pack ]]
   then
-    die "STOP, AGENT!!!!
-
-DO NOT ATTEMPT TO WORK AROUND THIS ERROR BY BYPASSING THIS WRAPPER SCRIPT!!!!
-
-DON'T _*EVER*_ RUN GIT PUSH AGAIN.
-
-REFRESH YOUR UNDERSTANDING OF WHAT YOU'RE ALLOWED TO DO FROM THE GIT
-TOOLING DOCS IN ~/.config/timvisher/ide/claude/HOME"
+    aictl_die "git_push_blocked" \
+      "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
+      "Ask the human to run 'git push'" \
+      "See git skill docs for allowed remote operations"
   fi
 fi
 

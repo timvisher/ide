@@ -55,7 +55,7 @@ run_wrapper_agent() {
 # Test 1: blocks 'git push' when agent
 run_test
 result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:error:git_push_blocked]"* ]]
 then
   pass "blocks 'git push' when agent"
 else
@@ -65,7 +65,7 @@ fi
 # Test 2: blocks 'git send-pack' when agent
 run_test
 result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' send-pack" 2>&1 || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:error:git_push_blocked]"* ]]
 then
   pass "blocks 'git send-pack' when agent"
 else
@@ -85,7 +85,7 @@ fi
 # Test 4: requires Co-authored-by trailer for Claude agent commits
 run_test
 result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
-if [[ $result == *"Missing Co-authored-by trailer"* ]]
+if [[ $result == *"[aictl:error:git_commit_missing_trailer]"* ]]
 then
   pass "requires Co-authored-by trailer for Claude commits"
 else
@@ -127,10 +127,10 @@ fi
 # Range expression guard tests (agent must use @{u} not hardcoded branches)
 # ---------------------------------------------------------------------------
 
-# Test: blocks 'git log master..HEAD' for agents
+# Test: blocks 'git log master..HEAD' for agents (warning)
 run_test
 result=$(run_wrapper_agent "log --oneline master..HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"@{u}"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git log master..HEAD' for agents"
 else
@@ -140,7 +140,7 @@ fi
 # Test: blocks 'git diff origin/main..HEAD' for agents
 run_test
 result=$(run_wrapper_agent "diff origin/main..HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git diff origin/main..HEAD' for agents"
 else
@@ -150,7 +150,7 @@ fi
 # Test: blocks three-dot 'git diff main...HEAD' for agents
 run_test
 result=$(run_wrapper_agent "diff main...HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git diff main...HEAD' for agents"
 else
@@ -160,7 +160,7 @@ fi
 # Test: blocks reverse 'git log HEAD..master' for agents
 run_test
 result=$(run_wrapper_agent "log HEAD..master" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git log HEAD..master' for agents"
 else
@@ -170,7 +170,7 @@ fi
 # Test: blocks arbitrary branch names in range expressions
 run_test
 result=$(run_wrapper_agent "log feature/my-branch..HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git log feature/my-branch..HEAD' for agents"
 else
@@ -180,7 +180,7 @@ fi
 # Test: blocks origin/arbitrary-branch in range expressions
 run_test
 result=$(run_wrapper_agent "diff origin/develop...HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git diff origin/develop...HEAD' for agents"
 else
@@ -190,7 +190,7 @@ fi
 # Test: blocks SHA..HEAD for agents (must use @{u})
 run_test
 result=$(run_wrapper_agent "log abc123..HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git log abc123..HEAD' for agents"
 else
@@ -200,7 +200,7 @@ fi
 # Test: blocks HEAD..HEAD for agents (no @{u} present)
 run_test
 result=$(run_wrapper_agent "diff HEAD..HEAD" || true)
-if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"@{u}"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git diff HEAD..HEAD' for agents (no @{u})"
 else
@@ -210,27 +210,52 @@ fi
 # Test: blocks empty range '...' for agents (no @{u} present)
 run_test
 result=$(run_wrapper_agent "log ..." || true)
-if [[ $result == *"STOP, AGENT"* ]]
+if [[ $result == *"[aictl:warning:git_range_no_upstream_ref]"* ]]
 then
   pass "blocks 'git log ...' for agents (no @{u})"
 else
   fail "blocks empty range: got '${result}'"
 fi
 
-# Test: allows @{u}..HEAD for agents
+# Test: NIRMI bypasses range guard
 run_test
-result=$(run_wrapper_agent "log @{u}..HEAD" || true)
-if [[ $result == *"real-git log"* ]]
+run_wrapper_agent_nirmi() {
+  TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 \
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+result=$(run_wrapper_agent_nirmi "log abc123..HEAD" || true)
+if [[ $result == *"[aictl:bypass:git_range_no_upstream_ref]"* ]] && [[ $result != *"[aictl:warning:"* ]]
+then
+  pass "NIRMI bypasses range guard"
+else
+  fail "NIRMI bypass: got '${result}'"
+fi
+
+# Test: NIRMI does NOT bypass push guard
+run_test
+result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+if [[ $result == *"[aictl:error:git_push_blocked]"* ]]
+then
+  pass "NIRMI does NOT bypass push guard"
+else
+  fail "NIRMI should not bypass push: got '${result}'"
+fi
+
+# Test: allows @{u}..HEAD for agents (not blocked)
+run_test
+result=$(run_wrapper_agent "log '@{u}..HEAD'" || true)
+if [[ $result != *"[aictl:"* ]]
 then
   pass "allows 'git log @{u}..HEAD' for agents"
 else
   fail "allows 'git log @{u}..HEAD': got '${result}'"
 fi
 
-# Test: allows @{upstream}...HEAD for agents
+# Test: allows @{upstream}...HEAD for agents (not blocked)
 run_test
-result=$(run_wrapper_agent "diff @{upstream}...HEAD" || true)
-if [[ $result == *"real-git diff"* ]]
+result=$(run_wrapper_agent "diff '@{upstream}...HEAD'" || true)
+if [[ $result != *"[aictl:"* ]]
 then
   pass "allows 'git diff @{upstream}...HEAD' for agents"
 else
@@ -240,7 +265,7 @@ fi
 # Test: allows 'git log master..HEAD' for non-agents
 run_test
 result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log master..HEAD" 2>&1)
-if [[ $result == *"real-git log master..HEAD"* ]]
+if [[ $result != *"[aictl:"* ]]
 then
   pass "allows 'git log master..HEAD' for non-agents"
 else
@@ -342,7 +367,7 @@ run_test
 "$real_git" -C "${tmpdir}/no-upstream" commit --allow-empty -m "init" >/dev/null 2>&1
 
 result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
-if [[ $result == *"STOP, AGENT"* ]] && [[ $result == *"ASK THE HUMAN"* ]]
+if [[ $result == *"[aictl:error:git_upstream_not_configured]"* ]]
 then
   pass "blocks 'git log @{u}..HEAD' when no upstream"
 else
@@ -354,7 +379,7 @@ run_test
 setup_tracking_repo "has-upstream" "feature2"
 
 result=$(cd "${tmpdir}/has-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
-if [[ $result != *"ASK THE HUMAN"* ]]
+if [[ $result != *"[aictl:"* ]]
 then
   pass "allows 'git log @{u}..HEAD' when upstream exists"
 else
@@ -364,7 +389,7 @@ fi
 # Test: blocks 'git diff @{upstream}...HEAD' when no upstream (long form)
 run_test
 result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "diff '@{upstream}...HEAD'" || true)
-if [[ $result == *"ASK THE HUMAN"* ]]
+if [[ $result == *"[aictl:error:git_upstream_not_configured]"* ]]
 then
   pass "blocks @{upstream} long form when no upstream"
 else
