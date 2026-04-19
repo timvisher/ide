@@ -1,3 +1,6 @@
+# UTF-16LE AppleScript files saved by Script Editor.app
+AppleScript/background[[:space:]]noise.applescript diff working-tree-encoding=UTF-16LE-BOM
+AppleScript/break[[:space:]]-[[:space:]]start.applescript diff working-tree-encoding=UTF-16LE-BOM
 
 # Use bd merge for beads JSONL files
 .beads/beads.jsonl merge=beads
