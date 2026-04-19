@@ -6,6 +6,7 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+
 default_topics_root="${HOME}/Documents/projects"
 topics_root_config="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bd_topics_root"
 if [[ -r $topics_root_config ]]
@@ -499,6 +500,15 @@ case $cmd in
     beads_dir="$topic_abs/.beads"
     if [[ ! -d $beads_dir ]]
     then
+      if [[ -n ${TIMVISHER_AGENT:-} ]]
+      then
+        aictl die \
+          --code "topic_no_beads" \
+          --message "Topic '${topic_abs}' does not contain .beads" \
+          --reason "The topic directory exists but has not been initialized with beads yet." \
+          --suggestion "timvisher_bd_topics new ${topic_input}" \
+          --suggestion "timvisher_bd_topics set ${topic_input}"
+      fi
       error "Topic '%s' does not contain .beads" "$topic_abs"
       list_topics
       exit 1
