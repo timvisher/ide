@@ -1,4 +1,4 @@
-#!/usr/bin/env bash -O extglob
+#!/usr/bin/env bash
 
 source "${HOME}/.functions/logging.bash" ||
   {
@@ -29,7 +29,8 @@ profile_directory=$(
        .profile.info_cache | to_entries[]
        | select(.value.name == $name)
        | .key
-     ' ~/Library/Application\ Support/Vivaldi/Local\ State
+     ' ~/Library/Application\ Support/Vivaldi/Local\ State |
+    head -1
                  )
 
 if [[ -z $profile_directory ]]
@@ -41,7 +42,7 @@ info 'Using profile_directory '%s'' "$profile_directory"
 
 if ! [[ -d ~/Library/'Application Support'/Vivaldi/"${profile_directory}" ]]
 then
-  die "Profile isn\'t a directory which is impossible? '%s'" "${profile_directory}"
+  die 'Profile is not a directory which is impossible? '%s'' "${profile_directory}"
 fi
 
 open -a Vivaldi -n --args --profile-directory="$profile_directory" "$@"

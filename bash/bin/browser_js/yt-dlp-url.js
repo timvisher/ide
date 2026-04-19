@@ -1,7 +1,10 @@
-if (document.location.hostname.includes('youtube.com')) {
-  params = new URLSearchParams(document.location.search.substring(1));
-
-  new URL(document.location.protocol + "//" + document.location.hostname + document.location.pathname + "?v=" + params.get("v")).toString();
-} else {
-  document.location.href
-}
+(function() {
+  if (document.location.hostname.endsWith('youtube.com')) {
+    var params = new URLSearchParams(document.location.search.substring(1));
+    var v = params.get("v");
+    if (v) {
+      return new URL(document.location.protocol + "//" + document.location.hostname + document.location.pathname + "?v=" + v).toString();
+    }
+  }
+  return document.location.href;
+})()
