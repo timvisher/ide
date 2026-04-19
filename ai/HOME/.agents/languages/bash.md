@@ -17,6 +17,47 @@
   done
   ```
 
+#### Mutexes and Temp File Cleanup
+
+- **Always** define `trap` cleanup **before** creating the resources
+  it cleans up. If the script dies between resource creation and trap
+  registration, the resource leaks.
+  https://www.reddit.com/r/bash/comments/1rlrlom/
+- Use `mkdir` for portable mutex locks — the kernel guarantees
+  atomicity of check-and-create. Never use file existence checks
+  (`test -f`) or `touch` as they have race conditions.
+  https://mywiki.wooledge.org/BashFAQ/045
+- Use `mktemp -d` for temp directories when you need multiple temp
+  files — one `rm -rf` in the trap cleans them all up.
+- Example:
+  ```bash
+  # mutex + temp dir with cleanup
+  lockdir=/tmp/myscript.lock
+  cleanup() { rm -rf -- "$lockdir" "$tmpdir"; }
+  trap cleanup EXIT
+
+  if mkdir -- "$lockdir"
+  then
+    tmpdir=$(mktemp -d)
+  else
+    printf 'cannot acquire lock, another instance is running\n' >&2
+    exit 1
+  fi
+  ```
+- For file-descriptor-based locking (Linux), use `flock`:
+  ```bash
+  exec 9>/path/to/lock/file
+  if ! flock -n 9
+  then
+    printf 'another instance is running\n' >&2
+    exit 1
+  fi
+  ```
+- **NEVER** use `mkdir -p` for locks — it does not fail if the
+  directory already exists, defeating mutual exclusion.
+- `SIGKILL` and `SIGSTOP` cannot be caught, blocked, or ignored —
+  traps will not fire. Design lock files to handle stale locks.
+
 #### Quote Usage in Bash
 
 - **ALWAYS** replace ‘ (U+2018) and ‘ (U+2019) with ‘ (straight
