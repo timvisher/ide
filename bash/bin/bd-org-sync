@@ -1,0 +1,758 @@
+#!/usr/bin/env python3
+"""bd-org-sync - Sync beads into an Org-mode file.
+
+Default: persistent daemon that watches the beads DB and
+incrementally updates beads.org at the worktree root.
+
+Usage: bd-org-sync [OPTIONS]
+
+Modes:
+  (default)          Daemon — poll and sync incrementally
+  --once             Sync once to beads.org and exit
+  --stdout           Render to stdout and exit (for piping)
+
+Options:
+  --topic TOPIC      Override topic (default: auto-detect)
+  --all              Include closed beads (--once/--stdout only;
+                     daemon always includes all to track transitions)
+  --stdin            Read JSON from stdin instead of running bd
+  --interval SECS    Poll interval in seconds (default: 5)
+
+The daemon auto-detects topic and beads.org path from the
+worktree, acquires .beads/bd-org-sync.lock/ (mkdir lock), and
+only syncs when the data hash changes.
+"""
+
+import atexit
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+# -- Logging ---------------------------------------------------------------
+
+def _ts():
+    """Return a timestamp matching the logging.bash convention."""
+    return datetime.now().astimezone().strftime("%FT%T%z")
+
+
+_on_status_line = False
+
+
+def _cols():
+    """Return terminal width, or 80 if stderr is not a tty."""
+    try:
+        return os.get_terminal_size(sys.stderr.fileno()).columns
+    except (ValueError, OSError):
+        return 80
+
+
+def _clear_status():
+    """If a transient status line is active, clear it before printing."""
+    global _on_status_line
+    if _on_status_line:
+        print(f"\r{' ' * _cols()}\r", end="", file=sys.stderr, flush=True)
+        _on_status_line = False
+
+
+def log_info(msg):
+    _clear_status()
+    print(f"{_ts()} INFO bd-org-sync: {msg}", file=sys.stderr)
+
+
+def log_error(msg):
+    _clear_status()
+    print(f"{_ts()} ERROR bd-org-sync: {msg}", file=sys.stderr)
+
+
+def _status_line(msg):
+    """Overwrite the current terminal line with a transient status."""
+    global _on_status_line
+    cols = _cols()
+    line = f"\r{_ts()} INFO bd-org-sync: {msg}"
+    print(line[:cols].ljust(cols), end="", file=sys.stderr, flush=True)
+    _on_status_line = True
+
+
+# -- Status -> Org TODO keyword ------------------------------------------
+
+_STATUS_KEYWORD = {
+    "open": "TODO",
+    "in_progress": "IN_PROGRESS",
+    "blocked": "TODO",
+    "deferred": "TODO",
+    "closed": "DONE",
+}
+
+_STATUS_TAGS = {"blocked", "deferred"}
+
+_STATUS_ORDER = {
+    "in_progress": 0,
+    "open": 1,
+    "blocked": 2,
+    "deferred": 3,
+    "closed": 4,
+}
+
+_TYPE_SECTION = {
+    "epic": "Epics",
+    "bug": "Bugs",
+    "feature": "Stories",
+    "task": "Stories",
+    "chore": "Chores",
+    "decision": "Decisions",
+}
+
+_SECTION_ORDER = {
+    "Epics": 0,
+    "Bugs": 1,
+    "Stories": 2,
+    "Chores": 3,
+    "Decisions": 4,
+    "Other": 5,
+    "Memories": 6,
+}
+
+
+# -- Text wrapping -------------------------------------------------------
+
+def wrap_body(text, indent):
+    """Wrap text to 72 columns, respecting the given indent string."""
+    out_lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            out_lines.append("")
+        elif paragraph[0] in (" ", "\t") or paragraph.startswith("- "):
+            out_lines.append(f"{indent}{paragraph}")
+        else:
+            wrapped = textwrap.fill(
+                paragraph,
+                width=72,
+                initial_indent=indent,
+                subsequent_indent=indent,
+            )
+            out_lines.append(wrapped)
+    return "\n".join(out_lines)
+
+
+# -- Priority -> Org priority cookie ------------------------------------
+
+def priority_cookie(pri):
+    if pri == 0:
+        return " [#A]"
+    if pri == 1:
+        return " [#B]"
+    if 3 <= pri:
+        return " [#C]"
+    return ""
+
+
+# -- Timestamp formatting ------------------------------------------------
+
+def iso_to_org_ts(iso_str):
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("[%Y-%m-%d %a %H:%M]")
+    except (ValueError, TypeError):
+        return ""
+
+
+# -- Tag formatting -------------------------------------------------------
+
+def sanitize_tag(raw):
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in ("_", "@", "#", "%"):
+            out.append(ch)
+        else:
+            if not out or out[-1] != "_":
+                out.append("_")
+    tag = "".join(out).strip("_")
+    return tag if tag else None
+
+
+def build_tags(bead):
+    tags = []
+    itype = bead.get("issue_type")
+    if itype:
+        t = sanitize_tag(itype)
+        if t:
+            tags.append(t)
+    status = bead.get("status", "")
+    if status in _STATUS_TAGS:
+        tags.append(status)
+    for label in bead.get("labels") or []:
+        t = sanitize_tag(label)
+        if t and t not in tags:
+            tags.append(t)
+    return tags
+
+
+def format_tags(tags):
+    if not tags:
+        return ""
+    return ":" + ":".join(tags) + ":"
+
+
+# -- Heading generation ---------------------------------------------------
+
+def close_keyword(bead):
+    reason = (bead.get("close_reason") or "").lower()
+    if "cancel" in reason:
+        return "CANCELLED"
+    return "DONE"
+
+
+def bead_keyword(bead):
+    status = bead.get("status", "open")
+    if status == "closed":
+        return close_keyword(bead)
+    return _STATUS_KEYWORD.get(status, "TODO")
+
+
+def render_bead(bead, depth=2):
+    lines = []
+    stars = "*" * depth
+    indent = "  " * depth
+
+    keyword = bead_keyword(bead)
+    cookie = priority_cookie(bead.get("priority", 2))
+    title = bead.get("title", "(untitled)")
+    tags = build_tags(bead)
+    tag_str = format_tags(tags)
+
+    heading = f"{stars} {keyword}{cookie} {title}"
+    if tag_str:
+        heading = f"{heading} {tag_str}"
+    lines.append(heading)
+
+    lines.append(f"{indent}:PROPERTIES:")
+    props = [
+        ("BEAD_ID", bead.get("id")),
+        ("BEAD_TYPE", bead.get("issue_type")),
+        ("BEAD_STATUS", bead.get("status")),
+        ("ASSIGNEE", bead.get("assignee")),
+        ("OWNER", bead.get("owner")),
+        ("CREATED", iso_to_org_ts(bead.get("created_at"))),
+        ("UPDATED", iso_to_org_ts(bead.get("updated_at"))),
+        ("CLOSED", iso_to_org_ts(bead.get("closed_at"))),
+        ("DUE", iso_to_org_ts(bead.get("due_at"))),
+        ("DEFER_UNTIL", iso_to_org_ts(bead.get("defer_until"))),
+        ("ESTIMATE", bead.get("estimate")),
+        ("EXTERNAL_REF", bead.get("external_ref")),
+        ("CLOSE_REASON", bead.get("close_reason")),
+    ]
+    for key, val in props:
+        if val:
+            lines.append(f"{indent}:{key}: {val}")
+    lines.append(f"{indent}:END:")
+
+    desc = (bead.get("description") or "").strip()
+    if desc:
+        lines.append("")
+        lines.append(wrap_body(desc, indent))
+
+    notes = (bead.get("notes") or "").strip()
+    if notes:
+        lines.append("")
+        lines.append(wrap_body(notes, indent))
+
+    return "\n".join(lines)
+
+
+def render_bead_tree(bead, children_map, depth=2):
+    parts = [render_bead(bead, depth)]
+    bead_id = bead.get("id")
+    for child in children_map.get(bead_id, []):
+        parts.append("")
+        parts.append(render_bead_tree(child, children_map, depth + 1))
+    return "\n".join(parts)
+
+
+# -- Sorting --------------------------------------------------------------
+
+def sort_key(bead):
+    status = bead.get("status", "open")
+    return (
+        _STATUS_ORDER.get(status, 99),
+        bead.get("priority", 2),
+        (bead.get("title") or "").lower(),
+    )
+
+
+# -- Tree building ---------------------------------------------------------
+
+def build_tree(beads):
+    by_id = {b["id"]: b for b in beads}
+    children_map = {}
+    roots = []
+    for bead in beads:
+        parent = bead.get("parent")
+        if parent and parent in by_id:
+            children_map.setdefault(parent, []).append(bead)
+        else:
+            roots.append(bead)
+    for pid in children_map:
+        children_map[pid].sort(key=sort_key)
+    return roots, children_map
+
+
+def section_for(bead):
+    itype = bead.get("issue_type", "")
+    return _TYPE_SECTION.get(itype, "Other")
+
+
+def skip_bead(bead):
+    return bead.get("issue_type", "") in ("event", "gate")
+
+
+# -- Memory helpers --------------------------------------------------------
+
+def memory_heading(value):
+    first_line = value.split("\n")[0]
+    for sep in (". ", ": "):
+        pos = first_line.find(sep)
+        if 0 < pos and pos < 72:
+            return first_line[:pos]
+    if 72 < len(first_line):
+        return first_line[:69] + "..."
+    return first_line
+
+
+# -- Data fetching ---------------------------------------------------------
+
+def run_bd(cmd_parts):
+    result = subprocess.run(cmd_parts, capture_output=True, text=True)
+    if result.returncode != 0 and not result.stdout.strip():
+        return "", False
+    return result.stdout, True
+
+
+def get_beads_json(topic, include_all, extra_args):
+    if topic:
+        cmd = [
+            "timvisher_bd_topics", "bd", topic, "--",
+            "list", "--json", "--flat", "--limit", "0",
+        ]
+    else:
+        cmd = ["bd", "list", "--json", "--flat", "--limit", "0"]
+
+    if include_all:
+        cmd.append("--all")
+    cmd.extend(extra_args)
+
+    stdout, ok = run_bd(cmd)
+    if not ok:
+        log_error("bd list failed")
+        sys.exit(1)
+    return json.loads(stdout)
+
+
+def get_memories_json(topic):
+    if topic:
+        cmd = [
+            "timvisher_bd_topics", "bd", topic, "--",
+            "memories", "--json",
+        ]
+    else:
+        cmd = ["bd", "memories", "--json"]
+
+    stdout, ok = run_bd(cmd)
+    if not ok or not stdout.strip():
+        return {}
+    try:
+        data = json.loads(stdout)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+# -- Worktree / topic detection -------------------------------------------
+
+def repo_root():
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return Path(result.stdout.strip())
+    return None
+
+
+def detect_topic():
+    result = subprocess.run(
+        ["timvisher_bd_topics", "current"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+# -- Lock management -------------------------------------------------------
+
+_lock_dir = None
+_lock_mtime = None
+
+
+def acquire_lock(beads_dir):
+    """Acquire .beads/bd-org-sync.lock/ via mkdir (atomic).
+
+    mkdir is the only reliable atomic lock primitive available from
+    userspace (BashFAQ/045).  If the process is SIGKILL'd the lock
+    stays — the human removes it with rmdir.
+
+    Records the mtime so the daemon can detect if someone removes
+    and recreates the lock (which means another instance took over).
+    """
+    global _lock_dir, _lock_mtime
+    lock = Path(beads_dir) / "bd-org-sync.lock"
+    try:
+        lock.mkdir()
+    except FileExistsError:
+        log_error(f"lock exists at {lock}")
+        log_error(f"  If no other instance is running:")
+        log_error(f"    rmdir '{lock}'")
+        sys.exit(1)
+    _lock_dir = lock
+    _lock_mtime = lock.stat().st_mtime
+    return lock
+
+
+def check_lock():
+    """Verify our lock is still intact.  Die if it was removed or replaced."""
+    if not _lock_dir:
+        return
+    try:
+        current_mtime = _lock_dir.stat().st_mtime
+    except FileNotFoundError:
+        log_error("lock directory removed out from under us, exiting")
+        sys.exit(1)
+    if current_mtime != _lock_mtime:
+        log_error("lock directory mtime changed (another instance "
+                  "took over), exiting")
+        sys.exit(1)
+
+
+def release_lock():
+    """Remove the lock directory."""
+    global _lock_dir
+    if _lock_dir and _lock_dir.exists():
+        try:
+            _lock_dir.rmdir()
+        except OSError:
+            pass
+        _lock_dir = None
+
+
+def _signal_handler(signum, frame):
+    """Clean up lock on signal, then re-raise so the parent sees it."""
+    release_lock()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+# -- Stdout rendering (replaces old bd-to-org) -----------------------------
+
+def render_section(section_name, beads, children_map):
+    lines = [f"* {section_name}"]
+    for bead in beads:
+        lines.append("")
+        lines.append(render_bead_tree(bead, children_map, depth=2))
+    return "\n".join(lines)
+
+
+def render_memories(memories):
+    if not memories:
+        return None
+    indent = "    "
+    lines = ["* Memories"]
+    for key in sorted(memories):
+        value = memories[key]
+        heading = memory_heading(value)
+        lines.append("")
+        lines.append(f"** {heading} :memory:")
+        lines.append(f"{indent}:PROPERTIES:")
+        lines.append(f"{indent}:MEMORY_KEY: {key}")
+        lines.append(f"{indent}:END:")
+        lines.append("")
+        lines.append(wrap_body(value, indent))
+    return "\n".join(lines)
+
+
+def render_full(beads, memories, topic):
+    """Render the full org file to stdout."""
+    beads = [b for b in beads if not skip_bead(b)]
+    roots, children_map = build_tree(beads)
+    roots.sort(key=sort_key)
+
+    sections = {}
+    for bead in roots:
+        sec = section_for(bead)
+        sections.setdefault(sec, []).append(bead)
+
+    topic_label = topic or "current"
+    ts = datetime.now(timezone.utc).strftime("[%Y-%m-%d %a %H:%M]")
+    print(f"#+TITLE: Beads — {topic_label}")
+    print("#+STARTUP: showeverything")
+    print(f"#+GENERATED: {ts}")
+
+    ordered = sorted(
+        sections.items(),
+        key=lambda kv: _SECTION_ORDER.get(kv[0], 99),
+    )
+    for sec_name, sec_beads in ordered:
+        print()
+        print(render_section(sec_name, sec_beads, children_map))
+
+    if memories:
+        print()
+        print(render_memories(memories))
+    print()
+
+
+# -- Manifest generation (for incremental sync) ----------------------------
+
+def build_manifest(beads, memories, topic):
+    beads = [b for b in beads if not skip_bead(b)]
+    roots, children_map = build_tree(beads)
+    roots.sort(key=sort_key)
+
+    sections_seen = set()
+    manifest_beads = []
+
+    for bead in roots:
+        sec = section_for(bead)
+        sections_seen.add(sec)
+        rendered = render_bead_tree(bead, children_map, depth=2)
+        manifest_beads.append({
+            "bead_id": bead["id"],
+            "section": sec,
+            "section_order": _SECTION_ORDER.get(sec, 99),
+            "rendered": rendered,
+        })
+
+    sections = []
+    for name in sorted(sections_seen,
+                       key=lambda n: _SECTION_ORDER.get(n, 99)):
+        sections.append({
+            "name": name,
+            "order": _SECTION_ORDER.get(name, 99),
+        })
+
+    manifest_memories = []
+    if memories:
+        sections.append({"name": "Memories", "order": 6})
+        indent = "    "
+        for key in sorted(memories):
+            value = memories[key]
+            heading = memory_heading(value)
+            lines = [
+                f"** {heading} :memory:",
+                f"{indent}:PROPERTIES:",
+                f"{indent}:MEMORY_KEY: {key}",
+                f"{indent}:END:",
+                "",
+                wrap_body(value, indent),
+            ]
+            manifest_memories.append({
+                "memory_key": key,
+                "rendered": "\n".join(lines),
+            })
+
+    topic_label = topic or "current"
+    ts = datetime.now(timezone.utc).strftime("[%Y-%m-%d %a %H:%M]")
+    file_header = (
+        f"#+TITLE: Beads — {topic_label}\n"
+        f"#+STARTUP: showeverything\n"
+        f"#+GENERATED: {ts}"
+    )
+
+    return {
+        "file_header": file_header,
+        "sections": sections,
+        "beads": manifest_beads,
+        "memories": manifest_memories,
+    }
+
+
+# -- Emacs batch invocation ------------------------------------------------
+
+_elisp_path = (
+    Path(__file__).resolve().parent.parent.parent
+    / "emacs" / "emacs.d" / "bd-org.el"
+)
+
+
+def apply_manifest(org_file, manifest):
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False,
+    ) as f:
+        json.dump(manifest, f, ensure_ascii=False)
+        manifest_path = f.name
+
+    try:
+        result = subprocess.run(
+            [
+                "emacs", "--batch",
+                "--eval", "(require 'package)",
+                "--eval", "(package-initialize)",
+                "--eval", '(load "~/.config/emacs/init.el")',
+                "-l", str(_elisp_path),
+                "-f", "bd-org-sync-batch",
+                str(org_file),
+                manifest_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            log_error(f"emacs batch failed:\n{result.stderr.strip()}")
+            return False
+        for line in result.stderr.strip().split("\n"):
+            if line.startswith("bd-org-sync:"):
+                # Relay the emacs-side message with our timestamp
+                msg = line.split(":", 1)[1].strip() if ":" in line else line
+                log_info(msg)
+        return True
+    finally:
+        os.unlink(manifest_path)
+
+
+# -- Change detection ------------------------------------------------------
+
+def data_hash(beads_json, memories_json):
+    blob = json.dumps(
+        {"beads": beads_json, "memories": memories_json},
+        sort_keys=True, ensure_ascii=False,
+    ).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+# -- Main ------------------------------------------------------------------
+
+def main():
+    topic = None
+    include_all = False
+    once = False
+    stdout_mode = False
+    use_stdin = False
+    interval = 5
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--topic" and i + 1 < len(args):
+            topic = args[i + 1]
+            i += 2
+        elif args[i] == "--all":
+            include_all = True
+            i += 1
+        elif args[i] == "--once":
+            once = True
+            i += 1
+        elif args[i] == "--stdout":
+            stdout_mode = True
+            i += 1
+        elif args[i] == "--stdin":
+            use_stdin = True
+            i += 1
+        elif args[i] == "--interval" and i + 1 < len(args):
+            interval = int(args[i + 1])
+            i += 2
+        elif args[i] in ("--help", "-h"):
+            print(__doc__.strip())
+            sys.exit(0)
+        elif args[i] == "--":
+            break
+        else:
+            log_error(f"unknown option: {args[i]}")
+            sys.exit(1)
+
+    # -- stdout mode: render and exit, no lock needed
+    if stdout_mode or use_stdin:
+        if use_stdin:
+            beads = json.load(sys.stdin)
+        else:
+            beads = get_beads_json(topic, include_all, [])
+        memories = {} if use_stdin else get_memories_json(topic)
+        render_full(beads, memories, topic)
+        return
+
+    # -- file modes (--once and daemon) need a worktree
+    root = repo_root()
+    if not root:
+        log_error("not in a git worktree")
+        sys.exit(1)
+
+    if not topic:
+        topic = detect_topic()
+
+    beads_dir = root / ".beads"
+    org_file = root / "beads.org"
+
+    if not beads_dir.exists():
+        log_error(f"no .beads/ directory at {root}")
+        log_error(f"  Run: timvisher_bd_topics set <topic>")
+        sys.exit(1)
+
+    acquire_lock(beads_dir)
+    atexit.register(release_lock)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGHUP, _signal_handler)
+
+    if once:
+        beads = get_beads_json(topic, include_all, [])
+        memories = get_memories_json(topic)
+        manifest = build_manifest(beads, memories, topic)
+        if not apply_manifest(str(org_file), manifest):
+            sys.exit(1)
+        return
+
+    # -- Daemon loop -------------------------------------------------------
+    # Always fetch --all so we see status transitions (open → closed
+    # renders as DONE).  The --all CLI flag only affects --once mode.
+    last_hash = None
+    log_info(f"watching topic={topic or '(auto)'} "
+             f"→ {org_file}  (every {interval}s)")
+
+    while True:
+        check_lock()
+        try:
+            beads = get_beads_json(topic, True, [])
+            memories = get_memories_json(topic)
+        except (json.JSONDecodeError, SystemExit):
+            time.sleep(interval)
+            continue
+
+        # Overwrite the countdown with a "checking" line
+        _status_line(f"checking beads...")
+
+        h = data_hash(beads, memories)
+        if h != last_hash:
+            manifest = build_manifest(beads, memories, topic)
+            if apply_manifest(str(org_file), manifest):
+                last_hash = h
+                # Activity happened — leave the log_info line visible
+                # (apply_manifest already printed it)
+            continue
+
+        # No changes — countdown replaces the "checking" line
+        for remaining in range(interval, 0, -1):
+            _status_line(f"next check in {remaining}s")
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
