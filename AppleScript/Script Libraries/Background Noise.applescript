@@ -1,10 +1,8 @@
 on mute()
 	
-	(*
 	if application "Spotify" is running then
 		tell application "Spotify" to set sound volume to 0
 	end if
-*)
 	
 	if application "VLC" is running then
 		tell application "VLC"
@@ -18,13 +16,11 @@ end mute
 on isMuted()
 	set spotifyMuted to false
 	
-	(*
 	if application "Spotify" is running then
 		tell application "Spotify"
 			set spotifyMuted to 0 is equal to sound volume
 		end tell
 	end if
-*)
 	
 	set vlcMuted to false
 	if application "VLC" is running then
@@ -38,13 +34,11 @@ end isMuted
 
 on volumeUp()
 	
-	(*
 	if application "Spotify" is running then
 		tell application "Spotify"
 			set sound volume to 47
 		end tell
 	end if
-*)
 	
 	if application "VLC" is running then
 		tell application "VLC"
@@ -68,13 +62,11 @@ end volumeUp
 
 on volumeDown()
 	
-	(*
 	if application "Spotify" is running then
 		tell application "Spotify"
 			set sound volume to 10
 		end tell
 	end if
-*)
 	
 	if application "VLC" is running then
 		tell application "VLC"
@@ -94,7 +86,6 @@ end volumeDown
 
 on getCurrentBackgroundNoise()
 	
-	(*
 	if application "VLC" is running and application "Spotify" is running then
 		tell application "VLC" to set vlcPlaying to playing
 		tell application "Spotify" to set spotifyPlaying to player state is playing
@@ -104,7 +95,6 @@ on getCurrentBackgroundNoise()
 			error m
 		end if
 	end if
-*)
 	if application "VLC" is running then
 		tell application "VLC"
 			if playing then
@@ -113,7 +103,6 @@ on getCurrentBackgroundNoise()
 		end tell
 	end if
 	
-	(*
 	if application "Spotify" is running then
 		tell application "Spotify"
 			if player state is playing then
@@ -121,27 +110,22 @@ on getCurrentBackgroundNoise()
 			end if
 		end tell
 	end if
-*)
 	return missing value
 end getCurrentBackgroundNoise
 
 -- getCurrentBackgroundNoise()
 
-(*
 on spotifyEnsurePaused()
 	if application "Spotify" is running then
 		tell application "Spotify" to pause
 	end if
 end spotifyEnsurePaused
-*)
 
 on hideBackgroundNoiseApps()
 	
-	(*
 	if application "Spotify" is running then
 		tell application "System Events" to set visible of application process "Spotify" to false
 	end if
-*)
 	
 	tell application "System Events"
 		if 1 is less than (count of (application processes whose name is "VLC")) then
@@ -153,7 +137,7 @@ end hideBackgroundNoiseApps
 -- hideBackgroundNoiseApps()
 
 on vlcPlayUrl(theUrl)
-	--spotifyEnsurePaused()
+	spotifyEnsurePaused()
 	tell application "VLC" to OpenURL theUrl
 	volumeUp()
 	hideBackgroundNoiseApps()
@@ -170,7 +154,6 @@ on vlcEnsurePaused()
 end vlcEnsurePaused
 
 
-(*
 on playSpotifyTrack(theTrack)
 	vlcEnsurePaused()
 	tell application "Spotify"
@@ -202,7 +185,6 @@ on playSpotifyTrack(theTrack)
 	volumeUp()
 	hideBackgroundNoiseApps()
 end playSpotifyTrack
-*)
 
 on playUrl(theUrl)
 	vlcPlayUrl(theUrl)
