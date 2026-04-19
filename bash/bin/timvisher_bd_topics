@@ -30,14 +30,18 @@ usage() {
     timvisher_bd_topics deactivate <topic>
     timvisher_bd_topics rm <topic>
     timvisher_bd_topics activate <topic>
+    timvisher_bd_topics subscribers <topic>
+    timvisher_bd_topics mv <source-topic> <dest-topic>
     timvisher_bd_topics prune [<topic>]
   Notes:
     - Topic paths are absolute or relative to the configured topics root.
-    - set must be run from within a git repo.
+    - set must be run from within a git repo or a directory with todo.org.
     - new can be run outside a git repo (it skips writing .beads/redirect).
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
+    - subscribers lists all registered subscribers for a topic.
+    - mv renames/moves a topic and updates all subscribers.
     - prune permanently deletes topics (rm -rf). When called bare, it offers
       to remove deactivated topics older than 14 days.
     - bd runs in the current directory unless a topic is provided. If the topic
@@ -94,13 +98,30 @@ print(os.path.normpath(resolved))
 PY
 }
 
-require_repo_root() {
+find_project_root() {
   local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+  if [[ -n $repo_root ]]
+  then
+    printf '%s' "$repo_root"
+    return 0
+  fi
 
-  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
-    die "Must be run from within a git repo"
+  if [[ -f ./todo.org ]]
+  then
+    pwd -P
+    return 0
+  fi
 
-  printf '%s' "$repo_root"
+  return 1
+}
+
+require_project_root() {
+  local root
+  root=$(find_project_root) ||
+    die "Must be run from within a git repo or a directory with todo.org"
+
+  printf '%s' "$root"
 }
 
 resolve_topic() {
@@ -219,7 +240,7 @@ read_current_topic() {
   local topic_file
   local topic_rel
 
-  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  repo_root=$(find_project_root) || return 1
   local state_dir
   state_dir=$(migrate_state_dir "$repo_root")
   topic_file="$state_dir/topic.txt"
@@ -293,13 +314,159 @@ write_repo_redirect() {
     die "Unable to write '%s'" "$redirect_path"
 }
 
+topic_subscribers_dir() {
+  local topic_abs=$1
+
+  printf '%s' "$topic_abs/.timvisher_bd_topics"
+}
+
+topic_subscribers_file() {
+  local topic_abs=$1
+
+  printf '%s' "$topic_abs/.timvisher_bd_topics/subscribers.txt"
+}
+
+_subscribers_lockdir=""
+trap 'rm -rf -- "$_subscribers_lockdir"' 0
+
+with_subscribers_lock() {
+  local topic_abs=$1
+  shift
+
+  local subs_dir
+  subs_dir=$(topic_subscribers_dir "$topic_abs")
+  local lockdir="$subs_dir/subscribers.lock"
+
+  if [[ ! -d $subs_dir ]]
+  then
+    mkdir -p "$subs_dir" ||
+      die "Unable to create '%s'" "$subs_dir"
+  fi
+
+  if ! mkdir -- "$lockdir" 2>/dev/null
+  then
+    die "Unable to acquire lock '%s' (another process may be modifying subscribers)" "$lockdir"
+  fi
+
+  # Only record after successful mkdir — trap must never rm a lock we don't own
+  _subscribers_lockdir=$lockdir
+
+  "$@"
+  local rc=$?
+
+  rm -rf -- "$_subscribers_lockdir"
+  _subscribers_lockdir=""
+
+  return $rc
+}
+
+_register_subscriber_impl() {
+  local topic_abs=$1
+  local subscriber=$2
+
+  local subs_file
+  subs_file=$(topic_subscribers_file "$topic_abs")
+
+  # Check if already registered
+  if [[ -f $subs_file ]]
+  then
+    local existing
+    while IFS= read -r -d '' existing
+    do
+      if [[ $existing == "$subscriber" ]]
+      then
+        return 0
+      fi
+    done < "$subs_file"
+  fi
+
+  printf '%s\0' "$subscriber" >> "$subs_file" ||
+    die "Unable to write '%s'" "$subs_file"
+}
+
+register_subscriber() {
+  with_subscribers_lock "$1" _register_subscriber_impl "$@"
+}
+
+_deregister_subscriber_impl() {
+  local topic_abs=$1
+  local subscriber=$2
+
+  local subs_file
+  subs_file=$(topic_subscribers_file "$topic_abs")
+
+  [[ -f $subs_file ]] || return 0
+
+  local entries=()
+  local entry
+  while IFS= read -r -d '' entry
+  do
+    if [[ $entry != "$subscriber" ]]
+    then
+      entries+=("$entry")
+    fi
+  done < "$subs_file"
+
+  : > "$subs_file"
+  local e
+  for e in "${entries[@]}"
+  do
+    printf '%s\0' "$e" >> "$subs_file"
+  done
+}
+
+deregister_subscriber() {
+  local subs_file
+  subs_file=$(topic_subscribers_file "$1")
+  [[ -f $subs_file ]] || return 0
+
+  with_subscribers_lock "$1" _deregister_subscriber_impl "$@"
+}
+
+list_subscribers() {
+  local topic_abs=$1
+
+  local subs_file
+  subs_file=$(topic_subscribers_file "$topic_abs")
+
+  if [[ ! -f $subs_file ]]
+  then
+    return 0
+  fi
+
+  local entry
+  while IFS= read -r -d '' entry
+  do
+    if [[ -d $entry ]]
+    then
+      printf '%s\n' "$entry"
+    else
+      printf '%s (stale)\n' "$entry"
+    fi
+  done < "$subs_file"
+}
+
 set_topic() {
   local repo_root=$1
   local topic_rel=$2
   local topic_abs=$3
 
+  # Deregister from old topic if switching
+  local old_topic_rel
+  old_topic_rel=$(read_current_topic 2>/dev/null || true)
+  if [[ -n $old_topic_rel && $old_topic_rel != "$topic_rel" ]]
+  then
+    local old_topic_abs
+    old_topic_abs=$(normalize_topic_path "$topics_root_real" "$old_topic_rel") || true
+    if [[ -n $old_topic_abs ]]
+    then
+      deregister_subscriber "$old_topic_abs" "$repo_root"
+    fi
+  fi
+
   write_repo_redirect "$repo_root" "$topic_abs"
   write_topic_file "$repo_root" "$topic_rel"
+  register_subscriber "$topic_abs" "$repo_root"
 }
 
 if [[ $# -eq 0 ]]
@@ -405,7 +572,7 @@ case $cmd in
     fi
     ;;
   current)
-    repo_root=$(require_repo_root)
+    repo_root=$(require_project_root) || exit 1
 
     state_dir=$(migrate_state_dir "$repo_root")
     topic_file="$state_dir/topic.txt"
@@ -469,7 +636,7 @@ case $cmd in
     bd "$@"
     ;;
   set)
-    repo_root=$(require_repo_root)
+    repo_root=$(require_project_root) || exit 1
 
     if [[ $# -gt 1 ]]
     then
@@ -532,10 +699,10 @@ case $cmd in
     set_topic "$repo_root" "$topic_rel" "$topic_abs"
     ;;
   new)
-    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    repo_root=$(find_project_root 2>/dev/null || true)
     if [[ -z $repo_root ]]
     then
-      warn "Not in a git repo; skipping .beads/redirect setup"
+      warn "No project root found (git repo or todo.org); skipping .beads/redirect setup"
     fi
 
     if [[ $# -ne 1 ]]
@@ -708,6 +875,143 @@ case $cmd in
           die "Unable to remove '%s'" "$topic_abs"
       done
     fi
+    ;;
+  subscribers)
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    [[ -n $topic_input ]] || die "Topic argument is empty"
+
+    resolve_topic "$topic_input"
+
+    beads_dir="$topic_abs/.beads"
+    if [[ ! -d $beads_dir ]]
+    then
+      error "Topic '%s' does not contain .beads" "$topic_abs"
+      list_topics
+      exit 1
+    fi
+
+    list_subscribers "$topic_abs"
+    ;;
+  mv|rename)
+    if [[ $# -ne 2 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    src_input=$(strip_beads_suffix "$1")
+    dst_input=$(strip_beads_suffix "$2")
+    [[ -n $src_input ]] || die "Source topic argument is empty"
+    [[ -n $dst_input ]] || die "Destination topic argument is empty"
+
+    resolve_topic "$src_input"
+    src_abs=$topic_abs
+    src_rel=$topic_rel
+
+    resolve_topic "$dst_input"
+    dst_abs=$topic_abs
+    dst_rel=$topic_rel
+
+    if [[ ! -d $src_abs/.beads ]]
+    then
+      die "Source topic '%s' does not contain .beads" "$src_abs"
+    fi
+
+    if [[ -e $dst_abs ]]
+    then
+      die "Destination '%s' already exists" "$dst_abs"
+    fi
+
+    # Show subscribers before moving
+    info "Subscribers for '%s':" "$src_rel"
+    list_subscribers "$src_abs"
+
+    # Move the topic directory
+    mkdir -p "$(dirname "$dst_abs")" ||
+      die "Unable to create parent directory for '%s'" "$dst_abs"
+
+    mv "$src_abs" "$dst_abs" ||
+      die "Unable to move '%s' → '%s'" "$src_abs" "$dst_abs"
+
+    info "Moved '%s' → '%s'" "$src_rel" "$dst_rel"
+
+    # Update dolt backup remote URL
+    for repo_state in "$dst_abs"/.beads/embeddeddolt/*/.dolt/repo_state.json
+    do
+      if [[ -f $repo_state ]]
+      then
+        jq --arg old "file://${src_abs}/.beads/backup" \
+           --arg new "file://${dst_abs}/.beads/backup" \
+           '(.backups, .remotes) |= (if . then with_entries(if .value.url == $old then .value.url = $new else . end) else . end)' \
+           "$repo_state" > "$repo_state.tmp" &&
+          mv "$repo_state.tmp" "$repo_state" ||
+          warn "Unable to update dolt backup remote in '%s'" "$repo_state"
+      fi
+    done
+
+    # Update each subscriber (under lock)
+    subs_dir=$(topic_subscribers_dir "$dst_abs")
+    lockdir="$subs_dir/subscribers.lock"
+
+    mkdir -p "$subs_dir" ||
+      die "Unable to create '%s'" "$subs_dir"
+
+    if ! mkdir -- "$lockdir" 2>/dev/null
+    then
+      die "Unable to acquire lock '%s' (another process may be modifying subscribers)" "$lockdir"
+    fi
+    _subscribers_lockdir=$lockdir
+
+    subs_file=$(topic_subscribers_file "$dst_abs")
+
+    if [[ -f $subs_file ]]
+    then
+      live_subs=()
+      while IFS= read -r -d '' entry
+      do
+        if [[ ! -d $entry ]]
+        then
+          info "  %s (stale, removing)" "$entry"
+          continue
+        fi
+
+        # Update redirect
+        redirect_path="$entry/.beads/redirect"
+        if [[ -f $redirect_path ]]
+        then
+          printf '%s\n' "$dst_abs/.beads" > "$redirect_path" ||
+            warn "Unable to update redirect in '%s'" "$entry"
+        fi
+
+        # Update topic.txt
+        state_dir=$(migrate_state_dir "$entry")
+        topic_file="$state_dir/topic.txt"
+        if [[ -f $topic_file ]]
+        then
+          printf '%s\n' "$dst_rel" > "$topic_file" ||
+            warn "Unable to update topic.txt in '%s'" "$entry"
+        fi
+
+        info "  Updated '%s'" "$entry"
+        live_subs+=("$entry")
+      done < "$subs_file"
+
+      # Rewrite subscribers file without stale entries
+      : > "$subs_file"
+      for s in "${live_subs[@]}"
+      do
+        printf '%s\0' "$s" >> "$subs_file"
+      done
+    fi
+
+    rm -rf -- "$_subscribers_lockdir"
+    _subscribers_lockdir=""
     ;;
   *)
     usage
