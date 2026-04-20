@@ -1,5 +1,4 @@
 on mute()
-	
 	if application "Spotify" is running then
 		tell application "Spotify" to set sound volume to 0
 	end if
@@ -33,7 +32,6 @@ on isMuted()
 end isMuted
 
 on volumeUp()
-	
 	if application "Spotify" is running then
 		tell application "Spotify"
 			set sound volume to 47
@@ -172,6 +170,10 @@ on playSpotifyTrack(theTrack)
 			end tell
 			tell application "Spotify"
 				set isPlaying to player state is playing
+				
+				if not isPlaying then
+					play track theTrack
+				end if
 			end tell
 			if isVisible and isPlaying then
 				set visibleAndPlayingCount to visibleAndPlayingCount + 1
