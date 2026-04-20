@@ -5,8 +5,6 @@
 # fires on success.  This pre-hook ensures cleanup happens every
 # run, even when tests fail.
 
-set -euo pipefail
-
 echo "--- aws-vault keychain cleanup ---"
 
 # Remove aws-vault session and oidc-token entries from the login keychain.

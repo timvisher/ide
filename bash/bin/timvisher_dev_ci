@@ -902,13 +902,16 @@ cmd__integrate() {
     # integration.  The output is passed to the agent so it can tell
     # which failures are pre-existing vs caused by the merge.
     local baseline_log="${dev_path}/x.dev-ci-baseline.log"
+    local baseline_results="${dev_path}/x.dev-ci-baseline-results.txt"
     local baseline_clean=true
 
     if $has_run_tests
     then
         info "integrate: running baseline tests on @{u}"
+        : > "$baseline_results"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
-        if run_hooks "$dev_path" "run-tests.sh" > "$baseline_log" 2>&1
+        if TIMVISHER_DEV_CI_RESULTS_FILE="$baseline_results" \
+           run_hooks "$dev_path" "run-tests.sh" > "$baseline_log" 2>&1
         then
             info "integrate: baseline tests passed"
         else
@@ -1061,17 +1064,22 @@ PROMPT_EOF
     fi
 
     # Verify tests deterministically -- don't rely solely on the agent.
+    # Hooks that honor TIMVISHER_DEV_CI_RESULTS_FILE write a deterministic
+    # summary of each phase (vet/test/build pass/fail plus stable stderr)
+    # which we diff across baseline and verify to distinguish pre-existing
+    # failures from new regressions introduced by the merge.
     if [[ $final_status == pass ]] && $has_run_tests
     then
         info "integrate: verifying tests post-merge"
         local verify_log="${dev_path}/x.dev-ci-verify.log"
+        local verify_results="${dev_path}/x.dev-ci-verify-results.txt"
+        : > "$verify_results"
         run_ext_hook "$dev_path" "pre-run-tests.sh"
-        if ! run_hooks "$dev_path" "run-tests.sh" > "$verify_log" 2>&1
+        if ! TIMVISHER_DEV_CI_RESULTS_FILE="$verify_results" \
+             run_hooks "$dev_path" "run-tests.sh" > "$verify_log" 2>&1
         then
-            # If baseline already had failures, check whether the
-            # post-merge failures are the same.  Identical output means
-            # no new regressions were introduced by the merge.
-            if [[ $baseline_clean == false ]] && diff -q "$baseline_log" "$verify_log" >/dev/null 2>&1
+            if [[ $baseline_clean == false ]] \
+               && diff -q "$baseline_results" "$verify_results" >/dev/null 2>&1
             then
                 info "integrate: post-merge failures match baseline; treating as pass"
             else
@@ -1079,10 +1087,10 @@ PROMPT_EOF
                 final_status=fail
             fi
         fi
-        rm -f "$verify_log"
+        rm -f "$verify_log" "$verify_results"
     fi
 
-    rm -f "$baseline_log"
+    rm -f "$baseline_log" "$baseline_results"
 
     # Run post-integration hook if integration passed.
     ensure_repo_script "$dev_path" "post-integrate.sh" || true
