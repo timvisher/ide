@@ -30,9 +30,9 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 		set end of commandList to urlArg
 	end if
 	tell script "timvisher utilities" to doShellScript(commandList)
-
+	
 	set maxWindowCreationTime to (current date) + 10
-
+	
 	set m to "Unable to create window in time"
 	repeat while application "Vivaldi" is not running
 		if maxWindowCreationTime < (current date) then
@@ -42,9 +42,9 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 		log "Waiting for Vivaldi to be running"
 		delay 1
 	end repeat
-
+	
 	delay 1
-
+	
 	tell application "System Events"
 		repeat while 0 is equal to (count of windows of application process "Vivaldi")
 			if maxWindowCreationTime < (current date) then
@@ -55,7 +55,7 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 			delay 1
 		end repeat
 	end tell
-
+	
 	delay 1
 end makeNewProfile2
 
@@ -69,7 +69,7 @@ on getTabWithUrl(u)
 	if application "Vivaldi" is not running then
 		return missing value
 	end if
-
+	
 	tell application "Vivaldi"
 		repeat with w in windows
 			set t to missing value
@@ -80,7 +80,7 @@ on getTabWithUrl(u)
 				exit repeat
 			end if
 		end repeat
-
+		
 		t
 	end tell
 end getTabWithUrl
