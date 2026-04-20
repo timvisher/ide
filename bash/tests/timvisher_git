@@ -2,7 +2,9 @@
 
 # Tests for timvisher_git functions
 
-set -eo pipefail
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  { echo "Unable to source logging functions" >&2; exit 1; }
 
 failures=0
 tests=0
@@ -20,23 +22,28 @@ run_test() {
   ((tests++)) || true
 }
 
-script_dir="$(cd "$(dirname "$0")/.." && pwd)"
+script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
+  die "cannot resolve script_dir"
 script="${script_dir}/bin/timvisher_git"
 
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d) ||
+  die "mktemp failed"
 trap 'rm -rf "$tmpdir"' EXIT
 
 # Create a minimal config dir so the script can initialize
 config_dir="$tmpdir/config"
-mkdir -p "$config_dir/bash/bin/timvisher_git_hooks"
+mkdir -p "$config_dir/bash/bin/timvisher_git_hooks" ||
+  die "cannot create config dir"
 
 # Create minimal cache and live dirs
 cache_dir="$tmpdir/cache"
 live_dir="$tmpdir/git"
-mkdir -p "$cache_dir" "$live_dir"
+mkdir -p "$cache_dir" "$live_dir" ||
+  die "cannot create cache/live dirs"
 
 # Create mock gh that handles pr view, api /repos/, repo set-default, repo view
-mkdir -p "$tmpdir/mockbin"
+mkdir -p "$tmpdir/mockbin" ||
+  die "cannot create mockbin dir"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
 #!/usr/bin/env bash
 
@@ -168,6 +175,9 @@ printf '%s\n' "myuser" "altuser" > "$mock_self_dir/timvisher_git.config/github_u
 source_timvisher_git() {
   export XDG_CONFIG_HOME="$tmpdir"
   export TIMVISHER_GIT_HOME="$live_dir"
+  # Disable agent safety guards in ~/bin/git so command git worktree add
+  # and similar operations work during tests.
+  unset TIMVISHER_AGENT
 
   # Rename config_dir so script finds our test config
   mkdir -p "$tmpdir/timvisher/ide"
@@ -594,44 +604,54 @@ fi
 
 # Test: clone_stacked skips stacking on existing target with no x.stack-pending
 run_test
-# Make a commit in the target so we can detect if reset happens
-"$test_git" -C "$target_dir" -c user.email=test@test.com -c user.name=Test \
-  -c core.hooksPath=/dev/null commit --allow-empty -m "target-only commit" >/dev/null 2>&1
-target_only_commit=$("$test_git" -C "$target_dir" rev-parse HEAD)
-target_dir2=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
-if (( rc == 0 ))
+if [[ -z $target_dir || ! -d $target_dir ]]
 then
-  target_head2=$("$test_git" -C "$target_dir2" rev-parse HEAD 2>/dev/null) || true
-  if [[ $target_head2 == "$target_only_commit" ]]
-  then
-    pass "clone_stacked: skips stacking on existing target (HEAD preserved)"
-  else
-    fail "clone_stacked: should preserve existing target HEAD '${target_only_commit}', got '${target_head2}'"
-  fi
+  fail "clone_stacked: skipping — target_dir is empty from prior failure"
 else
-  fail "clone_stacked: second call returned rc=${rc}"
+  # Make a commit in the target so we can detect if reset happens
+  "$test_git" -C "$target_dir" -c user.email=test@test.com -c user.name=Test \
+    -c core.hooksPath=/dev/null commit --allow-empty -m "target-only commit" >/dev/null 2>&1
+  target_only_commit=$("$test_git" -C "$target_dir" rev-parse HEAD)
+  target_dir2=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
+  if (( rc == 0 ))
+  then
+    target_head2=$("$test_git" -C "$target_dir2" rev-parse HEAD 2>/dev/null) || true
+    if [[ $target_head2 == "$target_only_commit" ]]
+    then
+      pass "clone_stacked: skips stacking on existing target (HEAD preserved)"
+    else
+      fail "clone_stacked: should preserve existing target HEAD '${target_only_commit}', got '${target_head2}'"
+    fi
+  else
+    fail "clone_stacked: second call returned rc=${rc}"
+  fi
 fi
 
 # Test: clone_stacked recovers via x.stack-pending
 run_test
-# Advance the base branch with a new commit
-"$test_git" -C "$base_dir" -c user.email=test@test.com -c user.name=Test \
-  -c core.hooksPath=/dev/null commit --allow-empty -m "recovery commit" >/dev/null 2>&1
-recovery_commit=$("$test_git" -C "$base_dir" rev-parse HEAD)
-# Simulate partial failure: write x.stack-pending
-printf '%s\n' "testorg/testrepo/feature/base" > "${target_dir}/x.stack-pending"
-target_dir3=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
-if (( rc == 0 ))
+if [[ -z $base_dir || ! -d $base_dir || -z $target_dir || ! -d $target_dir ]]
 then
-  target_head3=$("$test_git" -C "$target_dir3" rev-parse HEAD 2>/dev/null) || true
-  if [[ $target_head3 == "$recovery_commit" && ! -f "${target_dir3}/x.stack-pending" ]]
-  then
-    pass "clone_stacked: recovers via x.stack-pending and re-stacks"
-  else
-    fail "clone_stacked: recovery failed (target=${target_head3} expected=${recovery_commit} pending=$(test -f "${target_dir3}/x.stack-pending" && echo yes || echo no))"
-  fi
+  fail "clone_stacked: skipping recovery — base_dir or target_dir is empty from prior failure"
 else
-  fail "clone_stacked: recovery call returned rc=${rc}"
+  # Advance the base branch with a new commit
+  "$test_git" -C "$base_dir" -c user.email=test@test.com -c user.name=Test \
+    -c core.hooksPath=/dev/null commit --allow-empty -m "recovery commit" >/dev/null 2>&1
+  recovery_commit=$("$test_git" -C "$base_dir" rev-parse HEAD)
+  # Simulate partial failure: write x.stack-pending
+  printf '%s\n' "testorg/testrepo/feature/base" > "${target_dir}/x.stack-pending"
+  target_dir3=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
+  if (( rc == 0 ))
+  then
+    target_head3=$("$test_git" -C "$target_dir3" rev-parse HEAD 2>/dev/null) || true
+    if [[ $target_head3 == "$recovery_commit" && ! -f "${target_dir3}/x.stack-pending" ]]
+    then
+      pass "clone_stacked: recovers via x.stack-pending and re-stacks"
+    else
+      fail "clone_stacked: recovery failed (target=${target_head3} expected=${recovery_commit} pending=$(test -f "${target_dir3}/x.stack-pending" && echo yes || echo no))"
+    fi
+  else
+    fail "clone_stacked: recovery call returned rc=${rc}"
+  fi
 fi
 
 # Test: clone_stacked rejects mismatched org/repo
