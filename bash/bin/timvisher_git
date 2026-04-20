@@ -3,6 +3,7 @@
 # Worktree-based git clone/worktree manager.
 # Uses separate cache/live roots.
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
@@ -401,10 +402,11 @@ maybe_execute_hook() {
 
 cache_trunk() {
   local source=$1
-  local org=$(get_org "$source") ||
+  local org repo
+  org=$(get_org "$source") ||
     die "Unable to get org from ‘${source}’"
-  local repo=$(get_repo "$source") ||
-    die "Unable to repo from ‘${source}’"
+  repo=$(get_repo "$source") ||
+    die "Unable to get repo from ‘${source}’"
   local org_dir="${repo_trunks_dir}/${org}"
   local repo_dir="${org_dir}/${repo}"
 
@@ -715,7 +717,8 @@ branch_path_for_source() {
       branch=${branch_dir##*/}
       ;;
     https://github.com/*/*)
-      local trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
+      local trunk_branch_name
+      trunk_branch_name=$(get_trunk_branch_name_from_cache "$trunk_cache")
       org=$(get_org "$source")
       repo=$(get_repo "$source")
       branch_dir="${org}/${repo}/${trunk_branch_name}"
@@ -750,7 +753,8 @@ branch_path_for_source() {
 
 ensure_worktree() {
   local source=$1
-  local trunk_cache=$(cache_trunk "$source")
+  local trunk_cache
+  trunk_cache=$(cache_trunk "$source")
 
   local branch_dir_and_branch
   branch_dir_and_branch=$(branch_path_for_source "$source" "$trunk_cache")
@@ -857,17 +861,63 @@ ensure_worktree() {
           }
       fi
     else
-      if git show-ref --verify --quiet "refs/heads/${branch}"; then
-        command git checkout "${branch}" >&2 ||
-          warn "git checkout ${branch} exited non-zero (post-checkout hook failure?)"
-      elif git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
-        command git checkout --track -b "${branch}" "origin/${branch}" >&2 ||
-          warn "git checkout --track -b ${branch} origin/${branch} exited non-zero"
-      else
-        local trunk_branch
-        trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
-        command git checkout --track -b "${branch}" "origin/${trunk_branch}" >&2 ||
-          warn "git checkout --track -b ${branch} origin/${trunk_branch} exited non-zero"
+      # For repos with selective fetch refspecs (e.g., dd-source), the
+      # target branch may not have been fetched by cache_trunk.  Add a
+      # refspec and fetch it before the checkout logic.  This mirrors
+      # _dd_git__ensure_branch_refspec from the git wrapper, which
+      # timvisher_git bypasses via `command git`.
+      if ! command git show-ref --verify --quiet "refs/remotes/origin/${branch}"
+      then
+        local refspec="+refs/heads/${branch}:refs/remotes/origin/${branch}"
+        if ! command git config --local --fixed-value --get-all \
+          remote.origin.fetch "$refspec" >/dev/null 2>&1
+        then
+          command git config --local --add remote.origin.fetch "$refspec"
+        fi
+        if ! command git fetch origin "$refspec" >&2
+        then
+          # Only remove the refspec if the branch genuinely doesn't exist
+          # on the remote (ls-remote exit code 2).  Transient errors
+          # (network, auth) should not permanently strip the refspec.
+          local ls_rc=0
+          command git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1 ||
+            ls_rc=$?
+          if (( ls_rc == 2 ))
+          then
+            command git config --local --fixed-value --unset-all \
+              remote.origin.fetch "$refspec" 2>/dev/null || true
+          elif (( 0 < ls_rc ))
+          then
+            warn "fetch and ls-remote both failed for '%s'; keeping refspec" "$branch"
+          else
+            warn "fetch failed for '%s' but branch exists on remote; keeping refspec" "$branch"
+          fi
+          # Don't fall through to checkout — the remote ref wasn't fetched
+          # so the checkout logic would incorrectly create from trunk.
+          if (( ls_rc != 2 ))
+          then
+            error "Unable to fetch '%s'; skipping checkout" "$branch"
+            errors=1
+          fi
+        fi
+      fi
+
+      if [[ -z $errors ]]
+      then
+        if git show-ref --verify --quiet "refs/heads/${branch}"
+        then
+          command git checkout "${branch}" >&2 ||
+            warn "git checkout ${branch} exited non-zero (post-checkout hook failure?)"
+        elif git show-ref --verify --quiet "refs/remotes/origin/${branch}"
+        then
+          command git checkout --track -b "${branch}" "origin/${branch}" >&2 ||
+            warn "git checkout --track -b ${branch} origin/${branch} exited non-zero"
+        else
+          local trunk_branch
+          trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
+          command git checkout --track -b "${branch}" "origin/${trunk_branch}" >&2 ||
+            warn "git checkout --track -b ${branch} origin/${trunk_branch} exited non-zero"
+        fi
       fi
 
       # Verify we actually landed on the right branch regardless of exit code
@@ -1343,6 +1393,7 @@ strip_live_prefix() {
   local path=$1
   [[ -n $path ]] || return 0
 
+  # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
   case $path in
     '~')   path="$HOME" ;;
     '~/'*) path="${HOME}/${path#'~'/}" ;;
@@ -1356,7 +1407,7 @@ strip_live_prefix() {
       local live_prefix="${live_repo_dir}/"
       if [[ $path == "${live_prefix}"* ]]
       then
-        printf '%s' "${path#${live_prefix}}"
+        printf '%s' "${path#"${live_prefix}"}"
         return
       fi
       # Fallback: strip up to the first /git/ path component.
@@ -1387,6 +1438,7 @@ clone() {
 
   # Expand tilde (command-line args are already expanded, but clipboard
   # or variable values passed by callers may not be).
+  # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
   case $target in
     '~')   target="$HOME" ;;
     '~/'*) target="${HOME}/${target#'~'/}" ;;
@@ -1406,6 +1458,7 @@ clone() {
 
   if [[ -n $stack_on_base ]]
   then
+    # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
     case $stack_on_base in
       '~')   stack_on_base="$HOME" ;;
       '~/'*) stack_on_base="${HOME}/${stack_on_base#'~'/}" ;;
@@ -1581,6 +1634,7 @@ is_branch_ish() {
   case $source in
     /* | ./* | ../* | ~*)
       local expanded="$source"
+      # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
       case $expanded in
         '~')   expanded="$HOME" ;;
         '~/'*) expanded="${HOME}/${expanded#'~'/}" ;;
@@ -1719,7 +1773,7 @@ worktree_gc__should_archive() {
     x.timvisher_EXP_terraform_export_format_init_plan*) return 1 ;;
     applied.*|*/applied.*) return 1 ;;
     current.*|*/current.*) return 1 ;;
-    *.auto.tfvars*|*/*.auto.tfvars*) return 1 ;;
+    *.auto.tfvars*) return 1 ;;
     x.home|x.home/*) return 1 ;;
     x.config|x.config/*) return 1 ;;
     joblog|*/joblog) return 1 ;;
@@ -1922,7 +1976,12 @@ worktree_gc() {
       info "Archived %d file(s) from %s" "${archive_counts[i]}" "${archive_labels[i]}"
     fi
     info "Removing %s ..." "$wt"
-    git -C "$trunk" worktree remove --force "$wt" && info "  done" || warn "  FAILED"
+    if git -C "$trunk" worktree remove --force "$wt"
+    then
+      info "  done"
+    else
+      warn "  FAILED"
+    fi
   done
 
   info "Cleanup complete. Archives at: %s" "$worktree_gc__archive_dir"
