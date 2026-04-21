@@ -344,6 +344,17 @@ else
   fail "allows 'git diff @{u} HEAD': got '${result}'"
 fi
 
+# Test: flag values containing '..' do NOT trigger the single-arg range guard
+# (e.g. --format="%H..%s" — the '..' is in the format string, not a range)
+run_test
+result=$(run_wrapper_agent "log --format='%H..%s' HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log --format=%H..%s HEAD' for agents (.. in flag value)"
+else
+  fail "flag value with ..: got '${result}'"
+fi
+
 # Test: range guard is now aictl_die — NIRMI+REASON does NOT bypass it
 # (promoted from warn because 48 bypasses across 6 sessions showed the
 # warning was just getting copy-pasted around)

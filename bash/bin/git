@@ -204,9 +204,27 @@ then
     range_guard__head_or_empty='^(HEAD)?$'
 
     # --- Per-arg range check: A..B / A...B embedded in a single arg ---
+    #
+    # Only inspects positional (non-flag) args, and stops at `--`. Flag
+    # VALUES like `--format="%H..%s"` must not trigger the guard (they
+    # contain `..` for benign reasons). Paths after `--` aren't refs.
     range_guard__single_arg_range_seen=false
+    range_guard__past_double_dash=false
     for x in "$@"
     do
+      if [[ $range_guard__past_double_dash == true ]]
+      then
+        continue
+      fi
+      if [[ $x == -- ]]
+      then
+        range_guard__past_double_dash=true
+        continue
+      fi
+      if [[ $x == -* ]]
+      then
+        continue
+      fi
       if [[ $x == *..* ]]
       then
         range_guard__single_arg_range_seen=true
