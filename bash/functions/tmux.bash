@@ -486,7 +486,7 @@ function ntmux3() {
     # directory (e.g. relative path that isn't an org/repo shorthand),
     # fall back to opening it as a local session.
     local branch_dir
-    branch_dir=$(timvisher_git clone "$clone_target" ${stack_on_base:+"$stack_on_base"}) || {
+    branch_dir=$(TIMVISHER_NTMUX=1 timvisher_git clone "$clone_target" ${stack_on_base:+"$stack_on_base"}) || {
         if [[ -d $clone_target ]] &&
             ! git -C "$clone_target" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
             ! [[ $(git -C "$clone_target" rev-parse --is-bare-repository 2>/dev/null) == true ]]

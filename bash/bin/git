@@ -377,7 +377,7 @@ then
       fi
     done
 
-    if [[ $wt_subcmd == add ]]
+    if [[ $wt_subcmd == add && -z ${TIMVISHER_NTMUX:-} ]]
     then
       wt_suggestions=()
       wt_suggestions+=(--suggestion "source ~/.bashrc && ntmux3 -d org/repo/branch-name")
