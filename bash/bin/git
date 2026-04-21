@@ -47,7 +47,12 @@ then
     aictl__stub_parse "$@"
     if [[ -n ${TIMVISHER_AGENT_NIRMI:-} ]]
     then
-      printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail skipped. Be sure you know what you are doing."}\n' "$_sc" >&2
+      if [[ -z ${TIMVISHER_AGENT_NIRMI_REASON:-} ]]
+      then
+        printf '{"type":"instruction","level":"error","code":"aictl_bypass_missing_reason","message":"NIRMI=1 without TIMVISHER_AGENT_NIRMI_REASON. Bypass requires both.","retryable":false}\n' >&2
+        exit 1
+      fi
+      printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail bypassed with logged reason."}\n' "$_sc" >&2
       return 0
     fi
     printf '{"type":"instruction","level":"warning","code":"%s","message":"%s","retryable":true}\n' "$_sc" "$_sm" >&2

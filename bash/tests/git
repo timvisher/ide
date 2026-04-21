@@ -344,27 +344,38 @@ else
   fail "allows 'git diff @{u} HEAD': got '${result}'"
 fi
 
-# Test: NIRMI bypasses range guard
+# Test: NIRMI+REASON bypasses range guard (warn-level)
 run_test
 run_wrapper_agent_nirmi() {
-  TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 \
+  TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="testing bypass" \
   PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 result=$(run_wrapper_agent_nirmi "log abc123..HEAD" || true)
 if [[ $result == *'"level":"bypass"'* ]] && [[ $result == *"git_range_no_upstream_ref"* ]] && [[ $result != *'"level":"warning"'* ]]
 then
-  pass "NIRMI bypasses range guard"
+  pass "NIRMI+REASON bypasses range guard"
 else
-  fail "NIRMI bypass: got '${result}'"
+  fail "NIRMI+REASON bypass: got '${result}'"
 fi
 
-# Test: NIRMI does NOT bypass push guard
+# Test: NIRMI alone (no REASON) emits aictl_bypass_missing_reason
 run_test
-result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' log abc123..HEAD" 2>&1 || true)
+if [[ $result == *'"code":"aictl_bypass_missing_reason"'* ]]
+then
+  pass "NIRMI without REASON rejects bypass"
+else
+  fail "NIRMI without REASON: got '${result}'"
+fi
+
+# Test: NIRMI+REASON does NOT bypass push guard (push is a die)
+run_test
+result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
 if [[ $result == *'"code":"git_push_blocked"'* ]]
 then
-  pass "NIRMI does NOT bypass push guard"
+  pass "NIRMI+REASON does NOT bypass push guard"
 else
   fail "NIRMI should not bypass push: got '${result}'"
 fi

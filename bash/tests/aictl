@@ -126,44 +126,73 @@ else
   fail "aictl_warn should exit non-zero, got rc=$rc"
 fi
 
-# Test: aictl_warn includes structured bypass object
+# Test: aictl_warn does NOT include a bypass object (agents had been
+# copying the ready-to-paste bypass command rather than reconsidering)
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1 || true)
-if [[ $result == *'"bypass":'* ]] && [[ $result == *'"mechanism":"environment_variable"'* ]] && [[ $result == *'"name":"TIMVISHER_AGENT_NIRMI"'* ]]
+if [[ $result != *'"bypass":'* ]] && [[ $result != *'"mechanism"'* ]]
 then
-  pass "aictl_warn includes structured bypass object"
+  pass "aictl_warn omits bypass object"
 else
-  fail "aictl_warn bypass object: got '${result}'"
+  fail "aictl_warn should omit bypass object: got '${result}'"
 fi
 
-# Test: aictl_warn bypass includes full command when --command given
+# Test: aictl_warn does NOT leak TIMVISHER_AGENT_NIRMI into output
+# when --command is passed (used to be emitted as ready-to-paste)
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m --command 'git log abc..HEAD'" 2>&1 || true)
-if [[ $result == *'"command":"TIMVISHER_AGENT_NIRMI=1 git log abc..HEAD"'* ]]
+if [[ $result != *'"command":"TIMVISHER_AGENT_NIRMI=1'* ]] && [[ $result != *'TIMVISHER_AGENT_NIRMI=1 git log'* ]]
 then
-  pass "aictl_warn bypass includes full command"
+  pass "aictl_warn does not emit ready-to-paste bypass command"
 else
-  fail "aictl_warn bypass command: got '${result}'"
+  fail "aictl_warn leaks bypass command: got '${result}'"
 fi
 
-# Test: aictl_warn NIRMI bypass outputs level:bypass and continues
+# Test: aictl_warn with NIRMI only (no REASON) emits aictl_bypass_missing_reason
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
+result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1 || true)
+if [[ $result == *'"code":"aictl_bypass_missing_reason"'* ]] && [[ $result != *"continued"* ]]
+then
+  pass "aictl_warn with NIRMI only requires REASON"
+else
+  fail "aictl_warn NIRMI-only: got '${result}'"
+fi
+
+# Test: aictl_warn with NIRMI + REASON bypasses and continues
+run_test
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="testing bypass" bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
 if [[ $result == *'"level":"bypass"'* ]] && [[ $result == *"continued"* ]]
 then
-  pass "aictl_warn NIRMI bypass outputs level:bypass and continues"
+  pass "aictl_warn NIRMI+REASON bypasses and continues"
 else
-  fail "aictl_warn NIRMI bypass: got '${result}'"
+  fail "aictl_warn NIRMI+REASON: got '${result}'"
 fi
 
-# Test: aictl_warn NIRMI bypass does NOT emit level:warning
+# Test: aictl_warn NIRMI+REASON bypass does NOT emit level:warning
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
 if [[ $result != *'"level":"warning"'* ]]
 then
-  pass "aictl_warn NIRMI bypass does not emit warning"
+  pass "aictl_warn bypass path does not emit warning"
 else
-  fail "aictl_warn NIRMI should not emit warning: got '${result}'"
+  fail "aictl_warn bypass should not emit warning: got '${result}'"
+fi
+
+# Test: aictl_warn NIRMI+REASON appends a log event (ts, code, reason, cwd)
+run_test
+tmp_state=$(mktemp -d)
+trap 'rm -rf "$tmp_state"' EXIT
+XDG_STATE_HOME="$tmp_state" TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="why we bypassed" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code test_logged --message m --command 'git log main..HEAD'" 2>/dev/null
+log_file="$tmp_state/timvisher/wrappers/aictl-bypass/log.jsonl"
+if [[ -f $log_file ]] && \
+   grep -q '"code":"test_logged"' "$log_file" && \
+   grep -q '"reason":"why we bypassed"' "$log_file" && \
+   grep -q '"command":"git log main..HEAD"' "$log_file"
+then
+  pass "aictl_warn bypass writes JSONL log event"
+else
+  fail "aictl_warn bypass log: log='$(cat "$log_file" 2>/dev/null)'"
 fi
 
 # Test: aictl_warn with --flag syntax including reason and doc
