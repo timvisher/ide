@@ -171,8 +171,13 @@ aictl_warn() {
     local _aictl__log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/aictl-bypass"
     local _aictl__log_file="${_aictl__log_dir}/log.jsonl"
     mkdir -p "$_aictl__log_dir" 2>/dev/null || true
+    # Capture timestamp up front; if date fails or returns non-digits,
+    # emit JSON null rather than a silent 0 that would corrupt the audit.
+    local _aictl__ts
+    _aictl__ts=$(date +%s 2>/dev/null || true)
+    [[ $_aictl__ts =~ ^[0-9]+$ ]] || _aictl__ts="null"
     {
-      printf '{"ts":%d,"code":"%s"' "$(date +%s)" "$(aictl__json_escape "${_code:-}")"
+      printf '{"ts":%s,"code":"%s"' "$_aictl__ts" "$(aictl__json_escape "${_code:-}")"
       printf ',"reason":"%s"' "$(aictl__json_escape "${TIMVISHER_AGENT_NIRMI_REASON}")"
       printf ',"cwd":"%s"' "$(aictl__json_escape "$PWD")"
       if [[ -n ${_command:-} ]]

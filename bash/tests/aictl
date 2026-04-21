@@ -205,6 +205,44 @@ else
   fail "aictl_warn reason/doc: got '${result}'"
 fi
 
+# Test: bypass log ts field is either digits or the JSON null literal —
+# never silently 0 from a failed date call.
+run_test
+tmp_state_ts=$(mktemp -d)
+XDG_STATE_HOME="$tmp_state_ts" TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
+log_file_ts="$tmp_state_ts/timvisher/wrappers/aictl-bypass/log.jsonl"
+if [[ -f $log_file_ts ]] && grep -E -q '"ts":([0-9]+|null)' "$log_file_ts"
+then
+  pass "bypass log ts field is digits or null"
+else
+  fail "bypass log ts shape: log='$(cat "$log_file_ts" 2>/dev/null)'"
+fi
+rm -rf "$tmp_state_ts"
+
+# Test: bypass log ts field falls back to "null" when date is unavailable
+# (simulated by prepending a PATH entry with a 'date' stub that exits 1,
+# keeping mkdir/etc from the normal PATH intact)
+run_test
+tmp_state_ts2=$(mktemp -d)
+stub_dir_ts2=$(mktemp -d)
+cat > "$stub_dir_ts2/date" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$stub_dir_ts2/date"
+PATH="$stub_dir_ts2:$PATH" XDG_STATE_HOME="$tmp_state_ts2" \
+  TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
+log_file_ts2="$tmp_state_ts2/timvisher/wrappers/aictl-bypass/log.jsonl"
+if [[ -f $log_file_ts2 ]] && grep -q '"ts":null' "$log_file_ts2"
+then
+  pass "bypass log ts falls back to null when date fails"
+else
+  fail "bypass log ts fallback: log='$(cat "$log_file_ts2" 2>/dev/null)'"
+fi
+rm -rf "$tmp_state_ts2" "$stub_dir_ts2"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
