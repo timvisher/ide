@@ -631,6 +631,20 @@ else
   fail "'git worktree remove add' should not be blocked: got '${result}'"
 fi
 
+# Test: TIMVISHER_NTMUX=1 bypasses the 'git worktree add' guard
+# (ntmux3 sets this env var when it shells out to timvisher_git clone,
+# which eventually invokes git worktree add. Agents that discover this
+# var outside of ntmux3 are caught by the audit trail, not this guard.)
+run_test
+result=$(TIMVISHER_AGENT=true TIMVISHER_NTMUX=1 PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' worktree add /tmp/test-wt test-branch" 2>&1 || true)
+if [[ $result != *'"code":"git_worktree_add_blocked"'* ]] && [[ $result == *"real-git worktree add"* ]]
+then
+  pass "TIMVISHER_NTMUX=1 bypasses worktree add guard (passes through to real git)"
+else
+  fail "TIMVISHER_NTMUX=1 bypass: got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
