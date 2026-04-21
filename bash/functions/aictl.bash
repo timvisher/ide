@@ -188,7 +188,7 @@ aictl_warn() {
     } >> "$_aictl__log_file" 2>/dev/null || true
 
     printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail bypassed with logged reason. Be sure you know what you are doing."}\n' \
-      "${_code:-}" >&2
+      "$(aictl__json_escape "${_code:-}")" >&2
     return 0
   fi
 

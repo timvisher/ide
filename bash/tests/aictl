@@ -243,6 +243,20 @@ else
 fi
 rm -rf "$tmp_state_ts2" "$stub_dir_ts2"
 
+# Test: bypass JSON message has _code JSON-escaped (no unescaped " or \)
+run_test
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code 'has\"quote' --message m" 2>&1)
+# The bypass JSON should contain the escaped form (\") and must not break
+# parseability: a naive unescaped emission would produce code":"has"quote"
+if [[ $result == *'"code":"has\"quote"'* ]] ||
+     [[ $result == *'"code":"has\\"quote"'* ]]
+then
+  pass "bypass JSON escapes quote in code"
+else
+  fail "bypass JSON escape: got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
