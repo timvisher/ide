@@ -318,7 +318,11 @@ then
           # Common value-taking flags in space-separated form. Attached
           # `--flag=value` form is safe — it's a single token starting
           # with `-`, so the `-*` catch below handles it.
-          -n|-L|--max-count|--skip|--since|--after|--until|--before|\
+          #
+          # -S/-G are pickaxe flags (git log -S some_func HEAD). -O is
+          # --orderfile. Missing one here means its value gets counted as
+          # a positional and the guard fires a false positive.
+          -n|-L|-S|-G|-O|--max-count|--skip|--since|--after|--until|--before|\
           --author|--committer|--grep|--format|--pretty|--date|--encoding)
             range_guard__skip_next=true
             continue

@@ -355,6 +355,36 @@ else
   fail "flag value with ..: got '${result}'"
 fi
 
+# Test: pickaxe -S with space-separated value does not count as positional
+run_test
+result=$(run_wrapper_agent "log -S some_function HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log -S some_function HEAD' for agents (-S takes value)"
+else
+  fail "pickaxe -S: got '${result}'"
+fi
+
+# Test: pickaxe -G with space-separated value does not count as positional
+run_test
+result=$(run_wrapper_agent "log -G 'regex.*pattern' HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log -G regex HEAD' for agents (-G takes value)"
+else
+  fail "pickaxe -G: got '${result}'"
+fi
+
+# Test: -O (orderfile) with space-separated value does not count as positional
+run_test
+result=$(run_wrapper_agent "diff -O /tmp/orderfile HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git diff -O orderfile HEAD' for agents (-O takes value)"
+else
+  fail "orderfile -O: got '${result}'"
+fi
+
 # Test: range guard is now aictl_die — NIRMI+REASON does NOT bypass it
 # (promoted from warn because 48 bypasses across 6 sessions showed the
 # warning was just getting copy-pasted around)
