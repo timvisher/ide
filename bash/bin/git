@@ -241,15 +241,13 @@ then
               --suggestion "Once told, run: git branch --set-upstream-to=<remote>/<branch>"
           fi
         else
-          aictl_warn \
+          aictl_die \
             --code "git_range_no_upstream_ref" \
             --message "You almost certainly didn't mean to use '${x}' if what you were looking for is this branch's diff." \
-            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream." \
-            --command "git $*" \
+            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream. This form is common enough as an agent mistake that it's been promoted to a hard error." \
             --doc "ai/HOME/.agents/skills/git/references/git.md" \
             --suggestion "git diff @{u}...     (three-dot: changes on this branch only)" \
             --suggestion "git log @{u}...      (three-dot: commits on this branch only)"
-          # If we reach here, NIRMI bypassed the warning
         fi
       fi
     done
@@ -328,11 +326,10 @@ then
 
         if [[ $range_guard__has_upstream == false ]]
         then
-          aictl_warn \
+          aictl_die \
             --code "git_range_no_upstream_ref" \
             --message "You almost certainly didn't mean to use '${range_guard__positionals[*]}' as a revision range if what you were looking for is this branch's diff." \
-            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream. 'git diff A B' and 'git log A B' are the space-separated equivalents of 'A..B' — use @{u} instead." \
-            --command "git $*" \
+            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream. 'git diff A B' and 'git log A B' are the space-separated equivalents of 'A..B' — use @{u} instead. This form is common enough as an agent mistake that it's been promoted to a hard error." \
             --doc "ai/HOME/.agents/skills/git/references/git.md" \
             --suggestion "git diff @{u}...     (three-dot: changes on this branch only)" \
             --suggestion "git log @{u}...      (three-dot: commits on this branch only)" \

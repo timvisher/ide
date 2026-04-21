@@ -344,7 +344,9 @@ else
   fail "allows 'git diff @{u} HEAD': got '${result}'"
 fi
 
-# Test: NIRMI+REASON bypasses range guard (warn-level)
+# Test: range guard is now aictl_die — NIRMI+REASON does NOT bypass it
+# (promoted from warn because 48 bypasses across 6 sessions showed the
+# warning was just getting copy-pasted around)
 run_test
 run_wrapper_agent_nirmi() {
   TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="testing bypass" \
@@ -352,17 +354,29 @@ run_wrapper_agent_nirmi() {
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 result=$(run_wrapper_agent_nirmi "log abc123..HEAD" || true)
-if [[ $result == *'"level":"bypass"'* ]] && [[ $result == *"git_range_no_upstream_ref"* ]] && [[ $result != *'"level":"warning"'* ]]
+if [[ $result == *'"level":"error"'* ]] && [[ $result == *'"code":"git_range_no_upstream_ref"'* ]] && [[ $result != *'"level":"bypass"'* ]]
 then
-  pass "NIRMI+REASON bypasses range guard"
+  pass "NIRMI+REASON does NOT bypass range guard (it's a die now)"
 else
-  fail "NIRMI+REASON bypass: got '${result}'"
+  fail "range guard should be un-bypassable: got '${result}'"
 fi
 
-# Test: NIRMI alone (no REASON) emits aictl_bypass_missing_reason
+# Test: range guard emits level:error (not level:warning) — it's a die
+run_test
+result=$(run_wrapper_agent "log abc123..HEAD" || true)
+if [[ $result == *'"level":"error"'* ]] && [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "range guard emits level:error"
+else
+  fail "range guard level: got '${result}'"
+fi
+
+# Test: NIRMI alone (no REASON) emits aictl_bypass_missing_reason on a warn
+# (the range guard itself is a die, but warn-level guards elsewhere — e.g.,
+# in ntmux3 — go through this path)
 run_test
 result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$test_path" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' log abc123..HEAD" 2>&1 || true)
+  bash -c "source '${funcs_dir}/logging.bash'; source '${funcs_dir}/aictl.bash'; aictl_warn test_code 'test msg'" 2>&1 || true)
 if [[ $result == *'"code":"aictl_bypass_missing_reason"'* ]]
 then
   pass "NIRMI without REASON rejects bypass"
@@ -370,7 +384,7 @@ else
   fail "NIRMI without REASON: got '${result}'"
 fi
 
-# Test: NIRMI+REASON does NOT bypass push guard (push is a die)
+# Test: NIRMI does NOT bypass push guard (push is a die)
 run_test
 result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
 if [[ $result == *'"code":"git_push_blocked"'* ]]
