@@ -193,13 +193,18 @@ then
     fi
   fi
 
-  if [[ $subcommand == diff || $subcommand == log ]]
+  if [[ $subcommand == diff || $subcommand == log || $subcommand == rev-list ]]
   then
+    range_guard__upstream_re='@\{u(pstream)?\}'
+    range_guard__head_or_empty='^(HEAD)?$'
+
+    # --- Per-arg range check: A..B / A...B embedded in a single arg ---
+    range_guard__single_arg_range_seen=false
     for x in "$@"
     do
-      # Detect range expressions (.. or ...) and validate both sides
       if [[ $x == *..* ]]
       then
+        range_guard__single_arg_range_seen=true
         # Split on ... first (three-dot), then .. (two-dot)
         if [[ $x == *...* ]]
         then
@@ -213,9 +218,6 @@ then
         # Valid range form: one side is @{u}/@{upstream}, the other is
         # empty (implied HEAD) or literal HEAD. Anything else is almost
         # certainly wrong for agents.
-        range_guard__upstream_re='@\{u(pstream)?\}'
-        range_guard__head_or_empty='^(HEAD)?$'
-
         range_guard__lhs_is_upstream=false
         range_guard__rhs_is_upstream=false
         [[ $range_guard__lhs =~ $range_guard__upstream_re ]] && range_guard__lhs_is_upstream=true
@@ -246,6 +248,93 @@ then
         fi
       fi
     done
+
+    # --- Multi-positional check: `diff A B`, `log X Y`, `rev-list A B` ---
+    #
+    # Only runs when no single-arg `..` range was already caught, so we
+    # don't double-warn on `diff A..B C` (already handled above).
+    #
+    # Collects positional (non-flag) args after the subcommand, up to `--`.
+    # A small set of common value-taking flags is handled; uncurated ones
+    # in space-separated form (e.g., `--author Tim`) may cause a false
+    # positive. Agents can bypass by switching to `--flag=value`.
+    if [[ $range_guard__single_arg_range_seen == false ]]
+    then
+      range_guard__positionals=()
+      range_guard__past_subcommand=false
+      range_guard__past_double_dash=false
+      range_guard__skip_next=false
+      for x in "$@"
+      do
+        if [[ $range_guard__skip_next == true ]]
+        then
+          range_guard__skip_next=false
+          continue
+        fi
+        if [[ $range_guard__past_double_dash == true ]]
+        then
+          continue
+        fi
+        if [[ $range_guard__past_subcommand == false ]]
+        then
+          case "$x" in
+            -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+              range_guard__skip_next=true
+              ;;
+          esac
+          if [[ $x == "$subcommand" ]]
+          then
+            range_guard__past_subcommand=true
+          fi
+          continue
+        fi
+        if [[ $x == -- ]]
+        then
+          range_guard__past_double_dash=true
+          continue
+        fi
+        case "$x" in
+          # Common value-taking flags in space-separated form. Attached
+          # `--flag=value` form is safe — it's a single token starting
+          # with `-`, so the `-*` catch below handles it.
+          -n|-L|--max-count|--skip|--since|--after|--until|--before|\
+          --author|--committer|--grep|--format|--pretty|--date|--encoding)
+            range_guard__skip_next=true
+            continue
+            ;;
+          -*)
+            continue
+            ;;
+        esac
+        range_guard__positionals+=("$x")
+      done
+
+      if (( 2 <= ${#range_guard__positionals[@]} ))
+      then
+        range_guard__has_upstream=false
+        for range_guard__p in "${range_guard__positionals[@]}"
+        do
+          if [[ $range_guard__p =~ $range_guard__upstream_re ]]
+          then
+            range_guard__has_upstream=true
+            break
+          fi
+        done
+
+        if [[ $range_guard__has_upstream == false ]]
+        then
+          aictl_warn \
+            --code "git_range_no_upstream_ref" \
+            --message "You almost certainly didn't mean to use '${range_guard__positionals[*]}' as a revision range if what you were looking for is this branch's diff." \
+            --reason "Hardcoded refs break across rebases and branch renames. @{u} always resolves to the correct upstream. 'git diff A B' and 'git log A B' are the space-separated equivalents of 'A..B' — use @{u} instead." \
+            --command "git $*" \
+            --doc "ai/HOME/.agents/skills/git/references/git.md" \
+            --suggestion "git diff @{u}...     (three-dot: changes on this branch only)" \
+            --suggestion "git log @{u}...      (three-dot: commits on this branch only)" \
+            --suggestion "If these were meant to be file paths, put them after '--'"
+        fi
+      fi
+    fi
   fi
 
   if [[ $subcommand == add ]]

@@ -41,20 +41,37 @@ echo "$tmpdir/prefix"
 MOCK
 chmod +x "$tmpdir/mockbin/brew"
 
+# resolve_next_git walks PATH, finds itself, returns the next entry.
+# We need:
+#   1. A PATH entry for the wrapper itself (so "self" is found).
+#   2. The mock git immediately after (so it becomes "next").
+# We cannot reuse $PATH because the user's $PATH already contains a path
+# to the wrapper followed by real git — which would shadow the mock. So
+# we construct a minimal PATH:
+#   - selflink/ → symlink to the wrapper under test
+#   - prefix/bin/ → mock git
+#   - $tmpdir/mockbin → mock `brew` for wrappers that still shell out to it
+#   - /opt/homebrew/bin:/usr/bin:/bin → bash builtins (`realpath`, `mktemp`,
+#     etc.) but NOT another git binary ahead of the mock
+mkdir -p "$tmpdir/selflink"
+ln -s "$script" "$tmpdir/selflink/git"
+
+test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
+
 run_wrapper() {
-  PATH="$tmpdir/mockbin:$PATH" \
+  PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
 run_wrapper_agent() {
   TIMVISHER_AGENT=true \
-  PATH="$tmpdir/mockbin:$PATH" \
+  PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
 # Test 1: blocks 'git push' when agent
 run_test
-result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
 if [[ $result == *'"code":"git_push_blocked"'* ]]
 then
   pass "blocks 'git push' when agent"
@@ -64,7 +81,7 @@ fi
 
 # Test 2: blocks 'git send-pack' when agent
 run_test
-result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' send-pack" 2>&1 || true)
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' send-pack" 2>&1 || true)
 if [[ $result == *'"code":"git_push_blocked"'* ]]
 then
   pass "blocks 'git send-pack' when agent"
@@ -74,7 +91,7 @@ fi
 
 # Test 3: allows 'git push' when not agent
 run_test
-result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1)
+result=$(PATH="$test_path" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1)
 if [[ $result == *"real-git push origin main"* ]]
 then
   pass "allows 'git push' when not agent"
@@ -84,7 +101,7 @@ fi
 
 # Test 4: requires Co-authored-by trailer for Claude agent commits
 run_test
-result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
 if [[ $result == *'"code":"git_commit_missing_trailer"'* ]]
 then
   pass "requires Co-authored-by trailer for Claude commits"
@@ -95,7 +112,7 @@ fi
 # Test 5: accepts commit with proper Co-authored-by trailer
 run_test
 msg=$'Fix a bug\n\nCo-authored-by: Claude <noreply@anthropic.com>'
-result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m '$msg'" 2>&1)
+result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m '$msg'" 2>&1)
 if [[ $result == *"real-git commit"* ]]
 then
   pass "accepts commit with proper trailer"
@@ -105,7 +122,7 @@ fi
 
 # Test 6: passes through normal commands for agents
 run_test
-result=$(TIMVISHER_AGENT=true PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1)
+result=$(TIMVISHER_AGENT=true PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1)
 if [[ $result == *"real-git status"* ]]
 then
   pass "passes through 'git status' for agents"
@@ -115,7 +132,7 @@ fi
 
 # Test 7: passes through all args when not agent
 run_test
-result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log --oneline -5" 2>&1)
+result=$(PATH="$test_path" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log --oneline -5" 2>&1)
 if [[ $result == *"real-git log --oneline -5"* ]]
 then
   pass "passes through all args when not agent"
@@ -217,11 +234,121 @@ else
   fail "blocks empty range: got '${result}'"
 fi
 
+# Test: blocks 'git rev-list main..HEAD' for agents (rev-list subcommand)
+run_test
+result=$(run_wrapper_agent "rev-list main..HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git rev-list main..HEAD' for agents"
+else
+  fail "blocks 'git rev-list main..HEAD': got '${result}'"
+fi
+
+# Test: blocks 'git rev-list --count main..HEAD' for agents
+run_test
+result=$(run_wrapper_agent "rev-list --count main..HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git rev-list --count main..HEAD' for agents"
+else
+  fail "blocks 'git rev-list --count main..HEAD': got '${result}'"
+fi
+
+# Test: blocks space-separated two-arg form 'git diff origin/main HEAD'
+run_test
+result=$(run_wrapper_agent "diff origin/main HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git diff origin/main HEAD' for agents (two-arg form)"
+else
+  fail "blocks two-arg diff: got '${result}'"
+fi
+
+# Test: blocks 'git diff --shortstat origin/main HEAD' (flags before refs)
+run_test
+result=$(run_wrapper_agent "diff --shortstat origin/main HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git diff --shortstat origin/main HEAD' for agents"
+else
+  fail "blocks diff --shortstat two-arg: got '${result}'"
+fi
+
+# Test: blocks space-separated two-arg form 'git log origin/main HEAD'
+run_test
+result=$(run_wrapper_agent "log origin/main HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git log origin/main HEAD' for agents (two-arg form)"
+else
+  fail "blocks two-arg log: got '${result}'"
+fi
+
+# Test: blocks space-separated 'git rev-list A B' for agents
+run_test
+result=$(run_wrapper_agent "rev-list main HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "blocks 'git rev-list main HEAD' for agents (two-arg form)"
+else
+  fail "blocks two-arg rev-list: got '${result}'"
+fi
+
+# Test: allows 'git log -n 10 HEAD' for agents (single positional after flag)
+run_test
+result=$(run_wrapper_agent "log -n 10 HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log -n 10 HEAD' for agents (flag+value not counted as positional)"
+else
+  fail "allows 'git log -n 10 HEAD': got '${result}'"
+fi
+
+# Test: allows 'git log --since 2024-01-01 HEAD' for agents (space-form value flag)
+run_test
+result=$(run_wrapper_agent "log --since 2024-01-01 HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log --since 2024-01-01 HEAD' for agents"
+else
+  fail "allows 'git log --since 2024-01-01 HEAD': got '${result}'"
+fi
+
+# Test: allows single-arg 'git log HEAD' for agents
+run_test
+result=$(run_wrapper_agent "log HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log HEAD' for agents (single positional)"
+else
+  fail "allows 'git log HEAD': got '${result}'"
+fi
+
+# Test: allows 'git log -- file1 file2' for agents (positionals after -- are paths)
+run_test
+result=$(run_wrapper_agent "log -- file1 file2" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log -- file1 file2' for agents (paths after --)"
+else
+  fail "allows 'git log -- file1 file2': got '${result}'"
+fi
+
+# Test: allows 'git diff @{u} HEAD' for agents (two-arg but one is @{u})
+run_test
+result=$(run_wrapper_agent "diff '@{u}' HEAD" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git diff @{u} HEAD' for agents (two-arg with @{u})"
+else
+  fail "allows 'git diff @{u} HEAD': got '${result}'"
+fi
+
 # Test: NIRMI bypasses range guard
 run_test
 run_wrapper_agent_nirmi() {
   TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 \
-  PATH="$tmpdir/mockbin:$PATH" \
+  PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 result=$(run_wrapper_agent_nirmi "log abc123..HEAD" || true)
@@ -234,7 +361,7 @@ fi
 
 # Test: NIRMI does NOT bypass push guard
 run_test
-result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$tmpdir/mockbin:$PATH" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+result=$(TIMVISHER_AGENT=true TIMVISHER_AGENT_NIRMI=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
 if [[ $result == *'"code":"git_push_blocked"'* ]]
 then
   pass "NIRMI does NOT bypass push guard"
@@ -264,7 +391,7 @@ fi
 
 # Test: allows 'git log master..HEAD' for non-agents
 run_test
-result=$(PATH="$tmpdir/mockbin:$PATH" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log master..HEAD" 2>&1)
+result=$(PATH="$test_path" bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log master..HEAD" 2>&1)
 if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
 then
   pass "allows 'git log master..HEAD' for non-agents"
@@ -279,25 +406,23 @@ fi
 real_git=/opt/homebrew/bin/git
 
 # For upstream guard tests, the wrapper needs the real git binary (not the
-# echo mock) because it calls rev-parse/config internally.
+# echo mock) because it calls rev-parse/config internally. Build a parallel
+# PATH that points at real git instead of the echo mock.
 mkdir -p "$tmpdir/real-prefix/bin"
 ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
-cat > "$tmpdir/mockbin/brew-real" <<MOCK
-#!/usr/bin/env bash
-echo "$tmpdir/real-prefix"
-MOCK
-chmod +x "$tmpdir/mockbin/brew-real"
+
+test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
 
 run_wrapper_real_git() {
   TIMVISHER_AGENT= CLAUDECODE= TIMVISHER_CODEX= \
-  PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "cp '$tmpdir/mockbin/brew-real' '$tmpdir/mockbin/brew'; source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+  PATH="$test_path_real_git" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
 run_wrapper_real_git_agent() {
   TIMVISHER_AGENT=true \
-  PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "cp '$tmpdir/mockbin/brew-real' '$tmpdir/mockbin/brew'; source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+  PATH="$test_path_real_git" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
 # Helper: create a minimal repo with a branch tracking a remote
