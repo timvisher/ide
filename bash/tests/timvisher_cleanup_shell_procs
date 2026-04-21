@@ -26,23 +26,74 @@ script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_cleanup_shell_procs"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Test 1: calls cleanup_emacs and tmux kill-server when tmux is running
-run_test
-mkdir -p "$tmpdir/bin1"
-cat > "$tmpdir/bin1/cleanup_emacs" <<'MOCK'
+# Helper: create a bin dir with default mocks (cleanup_emacs, pgrep,
+# tmux, ps, kill, sleep). Each mock logs its call to $MOCK_LOG.
+# Callers can override individual files afterward. The real `awk` on
+# PATH is used unchanged — the mock `ps` output is plain text and awk
+# parsing doesn't need to be stubbed.
+#
+# Mock data is driven by env vars:
+#   MOCK_PANES    — "tty\n..."  (for tmux list-panes)
+#   MOCK_TPGIDS   — "tty=pgid tty=pgid..."  (for ps -t <tty> -o tpgid=)
+make_mock_bin() {
+  local bin_dir=$1
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/cleanup_emacs" <<'MOCK'
 #!/usr/bin/env bash
 echo "cleanup_emacs $*" >> "$MOCK_LOG"
 MOCK
-cat > "$tmpdir/bin1/pgrep" <<'MOCK'
+  cat > "$bin_dir/pgrep" <<'MOCK'
 #!/usr/bin/env bash
 echo "pgrep $*" >> "$MOCK_LOG"
 exit 0
 MOCK
-cat > "$tmpdir/bin1/tmux" <<'MOCK'
+  cat > "$bin_dir/tmux" <<'MOCK'
 #!/usr/bin/env bash
 echo "tmux $*" >> "$MOCK_LOG"
+if [[ $1 == list-panes ]]
+then
+  printf '%s\n' "${MOCK_PANES:-/dev/ttys001}"
+fi
 MOCK
-chmod +x "$tmpdir/bin1"/{cleanup_emacs,pgrep,tmux}
+  cat > "$bin_dir/ps" <<'MOCK'
+#!/usr/bin/env bash
+echo "ps $*" >> "$MOCK_LOG"
+tty=""
+while (( 0 < $# )); do
+  case "$1" in
+    -t) tty=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+for pair in ${MOCK_TPGIDS:-}; do
+  if [[ $pair == "${tty}="* ]]; then
+    echo "${pair#*=}"
+    break
+  fi
+done
+MOCK
+  cat > "$bin_dir/kill" <<'MOCK'
+#!/usr/bin/env bash
+echo "kill $*" >> "$MOCK_LOG"
+MOCK
+  cat > "$bin_dir/sleep" <<'MOCK'
+#!/usr/bin/env bash
+echo "sleep $*" >> "$MOCK_LOG"
+MOCK
+  chmod +x "$bin_dir"/{cleanup_emacs,pgrep,tmux,ps,kill,sleep}
+}
+
+# Extract the single kill line padded with spaces on both sides so
+# token checks with " -N " can use glob anchors.
+kill_line_padded() {
+  local line
+  line=$(grep '^kill -TERM' "$1" | head -1)
+  [[ -n $line ]] && printf ' %s ' "$line"
+}
+
+# Test 1: calls cleanup_emacs and tmux kill-server when tmux is running
+run_test
+make_mock_bin "$tmpdir/bin1"
 
 export MOCK_LOG="$tmpdir/log1"
 touch "$MOCK_LOG"
@@ -56,21 +107,13 @@ fi
 
 # Test 2: skips tmux kill-server when tmux is not running
 run_test
-mkdir -p "$tmpdir/bin2"
-cat > "$tmpdir/bin2/cleanup_emacs" <<'MOCK'
-#!/usr/bin/env bash
-echo "cleanup_emacs $*" >> "$MOCK_LOG"
-MOCK
+make_mock_bin "$tmpdir/bin2"
 cat > "$tmpdir/bin2/pgrep" <<'MOCK'
 #!/usr/bin/env bash
 echo "pgrep $*" >> "$MOCK_LOG"
 exit 1
 MOCK
-cat > "$tmpdir/bin2/tmux" <<'MOCK'
-#!/usr/bin/env bash
-echo "tmux $*" >> "$MOCK_LOG"
-MOCK
-chmod +x "$tmpdir/bin2"/{cleanup_emacs,pgrep,tmux}
+chmod +x "$tmpdir/bin2/pgrep"
 
 export MOCK_LOG="$tmpdir/log2"
 touch "$MOCK_LOG"
@@ -84,22 +127,13 @@ fi
 
 # Test 3: aborts if cleanup_emacs fails
 run_test
-mkdir -p "$tmpdir/bin3"
+make_mock_bin "$tmpdir/bin3"
 cat > "$tmpdir/bin3/cleanup_emacs" <<'MOCK'
 #!/usr/bin/env bash
 echo "cleanup_emacs $*" >> "$MOCK_LOG"
 exit 1
 MOCK
-cat > "$tmpdir/bin3/pgrep" <<'MOCK'
-#!/usr/bin/env bash
-echo "pgrep $*" >> "$MOCK_LOG"
-exit 0
-MOCK
-cat > "$tmpdir/bin3/tmux" <<'MOCK'
-#!/usr/bin/env bash
-echo "tmux $*" >> "$MOCK_LOG"
-MOCK
-chmod +x "$tmpdir/bin3"/{cleanup_emacs,pgrep,tmux}
+chmod +x "$tmpdir/bin3/cleanup_emacs"
 
 export MOCK_LOG="$tmpdir/log3"
 touch "$MOCK_LOG"
@@ -109,6 +143,151 @@ then
   pass "aborts if cleanup_emacs fails"
 else
   fail "expected abort on cleanup_emacs failure, got: $(cat "$MOCK_LOG")"
+fi
+
+# Test 4: SIGTERMs the fg process group of every pane
+run_test
+make_mock_bin "$tmpdir/bin4"
+
+export MOCK_LOG="$tmpdir/log4"
+touch "$MOCK_LOG"
+MOCK_PANES=$'/dev/ttys001\n/dev/ttys002\n/dev/ttys003' \
+  MOCK_TPGIDS='ttys001=3114 ttys002=5555 ttys003=7777' \
+  PATH="$tmpdir/bin4:$PATH" \
+  bash "$script"
+kill_padded=$(kill_line_padded "$MOCK_LOG")
+kill_count=$(grep -c '^kill -TERM' "$MOCK_LOG")
+if [[ $kill_padded == *' -3114 '* ]] &&
+   [[ $kill_padded == *' -5555 '* ]] &&
+   [[ $kill_padded == *' -7777 '* ]] &&
+   (( kill_count == 1 )) &&
+   grep -q 'tmux kill-server' "$MOCK_LOG"
+then
+  pass "one SIGTERM invocation covers every pane's fg pgid"
+else
+  fail "pane SIGTERM targeting (count=$kill_count): got '$(cat "$MOCK_LOG")'"
+fi
+
+# Test 5: kill fires BEFORE sleep which fires BEFORE tmux kill-server
+run_test
+make_mock_bin "$tmpdir/bin5"
+
+export MOCK_LOG="$tmpdir/log5"
+touch "$MOCK_LOG"
+MOCK_PANES='/dev/ttys021' \
+  MOCK_TPGIDS='ttys021=4444' \
+  PATH="$tmpdir/bin5:$PATH" \
+  bash "$script"
+kill_line=$(grep -n '^kill -TERM' "$MOCK_LOG" | head -1 | cut -d: -f1)
+sleep_line=$(grep -n '^sleep 1' "$MOCK_LOG" | head -1 | cut -d: -f1)
+killserver_line=$(grep -n 'tmux kill-server' "$MOCK_LOG" | head -1 | cut -d: -f1)
+if [[ -n $kill_line && -n $sleep_line && -n $killserver_line ]] &&
+   (( kill_line < sleep_line )) &&
+   (( sleep_line < killserver_line ))
+then
+  pass "ordering: kill → sleep → tmux kill-server"
+else
+  fail "ordering: kill=$kill_line sleep=$sleep_line killserver=$killserver_line log='$(cat "$MOCK_LOG")'"
+fi
+
+# Test 6: panes with no tpgid (or tpgid=-1) are filtered out — the
+# valid pgid still gets signaled, bogus ones don't appear.
+run_test
+make_mock_bin "$tmpdir/bin6"
+
+export MOCK_LOG="$tmpdir/log6"
+touch "$MOCK_LOG"
+MOCK_PANES=$'/dev/ttys031\n/dev/ttys032\n/dev/ttys033' \
+  MOCK_TPGIDS='ttys031=1111 ttys032=-1' \
+  PATH="$tmpdir/bin6:$PATH" \
+  bash "$script"
+kill_padded=$(kill_line_padded "$MOCK_LOG")
+if [[ $kill_padded == *' -1111 '* ]] &&
+   [[ $kill_padded != *' --1 '* ]] &&
+   [[ $kill_padded != *' - '* ]]
+then
+  pass "skips panes with missing or -1 tpgid"
+else
+  fail "tpgid filter: got '$(cat "$MOCK_LOG")'"
+fi
+
+# Test 7: exactly one kill invocation regardless of pane count
+run_test
+make_mock_bin "$tmpdir/bin7"
+
+export MOCK_LOG="$tmpdir/log7"
+touch "$MOCK_LOG"
+MOCK_PANES=$'/dev/ttys041\n/dev/ttys042\n/dev/ttys043\n/dev/ttys044\n/dev/ttys045' \
+  MOCK_TPGIDS='ttys041=100 ttys042=200 ttys043=300 ttys044=400 ttys045=500' \
+  PATH="$tmpdir/bin7:$PATH" \
+  bash "$script"
+kill_count=$(grep -c '^kill -TERM' "$MOCK_LOG")
+if (( kill_count == 1 ))
+then
+  pass "one kill invocation covers all panes (not N calls)"
+else
+  fail "expected 1 kill call, got $kill_count: $(cat "$MOCK_LOG")"
+fi
+
+# Test 8: empty pane_tty is skipped — no spurious ps call on an empty tty
+run_test
+make_mock_bin "$tmpdir/bin8"
+
+export MOCK_LOG="$tmpdir/log8"
+touch "$MOCK_LOG"
+# Pane 1 has no tty (blank line), pane 2 is valid
+MOCK_PANES=$'\n/dev/ttys051' \
+  MOCK_TPGIDS='ttys051=2345' \
+  PATH="$tmpdir/bin8:$PATH" \
+  bash "$script"
+kill_padded=$(kill_line_padded "$MOCK_LOG")
+# ps should only have been called for the non-empty tty
+ps_count=$(grep -c '^ps -t ttys' "$MOCK_LOG")
+if [[ $kill_padded == *' -2345 '* ]] && (( ps_count == 1 ))
+then
+  pass "empty pane_tty is skipped (no ps call, no kill arg)"
+else
+  fail "empty tty handling (ps_count=$ps_count): got '$(cat "$MOCK_LOG")'"
+fi
+
+# Test 9: when no pane has a valid tpgid, kill is not invoked at all
+run_test
+make_mock_bin "$tmpdir/bin9"
+
+export MOCK_LOG="$tmpdir/log9"
+touch "$MOCK_LOG"
+MOCK_PANES=$'/dev/ttys061\n/dev/ttys062' \
+  MOCK_TPGIDS='ttys061=-1 ttys062=0' \
+  PATH="$tmpdir/bin9:$PATH" \
+  bash "$script"
+if ! grep -q '^kill -TERM' "$MOCK_LOG" &&
+   grep -q 'tmux kill-server' "$MOCK_LOG"
+then
+  pass "no kill call when all pgids are invalid"
+else
+  fail "expected no kill call, got: $(cat "$MOCK_LOG")"
+fi
+
+# Test 10: duplicate tpgids across panes are deduped into a single
+# kill argument (sort -u)
+run_test
+make_mock_bin "$tmpdir/bin10"
+
+export MOCK_LOG="$tmpdir/log10"
+touch "$MOCK_LOG"
+# Two panes, same tpgid (rare but possible — e.g., split panes sharing a shell)
+MOCK_PANES=$'/dev/ttys071\n/dev/ttys072' \
+  MOCK_TPGIDS='ttys071=9999 ttys072=9999' \
+  PATH="$tmpdir/bin10:$PATH" \
+  bash "$script"
+kill_line=$(grep '^kill -TERM' "$MOCK_LOG" | head -1)
+# Count occurrences of -9999 in the kill line
+occurrences=$(grep -o -- '-9999' <<< "$kill_line" | wc -l | tr -d ' ')
+if [[ -n $kill_line ]] && (( occurrences == 1 ))
+then
+  pass "duplicate tpgids are deduped (single -9999 arg)"
+else
+  fail "dedup (occurrences=$occurrences): got '$kill_line'"
 fi
 
 echo ""

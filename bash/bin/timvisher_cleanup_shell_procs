@@ -3,5 +3,37 @@
 cleanup_emacs --no-dry-run &&
   if pgrep tmux >/dev/null
   then
+    # SIGTERM each pane's FOREGROUND process group before tmux
+    # kill-server so running commands can clean up (EXIT traps, save
+    # history, release locks) rather than being killed abruptly by
+    # pty closure.
+    #
+    # Signal the tty's foreground process group (TPGID), not pane_pid.
+    # pane_pid is the login shell — bash running as a script ignores
+    # SIGQUIT (POSIX SIG_IGN inheritance) and is just waiting on its
+    # foreground child. Signaling the fg pgid reaches whatever is
+    # actually running (loop script, editor, ssh session). SIGTERM is
+    # the signal; the "like Ctrl+C" similarity is about the targeting
+    # (fg pgid via the tty) — Ctrl+C sends SIGINT, we send SIGTERM.
+    #
+    # Pipeline: list every pane across every tmux session, resolve
+    # each pane's fg pgid via ps, dedupe, xargs into a single kill so
+    # kill(2) syscalls fire back-to-back inside one process. Running
+    # this from within a tmux pane will signal that pane too — if you
+    # don't want your own shell caught up, don't run the cleanup from
+    # inside something you want to keep.
+    tmux list-panes -a -F '#{pane_tty}' 2>/dev/null |
+      while read -r pane_tty
+      do
+        [[ -z $pane_tty ]] && continue
+        ps -t "${pane_tty#/dev/}" -o tpgid= 2>/dev/null |
+          awk 'NF && 0 < $1 {print "-"$1; exit}'
+      done |
+      sort -u |
+      xargs kill -TERM -- 2>/dev/null || true
+
+    # Give foreground processes a moment to exit on SIGTERM
+    sleep 1
+
     tmux kill-server
   fi
