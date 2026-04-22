@@ -34,7 +34,7 @@ end isMuted
 on volumeUp()
 	if application "Spotify" is running then
 		tell application "Spotify"
-			set sound volume to 47
+			set sound volume to 57
 		end tell
 	end if
 	
