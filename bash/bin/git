@@ -429,12 +429,134 @@ then
 
   if [[ $subcommand == push || $subcommand == send-pack ]]
   then
-    aictl_die \
-      --code "git_push_blocked" \
-      --message "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
-      --reason "Remote mutations are human-only operations." \
-      --doc "ai/HOME/.agents/skills/git/SKILL.md" \
-      --suggestion "Ask the human to run 'git push'"
+    # Narrow allow-path: bd auto-syncs its issue database to a Dolt remote
+    # by shelling out to `git push refs/dolt/...`. Every bd command (create,
+    # update, close, …) can trigger this, so we need to permit it without
+    # opening the door to general pushes.
+    #
+    # Two conditions, both required:
+    #   1. A refs/dolt/ token in the push args (so the push is to Dolt
+    #      refs, not a regular branch).
+    #   2. A 'bd' process in the ancestor chain (so the push originated
+    #      inside bd, not from an agent typing refs/dolt/ at random).
+    push_guard__is_bd_dolt() {
+      # --- Refspec gate ---
+      # Parse push args as git would: skip flags (incl. the one value-taking
+      # flag `-o` in space form; the rest use attached `--flag=value`).
+      # First positional is the remote; every other positional must be a
+      # refspec containing refs/dolt/. refs/dolt/ appearing ONLY inside a
+      # flag value (e.g. `--force-with-lease=refs/dolt/data:abc`) is not
+      # sufficient — a real refspec positional must be present.
+      local arg
+      local past_subcommand=false
+      local past_double_dash=false
+      local skip_next=false
+      local -a positionals=()
+      for arg in "$@"
+      do
+        if [[ $skip_next == true ]]
+        then
+          skip_next=false
+          continue
+        fi
+        if [[ $past_double_dash == true ]]
+        then
+          continue
+        fi
+        if [[ $past_subcommand == false ]]
+        then
+          if [[ $arg == "$subcommand" ]]
+          then
+            past_subcommand=true
+          fi
+          continue
+        fi
+        if [[ $arg == -- ]]
+        then
+          past_double_dash=true
+          continue
+        fi
+        case "$arg" in
+          -o)
+            skip_next=true
+            continue
+            ;;
+          -*)
+            continue
+            ;;
+        esac
+        positionals+=("$arg")
+      done
+
+      # Need remote + ≥1 refspec. Bare `git push` (no refspec) cannot be
+      # scoped to dolt — deny.
+      if (( ${#positionals[@]} < 2 ))
+      then
+        return 1
+      fi
+
+      # positionals[0] is the remote (could be a URL, file path, or nickname);
+      # not inspected. Every remaining positional must mention refs/dolt/ —
+      # this catches mixed-refspec pushes like `push origin main refs/dolt/x:y`.
+      local i
+      for (( i=1; i<${#positionals[@]}; i++ ))
+      do
+        if [[ ${positionals[$i]} != *"refs/dolt/"* ]]
+        then
+          return 1
+        fi
+      done
+
+      # --- Ancestor gate ---
+      # One `ps -axww` — per-hop `ps -p` would fork per ancestor (3–10ms
+      # each on macOS); single call is ~10–30ms regardless of depth. `-ww`
+      # disables column-width truncation so long command lines don't mask
+      # a real `bd` token.
+      local -A parent_of args_of
+      local pid ppid cmd
+      while read -r pid ppid cmd
+      do
+        parent_of[$pid]=$ppid
+        args_of[$pid]=$cmd
+      done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
+
+      # Walk from $PPID up to depth 20 (login→tmux→bash→bd→git is 5 deep;
+      # 20 is ample and caps pathological cycles from pid reuse).
+      local depth=0
+      pid=$PPID
+      while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
+      do
+        # Only argv positions 0 and 1 count — position 0 for native binaries
+        # (real bd: `/opt/homebrew/bin/bd …`) and position 1 for shebang
+        # scripts (macOS `ps` renders these as `interpreter /path/to/script …`,
+        # putting the script path at argv[1]). Restricting to these two
+        # positions rejects false positives from `bd` appearing as a regular
+        # argument further along the command line.
+        local -a toks=()
+        read -ra toks <<< "${args_of[$pid]:-}"
+        local j
+        for (( j=0; j<${#toks[@]} && j<2; j++ ))
+        do
+          if [[ ${toks[$j]##*/} == bd ]]
+          then
+            return 0
+          fi
+        done
+        pid=${parent_of[$pid]:-}
+        (( depth++ ))
+      done
+      return 1
+    }
+
+    if ! push_guard__is_bd_dolt "$@"
+    then
+      aictl_die \
+        --code "git_push_blocked" \
+        --message "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
+        --reason "Remote mutations are human-only operations." \
+        --doc "ai/HOME/.agents/skills/git/SKILL.md" \
+        --suggestion "Ask the human to run 'git push'"
+    fi
   fi
 fi
 

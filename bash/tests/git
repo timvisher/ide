@@ -99,6 +99,134 @@ else
   fail "allows 'git push': got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# bd-originated dolt push allow-path
+# ---------------------------------------------------------------------------
+# bd auto-syncs its issue database to a Dolt remote by shelling out to
+# `git push refs/dolt/…`. The push guard must permit this without creating
+# a general agent-push hole.
+
+# Fake bd: a shell script that runs its args as a subprocess (no exec),
+# so it sits in the ancestor chain when the wrapper is invoked underneath.
+mkdir -p "$tmpdir/fakebd-bin"
+cat > "$tmpdir/fakebd-bin/bd" <<'FAKE_BD'
+#!/usr/bin/env bash
+"$@"
+FAKE_BD
+chmod +x "$tmpdir/fakebd-bin/bd"
+
+# Test: allows 'git push refs/dolt/…' when 'bd' is in the ancestor chain
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push --porcelain --force-with-lease=refs/dolt/data:abc origin refs/dolt/blobstore/foo:refs/dolt/data" 2>&1 || true)
+if [[ $result == *"real-git push"* ]] && [[ $result != *'"code":"git_push_blocked"'* ]]
+then
+  pass "allows 'git push refs/dolt/…' when bd is an ancestor"
+else
+  fail "bd-ancestor dolt push: got '${result}'"
+fi
+
+# Test: blocks 'git push origin main' even when bd is an ancestor (no dolt ref)
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push origin main" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "blocks non-dolt push even when bd is an ancestor"
+else
+  fail "non-dolt push with bd ancestor should block: got '${result}'"
+fi
+
+# Test: blocks 'git push refs/dolt/…' when bd is NOT an ancestor
+# (refspec alone must not be enough — spoof prevention)
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push origin refs/dolt/data:refs/dolt/data" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "blocks dolt-ref push when bd is NOT an ancestor"
+else
+  fail "dolt push without bd ancestor should block: got '${result}'"
+fi
+
+# Test: blocks 'git push' where refs/dolt/ appears only in --force-with-lease
+# (flag values don't count as a dolt refspec; a real positional refspec is required)
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push --force-with-lease=refs/dolt/data:abc origin main" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "blocks push with refs/dolt/ only in --force-with-lease (no refspec positional)"
+else
+  fail "refs/dolt/ in flag value should not satisfy refspec gate: got '${result}'"
+fi
+
+# Test: blocks mixed-refspec push (one dolt + one non-dolt) even under bd ancestor
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push origin main refs/dolt/data:refs/dolt/data" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "blocks mixed dolt + non-dolt refspecs under bd ancestor"
+else
+  fail "mixed refspecs should block: got '${result}'"
+fi
+
+# Test: bare 'git push' (no refspec) is blocked even under bd ancestor
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "blocks bare 'git push' (no refspec) under bd ancestor"
+else
+  fail "bare push should block: got '${result}'"
+fi
+
+# Test: spoof attempt — non-bd ancestor whose args contain 'bd' as a later
+# argv token must NOT pass the ancestor gate (positions 0/1 only).
+#
+# Process tree: spoofscript is invoked with 'bd' as argv[1] of the SCRIPT
+# (i.e., argv[2] of the ps output, since macOS ps prefixes with interpreter).
+# The script discards it and runs the rest. ps shows:
+#   bash /path/to/spoofscript bd bash -c "…"
+# Our 0/1 check looks at 'bash' and '/path/to/spoofscript' — neither's
+# basename is 'bd', so the guard must still block.
+run_test
+mkdir -p "$tmpdir/spoof-bin"
+cat > "$tmpdir/spoof-bin/spoofscript" <<'SPOOF'
+#!/usr/bin/env bash
+shift  # discard the 'bd' decoy; run the rest
+"$@"
+SPOOF
+chmod +x "$tmpdir/spoof-bin/spoofscript"
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/spoof-bin/spoofscript" bd bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' push origin refs/dolt/data:refs/dolt/data" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "spoof: 'bd' as a later argv token does NOT satisfy ancestor gate"
+else
+  fail "spoof should block: got '${result}'"
+fi
+
+# Test: deeply-nested bd ancestor (bd → bash → bash → git) still allows
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/fakebd-bin/bd" bash -c \
+  "bash -c \"source '${funcs_dir}/logging.bash'; '$script' push --porcelain origin refs/dolt/blobstore/foo:refs/dolt/data\"" 2>&1 || true)
+if [[ $result == *"real-git push"* ]] && [[ $result != *'"code":"git_push_blocked"'* ]]
+then
+  pass "deep ancestor chain (bd → bash → bash → git) still allows dolt push"
+else
+  fail "deep bd ancestor: got '${result}'"
+fi
+
 # Test 4: requires Co-authored-by trailer for Claude agent commits
 run_test
 result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
