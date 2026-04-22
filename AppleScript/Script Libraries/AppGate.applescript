@@ -1,6 +1,11 @@
+property postQuitDelaySeconds : 3
+property postWriteDelaySeconds : 1
+
 on connectToProfile(profileId)
 	quitIfRunning()
+	delay postQuitDelaySeconds
 	setProfile(profileId)
+	delay postWriteDelaySeconds
 	tell application "AppGate SDP" to activate
 end connectToProfile
 
