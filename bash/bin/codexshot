@@ -16,8 +16,16 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 
 # Reads prompt from stdin (caller is responsible for preamble via
 # aishot make-prompt).
+#
+# Strips invalid UTF-8 sequences before handing to codex, which rejects
+# non-UTF-8 stdin with "Failed to read prompt from stdin: input is not
+# valid UTF-8". Diff hunks for files in legacy encodings trip this —
+# notably AppleScript files saved as MacRoman, where the line-
+# continuation glyph `¬` is the single byte 0xC2 (a UTF-8 lead byte
+# expecting a continuation that never comes).
 run_shot() {
-    codex exec --full-auto --sandbox read-only --json - |
+    iconv -c -f UTF-8 -t UTF-8 |
+        codex exec --full-auto --sandbox read-only --json - |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
