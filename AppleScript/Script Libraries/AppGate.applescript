@@ -2,12 +2,40 @@ property postQuitDelaySeconds : 3
 property postWriteDelaySeconds : 1
 
 on connectToProfile(profileId)
+	-- currentProfileId() returns a string from `defaults read`; AppleScript's
+	-- `is equal to` does not coerce types, so a numeric profileId would
+	-- always miss the fast-path and force an unnecessary quit/relaunch cycle.
+	set profileId to profileId as string
+	if application "AppGate SDP" is running and currentProfileId() is equal to profileId then
+		set m to "AppGate: already connected to " & profileNameForId(profileId)
+		log m
+		display notification m
+		return
+	end if
 	quitIfRunning()
 	delay postQuitDelaySeconds
 	setProfile(profileId)
 	delay postWriteDelaySeconds
 	tell application "AppGate SDP" to activate
 end connectToProfile
+
+on currentProfileId()
+	try
+		return do shell script "defaults read com.appgate.sdp.service profile"
+	on error
+		return ""
+	end try
+end currentProfileId
+
+on profileNameForId(profileId)
+	try
+		set n to do shell script "security find-internet-password -a " & quoted form of ("agprofile" & profileId) & " -D Profile -w 2>/dev/null | jq -r '.name // empty'"
+		if n is "" then return profileId
+		return n
+	on error
+		return profileId
+	end try
+end profileNameForId
 
 on quitIfRunning()
 	if application "AppGate SDP" is not running then return
