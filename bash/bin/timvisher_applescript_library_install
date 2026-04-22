@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+
+# Compile AppleScript Script Library files into
+# ~/Library/Script Libraries so `tell script "X"` can load them.
+#
+# Usage:
+#   timvisher_applescript_library_install                # scan <repo>/AppleScript/Script Libraries
+#   timvisher_applescript_library_install <file>...      # compile only the given files
+#   ls AppleScript/Script\ Libraries/*.applescript |
+#     entr timvisher_applescript_library_install         # auto-recompile on change
+#
+# In no-arg mode the source dir is anchored at the current git
+# repo root, so invocation works from anywhere inside either
+# AppleScript-hosting repo (this one or
+# timvisher-ide-datadog-system-extensions).
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+dest="${HOME}/Library/Script Libraries"
+mkdir -p "$dest" ||
+  die "Couldn't create ‘%s’" "$dest"
+
+if (( 0 < $# ))
+then
+  files=("$@")
+  explicit_args=true
+else
+  explicit_args=false
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
+    die "no file args and not inside a git repo; pass file paths explicitly"
+  src_dir="${repo_root}/AppleScript/Script Libraries"
+  [[ -d $src_dir ]] ||
+    die "no ‘%s’ under repo root ‘%s’; pass file paths explicitly" \
+      "AppleScript/Script Libraries" "$repo_root"
+  shopt -s nullglob
+  files=("$src_dir"/*.applescript)
+  shopt -u nullglob
+  (( 0 < ${#files[@]} )) ||
+    die "no *.applescript files in ‘%s’" "$src_dir"
+fi
+
+# `GetFileInfo` / `SetFile` ship with Xcode command-line tools and
+# have been deprecated for years. Skip the hide-extension step
+# rather than failing if the developer environment is bare.
+if command -v GetFileInfo >/dev/null && command -v SetFile >/dev/null
+then
+  hide_extensions=true
+else
+  hide_extensions=false
+  warn "GetFileInfo/SetFile not found; skipping hidden-extension step"
+fi
+
+failures=0
+for af in "${files[@]}"
+do
+  if ! [[ $af == *.applescript ]]
+  then
+    warn "skipping non-.applescript path ‘%s’" "$af"
+    $explicit_args && (( failures++ ))
+    continue
+  fi
+
+  if ! [[ -r $af ]]
+  then
+    warn "skipping unreadable ‘%s’" "$af"
+    $explicit_args && (( failures++ ))
+    continue
+  fi
+
+  base=$(basename "$af" .applescript)
+  of="${dest}/${base}.scpt"
+
+  if [[ $af -nt $of ]]
+  then
+    info "compiling ‘%s’ to ‘%s’" "$af" "$of"
+    osacompile -o "$of" "$af" ||
+      die "osacompile failed for ‘%s’" "$af"
+  else
+    info "no compilation needed for ‘%s’" "$af"
+  fi
+
+  if ! $hide_extensions
+  then
+    continue
+  fi
+
+  if ! [[ -e $of ]]
+  then
+    warn "expected output ‘%s’ missing after compile; skipping hidden-extension" "$of"
+    continue
+  fi
+
+  if (( $(GetFileInfo -aE "$of") == 0 ))
+  then
+    # /ht https://superuser.com/a/399918
+    info "setting extension to hidden for ‘%s’" "$of"
+    SetFile -a E "$of" ||
+      warn "SetFile failed for ‘%s’" "$of"
+  else
+    info "extension already hidden for ‘%s’" "$of"
+  fi
+done
+
+if (( 0 < failures ))
+then
+  die "%d explicit argument(s) failed" "$failures"
+fi
