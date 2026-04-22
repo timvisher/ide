@@ -438,6 +438,66 @@ die_if_git_component() {
   esac
 }
 
+# Sweep worktrees registered in the given cache whose paths contain
+# `/_git/` or `/.git/` as a path component — always bogus (remnants of
+# the main-57o regression's sanitize_branch_name laundering, or live
+# worktrees created under a non-bare cache's `.git/` dir before the
+# main-68h migration).  Also deletes any local `_git/...` branches,
+# which can only exist as the laundered form of `.git/...`.
+#
+# Safe to delete unconditionally: die_if_git_component now rejects
+# `_git` as a path component at branch/worktree creation, so any
+# `_git/...` branch present in a cache is residue from the regression
+# and cannot be live legitimate work.
+#
+# Cheap: ~40ms per cache on a typical setup.  Safe to call eagerly.
+sweep_bogus_worktrees_in_cache() {
+  local cache_dir=$1
+
+  [[ -d $cache_dir ]] || return 0
+
+  local worktrees
+  worktrees=$(command git -C "$cache_dir" worktree list --porcelain 2>/dev/null) || return 0
+
+  local wt_path
+  while IFS= read -r wt_path
+  do
+    [[ -n $wt_path ]] || continue
+    info "sweep_bogus_worktrees_in_cache: removing bogus worktree '%s' from cache '%s'" \
+      "$wt_path" "$cache_dir"
+    command git -C "$cache_dir" worktree remove --force "$wt_path" >&2 2>/dev/null ||
+      command git -C "$cache_dir" worktree prune >&2 2>/dev/null || true
+  # Pattern requires `/` before the `_git`/`.git` component because
+  # `worktree list --porcelain` always emits absolute paths (per git docs)
+  # — so relative paths starting with `_git/` cannot occur here.
+  done < <(grep -E '^worktree .*/(_git|\.git)(/|$)' <<<"$worktrees" | sed 's/^worktree //')
+
+  local branch
+  while IFS= read -r branch
+  do
+    [[ -n $branch ]] || continue
+    info "sweep_bogus_worktrees_in_cache: deleting bogus local branch '%s'" "$branch"
+    command git -C "$cache_dir" branch -D "$branch" >&2 2>/dev/null || true
+  done < <(command git -C "$cache_dir" for-each-ref --format='%(refname:short)' 'refs/heads/_git/**' 2>/dev/null)
+}
+
+# Sweep bogus worktrees across every trunk cache under repo_trunks_dir.
+# Used as a cross-cache self-heal at entry points that care about
+# global state (e.g. timvisher_dev_ci startup).
+#
+# The `*/*` glob hardcodes the documented `<org>/<repo>` layout under
+# repo_trunks_dir.  If that layout ever grows additional nesting,
+# generalize via `find -mindepth 2 -maxdepth N -type d` rather than
+# extending the glob — globbing arbitrary depth in bash is awkward.
+sweep_bogus_worktrees_in_all_caches() {
+  local cache_dir
+  for cache_dir in "${repo_trunks_dir}"/*/*
+  do
+    [[ -d $cache_dir ]] || continue
+    sweep_bogus_worktrees_in_cache "$cache_dir"
+  done
+}
+
 # Migrate an existing non-bare trunk cache in-place to a bare layout.
 #
 # Trunk caches are supposed to be bare.  A past regression in cache_trunk
@@ -524,6 +584,7 @@ cache_trunk() {
 
   if [[ -d $repo_dir ]]; then
     migrate_cache_to_bare_if_needed "$repo_dir"
+    sweep_bogus_worktrees_in_cache "$repo_dir"
     info "${org_repo} is already cached"
     local fetch_output
     if fetch_output=$(command git -C "${repo_dir}" fetch --prune origin 2>&1)
@@ -1249,6 +1310,27 @@ sync_trunk() {
   local trunk_branch
   trunk_branch=$(detect_trunk_branch "$dir") ||
     die "sync_trunk: cannot detect trunk branch for '%s'" "$dir"
+
+  # Clean out any bogus worktrees registered in the cache before we
+  # start looking for existing trunk worktrees to reuse (see main-agj).
+  # If the cache is non-bare its common_dir ends in `/.git`; migrate it
+  # to bare first so the sweep targets the cache root proper, and the
+  # downstream die_if_git_component guard doesn't hard-fail on what is
+  # really self-healable cache shape (see main-q5u).
+  local cache_common_dir
+  cache_common_dir=$(command git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || cache_common_dir=
+  if [[ -n $cache_common_dir ]]
+  then
+    cache_common_dir=$(cd "$dir" && cd "$cache_common_dir" && pwd -P)
+    if [[ $cache_common_dir == */.git ]]
+    then
+      migrate_cache_to_bare_if_needed "${cache_common_dir%/.git}"
+      cache_common_dir=$(command git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
+        die "sync_trunk: not a git repo after cache migration: '%s'" "$dir"
+      cache_common_dir=$(cd "$dir" && cd "$cache_common_dir" && pwd -P)
+    fi
+    sweep_bogus_worktrees_in_cache "$cache_common_dir"
+  fi
 
   local trunk_wt
   trunk_wt=$(find_worktree_for_branch "$dir" "$trunk_branch")
@@ -2013,6 +2095,10 @@ worktree_gc() {
 
     local label="${trunk_cache#"${repo_trunks_dir}/"}"
 
+    # Sweep bogus worktrees before the normal gc pass; these are never
+    # legitimate and must go regardless of age/protection.
+    sweep_bogus_worktrees_in_cache "$trunk_cache"
+
     local trunk_branch
     trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache" 2>/dev/null) || continue
 
@@ -2150,8 +2236,9 @@ case $1 in
   sync-trunk)   sync_trunk "${@:2}" ;;
   worktree)
     case ${2:-} in
-      gc) worktree_gc "${@:3}" ;;
-      *)  git "$@" ;;
+      gc)          worktree_gc "${@:3}" ;;
+      sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
+      *)           git "$@" ;;
     esac
     ;;
   *)            git "$@" ;;

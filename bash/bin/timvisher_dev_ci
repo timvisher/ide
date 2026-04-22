@@ -1545,6 +1545,14 @@ cmd_run() {
         warn "brew upgrade had warnings (non-fatal, continuing)"
     fi
 
+    # Sweep any legacy `_git/...` / `.git/...` worktrees across all
+    # caches before we start.  Cheap (~400ms across all caches) and
+    # ensures subsequent phases don't inherit state from the main-57o
+    # regression.
+    info "Phase 0.1: sweeping bogus worktrees across all caches"
+    timvisher_git worktree sweep-bogus ||
+      warn "sweep-bogus reported errors (non-fatal, continuing)"
+
     discover "$@"
     retire_merged_worktrees
     info "Found %d dev branches, %d feature worktrees" "${#dev_branches[@]}" "${#all_worktrees[@]}"

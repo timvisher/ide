@@ -1250,6 +1250,100 @@ else
   fail "ensure_worktree .git guard: rc=${rc} result='${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# sweep_bogus_worktrees_in_cache tests
+# ---------------------------------------------------------------------------
+
+# Common setup for sweep tests: cache with two bogus worktrees
+# (`.git/main`, `_git/main`) plus one legitimate worktree (`normal`).
+#
+# Edge case warning: creating worktrees with paths whose components
+# include `.git` or `_git` is unusual.  We do it here only to fabricate
+# the residue state we expect from the main-57o regression so the
+# sweep can be exercised.  In production the new die_if_git_component
+# guard (main-d78) blocks any code path from producing such paths, and
+# `$test_git` here is the real git binary (not the wrapper), so this
+# fixture-only setup bypasses the production guard intentionally.
+# Future maintainers: do NOT replicate this pattern outside test
+# fixtures.
+sweep_src="$tmpdir/sweep_src"
+"$test_git" init "$sweep_src" >/dev/null 2>&1
+"$test_git" -C "$sweep_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+
+sweep_cache="$tmpdir/sweep_cache"
+"$test_git" init --bare "$sweep_cache" >/dev/null 2>&1
+"$test_git" -C "$sweep_cache" remote add origin "$sweep_src"
+"$test_git" -C "$sweep_cache" fetch origin >/dev/null 2>&1
+"$test_git" -C "$sweep_cache" remote set-head origin -a >/dev/null 2>&1
+
+sweep_live_root="$tmpdir/sweep_live"
+mkdir -p "$sweep_live_root/.git" "$sweep_live_root/_git"
+"$test_git" -C "$sweep_cache" worktree add --detach "$sweep_live_root/.git/main" "origin/$default_branch" >/dev/null 2>&1
+"$test_git" -C "$sweep_cache" worktree add -b _git/main "$sweep_live_root/_git/main" "origin/$default_branch" >/dev/null 2>&1
+"$test_git" -C "$sweep_cache" worktree add -b normal "$sweep_live_root/normal" "origin/$default_branch" >/dev/null 2>&1
+
+pre_count=$("$test_git" -C "$sweep_cache" worktree list --porcelain | grep -c '^worktree ' || true)
+
+sweep_bogus_worktrees_in_cache "$sweep_cache" 2>/dev/null
+
+post_list=$("$test_git" -C "$sweep_cache" worktree list --porcelain)
+post_count=$(grep -c '^worktree ' <<<"$post_list" || true)
+has_normal=0; has_git=0; has_ugit=0
+grep -qF "/normal" <<<"$post_list" && has_normal=1 || true
+grep -qF "/.git/main" <<<"$post_list" && has_git=1 || true
+grep -qF "/_git/main" <<<"$post_list" && has_ugit=1 || true
+branch_gone=0
+"$test_git" -C "$sweep_cache" show-ref --verify --quiet refs/heads/_git/main ||
+  branch_gone=1
+
+# Split into separate assertions so failures pinpoint which guarantee
+# broke (worktree count, bogus removal, legitimate preservation,
+# branch cleanup) instead of one opaque combined fail message.
+run_test
+if (( pre_count == 4 )) && (( post_count == 2 ))
+then
+  pass "sweep_bogus_worktrees_in_cache: removes the two bogus worktrees"
+else
+  fail "sweep worktree count: pre=${pre_count} post=${post_count} (expected 4 → 2)"
+fi
+
+run_test
+if (( has_git == 0 )) && (( has_ugit == 0 ))
+then
+  pass "sweep_bogus_worktrees_in_cache: '.git/main' and '_git/main' worktrees gone"
+else
+  fail "sweep bogus presence: .git=${has_git} _git=${has_ugit} (expected 0/0)"
+fi
+
+run_test
+if (( has_normal == 1 ))
+then
+  pass "sweep_bogus_worktrees_in_cache: legitimate 'normal' worktree preserved"
+else
+  fail "sweep legit preservation: normal=${has_normal} (expected 1)"
+fi
+
+run_test
+if (( branch_gone == 1 ))
+then
+  pass "sweep_bogus_worktrees_in_cache: '_git/main' local branch deleted"
+else
+  fail "sweep branch cleanup: branch_gone=${branch_gone} (expected 1)"
+fi
+
+# Test: idempotent — running twice is a no-op the second time
+run_test
+second_count_before=$("$test_git" -C "$sweep_cache" worktree list --porcelain | grep -c '^worktree ' || true)
+sweep_bogus_worktrees_in_cache "$sweep_cache" 2>/dev/null
+second_count_after=$("$test_git" -C "$sweep_cache" worktree list --porcelain | grep -c '^worktree ' || true)
+if (( second_count_before == second_count_after ))
+then
+  pass "sweep_bogus_worktrees_in_cache: idempotent on clean cache"
+else
+  fail "sweep idempotent: before=${second_count_before} after=${second_count_after}"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
