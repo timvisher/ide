@@ -28,7 +28,7 @@ on setProfile(profileId)
 	tell application "System Events"
 		tell property list file plistPath
 			set value of property list item "profile" to profileId
-			set value of property list item "autosaml" to true
+			set value of property list item "autosaml" to false
 		end tell
 	end tell
 end setProfile
