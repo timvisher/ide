@@ -446,25 +446,25 @@ cache_trunk() {
         warn "cache_trunk: Unable to fetch ${org_repo}; continuing with stale cache"
       fi
     fi
-    {
-      command git -C "${repo_dir}" remote set-head origin -a >&2 &&
-        if ! command git -C "${repo_dir}" symbolic-ref -q HEAD >/dev/null 2>&1
-        then
-          info "cache_trunk: HEAD already detached; skipping checkout --detach"
-        else
-          command git -C "${repo_dir}" -c core.hooksPath=/dev/null checkout --detach >&2
-        fi
-    } ||
-      warn "cache_trunk: Unable to update HEAD for ${org_repo}; continuing with stale cache"
+    command git -C "${repo_dir}" remote set-head origin -a >&2 ||
+      warn "cache_trunk: Unable to update origin/HEAD for ${org_repo}; continuing with stale cache"
   else
     info "${org_repo} is not cached"
-    command git -C "$org_dir" clone "${clone_source}" >&2 ||
-      die "cache_trunk: Unable to clone ‘${clone_source}’"
-
-    command git -C "${repo_dir}" remote set-head origin -a >&2 ||
+    # Trunk caches are bare repos so there is no working tree to
+    # accidentally touch and `git rev-parse --git-common-dir` returns
+    # the cache dir itself (not a `.git` subdir).  The default --bare
+    # refspec mirrors `refs/heads/*:refs/heads/*`, which is the wrong
+    # shape for downstream code that reads `refs/remotes/origin/*`;
+    # use `init --bare` + `remote add origin` instead to get the
+    # standard `+refs/heads/*:refs/remotes/origin/*` refspec.
+    command git init --bare "$repo_dir" >&2 ||
+      die "cache_trunk: Unable to init bare cache at ‘${repo_dir}’"
+    command git -C "$repo_dir" remote add origin "$clone_source" >&2 ||
+      die "cache_trunk: Unable to add origin remote for ‘${org_repo}’"
+    command git -C "$repo_dir" fetch --prune origin >&2 ||
+      die "cache_trunk: Unable to fetch origin for ‘${org_repo}’"
+    command git -C "$repo_dir" remote set-head origin -a >&2 ||
       die "cache_trunk: Unable to set origin HEAD for ‘${org_repo}’"
-    command git -C "${repo_dir}" -c core.hooksPath=/dev/null checkout --detach >&2 ||
-      die "cache_trunk: Unable to detach HEAD for '${org_repo}'"
 
     maybe_execute_hook "${org}" "${repo}" post-cache
   fi
@@ -827,7 +827,7 @@ ensure_worktree() {
   if ! [[ -d ${branch_dir_abs} ]]; then
     info "Creating worktree ‘${branch_dir_abs}’ from cache ‘${trunk_cache}’"
     command git -C "${trunk_cache}" worktree prune >&2
-    command git -C "${trunk_cache}" worktree add --detach "${branch_dir_abs}" "$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
+    command git -C "${trunk_cache}" worktree add --detach "${branch_dir_abs}" "origin/$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
       die "Unable to add worktree ‘${branch_dir_abs}’"
 
     maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-initial-branch-dir-creation

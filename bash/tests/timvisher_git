@@ -398,11 +398,12 @@ default_branch=$("$test_git" -C "$source_repo" rev-parse --abbrev-ref HEAD)
 base_commit=$("$test_git" -C "$source_repo" rev-parse HEAD)
 "$test_git" -C "$source_repo" checkout "$default_branch" >/dev/null 2>&1
 
-# Clone into the cache structure (simulating what cache_trunk creates)
+# Initialize a bare cache (simulating what cache_trunk creates)
 mkdir -p "$cache_dir/repo_trunks/testorg"
-"$test_git" clone "$source_repo" "$cache_dir/repo_trunks/testorg/testrepo" >/dev/null 2>&1
+"$test_git" init --bare "$cache_dir/repo_trunks/testorg/testrepo" >/dev/null 2>&1
+"$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" remote add origin "$source_repo"
+"$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" fetch origin >/dev/null 2>&1
 "$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" remote set-head origin -a >/dev/null 2>&1
-"$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" -c core.hooksPath=/dev/null checkout --detach >/dev/null 2>&1
 
 # Add org alias: to → testorg, and re-source to pick it up
 echo 'to=testorg' > "$tmpdir/timvisher/ide/git_org_aliases"
@@ -764,18 +765,15 @@ else
 fi
 
 # Test: clone resolves managed bare repo to trunk checkout
-# Bare clones default to mirroring (refs/heads/*:refs/heads/*), so they
-# lack refs/remotes/origin/*.  Configure a normal fetch refspec to create
-# remote-tracking refs that cache_trunk/ensure_worktree expect.
+# cache_trunk uses `init --bare` + `remote add origin` so that the default
+# refspec is +refs/heads/*:refs/remotes/origin/* (populating origin/HEAD
+# and origin/<branch> refs that downstream code reads from).
 run_test
-bare_repo="$tmpdir/bare_managed"
-"$test_git" clone --bare "$source_repo" "$bare_repo" >/dev/null 2>&1
-"$test_git" -C "$bare_repo" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-"$test_git" -C "$bare_repo" fetch origin >/dev/null 2>&1
-"$test_git" -C "$bare_repo" remote set-head origin -a >/dev/null 2>&1
-# Place it under repo_trunks_dir as a managed bare repo
 mkdir -p "$cache_dir/repo_trunks/bareorg"
-mv "$bare_repo" "$cache_dir/repo_trunks/bareorg/barerepo"
+"$test_git" init --bare "$cache_dir/repo_trunks/bareorg/barerepo" >/dev/null 2>&1
+"$test_git" -C "$cache_dir/repo_trunks/bareorg/barerepo" remote add origin "$source_repo"
+"$test_git" -C "$cache_dir/repo_trunks/bareorg/barerepo" fetch origin >/dev/null 2>&1
+"$test_git" -C "$cache_dir/repo_trunks/bareorg/barerepo" remote set-head origin -a >/dev/null 2>&1
 bare_repo="$cache_dir/repo_trunks/bareorg/barerepo"
 result=$(clone "$bare_repo" 2>/dev/null) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == "${live_dir}/bareorg/barerepo/${default_branch}" ]]
@@ -785,14 +783,13 @@ else
   fail "clone: bare repo: expected '${live_dir}/bareorg/barerepo/${default_branch}', got rc=${rc} result='${result}'"
 fi
 
-# Test: clone resolves cache trunk path via local working tree fallback
-# (cache trunks are regular clones with detached HEAD, not bare repos)
+# Test: clone resolves cache trunk path (which is bare) to trunk checkout
 run_test
 cache_path="$cache_dir/repo_trunks/testorg/testrepo"
 result=$(clone "$cache_path" 2>/dev/null) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == *testorg/testrepo* ]]
 then
-  pass "clone: resolves cache trunk path as local working tree"
+  pass "clone: resolves cache trunk path to trunk checkout"
 else
   fail "clone: cache trunk path: expected success, got rc=${rc} result='${result}'"
 fi
