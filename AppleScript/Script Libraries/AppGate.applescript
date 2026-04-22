@@ -24,11 +24,6 @@ on quitIfRunning()
 end quitIfRunning
 
 on setProfile(profileId)
-	set plistPath to (POSIX path of (path to home folder)) & "Library/Preferences/com.appgate.sdp.service.plist"
-	tell application "System Events"
-		tell property list file plistPath
-			set value of property list item "profile" to profileId
-			set value of property list item "autosaml" to false
-		end tell
-	end tell
+	do shell script "defaults write com.appgate.sdp.service profile -string " & quoted form of profileId
+	do shell script "defaults write com.appgate.sdp.service autosaml -bool false"
 end setProfile
