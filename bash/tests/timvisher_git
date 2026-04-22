@@ -1133,6 +1133,123 @@ else
   fail "migrate mv-failure path: rc=${mv_fail_rc}, output='${mv_fail_output}'"
 fi
 
+# ---------------------------------------------------------------------------
+# die_if_git_component tests
+# ---------------------------------------------------------------------------
+
+# Test: dies on exact `.git`
+run_test
+result=$(die_if_git_component "test" ".git" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *".git"* ]]
+then
+  pass "die_if_git_component: dies on exact '.git'"
+else
+  fail "die_if_git_component exact: rc=${rc} result='${result}'"
+fi
+
+# Test: dies on leading `.git/`
+run_test
+result=$(die_if_git_component "test" ".git/main" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "die_if_git_component: dies on leading '.git/'"
+else
+  fail "die_if_git_component leading: should have died, got rc=${rc}"
+fi
+
+# Test: dies on trailing `/.git`
+run_test
+result=$(die_if_git_component "test" "/foo/.git" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "die_if_git_component: dies on trailing '/.git'"
+else
+  fail "die_if_git_component trailing: should have died, got rc=${rc}"
+fi
+
+# Test: dies on middle `/.git/`
+run_test
+result=$(die_if_git_component "test" "/foo/.git/main" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "die_if_git_component: dies on middle '/.git/'"
+else
+  fail "die_if_git_component middle: should have died, got rc=${rc}"
+fi
+
+# Test: allows paths where `.git` appears inside a longer name
+run_test
+result=$(die_if_git_component "test" "/foo/my.gitrepo/main" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "die_if_git_component: allows '.git' inside longer path component"
+else
+  fail "die_if_git_component partial: should have passed, got rc=${rc} '${result}'"
+fi
+
+# Test: dies on `_git` (sanitization-artifact form). main-d78 — sweep is
+# only safe to delete _git/* unconditionally because no legitimate code
+# path can create such a branch.
+run_test
+result=$(die_if_git_component "test" "_git" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"_git"* ]]
+then
+  pass "die_if_git_component: dies on exact '_git'"
+else
+  fail "die_if_git_component _git exact: rc=${rc} result='${result}'"
+fi
+
+run_test
+result=$(die_if_git_component "test" "_git/main" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"_git"* ]]
+then
+  pass "die_if_git_component: dies on leading '_git/'"
+else
+  fail "die_if_git_component _git leading: rc=${rc} result='${result}'"
+fi
+
+run_test
+result=$(die_if_git_component "test" "/foo/_git/main" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"_git"* ]]
+then
+  pass "die_if_git_component: dies on middle '/_git/'"
+else
+  fail "die_if_git_component _git middle: rc=${rc} result='${result}'"
+fi
+
+# Test: allows '_git' inside a longer name (e.g. legitimate '_gitignore'
+# would not match the _git component check)
+run_test
+result=$(die_if_git_component "test" "/foo/_gitignore/main" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "die_if_git_component: allows '_git' inside longer path component"
+else
+  fail "die_if_git_component _git partial: should have passed, got rc=${rc} '${result}'"
+fi
+
+# Test: allows clean paths
+run_test
+result=$(die_if_git_component "test" "/foo/bar/main" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "die_if_git_component: allows clean path"
+else
+  fail "die_if_git_component clean: should have passed, got rc=${rc} '${result}'"
+fi
+
+# Test: ensure_worktree dies on .git-containing source (prevents the
+# main-57o regression from re-creating spurious _git/ worktrees even if
+# a bogus path leaks in from somewhere else)
+run_test
+result=$(ensure_worktree "testorg/testrepo/.git/main" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *".git"* ]]
+then
+  pass "ensure_worktree: dies on source with .git path component"
+else
+  fail "ensure_worktree .git guard: rc=${rc} result='${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

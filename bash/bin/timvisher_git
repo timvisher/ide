@@ -400,6 +400,44 @@ maybe_execute_hook() {
   fi
 }
 
+# Die if a `/`-separated path or shorthand contains `.git` or `_git`
+# as a path component.  Used to catch internal bugs that leak `.git`
+# into otherwise-clean worktree paths (see main-57o, main-68h); in
+# those regressions sanitize_branch_name silently turned the leaked
+# `.git` into `_git` and spawned spurious worktrees.  This guard
+# makes the next such regression fail loudly instead.
+#
+# `_git` is rejected because it's a sanitization artifact, not a
+# legitimate branch component.  sanitize_branch_name converts a
+# leading `.` in any path component to `_`, so `.git/<anything>`
+# becomes `_git/<anything>` — the only way `_git/` legitimately
+# appears.  Enforcing this invariant here lets sweep_bogus_worktrees
+# safely delete any `_git/...` branches/worktrees it finds without
+# risk of removing user data.
+#
+# Callers that genuinely accept user-supplied `.git` in branch names
+# (e.g. tree URLs) should NOT use this — it's for internal-derived
+# paths only.
+#
+# Known constraint: ensure_worktree applies this guard to its source
+# argument, so user-supplied source paths whose parent contains a
+# literal `.git` component (unusual but possible: e.g.
+# `~/proj/.git/foo`) will be rejected. There is no escape hatch — the
+# rationale is that any `.git` component in an internal-derived path
+# indicates a bug, and refusing such inputs at the boundary is safer
+# than letting them flow into worktree creation. Users with this
+# layout should symlink to a clean path or restructure.
+die_if_git_component() {
+  local context=$1
+  local path=$2
+  case $path in
+    .git|.git/*|*/.git|*/.git/*|_git|_git/*|*/_git|*/_git/*)
+      die "%s: refusing to proceed — '.git' or '_git' appeared as a path component in '%s'. This is an internal bug; see main-6x3." \
+        "$context" "$path"
+      ;;
+  esac
+}
+
 # Migrate an existing non-bare trunk cache in-place to a bare layout.
 #
 # Trunk caches are supposed to be bare.  A past regression in cache_trunk
@@ -807,6 +845,13 @@ branch_path_for_source() {
       ;;
   esac
 
+  # Guard before sanitize.  If branch or branch_dir contains `.git` as
+  # a path component, something upstream handed us a path that leaked
+  # cache-layout structure (main-57o regression).  Die loudly instead
+  # of letting sanitize_branch_name quietly turn `.git` into `_git`.
+  die_if_git_component "branch_path_for_source: branch" "$branch"
+  die_if_git_component "branch_path_for_source: branch_dir" "$branch_dir"
+
   branch=$(sanitize_branch_name "$branch")
   branch_dir=$(sanitize_branch_name "$branch_dir")
 
@@ -815,6 +860,7 @@ branch_path_for_source() {
 
 ensure_worktree() {
   local source=$1
+  die_if_git_component "ensure_worktree: source" "$source"
   local trunk_cache
   trunk_cache=$(cache_trunk "$source")
 
@@ -1164,7 +1210,15 @@ derive_worktree_path() {
   repo_trunks_dir_real=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || repo_trunks_dir_real=$repo_trunks_dir
 
   local rel_path="${common_dir#"${repo_trunks_dir_real}/"}"
-  printf '%s' "${live_repo_dir}/${rel_path}/${branch}"
+  local result="${live_repo_dir}/${rel_path}/${branch}"
+
+  # After migration, the output must never contain `.git` as a path
+  # component.  If it does, the migration failed to take or something
+  # upstream corrupted common_dir — die loudly rather than return a
+  # path that would spawn a spurious `_git/...` worktree downstream.
+  die_if_git_component "derive_worktree_path: result" "$result"
+
+  printf '%s' "$result"
 }
 
 # ---------------------------------------------------------------------------
@@ -1198,6 +1252,17 @@ sync_trunk() {
 
   local trunk_wt
   trunk_wt=$(find_worktree_for_branch "$dir" "$trunk_branch")
+
+  # Guard: refuse to return a bogus worktree path to the caller, who is
+  # about to feed it into ensure_session / ntmux3 / clone.  Such a path
+  # would re-launder through sanitize_branch_name and spawn a spurious
+  # `_git/...` worktree (see main-57o).  If found, the cache's
+  # worktree registry still references legacy paths that main-agj
+  # cleanup should remove.
+  if [[ -n $trunk_wt ]]
+  then
+    die_if_git_component "sync_trunk: existing worktree from cache" "$trunk_wt"
+  fi
 
   if [[ -z $trunk_wt ]]
   then
