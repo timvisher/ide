@@ -1134,6 +1134,173 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# ensure_worktrees_not_poisoned_by_bare tests (ide-wfp)
+# ---------------------------------------------------------------------------
+#
+# Build a small helper that creates an already-bare cache whose linked
+# worktrees lack the per-worktree `core.bare = false` override — the
+# state the buggy migration leaves caches in.
+
+setup_poisoned_cache() {
+  local label=$1
+  local with_extension=$2  # true|false
+
+  local src="$tmpdir/poison_${label}_src"
+  "$test_git" init "$src" >/dev/null 2>&1
+  "$test_git" -C "$src" -c user.email=t@t -c user.name=t \
+    -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+
+  local cache="$tmpdir/poison_${label}_cache"
+  "$test_git" init --bare "$cache" >/dev/null 2>&1
+  "$test_git" -C "$cache" remote add origin "$src" >/dev/null 2>&1
+  "$test_git" -C "$cache" fetch origin >/dev/null 2>&1
+  "$test_git" -C "$cache" remote set-head origin -a >/dev/null 2>&1
+
+  if [[ $with_extension == true ]]
+  then
+    "$test_git" -C "$cache" config extensions.worktreeConfig true
+  fi
+
+  local wt="$tmpdir/poison_${label}_wt"
+  "$test_git" -C "$cache" worktree add --detach "$wt" \
+    "origin/$default_branch" >/dev/null 2>&1
+
+  printf '%s;%s' "$cache" "$wt"
+}
+
+# Test: heal pass writes per-worktree core.bare=false on a worktree that
+# is poisoned by core.bare=true on the common config + worktreeConfig
+# extension enabled.
+run_test
+poisoned=$(setup_poisoned_cache "wfp_heal" true)
+heal_cache=${poisoned%%;*}
+heal_wt=${poisoned#*;}
+
+# Confirm pre-state: no per-worktree override yet.
+pre_override=$("$test_git" -C "$heal_wt" config --worktree --get core.bare 2>/dev/null) || pre_override=""
+
+migrate_cache_to_bare_if_needed "$heal_cache" >/dev/null 2>&1
+
+post_override=$("$test_git" -C "$heal_wt" config --worktree --get core.bare 2>/dev/null) || post_override=""
+post_inside=$("$test_git" -C "$heal_wt" rev-parse --is-inside-work-tree 2>/dev/null) || post_inside=""
+
+if [[ -z $pre_override ]] && [[ $post_override == false ]] && [[ $post_inside == true ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: writes per-worktree core.bare=false (ide-wfp)"
+else
+  fail "heal pass: pre_override='${pre_override}' post_override='${post_override}' post_inside='${post_inside}'"
+fi
+
+# Test: no-op when extensions.worktreeConfig is not enabled. Without the
+# extension, `git config --worktree` would fail and we have no evidence
+# that bare-poisoning happens — the heal must skip silently and not
+# write any per-worktree config.
+run_test
+poisoned_noext=$(setup_poisoned_cache "wfp_noext" false)
+noext_cache=${poisoned_noext%%;*}
+noext_wt=${poisoned_noext#*;}
+
+migrate_cache_to_bare_if_needed "$noext_cache" >/dev/null 2>&1
+
+# config.worktree must not exist under the linked worktree's gitdir.
+noext_wt_gitdir=$("$test_git" -C "$noext_wt" rev-parse --git-dir 2>/dev/null)
+noext_wt_gitdir=$(cd "$noext_wt" && cd "$noext_wt_gitdir" && pwd -P)
+
+if [[ ! -e "$noext_wt_gitdir/config.worktree" ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: no-op when extensions.worktreeConfig is off (ide-wfp)"
+else
+  fail "no-extension heal: config.worktree should not exist at '${noext_wt_gitdir}'"
+fi
+
+# Test: idempotent — already-healed worktree stays at core.bare=false
+# and a second heal pass is a no-op (no rewrite of the file).
+run_test
+poisoned_idem=$(setup_poisoned_cache "wfp_idem" true)
+idem_cache=${poisoned_idem%%;*}
+idem_wt=${poisoned_idem#*;}
+
+migrate_cache_to_bare_if_needed "$idem_cache" >/dev/null 2>&1
+
+idem_wt_gitdir=$("$test_git" -C "$idem_wt" rev-parse --git-dir 2>/dev/null)
+idem_wt_gitdir=$(cd "$idem_wt" && cd "$idem_wt_gitdir" && pwd -P)
+first_mtime=$(/usr/bin/stat -f '%m' "$idem_wt_gitdir/config.worktree" 2>/dev/null) || first_mtime=""
+
+# Wait one second so a re-write would produce a distinct mtime.
+sleep 1
+migrate_cache_to_bare_if_needed "$idem_cache" >/dev/null 2>&1
+second_mtime=$(/usr/bin/stat -f '%m' "$idem_wt_gitdir/config.worktree" 2>/dev/null) || second_mtime=""
+second_value=$("$test_git" -C "$idem_wt" config --worktree --get core.bare 2>/dev/null) || second_value=""
+
+if [[ -n $first_mtime ]] && [[ $first_mtime == "$second_mtime" ]] && [[ $second_value == false ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: idempotent on already-healed worktree (ide-wfp)"
+else
+  fail "idempotent heal: first_mtime='${first_mtime}' second_mtime='${second_mtime}' second_value='${second_value}'"
+fi
+
+# Test: heals every linked worktree when multiple are poisoned.
+run_test
+poisoned_multi=$(setup_poisoned_cache "wfp_multi" true)
+multi_cache=${poisoned_multi%%;*}
+multi_wt1=${poisoned_multi#*;}
+multi_wt2="$tmpdir/poison_wfp_multi_wt2"
+"$test_git" -C "$multi_cache" worktree add --detach "$multi_wt2" \
+  "origin/$default_branch" >/dev/null 2>&1
+
+migrate_cache_to_bare_if_needed "$multi_cache" >/dev/null 2>&1
+
+multi_wt1_value=$("$test_git" -C "$multi_wt1" config --worktree --get core.bare 2>/dev/null) || multi_wt1_value=""
+multi_wt2_value=$("$test_git" -C "$multi_wt2" config --worktree --get core.bare 2>/dev/null) || multi_wt2_value=""
+
+if [[ $multi_wt1_value == false ]] && [[ $multi_wt2_value == false ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: heals all linked worktrees (ide-wfp)"
+else
+  fail "multi-worktree heal: wt1='${multi_wt1_value}' wt2='${multi_wt2_value}'"
+fi
+
+# Test: skips a worktree whose directory was rm'd without `git worktree
+# remove` and continues processing the remaining worktrees.
+run_test
+poisoned_missing=$(setup_poisoned_cache "wfp_missing" true)
+missing_cache=${poisoned_missing%%;*}
+missing_wt_kept=${poisoned_missing#*;}
+missing_wt_gone="$tmpdir/poison_wfp_missing_wt_gone"
+"$test_git" -C "$missing_cache" worktree add --detach "$missing_wt_gone" \
+  "origin/$default_branch" >/dev/null 2>&1
+rm -rf "$missing_wt_gone"
+
+heal_output=$(migrate_cache_to_bare_if_needed "$missing_cache" 2>&1) && heal_rc=0 || heal_rc=$?
+missing_kept_value=$("$test_git" -C "$missing_wt_kept" config --worktree --get core.bare 2>/dev/null) || missing_kept_value=""
+
+if (( heal_rc == 0 )) && [[ $missing_kept_value == false ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: skips missing worktree path (ide-wfp)"
+else
+  fail "missing-path heal: rc=${heal_rc} kept_value='${missing_kept_value}' output='${heal_output}'"
+fi
+
+# Test: triggers heal when extensions.worktreeConfig is set to a non-
+# canonical truthy value (`yes`); --type=bool should normalize it.
+run_test
+poisoned_yes=$(setup_poisoned_cache "wfp_yes" false)
+yes_cache=${poisoned_yes%%;*}
+yes_wt=${poisoned_yes#*;}
+"$test_git" -C "$yes_cache" config extensions.worktreeConfig yes
+
+migrate_cache_to_bare_if_needed "$yes_cache" >/dev/null 2>&1
+
+yes_value=$("$test_git" -C "$yes_wt" config --worktree --get core.bare 2>/dev/null) || yes_value=""
+
+if [[ $yes_value == false ]]
+then
+  pass "ensure_worktrees_not_poisoned_by_bare: honors truthy variants of extensions.worktreeConfig (ide-wfp)"
+else
+  fail "truthy-variant heal: value='${yes_value}'"
+fi
+
+# ---------------------------------------------------------------------------
 # die_if_git_component tests
 # ---------------------------------------------------------------------------
 

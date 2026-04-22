@@ -512,7 +512,10 @@ sweep_bogus_worktrees_in_all_caches() {
 #      new gitdir layout (<cache>/worktrees/<name> instead of
 #      <cache>/.git/worktrees/<name>)
 #
-# Idempotent: if the cache is already bare, this is a no-op.
+# Idempotent: if the cache is already bare, the conversion path is a
+# no-op, but the heal pass (ensure_worktrees_not_poisoned_by_bare) still
+# runs so that caches an earlier buggy migration left in a poisoned
+# state self-heal on next access.
 migrate_cache_to_bare_if_needed() {
   local cache_dir=$1
 
@@ -520,43 +523,91 @@ migrate_cache_to_bare_if_needed() {
 
   local is_bare
   is_bare=$(command git -C "$cache_dir" rev-parse --is-bare-repository 2>/dev/null) || return 0
-  [[ $is_bare == true ]] && return 0
 
-  [[ -d ${cache_dir}/.git ]] ||
-    die "migrate_cache_to_bare_if_needed: cache ‘${cache_dir}’ is not bare and has no .git subdir; refusing to guess"
+  if [[ $is_bare != true ]]
+  then
+    [[ -d ${cache_dir}/.git ]] ||
+      die "migrate_cache_to_bare_if_needed: cache ‘${cache_dir}’ is not bare and has no .git subdir; refusing to guess"
 
-  info "migrate_cache_to_bare_if_needed: converting non-bare trunk cache ‘${cache_dir}’ to bare layout"
+    info "migrate_cache_to_bare_if_needed: converting non-bare trunk cache ‘${cache_dir}’ to bare layout"
 
-  local item
-  for item in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*
-  do
-    [[ -e $item ]] || continue
-    [[ ${item##*/} == ".git" ]] && continue
-    rm -rf "$item" ||
-      die "migrate_cache_to_bare_if_needed: unable to remove ‘${item}’"
-  done
-
-  # The mv loop runs in a subshell to scope `shopt -s dotglob nullglob`.
-  # die() inside that subshell only exits the subshell, so an mv failure
-  # would silently leave the cache half-flattened.  Use plain `exit 1`
-  # to propagate failure to the parent and die from there.  mv prints
-  # its own per-file error to stderr.
-  (
-    shopt -s dotglob nullglob
-    for gitfile in "${cache_dir}/.git"/*
+    local item
+    for item in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*
     do
-      mv "$gitfile" "$cache_dir/" || exit 1
+      [[ -e $item ]] || continue
+      [[ ${item##*/} == ".git" ]] && continue
+      rm -rf "$item" ||
+        die "migrate_cache_to_bare_if_needed: unable to remove ‘${item}’"
     done
-  ) ||
-    die "migrate_cache_to_bare_if_needed: failed to flatten ‘${cache_dir}/.git’ into ‘${cache_dir}’"
-  rmdir "${cache_dir}/.git" ||
-    die "migrate_cache_to_bare_if_needed: .git dir not empty after flatten; manual inspection required"
 
-  command git -C "$cache_dir" config core.bare true ||
-    die "migrate_cache_to_bare_if_needed: unable to set core.bare=true in ‘${cache_dir}’"
+    # The mv loop runs in a subshell to scope `shopt -s dotglob nullglob`.
+    # die() inside that subshell only exits the subshell, so an mv failure
+    # would silently leave the cache half-flattened.  Use plain `exit 1`
+    # to propagate failure to the parent and die from there.  mv prints
+    # its own per-file error to stderr.
+    (
+      shopt -s dotglob nullglob
+      for gitfile in "${cache_dir}/.git"/*
+      do
+        mv "$gitfile" "$cache_dir/" || exit 1
+      done
+    ) ||
+      die "migrate_cache_to_bare_if_needed: failed to flatten ‘${cache_dir}/.git’ into ‘${cache_dir}’"
+    rmdir "${cache_dir}/.git" ||
+      die "migrate_cache_to_bare_if_needed: .git dir not empty after flatten; manual inspection required"
 
-  command git -C "$cache_dir" worktree repair >&2 ||
-    warn "migrate_cache_to_bare_if_needed: worktree repair reported issues; live worktrees may need manual fixing"
+    command git -C "$cache_dir" config core.bare true ||
+      die "migrate_cache_to_bare_if_needed: unable to set core.bare=true in ‘${cache_dir}’"
+
+    command git -C "$cache_dir" worktree repair >&2 ||
+      warn "migrate_cache_to_bare_if_needed: worktree repair reported issues; live worktrees may need manual fixing"
+  fi
+
+  ensure_worktrees_not_poisoned_by_bare "$cache_dir"
+}
+
+# When a bare cache has `extensions.worktreeConfig = true`, `core.bare`
+# becomes per-worktree-overridable.  Without an explicit per-worktree
+# `core.bare = false`, every linked worktree inherits `true` from the
+# common config and git refuses to recognise the working tree
+# (`fatal: this operation must be run in a work tree`).
+#
+# Walk the cache's linked worktrees and write the override where
+# missing.  Runs unconditionally from migrate_cache_to_bare_if_needed
+# (including the already-bare path) so caches that an earlier buggy
+# migration left in this state self-heal on next access.  No-op when
+# the extension is off — `git config --worktree` would fail there and
+# we have no evidence of poisoning in that case.
+ensure_worktrees_not_poisoned_by_bare() {
+  local cache_dir=$1
+
+  local worktree_config
+  # --type=bool normalizes git's truthy variants (true/yes/on/1) to
+  # "true" so we don't have to enumerate them ourselves.
+  worktree_config=$(command git -C "$cache_dir" config --type=bool --get extensions.worktreeConfig 2>/dev/null) || worktree_config=""
+  [[ $worktree_config == true ]] || return 0
+
+  local cache_dir_real
+  cache_dir_real=$(cd "$cache_dir" && pwd -P) || cache_dir_real=$cache_dir
+
+  local line wt_path wt_real current
+  while IFS= read -r line
+  do
+    [[ $line == "worktree "* ]] || continue
+    wt_path=${line#worktree }
+    [[ -d $wt_path ]] || continue
+
+    wt_real=$(cd "$wt_path" && pwd -P) || wt_real=$wt_path
+    # The bare cache's own entry really IS bare — leave it alone.
+    [[ $wt_real == "$cache_dir_real" ]] && continue
+
+    current=$(command git -C "$wt_path" config --worktree --get core.bare 2>/dev/null) || current=""
+    [[ $current == false ]] && continue
+
+    info "ensure_worktrees_not_poisoned_by_bare: setting per-worktree core.bare=false in ‘${wt_path}’"
+    command git -C "$wt_path" config --worktree core.bare false ||
+      warn "ensure_worktrees_not_poisoned_by_bare: failed to set per-worktree core.bare in ‘${wt_path}’"
+  done < <(command git -C "$cache_dir" worktree list --porcelain 2>/dev/null)
 }
 
 cache_trunk() {
