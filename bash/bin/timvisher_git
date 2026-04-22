@@ -400,6 +400,67 @@ maybe_execute_hook() {
   fi
 }
 
+# Migrate an existing non-bare trunk cache in-place to a bare layout.
+#
+# Trunk caches are supposed to be bare.  A past regression in cache_trunk
+# (see main-57o) created them via `git clone`, leaving a non-bare layout
+# with a `.git` subdir and a checked-out working tree.  This function
+# brings such caches back into the expected shape:
+#
+#   1. remove the cache's own working tree files (not .git/)
+#   2. flatten <cache>/.git/* into <cache>/
+#   3. set core.bare=true
+#   4. `git worktree repair` to re-point live linked worktrees at the
+#      new gitdir layout (<cache>/worktrees/<name> instead of
+#      <cache>/.git/worktrees/<name>)
+#
+# Idempotent: if the cache is already bare, this is a no-op.
+migrate_cache_to_bare_if_needed() {
+  local cache_dir=$1
+
+  [[ -d $cache_dir ]] || return 0
+
+  local is_bare
+  is_bare=$(command git -C "$cache_dir" rev-parse --is-bare-repository 2>/dev/null) || return 0
+  [[ $is_bare == true ]] && return 0
+
+  [[ -d ${cache_dir}/.git ]] ||
+    die "migrate_cache_to_bare_if_needed: cache ‘${cache_dir}’ is not bare and has no .git subdir; refusing to guess"
+
+  info "migrate_cache_to_bare_if_needed: converting non-bare trunk cache ‘${cache_dir}’ to bare layout"
+
+  local item
+  for item in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*
+  do
+    [[ -e $item ]] || continue
+    [[ ${item##*/} == ".git" ]] && continue
+    rm -rf "$item" ||
+      die "migrate_cache_to_bare_if_needed: unable to remove ‘${item}’"
+  done
+
+  # The mv loop runs in a subshell to scope `shopt -s dotglob nullglob`.
+  # die() inside that subshell only exits the subshell, so an mv failure
+  # would silently leave the cache half-flattened.  Use plain `exit 1`
+  # to propagate failure to the parent and die from there.  mv prints
+  # its own per-file error to stderr.
+  (
+    shopt -s dotglob nullglob
+    for gitfile in "${cache_dir}/.git"/*
+    do
+      mv "$gitfile" "$cache_dir/" || exit 1
+    done
+  ) ||
+    die "migrate_cache_to_bare_if_needed: failed to flatten ‘${cache_dir}/.git’ into ‘${cache_dir}’"
+  rmdir "${cache_dir}/.git" ||
+    die "migrate_cache_to_bare_if_needed: .git dir not empty after flatten; manual inspection required"
+
+  command git -C "$cache_dir" config core.bare true ||
+    die "migrate_cache_to_bare_if_needed: unable to set core.bare=true in ‘${cache_dir}’"
+
+  command git -C "$cache_dir" worktree repair >&2 ||
+    warn "migrate_cache_to_bare_if_needed: worktree repair reported issues; live worktrees may need manual fixing"
+}
+
 cache_trunk() {
   local source=$1
   local org repo
@@ -424,6 +485,7 @@ cache_trunk() {
   fi
 
   if [[ -d $repo_dir ]]; then
+    migrate_cache_to_bare_if_needed "$repo_dir"
     info "${org_repo} is already cached"
     local fetch_output
     if fetch_output=$(command git -C "${repo_dir}" fetch --prune origin 2>&1)
@@ -1078,11 +1140,30 @@ derive_worktree_path() {
   [[ -n $branch ]] || die "derive_worktree_path: branch required"
 
   local common_dir
-  common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
+  common_dir=$(command git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
     die "derive_worktree_path: not a git repo: '%s'" "$dir"
   common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
 
-  local rel_path="${common_dir#"${repo_trunks_dir}/"}"
+  # Trunk caches must be bare.  If the common_dir ends in /.git the
+  # cache is non-bare (likely a leftover from the main-57o regression)
+  # and rel_path below would include ".git" as a path component,
+  # producing bogus live paths.  Migrate in place, then re-resolve
+  # common_dir against the now-bare cache.
+  if [[ $common_dir == */.git ]]
+  then
+    migrate_cache_to_bare_if_needed "${common_dir%/.git}"
+    common_dir=$(command git -C "$dir" rev-parse --git-common-dir 2>/dev/null) ||
+      die "derive_worktree_path: not a git repo after migration: '%s'" "$dir"
+    common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
+  fi
+
+  # common_dir has been resolved via pwd -P; resolve repo_trunks_dir
+  # the same way so the prefix strip is apples-to-apples on systems
+  # (like macOS) where parent paths may contain symlinks.
+  local repo_trunks_dir_real
+  repo_trunks_dir_real=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || repo_trunks_dir_real=$repo_trunks_dir
+
+  local rel_path="${common_dir#"${repo_trunks_dir_real}/"}"
   printf '%s' "${live_repo_dir}/${rel_path}/${branch}"
 }
 

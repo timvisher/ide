@@ -1006,6 +1006,133 @@ fi
 # Restore branch for any future tests
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
 
+# ---------------------------------------------------------------------------
+# migrate_cache_to_bare_if_needed tests
+# ---------------------------------------------------------------------------
+
+# Test: idempotent on an already-bare cache
+run_test
+migrate_test_bare="$tmpdir/migrate_bare"
+"$test_git" init --bare "$migrate_test_bare" >/dev/null 2>&1
+migrate_cache_to_bare_if_needed "$migrate_test_bare" >/dev/null 2>&1
+result=$("$test_git" -C "$migrate_test_bare" rev-parse --is-bare-repository)
+if [[ $result == true ]]
+then
+  pass "migrate_cache_to_bare_if_needed: no-op on already-bare cache"
+else
+  fail "migrate bare: expected still-bare, got '${result}'"
+fi
+
+# Test: converts a non-bare cache and preserves live worktree linkage
+run_test
+migrate_src="$tmpdir/migrate_src"
+"$test_git" init "$migrate_src" >/dev/null 2>&1
+"$test_git" -C "$migrate_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+"$test_git" -C "$migrate_src" checkout -b feat >/dev/null 2>&1
+"$test_git" -C "$migrate_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m feat >/dev/null 2>&1
+"$test_git" -C "$migrate_src" checkout "$default_branch" >/dev/null 2>&1
+
+migrate_test_cache="$tmpdir/migrate_nonbare"
+"$test_git" clone "$migrate_src" "$migrate_test_cache" >/dev/null 2>&1
+"$test_git" -C "$migrate_test_cache" remote set-head origin -a >/dev/null 2>&1
+"$test_git" -C "$migrate_test_cache" -c core.hooksPath=/dev/null checkout --detach >/dev/null 2>&1
+
+migrate_live="$tmpdir/migrate_live"
+"$test_git" -C "$migrate_test_cache" worktree add "$migrate_live" feat >/dev/null 2>&1
+
+migrate_cache_to_bare_if_needed "$migrate_test_cache" >/dev/null 2>&1
+
+# After migration: cache is bare
+is_bare=$("$test_git" -C "$migrate_test_cache" rev-parse --is-bare-repository)
+# Live worktree's common-dir no longer ends in .git
+live_common=$("$test_git" -C "$migrate_live" rev-parse --git-common-dir)
+live_common=$(cd "$migrate_live" && cd "$live_common" && pwd -P)
+migrate_test_cache_real=$(cd "$migrate_test_cache" && pwd -P)
+# Live worktree still has its branch
+live_branch=$("$test_git" -C "$migrate_live" rev-parse --abbrev-ref HEAD)
+
+if [[ $is_bare == true ]] && [[ $live_common == "$migrate_test_cache_real" ]] && [[ $live_branch == feat ]]
+then
+  pass "migrate_cache_to_bare_if_needed: converts non-bare and repairs live worktree"
+else
+  fail "migrate non-bare: is_bare='${is_bare}' live_common='${live_common}' expected='${migrate_test_cache_real}' live_branch='${live_branch}'"
+fi
+
+# Test: derive_worktree_path migrates the cache when invoked against a
+# non-bare cache's live worktree, and returns a path free of .git
+run_test
+dwp_src="$tmpdir/dwp_src"
+"$test_git" init "$dwp_src" >/dev/null 2>&1
+"$test_git" -C "$dwp_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+
+dwp_cache_parent="$cache_dir/repo_trunks/dwporg"
+dwp_cache="$dwp_cache_parent/dwprepo"
+mkdir -p "$dwp_cache_parent"
+"$test_git" clone "$dwp_src" "$dwp_cache" >/dev/null 2>&1
+"$test_git" -C "$dwp_cache" remote set-head origin -a >/dev/null 2>&1
+"$test_git" -C "$dwp_cache" -c core.hooksPath=/dev/null checkout --detach >/dev/null 2>&1
+
+dwp_live="$live_repo_dir/dwporg/dwprepo/feat_branch"
+mkdir -p "$(dirname "$dwp_live")"
+"$test_git" -C "$dwp_cache" worktree add --detach "$dwp_live" "$default_branch" >/dev/null 2>&1
+
+# Save a pre-migration check
+pre_common=$("$test_git" -C "$dwp_live" rev-parse --git-common-dir)
+pre_common=$(cd "$dwp_live" && cd "$pre_common" && pwd -P)
+
+# derive_worktree_path should trigger the migration
+dwp_result=$(derive_worktree_path "$dwp_live" "newbranch")
+
+# After: cache is bare, derive_worktree_path returned a clean path
+post_bare=$("$test_git" -C "$dwp_cache" rev-parse --is-bare-repository)
+expected_path="$live_repo_dir/dwporg/dwprepo/newbranch"
+
+if [[ $pre_common == *".git" ]] \
+   && [[ $post_bare == true ]] \
+   && [[ $dwp_result == "$expected_path" ]]
+then
+  pass "derive_worktree_path: migrates non-bare cache and returns clean path"
+else
+  fail "derive_worktree_path migration: pre_common='${pre_common}' post_bare='${post_bare}' result='${dwp_result}' expected='${expected_path}'"
+fi
+
+# Test: dies cleanly when the mv loop fails mid-flatten.
+# Regression for main-669: die() inside the subshell only exited the
+# subshell, so an mv failure was masked by a downstream rmdir error.
+# Now the parent should die with a "failed to flatten" message.
+run_test
+mv_fail_src="$tmpdir/mv_fail_src"
+"$test_git" init "$mv_fail_src" >/dev/null 2>&1
+"$test_git" -C "$mv_fail_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+mv_fail_cache="$tmpdir/mv_fail_cache"
+"$test_git" clone "$mv_fail_src" "$mv_fail_cache" >/dev/null 2>&1
+"$test_git" -C "$mv_fail_cache" -c core.hooksPath=/dev/null checkout --detach >/dev/null 2>&1
+
+# Force every mv to fail by shadowing it on PATH. The function's `mv`
+# (not `command mv`) resolves through PATH; `command git` is unaffected.
+mkdir -p "$tmpdir/mv_fail_bin"
+cat > "$tmpdir/mv_fail_bin/mv" <<'FAKE_MV'
+#!/usr/bin/env bash
+echo "fake mv: refusing" >&2
+exit 1
+FAKE_MV
+chmod +x "$tmpdir/mv_fail_bin/mv"
+
+mv_fail_output=$(PATH="$tmpdir/mv_fail_bin:$PATH" \
+  migrate_cache_to_bare_if_needed "$mv_fail_cache" 2>&1)
+mv_fail_rc=$?
+
+if (( 0 < mv_fail_rc )) && [[ $mv_fail_output == *"failed to flatten"* ]]
+then
+  pass "migrate_cache_to_bare_if_needed: dies on mv failure with correct error (main-669)"
+else
+  fail "migrate mv-failure path: rc=${mv_fail_rc}, output='${mv_fail_output}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
