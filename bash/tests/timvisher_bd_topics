@@ -100,6 +100,140 @@ else
   fail "expected non-zero exit for missing argument"
 fi
 
+# Test: multiple arguments exit non-zero
+run_test
+if ! XDG_CONFIG_HOME="$tmpdir/config" "$script" resolve arg1 arg2 >/dev/null 2>&1
+then
+  pass "resolve with multiple arguments exits non-zero"
+else
+  fail "expected non-zero exit for multiple arguments"
+fi
+
+# Test: relative path resolves against topics root
+run_test
+if result=$(run_resolve "Topic/Example" 2>/dev/null) &&
+    [[ $result == "Topic/Example" ]]
+then
+  pass "resolve joins relative paths against topics root"
+else
+  fail "expected 'Topic/Example' from relative, got '${result:-}'"
+fi
+
+# Test: tilde expansion — overriding HOME requires the script's
+# `source ~/.functions/logging.bash` to still resolve, so symlink it in.
+run_test
+fake_home="$tmpdir/home"
+mkdir -p "$fake_home/.functions" "$fake_home/topics-under-home"
+ln -s "$HOME/.functions/logging.bash" "$fake_home/.functions/logging.bash"
+mkdir -p "$fake_home/.config/timvisher/ide"
+printf '%s\n' "$fake_home/topics-under-home" > "$fake_home/.config/timvisher/ide/bd_topics_root"
+if result=$(HOME="$fake_home" "$script" resolve '~/topics-under-home/foo' 2>/dev/null) &&
+    [[ $result == "foo" ]]
+then
+  pass "resolve expands tilde"
+else
+  fail "expected 'foo' from tilde, got '${result:-}'"
+fi
+
+# Test: symlinked topics-root path still resolves (canonicalization)
+run_test
+ln -s "$tmpdir/topics" "$tmpdir/alias"
+if result=$(run_resolve "$tmpdir/alias/Topic/Example" 2>/dev/null) &&
+    [[ $result == "Topic/Example" ]]
+then
+  pass "resolve canonicalizes symlinked topics-root paths"
+else
+  fail "expected 'Topic/Example' through symlink, got '${result:-}'"
+fi
+
+# Test: `..` traversal that stays under root resolves cleanly
+run_test
+if result=$(run_resolve "$tmpdir/topics/a/../b" 2>/dev/null) &&
+    [[ $result == "b" ]]
+then
+  pass "resolve collapses safe '..' traversal"
+else
+  fail "expected 'b' from '..' traversal, got '${result:-}'"
+fi
+
+# Test: `..` traversal that escapes topics root exits non-zero
+run_test
+if ! run_resolve "$tmpdir/topics/../outside" >/dev/null 2>&1
+then
+  pass "resolve rejects '..' traversal that escapes root"
+else
+  fail "expected non-zero exit for traversal escape"
+fi
+
+# ---------------------------------------------------------------------------
+# Exercise the code paths that pass fewer than 2 output params to
+# try_resolve_topic / resolve_topic. A reviewer flagged these as a
+# potential return-code bug (trailing `if` with an unmatched condition),
+# but POSIX `if` without a matching branch exits 0, so they work —
+# these tests lock that in.
+# ---------------------------------------------------------------------------
+
+# Helper: run the CLI with our scoped config dir. Used for subcommands
+# other than `resolve`.
+run_cli() {
+  XDG_CONFIG_HOME="$tmpdir/config" "$script" "$@"
+}
+
+# Test: `ls <prefix>` exercises the single-output-param call
+#   resolve_topic "$prefix_stripped" prefix_abs
+# (line 556). A working topic under the prefix should be listed, which
+# can only happen if resolve_topic returned 0 for a valid input when
+# only the abs output name was passed.
+run_test
+# Set up a real topic with .beads so list_topics_under_dir finds it.
+mkdir -p "$tmpdir/topics/single-param-test/nested/.beads"
+: > "$tmpdir/topics/single-param-test/nested/.beads/beads.db"
+result=$(run_cli ls single-param-test 2>&1)
+if [[ $result == *"single-param-test/nested"* ]]
+then
+  pass "ls <prefix> works (single-output-param resolve_topic path)"
+else
+  fail "single-param resolve_topic: got '${result}'"
+fi
+
+# Test: probe form `(resolve_topic "$x" >/dev/null 2>&1)` (line 636) —
+# exercised by `bd <topic>` when the topic exists. Stub `bd` via PATH
+# so we don't depend on a real beads install.
+run_test
+stubdir="$tmpdir/stubbin"
+mkdir -p "$stubdir"
+cat > "$stubdir/bd" <<'STUB'
+#!/usr/bin/env bash
+printf 'bd-called: %s\n' "$*"
+STUB
+chmod +x "$stubdir/bd"
+# bd subcommand requires the topic dir to exist and contain .beads.
+mkdir -p "$tmpdir/topics/probe-test/.beads"
+: > "$tmpdir/topics/probe-test/.beads/beads.db"
+result=$(PATH="$stubdir:$PATH" run_cli bd probe-test status 2>&1)
+if [[ $result == *"bd-called: status"* ]]
+then
+  pass "bd <topic> routes through the zero-output-param probe"
+else
+  fail "zero-param probe: got '${result}'"
+fi
+
+# Test: mv/rename exercises two separate dual-output calls with
+# DIFFERENT output variable names (src_abs/src_rel and dst_abs/dst_rel).
+# The function's nameref must not leak between the two calls.
+run_test
+mkdir -p "$tmpdir/topics/rename-src/.beads"
+: > "$tmpdir/topics/rename-src/.beads/beads.db"
+# The `mv` subcommand does the actual rename; just check it doesn't
+# die during resolve (nonexistent dst is fine — it's the target).
+result=$(run_cli mv rename-src rename-dst 2>&1)
+if [[ -d "$tmpdir/topics/rename-dst" ]] && [[ ! -e "$tmpdir/topics/rename-src" ]]
+then
+  pass "mv <src> <dst> uses distinct output var names cleanly"
+else
+  fail "mv dual-call: result='${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
