@@ -553,13 +553,41 @@ else
   fail "is_branch_ish should accept org alias shorthand (to -> testorg)"
 fi
 
-# Test: rejects org/repo for non-existent cached repo
+# Test: accepts org/repo shape even when the repo isn't cached
+# (downstream callers surface the real fetch/auth error)
 run_test
 if is_branch_ish "nosuchorg/nosuchrepo" 2>/dev/null
 then
-  fail "is_branch_ish should reject non-existent repo"
+  pass "is_branch_ish accepts org/repo shape regardless of cache state"
 else
-  pass "is_branch_ish rejects non-existent repo"
+  fail "is_branch_ish should accept org/repo shape regardless of cache state"
+fi
+
+# Test: accepts https:// URL shape
+run_test
+if is_branch_ish "https://github.com/some/repo" 2>/dev/null
+then
+  pass "is_branch_ish accepts https URL shape"
+else
+  fail "is_branch_ish should accept https URL shape"
+fi
+
+# Test: accepts git@ SSH URL shape
+run_test
+if is_branch_ish "git@github.com:some/repo" 2>/dev/null
+then
+  pass "is_branch_ish accepts git@ SSH URL shape"
+else
+  fail "is_branch_ish should accept git@ SSH URL shape"
+fi
+
+# Test: rejects input with no slash
+run_test
+if is_branch_ish "singletoken" 2>/dev/null
+then
+  fail "is_branch_ish should reject slash-less tokens"
+else
+  pass "is_branch_ish rejects slash-less tokens"
 fi
 
 # ---------------------------------------------------------------------------

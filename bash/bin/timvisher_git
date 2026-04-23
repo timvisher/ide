@@ -1995,15 +1995,16 @@ is_branch_ish() {
       ;;
   esac
 
-  # Remote/shorthand: try the full resolution path (cache_trunk +
-  # branch_path_for_source).  Run in a subshell so that die() from the
-  # resolution functions exits the subshell, not the caller.  We only
-  # care about the exit code.
-  (
-    local trunk_cache
-    trunk_cache=$(cache_trunk "$source" 2>/dev/null) || exit 1
-    branch_path_for_source "$source" "$trunk_cache" >/dev/null 2>&1
-  )
+  # Remote/shorthand: shape-only match.  No network probe — downstream
+  # callers (ensure_worktree → cache_trunk) surface real errors for
+  # missing repos, auth failures, unreachable hosts, etc.  A prior
+  # design probed cache_trunk here with stderr suppressed, which
+  # silently demoted genuine operational failures into "not a branch"
+  # and left clone() to die with a misleading generic message.
+  case $source in
+    */*) return 0 ;;
+    *)   return 1 ;;
+  esac
 }
 
 status__all_published() {
