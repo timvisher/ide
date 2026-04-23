@@ -42,21 +42,544 @@ echo "$tmpdir/prefix"
 MOCK
 chmod +x "$tmpdir/mockbin/brew"
 
-# Test 1: blocks 'gh repo create' when TIMVISHER_AGENT is set
+test_path="$tmpdir/mockbin:$PATH"
+
+# Fake timvisher_gh: a shell script that runs its args as a subprocess
+# (no exec) so it sits in the ancestor chain when the wrapper is invoked
+# underneath. Used to exercise the ancestor-gate allow-path.
+mkdir -p "$tmpdir/faketgh-bin"
+cat > "$tmpdir/faketgh-bin/timvisher_gh" <<'FAKE_TGH'
+#!/usr/bin/env bash
+"$@"
+FAKE_TGH
+chmod +x "$tmpdir/faketgh-bin/timvisher_gh"
+
+run_agent() {
+  # Pass args via positional parameters so values with spaces or shell
+  # metacharacters survive intact. `bash -c '... "$@"' _ "$@"` binds the
+  # first extra arg ($_) to $0 inside the child and the rest to $1, $2, …
+  TIMVISHER_AGENT=true PATH="$test_path" \
+    bash -c "source '${funcs_dir}/logging.bash'; '$script' \"\$@\"" _ "$@" 2>&1 || true
+}
+
+run_agent_under_tgh() {
+  TIMVISHER_AGENT=true PATH="$test_path" \
+    "$tmpdir/faketgh-bin/timvisher_gh" bash -c \
+    "source '${funcs_dir}/logging.bash'; '$script' \"\$@\"" _ "$@" 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Noun/verb mutation blocks
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'gh repo create' when TIMVISHER_AGENT is set
 run_test
-result=$(
-  TIMVISHER_AGENT=true \
-  PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' repo create my-repo" 2>&1 || true
-)
-if [[ $result == *'"code":"gh_repo_create_blocked"'* ]]
+result=$(run_agent repo create my-repo)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
 then
   pass "blocks 'gh repo create' when agent"
 else
   fail "blocks 'gh repo create': got '${result}'"
 fi
 
-# Test 2: allows 'gh repo create' when TIMVISHER_AGENT is unset
+# Test: blocks 'gh pr create'
+run_test
+result=$(run_agent pr create --title foo --body bar)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr create'"
+else
+  fail "blocks 'gh pr create': got '${result}'"
+fi
+
+# Test: blocks 'gh issue create' (the exact command that burned us)
+run_test
+result=$(run_agent issue create --repo someorg/somerepo --title foo --body bar)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh issue create' (the original regression)"
+else
+  fail "blocks 'gh issue create': got '${result}'"
+fi
+
+# Test: blocks 'gh pr comment'
+run_test
+result=$(run_agent pr comment 123 --body hello)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr comment'"
+else
+  fail "blocks 'gh pr comment': got '${result}'"
+fi
+
+# Test: blocks 'gh issue comment'
+run_test
+result=$(run_agent issue comment 123 --body hello)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh issue comment'"
+else
+  fail "blocks 'gh issue comment': got '${result}'"
+fi
+
+# Test: blocks 'gh pr review'
+run_test
+result=$(run_agent pr review 123 --approve)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr review'"
+else
+  fail "blocks 'gh pr review': got '${result}'"
+fi
+
+# Test: blocks 'gh pr merge'
+run_test
+result=$(run_agent pr merge 123 --squash)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr merge'"
+else
+  fail "blocks 'gh pr merge': got '${result}'"
+fi
+
+# Test: blocks 'gh pr close'
+run_test
+result=$(run_agent pr close 123)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr close'"
+else
+  fail "blocks 'gh pr close': got '${result}'"
+fi
+
+# Test: blocks 'gh issue close'
+run_test
+result=$(run_agent issue close 123)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh issue close'"
+else
+  fail "blocks 'gh issue close': got '${result}'"
+fi
+
+# Test: blocks 'gh release create'
+run_test
+result=$(run_agent release create v1.0.0)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh release create'"
+else
+  fail "blocks 'gh release create': got '${result}'"
+fi
+
+# Test: blocks 'gh gist create'
+run_test
+result=$(run_agent gist create file.txt)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh gist create'"
+else
+  fail "blocks 'gh gist create': got '${result}'"
+fi
+
+# Test: blocks 'gh workflow run'
+run_test
+result=$(run_agent workflow run deploy.yml)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh workflow run'"
+else
+  fail "blocks 'gh workflow run': got '${result}'"
+fi
+
+# Test: blocks 'gh secret set'
+run_test
+result=$(run_agent secret set FOO --body BAR)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh secret set'"
+else
+  fail "blocks 'gh secret set': got '${result}'"
+fi
+
+# Test: verb-based IAM catches a noun the blocklist never enumerated
+# (proves the point — new subcommands are blocked by default)
+run_test
+result=$(run_agent ruleset delete 42)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "verb IAM catches 'gh ruleset delete' (noun not individually enumerated)"
+else
+  fail "verb IAM ruleset delete: got '${result}'"
+fi
+
+# Test: blocks 'gh codespace rebuild' (mutating verb 'rebuild')
+run_test
+result=$(run_agent codespace rebuild abc123)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh codespace rebuild'"
+else
+  fail "blocks 'gh codespace rebuild': got '${result}'"
+fi
+
+# Test: blocks 'gh pr update-branch' (hyphenated mutating verb)
+run_test
+result=$(run_agent pr update-branch 123)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh pr update-branch' (hyphenated verb)"
+else
+  fail "blocks 'gh pr update-branch': got '${result}'"
+fi
+
+# Test: allows 'gh repo clone OWNER/REPO' — read-only, 'clone' excluded
+# from mutating-verb regex
+run_test
+result=$(run_agent repo clone someorg/otherrepo)
+if [[ $result == *"real-gh repo clone someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh repo clone' (clone is not a mutating verb)"
+else
+  fail "passes 'gh repo clone': got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Leading global flags should not confuse noun/verb detection
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'gh --help pr create' — boolean flag before noun must not
+# hide the real noun/verb.
+run_test
+result=$(run_agent --help pr create)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "leading boolean flag doesn't hide mutating noun/verb"
+else
+  fail "leading boolean flag: got '${result}'"
+fi
+
+# Test: blocks 'gh -R owner/repo pr create' — value-taking global flag
+# before the noun. Without consuming `-R`'s value, `owner/repo` would be
+# picked up as the noun and `pr` as the verb, and `create` would never
+# be examined. This was the bypass aishot review caught.
+run_test
+result=$(run_agent -R owner/repo pr create --title foo --body bar)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh -R OWNER/REPO pr create' (value-taking global flag)"
+else
+  fail "value-taking global flag '-R': got '${result}'"
+fi
+
+# Test: same for long form '--repo'
+run_test
+result=$(run_agent --repo owner/repo issue create --title foo)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh --repo OWNER/REPO issue create'"
+else
+  fail "value-taking global flag '--repo': got '${result}'"
+fi
+
+# Test: same for '--hostname' (gh auth global flag)
+run_test
+result=$(run_agent --hostname ghe.example.com pr merge 123)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh --hostname HOST pr merge' (value-taking global flag)"
+else
+  fail "value-taking global flag '--hostname': got '${result}'"
+fi
+
+# Test: attached '--repo=OWNER/REPO' form does NOT need the skip — the
+# whole thing is one flag token starting with '-' and skipped naturally.
+run_test
+result=$(run_agent --repo=owner/repo pr create)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh --repo=OWNER/REPO pr create' (attached form)"
+else
+  fail "attached --repo= form: got '${result}'"
+fi
+
+# Test: multiple value-taking flags in sequence
+run_test
+result=$(run_agent --repo owner/repo --hostname ghe.example.com issue delete 42)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks with multiple value-taking global flags in sequence"
+else
+  fail "multiple value-taking flags: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Read-only commands must pass through
+# ---------------------------------------------------------------------------
+
+# Test: 'gh pr list' passes through when agent
+run_test
+result=$(run_agent pr list)
+if [[ $result == *"real-gh pr list"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh pr list' when agent"
+else
+  fail "passes 'gh pr list': got '${result}'"
+fi
+
+# Test: 'gh pr view 123 --json title' passes through when agent
+run_test
+result=$(run_agent pr view 123 --json title)
+if [[ $result == *"real-gh pr view 123 --json title"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh pr view … --json …' when agent"
+else
+  fail "passes 'gh pr view': got '${result}'"
+fi
+
+# Test: 'gh issue view 42' passes through when agent
+run_test
+result=$(run_agent issue view 42)
+if [[ $result == *"real-gh issue view 42"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh issue view' when agent"
+else
+  fail "passes 'gh issue view': got '${result}'"
+fi
+
+# Test: 'gh repo view OWNER/REPO' passes through when agent
+run_test
+result=$(run_agent repo view someorg/otherrepo)
+if [[ $result == *"real-gh repo view someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh repo view' when agent"
+else
+  fail "passes 'gh repo view': got '${result}'"
+fi
+
+# Test: 'gh auth status' passes through when agent
+run_test
+result=$(run_agent auth status)
+if [[ $result == *"real-gh auth status"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh auth status' when agent"
+else
+  fail "passes 'gh auth status': got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# timvisher_gh ancestor bypass
+# ---------------------------------------------------------------------------
+
+# Test: 'gh pr create' ALLOWED when timvisher_gh is an ancestor
+run_test
+result=$(run_agent_under_tgh pr create --title foo --body bar)
+if [[ $result == *"real-gh pr create"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "allows 'gh pr create' under timvisher_gh ancestor"
+else
+  fail "timvisher_gh ancestor allow: got '${result}'"
+fi
+
+# Test: 'gh issue create' ALLOWED when timvisher_gh is an ancestor
+run_test
+result=$(run_agent_under_tgh issue create --title foo --body bar)
+if [[ $result == *"real-gh issue create"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "allows 'gh issue create' under timvisher_gh ancestor"
+else
+  fail "timvisher_gh issue-create allow: got '${result}'"
+fi
+
+# Test: 'gh pr comment' ALLOWED when timvisher_gh is an ancestor
+run_test
+result=$(run_agent_under_tgh pr comment 123 --body hi)
+if [[ $result == *"real-gh pr comment"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "allows 'gh pr comment' under timvisher_gh ancestor"
+else
+  fail "timvisher_gh pr-comment allow: got '${result}'"
+fi
+
+# Test: deeply-nested timvisher_gh ancestor (tgh → bash → bash → gh) still allows
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/faketgh-bin/timvisher_gh" bash -c \
+  "bash -c \"source '${funcs_dir}/logging.bash'; '$script' pr create --title x --body y\"" 2>&1 || true)
+if [[ $result == *"real-gh pr create"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "deep ancestor (timvisher_gh → bash → bash → gh) still allows mutation"
+else
+  fail "deep timvisher_gh ancestor: got '${result}'"
+fi
+
+# Test: spoof — 'timvisher_gh' as a later argv token does NOT satisfy the gate
+# ps will show `bash /path/to/spoofscript timvisher_gh bash -c "…"` — argv
+# positions 0/1 are `bash` and `/path/to/spoofscript`, not `timvisher_gh`,
+# so the guard must still block.
+run_test
+mkdir -p "$tmpdir/spoof-bin"
+cat > "$tmpdir/spoof-bin/spoofscript" <<'SPOOF'
+#!/usr/bin/env bash
+shift  # discard the 'timvisher_gh' decoy; run the rest
+"$@"
+SPOOF
+chmod +x "$tmpdir/spoof-bin/spoofscript"
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  "$tmpdir/spoof-bin/spoofscript" timvisher_gh bash -c \
+  "source '${funcs_dir}/logging.bash'; '$script' pr create --title x --body y" 2>&1 || true)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "spoof: 'timvisher_gh' as later argv token does NOT satisfy ancestor gate"
+else
+  fail "spoof should block: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# gh api mutation backstop
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'gh api -X POST /repos/foo/bar/issues'
+run_test
+result=$(run_agent api -X POST /repos/foo/bar/issues)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api -X POST …'"
+else
+  fail "blocks 'gh api -X POST': got '${result}'"
+fi
+
+# Test: blocks 'gh api --method POST …'
+run_test
+result=$(run_agent api --method POST /repos/foo/bar/issues)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api --method POST …'"
+else
+  fail "blocks 'gh api --method POST': got '${result}'"
+fi
+
+# Test: blocks 'gh api --method=PATCH …' (attached form)
+run_test
+result=$(run_agent api --method=PATCH /repos/foo/bar/issues/1)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api --method=PATCH …' (attached form)"
+else
+  fail "blocks 'gh api --method=PATCH': got '${result}'"
+fi
+
+# Test: blocks 'gh api -X DELETE …'
+run_test
+result=$(run_agent api -X DELETE /repos/foo/bar/issues/comments/123)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api -X DELETE …'"
+else
+  fail "blocks 'gh api -X DELETE': got '${result}'"
+fi
+
+# Test: blocks 'gh api -XPOST …' (combined short form, no space, no '=')
+# pflag accepts this form; without the dedicated pattern it would bypass.
+run_test
+result=$(run_agent api -XPOST /repos/foo/bar/issues)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api -XPOST …' (combined short form)"
+else
+  fail "combined -XPOST short form: got '${result}'"
+fi
+
+# Test: blocks 'gh api -XPATCH …' combined short form
+run_test
+result=$(run_agent api -XPATCH /repos/foo/bar/issues/1)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api -XPATCH …' (combined short form)"
+else
+  fail "combined -XPATCH short form: got '${result}'"
+fi
+
+# Test: blocks 'gh api … -f title=...' (field flag implicitly POSTs)
+run_test
+result=$(run_agent api /repos/foo/bar/issues -f title=foo -f body=bar)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api … -f key=value' (field flag implicitly POSTs)"
+else
+  fail "blocks 'gh api … -f …': got '${result}'"
+fi
+
+# Test: blocks 'gh api … -F body=@file' (typed field flag)
+run_test
+result=$(run_agent api /repos/foo/bar/issues -F title=x -F body=y)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api … -F key=value'"
+else
+  fail "blocks 'gh api … -F …': got '${result}'"
+fi
+
+# Test: blocks 'gh api … -ftitle=foo' (combined short form, no space).
+# pflag parses `-ftitle=foo` as flag -f with value 'title=foo', which
+# implicitly POSTs. Without the prefix pattern, this would bypass.
+run_test
+result=$(run_agent api /repos/foo/bar/issues -ftitle=foo -fbody=bar)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api … -ftitle=foo' (combined short form)"
+else
+  fail "combined -f short form: got '${result}'"
+fi
+
+# Test: same combined form with -F
+run_test
+result=$(run_agent api /repos/foo/bar/issues -Ftitle=foo)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api … -Ftitle=foo' (combined -F short form)"
+else
+  fail "combined -F short form: got '${result}'"
+fi
+
+# Test: allows 'gh api /repos/foo/bar' (plain GET, no fields)
+run_test
+result=$(run_agent api /repos/foo/bar)
+if [[ $result == *"real-gh api /repos/foo/bar"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "allows 'gh api /repos/foo/bar' (plain GET)"
+else
+  fail "plain GET 'gh api': got '${result}'"
+fi
+
+# Test: blocks 'gh api /search/issues --method GET -f q=foo'
+# Field flags are blocked unconditionally under the simpler IAM rule —
+# the explicit-GET override was dropped for simplicity. Agents doing
+# read-only queries should use 'gh search' instead.
+run_test
+result=$(run_agent api /search/issues --method GET -f q=foo)
+if [[ $result == *'"code":"gh_api_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh api … -f …' even with explicit --method GET (no override)"
+else
+  fail "field flag should block regardless of --method GET: got '${result}'"
+fi
+
+# Test: allows 'gh api -X POST …' ONLY when timvisher_gh is an ancestor
+run_test
+result=$(run_agent_under_tgh api -X POST /repos/foo/bar/issues)
+if [[ $result == *"real-gh api"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "allows 'gh api -X POST …' under timvisher_gh ancestor"
+else
+  fail "api POST under tgh ancestor: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# TIMVISHER_AGENT unset — wrapper must not interfere
+# ---------------------------------------------------------------------------
+
+# Test: 'gh repo create' allowed when TIMVISHER_AGENT is unset
 run_test
 result=$(
   PATH="$tmpdir/mockbin:$PATH" \
@@ -69,21 +592,33 @@ else
   fail "allows 'gh repo create': got '${result}'"
 fi
 
-# Test 3: passes through normal commands when agent
+# Test: 'gh issue create' allowed when TIMVISHER_AGENT is unset
 run_test
 result=$(
-  TIMVISHER_AGENT=true \
   PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' pr list" 2>&1
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' issue create --title x --body y" 2>&1
 )
-if [[ $result == *"real-gh pr list"* ]]
+if [[ $result == *"real-gh issue create"* ]]
 then
-  pass "passes through normal commands when agent"
+  pass "allows 'gh issue create' when not agent"
 else
-  fail "passes through normal commands: got '${result}'"
+  fail "allows 'gh issue create' when not agent: got '${result}'"
 fi
 
-# Test 4: passes through all args to real gh
+# Test: 'gh api -X POST …' allowed when TIMVISHER_AGENT is unset
+run_test
+result=$(
+  PATH="$tmpdir/mockbin:$PATH" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' api -X POST /repos/foo/bar/issues" 2>&1
+)
+if [[ $result == *"real-gh api -X POST"* ]]
+then
+  pass "allows 'gh api -X POST …' when not agent"
+else
+  fail "allows 'gh api -X POST' when not agent: got '${result}'"
+fi
+
+# Test: 'gh pr view' passes through all args to real gh (non-agent)
 run_test
 result=$(
   PATH="$tmpdir/mockbin:$PATH" \
@@ -91,7 +626,7 @@ result=$(
 )
 if [[ $result == *"real-gh pr view 123 --json title"* ]]
 then
-  pass "passes through all args to real gh"
+  pass "passes through all args to real gh (non-agent)"
 else
   fail "passes through all args: got '${result}'"
 fi

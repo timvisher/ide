@@ -37,18 +37,138 @@ fi
 
 if [[ -n $TIMVISHER_AGENT ]]
 then
-  args=("$@")
-  for ((i=0; i<${#args[@]}-1; i++))
+  # --- Noun / verb detection ---
+  # The first positional is the noun (pr, issue, repo, …), the second is
+  # the verb (create, edit, …). We skip flags (-*) and also consume the
+  # VALUE of known value-taking global flags — otherwise `gh -R owner/repo
+  # pr create` would pick up `owner/repo` as the noun and `pr` as the
+  # verb, missing the real mutating pair.
+  gh_guard__value_flags='^(-R|--repo|--hostname)$'
+  gh_guard__noun=""
+  gh_guard__verb=""
+  gh_guard__skip_next=false
+  for gh_guard__arg in "$@"
   do
-    if [[ ${args[i]} == repo && ${args[i+1]} == create ]]
+    if [[ $gh_guard__skip_next == true ]]
     then
-      aictl_die \
-        --code "gh_repo_create_blocked" \
-        --message "Agents must NEVER create repositories." \
-        --reason "Repository creation is a human-only operation." \
-        --suggestion "Ask the human to create the repository"
+      gh_guard__skip_next=false
+      continue
+    fi
+    if [[ $gh_guard__arg =~ $gh_guard__value_flags ]]
+    then
+      gh_guard__skip_next=true
+      continue
+    fi
+    if [[ $gh_guard__arg == -* ]]
+    then
+      continue
+    fi
+    if [[ -z $gh_guard__noun ]]
+    then
+      gh_guard__noun=$gh_guard__arg
+    elif [[ -z $gh_guard__verb ]]
+    then
+      gh_guard__verb=$gh_guard__arg
+      break
     fi
   done
+  gh_guard__pair="${gh_guard__noun} ${gh_guard__verb}"
+
+  # --- Ancestor gate for timvisher_gh ---
+  # timvisher_gh is the sanctioned path: it requires a human-reviewed
+  # pr.md / issue.md / comment.md at repo root before posting. It shells
+  # out to `gh pr create`, `gh issue create`, `gh pr comment`, etc., so
+  # this wrapper must let those internal calls through. The ancestor walk
+  # mirrors the one in bash/bin/git for the bd+dolt allow-path.
+  gh_guard__is_timvisher_gh_ancestor() {
+    local -A parent_of args_of
+    local pid ppid cmd
+    while read -r pid ppid cmd
+    do
+      parent_of[$pid]=$ppid
+      args_of[$pid]=$cmd
+    done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
+
+    local depth=0
+    pid=$PPID
+    while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
+    do
+      # Only argv positions 0 and 1 count — position 0 for native binaries,
+      # position 1 for shebang scripts (macOS ps renders these as
+      # `interpreter /path/to/script …`, putting the script at argv[1]).
+      # Restricting to these positions rejects false positives from
+      # 'timvisher_gh' appearing as a regular later argv token.
+      local -a toks=()
+      read -ra toks <<< "${args_of[$pid]:-}"
+      local j
+      for (( j=0; j<${#toks[@]} && j<2; j++ ))
+      do
+        if [[ ${toks[$j]##*/} == timvisher_gh ]]
+        then
+          return 0
+        fi
+      done
+      pid=${parent_of[$pid]:-}
+      (( depth++ ))
+    done
+    return 1
+  }
+
+  # --- Verb-based IAM ---
+  # gh's subcommand vocabulary is highly regular: nouns are containers
+  # (pr, issue, repo, release, gist, label, project, workflow, run,
+  # secret, variable, ssh-key, gpg-key, codespace, cache, ruleset, …)
+  # and mutating verbs are the same shape across all of them. So one
+  # verb list is enough — any noun paired with one of these verbs is a
+  # mutation. New gh subcommands get blocked by default rather than
+  # needing to be enumerated.
+  #
+  # Read-only verbs (list, view, show, status, checks, diff, browse,
+  # download, clone, watch, login, logout, refresh) are deliberately
+  # absent from this regex.
+  gh_guard__mutating_verbs='create|edit|delete|close|reopen|comment|review|merge|ready|lock|unlock|pin|unpin|transfer|develop|rename|archive|unarchive|fork|sync|set-default|deploy-key|run|rerun|cancel|enable|disable|set|add|remove|rebuild|stop|upload|delete-asset|copy|link|unlink|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit|mark-template|update-branch'
+
+  if [[ $gh_guard__verb =~ ^(${gh_guard__mutating_verbs})$ ]] &&
+     ! gh_guard__is_timvisher_gh_ancestor
+  then
+    aictl_die \
+      --code "gh_mutation_blocked" \
+      --message "Agents must NEVER run 'gh ${gh_guard__pair}' directly." \
+      --reason "The verb '${gh_guard__verb}' mutates shared GitHub state. Creating, editing, merging, or deleting PRs / issues / comments / releases / repos / labels / secrets / keys affects systems beyond this machine. The human must review pr.md / issue.md / comment.md before any PR, issue, or comment is posted." \
+      --doc "ai/HOME/.agents/skills/github/SKILL.md" \
+      --suggestion "For a PR: draft pr.md, then run 'timvisher_gh pr'" \
+      --suggestion "For an issue: draft issue.md, then run 'timvisher_gh issue'" \
+      --suggestion "For a PR comment: draft comment.md, then run 'timvisher_gh comment comment.md'" \
+      --suggestion "For any other mutation: ask the human"
+  fi
+
+  # --- gh api with mutating requests ---
+  # Same IAM idea as above, applied to raw HTTP: any mutating method token
+  # (POST / PUT / PATCH / DELETE — in -X / --method form, space, attached,
+  # or combined short form `-XPOST`), or any field flag (-f / -F /
+  # --field / --raw-field — including `-fkey=value` combined short form,
+  # since pflag parses that the same way), blocks the call.
+  if [[ $gh_guard__noun == api ]] && ! gh_guard__is_timvisher_gh_ancestor
+  then
+    for gh_guard__arg in "$@"
+    do
+      if [[ $gh_guard__arg =~ ^(POST|PUT|PATCH|DELETE)$ ]] ||
+         [[ $gh_guard__arg =~ ^(-X|--method)=(POST|PUT|PATCH|DELETE)$ ]] ||
+         [[ $gh_guard__arg =~ ^-X(POST|PUT|PATCH|DELETE)$ ]] ||
+         [[ $gh_guard__arg =~ ^-[fF] ]] ||
+         [[ $gh_guard__arg =~ ^(--field|--raw-field)(=|$) ]]
+      then
+        aictl_die \
+          --code "gh_api_mutation_blocked" \
+          --message "Agents must NEVER run 'gh api' with a mutating request." \
+          --reason "POST / PUT / PATCH / DELETE against the GitHub API — or any -f / -F / --field / --raw-field (which implicitly POST) — can create or edit PRs, issues, comments, releases, and other shared state." \
+          --doc "ai/HOME/.agents/skills/github/SKILL.md" \
+          --suggestion "For a PR / issue / comment: use the timvisher_gh workflow (pr.md, issue.md, comment.md)" \
+          --suggestion "For a read-only query: use 'gh search' or drop -f / -F / --method" \
+          --suggestion "For any other mutation: ask the human"
+      fi
+    done
+  fi
 fi
 
-"$(brew --prefix)"/bin/gh "$@"
+exec "$(brew --prefix)"/bin/gh "$@"
