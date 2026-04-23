@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_bd_topics.
+# Currently covers the `resolve` subcommand.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_bd_topics"
+
+tmpdir=$(mktemp -d)
+# Resolve symlinks so paths match the script's `cd && pwd -P` view
+# (mktemp on macOS returns /var/folders/..., actually /private/var/...).
+tmpdir=$(cd "$tmpdir" && pwd -P)
+trap 'rm -rf "$tmpdir"' EXIT
+
+mkdir -p "$tmpdir/topics"
+mkdir -p "$tmpdir/config/timvisher/ide"
+printf '%s\n' "$tmpdir/topics" > "$tmpdir/config/timvisher/ide/bd_topics_root"
+
+run_resolve() {
+  XDG_CONFIG_HOME="$tmpdir/config" "$script" resolve "$@"
+}
+
+# Test: path under topics root prints the relative topic name
+run_test
+if result=$(run_resolve "$tmpdir/topics/Topic/Example" 2>/dev/null) &&
+    [[ $result == "Topic/Example" ]]
+then
+  pass "resolve under topics root prints topic rel"
+else
+  fail "expected 'Topic/Example', got '${result:-}'"
+fi
+
+# Test: nonexistent path under topics root still resolves
+run_test
+if result=$(run_resolve "$tmpdir/topics/does/not/exist" 2>/dev/null) &&
+    [[ $result == "does/not/exist" ]]
+then
+  pass "resolve works for nonexistent paths under root"
+else
+  fail "expected 'does/not/exist', got '${result:-}'"
+fi
+
+# Test: path outside topics root exits non-zero
+run_test
+if ! run_resolve "/tmp/not-a-topic" >/dev/null 2>&1
+then
+  pass "resolve outside topics root exits non-zero"
+else
+  fail "expected non-zero exit for path outside root"
+fi
+
+# Test: topics root itself exits non-zero (must be *under*)
+run_test
+if ! run_resolve "$tmpdir/topics" >/dev/null 2>&1
+then
+  pass "resolve topics root itself exits non-zero"
+else
+  fail "expected non-zero exit for topics root itself"
+fi
+
+# Test: /.beads suffix is stripped before resolution
+run_test
+if result=$(run_resolve "$tmpdir/topics/foo/.beads" 2>/dev/null) &&
+    [[ $result == "foo" ]]
+then
+  pass "resolve strips /.beads suffix"
+else
+  fail "expected 'foo', got '${result:-}'"
+fi
+
+# Test: empty argument exits non-zero
+run_test
+if ! run_resolve "" >/dev/null 2>&1
+then
+  pass "resolve with empty argument exits non-zero"
+else
+  fail "expected non-zero exit for empty argument"
+fi
+
+# Test: wrong argument count exits non-zero
+run_test
+if ! XDG_CONFIG_HOME="$tmpdir/config" "$script" resolve >/dev/null 2>&1
+then
+  pass "resolve with no arguments exits non-zero"
+else
+  fail "expected non-zero exit for missing argument"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

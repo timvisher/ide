@@ -33,10 +33,13 @@ usage() {
     timvisher_bd_topics subscribers <topic>
     timvisher_bd_topics mv <source-topic> <dest-topic>
     timvisher_bd_topics prune [<topic>]
+    timvisher_bd_topics resolve <path>
   Notes:
     - Topic paths are absolute or relative to the configured topics root.
     - set must be run from within a git repo or a directory with todo.org.
     - new can be run outside a git repo (it skips writing .beads/redirect).
+    - resolve prints the topic name for a path under the topics root and
+      exits non-zero otherwise. The path does not need to exist.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
@@ -1012,6 +1015,33 @@ case $cmd in
 
     rm -rf -- "$_subscribers_lockdir"
     _subscribers_lockdir=""
+    ;;
+  resolve)
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    [[ -n $topic_input ]] || die "Path argument is empty"
+
+    case $topic_input in
+      '~')   topic_input="$HOME" ;;
+      '~/'*) topic_input="${HOME}/${topic_input#'~'/}" ;;
+    esac
+
+    resolved_abs=$(normalize_topic_path "$topics_root_real" "$topic_input") ||
+      exit 1
+
+    case $resolved_abs in
+      "$topics_root_real"/*)
+        printf '%s\n' "${resolved_abs#"$topics_root_real"/}"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
     ;;
   *)
     usage

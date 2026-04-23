@@ -213,6 +213,33 @@ function ntmux3__fail() {
     return 1
 }
 
+function ntmux3__handle_bd_topic() {
+    local dir=$1
+    local topic_rel=$2
+    local target_file=$3
+
+    if [[ ! -d $dir/.beads ]]
+    then
+        info 'creating bd topic %s' "$topic_rel"
+        # Run from a neutral CWD so `timvisher_bd_topics new` doesn't
+        # auto-subscribe whatever repo the user invoked ntmux3 from.
+        (cd / && command timvisher_bd_topics new "$topic_rel") ||
+            {
+                ntmux3__fail "timvisher_bd_topics new '${topic_rel}' failed"
+                return 1
+            }
+    fi
+
+    if [[ -n $target_file && ! -f $target_file ]]
+    then
+        touch "$target_file" ||
+            {
+                ntmux3__fail "Unable to create '${target_file}'"
+                return 1
+            }
+    fi
+}
+
 function ntmux3__session_name_from_path() {
     local raw_path="$1"
 
@@ -471,6 +498,38 @@ function ntmux3() {
             fi
         )
     }
+
+    # --- bd_topics path: handle as standalone beads topic ---
+    # If the target path resolves under the configured bd topics root,
+    # treat it as a topic directory rather than a git clone target.
+    # Creates the topic via `timvisher_bd_topics new` if missing.
+    if [[ $clone_target == /* ]] &&
+        command -v timvisher_bd_topics >/dev/null 2>&1
+    then
+        local bd_candidate=${clone_target%/}
+        # Normalize /.beads[/...] suffixes so a user passing the topic's
+        # internals (e.g. `.beads/` itself) still routes to the topic dir.
+        bd_candidate=${bd_candidate%%/.beads*}
+        local bd_dir=$bd_candidate
+        local bd_file=$target_file
+        # Any trailing path component with an extension is treated as a
+        # file; otherwise the whole path is treated as the topic dir.
+        if [[ -z $bd_file && ${bd_candidate##*/} == *.* && ! -d $bd_candidate ]]
+        then
+            bd_file=$bd_candidate
+            bd_dir=${bd_candidate%/*}
+        fi
+        local bd_topic_rel
+        if bd_topic_rel=$(command timvisher_bd_topics resolve "$bd_dir")
+        then
+            ntmux3__handle_bd_topic "$bd_dir" "$bd_topic_rel" "$bd_file" ||
+                return $?
+            clone_target=$bd_dir
+            target_file=$bd_file
+            ntmux3__open_nonrepo_dir "$clone_target"
+            return
+        fi
+    fi
 
     if [[ $clone_target == /* && -d $clone_target ]] &&
         [[ -z $home_real_ngd || $clone_target != "${home_real_ngd}/git/"* ]] &&
