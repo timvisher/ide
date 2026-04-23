@@ -1,0 +1,21 @@
+# colors
+theme = iTerm2 Solarized Light
+
+# font
+font-family = Source Code Pro
+font-style = Semibold
+font-size = 18
+
+# window
+window-padding-x = 5
+window-padding-y = 5
+cursor-style-blink = false
+cursor-style = block
+shell-integration-features = no-cursor,ssh-env,ssh-terminfo
+copy-on-select = clipboard
+macos-titlebar-style = native
+
+# keys
+macos-option-as-alt = true
+keybind = alt+left=unbind
+keybind = alt+right=unbind
