@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+
+# Tests for ntmux3__handle_bd_topic (bash/functions/tmux.bash).
+#
+# Covers the surface that aishot review flagged as untested when the
+# bd_topics routing path was added to ntmux3: topic-dir creation via
+# `timvisher_bd_topics new`, target-file touch, and error handling
+# when either step fails.
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+tests_dir="$(cd "$(dirname "$0")" && pwd)"
+funcs_dir="$(cd "${tests_dir}/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# --- Mock timvisher_bd_topics ---
+# The function under test calls `command timvisher_bd_topics new <rel>`.
+# `command` bypasses shell functions but still resolves via PATH, so we
+# install a mock binary and prepend its directory to PATH.
+mockbin="${tmpdir}/mockbin"
+mkdir -p "$mockbin"
+
+install_mock_tgt() {
+  local behavior=$1  # 'ok' or 'fail'
+  cat > "${mockbin}/timvisher_bd_topics" <<MOCK
+#!/usr/bin/env bash
+printf '%s\n' "mock-tgt: \$*" >> "${tmpdir}/tgt.log"
+MOCK
+  if [[ $behavior == fail ]]
+  then
+    cat >> "${mockbin}/timvisher_bd_topics" <<'MOCK'
+exit 1
+MOCK
+  fi
+  chmod +x "${mockbin}/timvisher_bd_topics"
+}
+
+# --- Run a test in a fresh subshell with the function sourced ---
+# Sourcing tmux.bash in the current shell would drag in a lot of
+# optional deps; running each case in a subshell keeps them isolated.
+run_case() {
+  local script=$1
+  (
+    PATH="${mockbin}:${PATH}"
+    : > "${tmpdir}/tgt.log"
+    source "${funcs_dir}/logging.bash"
+    source "${funcs_dir}/tmux.bash"
+    eval "$script"
+  ) 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Topic-creation path
+# ---------------------------------------------------------------------------
+
+# Test: $dir/.beads absent -> calls `timvisher_bd_topics new <topic_rel>`
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/acme/quarterly"
+mkdir -p "$topic_dir"  # topic dir exists, but no .beads under it yet
+rc=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'acme/quarterly' ''; echo rc=\$?")
+if [[ $rc == *rc=0* ]] && grep -q 'mock-tgt: new acme/quarterly' "${tmpdir}/tgt.log"
+then
+  pass "creates topic via 'timvisher_bd_topics new' when .beads missing"
+else
+  fail "topic creation: rc='${rc}' log='$(cat "${tmpdir}/tgt.log")'"
+fi
+
+# Test: $dir/.beads present -> does NOT call `timvisher_bd_topics new`
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/alpha/beta"
+mkdir -p "${topic_dir}/.beads"
+rc=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'alpha/beta' ''; echo rc=\$?")
+if [[ $rc == *rc=0* ]] && ! grep -q 'mock-tgt' "${tmpdir}/tgt.log"
+then
+  pass "skips 'timvisher_bd_topics new' when .beads already exists"
+else
+  fail "skip-existing case: rc='${rc}' log='$(cat "${tmpdir}/tgt.log")'"
+fi
+
+# Test: `timvisher_bd_topics new` exits non-zero -> return 1, stderr carries message
+run_test
+install_mock_tgt fail
+topic_dir="${tmpdir}/topics/broken"
+mkdir -p "$topic_dir"
+result=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'broken' ''; echo rc=\$?")
+if [[ $result == *rc=1* ]] && [[ $result == *"timvisher_bd_topics new 'broken' failed"* ]]
+then
+  pass "returns 1 and reports failure when 'timvisher_bd_topics new' fails"
+else
+  fail "creation-failure case: result='${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# target_file touch path
+# ---------------------------------------------------------------------------
+
+# Test: target_file empty -> no file created
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/notouch"
+mkdir -p "${topic_dir}/.beads"
+run_case "ntmux3__handle_bd_topic '${topic_dir}' 'notouch' ''" >/dev/null
+created_count=$(find "$topic_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
+if (( created_count == 0 ))
+then
+  pass "skips touch when target_file is empty"
+else
+  fail "empty target_file should not create files: created=${created_count}"
+fi
+
+# Test: target_file set, does not exist -> touch creates it
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/touchme"
+mkdir -p "${topic_dir}/.beads"
+target_file="${topic_dir}/todo.org"
+rc=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'touchme' '${target_file}'; echo rc=\$?")
+if [[ $rc == *rc=0* ]] && [[ -f $target_file ]]
+then
+  pass "creates target_file via touch when it doesn't exist"
+else
+  fail "touch-create: rc='${rc}' exists=$(test -f "$target_file" && echo y || echo n)"
+fi
+
+# Test: target_file already exists -> preserved (idempotent, no clobber)
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/preserve"
+mkdir -p "${topic_dir}/.beads"
+target_file="${topic_dir}/todo.org"
+printf 'existing content\n' > "$target_file"
+sentinel="${tmpdir}/preserve.sentinel"
+: > "$sentinel"
+# Sleep briefly so a subsequent touch would land with a later mtime.
+sleep 1
+run_case "ntmux3__handle_bd_topic '${topic_dir}' 'preserve' '${target_file}'" >/dev/null
+content_after=$(cat "$target_file")
+if [[ $content_after == 'existing content' ]] && [[ ! $target_file -nt $sentinel ]]
+then
+  pass "preserves existing target_file (no re-touch, no clobber)"
+else
+  fail "preservation: content='${content_after}' newer_than_sentinel=$([[ $target_file -nt $sentinel ]] && echo y || echo n)"
+fi
+
+# Test: target_file touch fails (parent dir missing) -> return 1 with message
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/nosuchparent"
+mkdir -p "${topic_dir}/.beads"
+target_file="${topic_dir}/does/not/exist/todo.org"  # parent dirs absent
+result=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'nosuchparent' '${target_file}'; echo rc=\$?")
+if [[ $result == *rc=1* ]] && [[ $result == *"Unable to create '${target_file}'"* ]]
+then
+  pass "returns 1 and reports failure when touch can't create target_file"
+else
+  fail "touch-failure: result='${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Combined: topic creation + target_file in one call
+# ---------------------------------------------------------------------------
+
+# Test: fresh dir + target_file -> both `new` and `touch` happen
+run_test
+install_mock_tgt ok
+topic_dir="${tmpdir}/topics/combined"
+mkdir -p "$topic_dir"  # .beads intentionally absent
+target_file="${topic_dir}/notes.md"
+rc=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'combined' '${target_file}'; echo rc=\$?")
+tgt_called=$(grep -q 'mock-tgt: new combined' "${tmpdir}/tgt.log" && echo yes || echo no)
+if [[ $rc == *rc=0* ]] && [[ $tgt_called == yes ]] && [[ -f $target_file ]]
+then
+  pass "creates topic AND touches target_file in one call"
+else
+  fail "combined: rc='${rc}' tgt_called=${tgt_called} file_exists=$(test -f "$target_file" && echo y || echo n)"
+fi
+
+# Test: creation failure short-circuits the touch step
+run_test
+install_mock_tgt fail
+topic_dir="${tmpdir}/topics/shortcircuit"
+mkdir -p "$topic_dir"
+target_file="${topic_dir}/notes.md"
+result=$(run_case "ntmux3__handle_bd_topic '${topic_dir}' 'shortcircuit' '${target_file}'; echo rc=\$?")
+if [[ $result == *rc=1* ]] && [[ ! -f $target_file ]]
+then
+  pass "creation failure short-circuits: target_file is NOT touched"
+else
+  fail "short-circuit: result='${result}' file_exists=$(test -f "$target_file" && echo y || echo n)"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
