@@ -703,6 +703,65 @@ get_trunk_branch_name_from_cache() {
   printf '%s' "${origin_head#refs/remotes/origin/}"
 }
 
+# Rewrite a branch name like "<trunk>/<subpath>" into "<prefix>/<subpath>"
+# when (1) the first segment is the repo's trunk branch and (2) the user
+# has a configured branch prefix.  Lets callers point at a subpath of the
+# trunk worktree and get back their own prefixed branch for that subpath.
+# Prints the (possibly rewritten) branch name on stdout; never fails.
+maybe_rewrite_trunk_subpath() {
+  local branch=$1 trunk_cache=$2
+
+  case $branch in
+    */*) ;;
+    *) printf '%s' "$branch"; return ;;
+  esac
+
+  [[ -n $trunk_cache && -d $trunk_cache ]] ||
+    { printf '%s' "$branch"; return; }
+
+  # Only the non-mutating symbolic-ref probe — don't trigger
+  # `remote set-head` (network) from this path.
+  local origin_head
+  origin_head=$(command git -C "$trunk_cache" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) ||
+    { printf '%s' "$branch"; return; }
+
+  local trunk_name=${origin_head#refs/remotes/origin/}
+  [[ -n $trunk_name ]] ||
+    { printf '%s' "$branch"; return; }
+
+  local first=${branch%%/*}
+  [[ $first == "$trunk_name" ]] ||
+    { printf '%s' "$branch"; return; }
+
+  # Preserve real branches named '<trunk>/<rest>'. If the ref exists on
+  # origin in the trunk cache, the user is pointing at an actual branch
+  # (e.g. `origin/main/experimental`) and the rewrite would hide it.
+  if command git -C "$trunk_cache" rev-parse --verify --quiet \
+       "refs/remotes/origin/${branch}" >/dev/null 2>&1
+  then
+    printf '%s' "$branch"
+    return
+  fi
+
+  local config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+  local prefix_file=${config_dir}/branch_prefix
+  [[ -r $prefix_file ]] ||
+    { printf '%s' "$branch"; return; }
+
+  local prefix
+  prefix=$(< "$prefix_file")
+  prefix=${prefix//$'\n'/}
+  prefix=${prefix//[[:space:]]/}
+  [[ -n $prefix ]] ||
+    { printf '%s' "$branch"; return; }
+
+  local rest=${branch#*/}
+  local rewritten="${prefix}/${rest}"
+
+  info 'rewriting trunk subpath: %s -> %s' "$branch" "$rewritten"
+  printf '%s' "$rewritten"
+}
+
 configure_remotes_and_tracking() {
   local trunk_cache=$1 source=$2
   local repo_spec parent default_branch pr_url override_repo
@@ -925,8 +984,12 @@ branch_path_for_source() {
       org=$(get_org "$branch_dir")
       repo=$(get_repo "$source")
       branch_dir=${branch_dir/tree\//}
-      branch_dir="${org}/${branch_dir#*/}"
-      branch=${branch_dir##*/}
+      # branch is everything after 'org/repo/' — preserves multi-segment
+      # branch names like 'main/foo/bar', which is what the rewrite needs.
+      branch=${branch_dir#*/}
+      branch=${branch#*/}
+      branch=$(maybe_rewrite_trunk_subpath "$branch" "$trunk_cache")
+      branch_dir="${org}/${repo}/${branch}"
       ;;
     https://github.com/*/*)
       local trunk_branch_name
@@ -942,6 +1005,7 @@ branch_path_for_source() {
       repo=${source%%/*}
       source=${source#*/}
       branch=${source}
+      branch=$(maybe_rewrite_trunk_subpath "$branch" "$trunk_cache")
       branch_dir="${org}/${repo}/${branch}"
       ;;
     */*)
@@ -2278,6 +2342,7 @@ case $1 in
   clone)        clone "${@:2}" ;;
   info)         info__cmd "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
+  rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
   status)
     case ${2:-} in
       --all-published) status__all_published ;;

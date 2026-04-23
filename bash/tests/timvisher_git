@@ -1511,6 +1511,102 @@ else
   fail "sweep idempotent: before=${second_count_before} after=${second_count_after}"
 fi
 
+# ---------------------------------------------------------------------------
+# maybe_rewrite_trunk_subpath tests
+# ---------------------------------------------------------------------------
+
+# Set up a bare-ish trunk cache with origin/HEAD -> refs/remotes/origin/main
+rewrite_cache="$tmpdir/rewrite_cache.git"
+"$test_git" init --bare "$rewrite_cache" >/dev/null 2>&1
+mkdir -p "$rewrite_cache/refs/remotes/origin"
+printf 'ref: refs/remotes/origin/main\n' > "$rewrite_cache/refs/remotes/origin/HEAD"
+
+# Populate branch_prefix config
+printf 'timvisher\n' > "$tmpdir/timvisher/ide/branch_prefix"
+
+# Test: trunk/subpath rewrites to prefix/subpath
+run_test
+result=$(maybe_rewrite_trunk_subpath "main/a/b/c" "$rewrite_cache")
+if [[ $result == "timvisher/a/b/c" ]]
+then
+  pass "maybe_rewrite_trunk_subpath rewrites trunk subpath"
+else
+  fail "expected 'timvisher/a/b/c', got '${result}'"
+fi
+
+# Test: pure trunk name (no subpath) left unchanged
+run_test
+result=$(maybe_rewrite_trunk_subpath "main" "$rewrite_cache")
+if [[ $result == "main" ]]
+then
+  pass "maybe_rewrite_trunk_subpath leaves pure trunk unchanged"
+else
+  fail "expected 'main', got '${result}'"
+fi
+
+# Test: non-trunk branch with slash left unchanged
+run_test
+result=$(maybe_rewrite_trunk_subpath "timvisher/feature" "$rewrite_cache")
+if [[ $result == "timvisher/feature" ]]
+then
+  pass "maybe_rewrite_trunk_subpath leaves non-trunk branches unchanged"
+else
+  fail "expected 'timvisher/feature', got '${result}'"
+fi
+
+# Test: missing config file — no rewrite
+run_test
+rm "$tmpdir/timvisher/ide/branch_prefix"
+result=$(maybe_rewrite_trunk_subpath "main/foo" "$rewrite_cache")
+if [[ $result == "main/foo" ]]
+then
+  pass "maybe_rewrite_trunk_subpath skips when branch_prefix absent"
+else
+  fail "expected 'main/foo', got '${result}'"
+fi
+printf 'timvisher\n' > "$tmpdir/timvisher/ide/branch_prefix"
+
+# Test: missing origin/HEAD — no rewrite
+run_test
+rm "$rewrite_cache/refs/remotes/origin/HEAD"
+result=$(maybe_rewrite_trunk_subpath "main/foo" "$rewrite_cache")
+if [[ $result == "main/foo" ]]
+then
+  pass "maybe_rewrite_trunk_subpath skips when origin/HEAD unset"
+else
+  fail "expected 'main/foo', got '${result}'"
+fi
+
+# Test: real branch named '<trunk>/<rest>' on origin is NOT rewritten —
+# otherwise legitimate branches like 'main/experimental' would become
+# unreachable when branch_prefix is configured.
+run_test
+printf 'ref: refs/remotes/origin/main\n' > "$rewrite_cache/refs/remotes/origin/HEAD"
+# Create a fake packed-ref for origin/main/experimental. Using a known
+# empty-tree sha so we don't need to produce a real commit.
+empty_tree_sha=$("$test_git" -C "$rewrite_cache" hash-object -t tree --stdin < /dev/null)
+printf '%s refs/remotes/origin/main/experimental\n' "$empty_tree_sha" \
+  >> "$rewrite_cache/packed-refs"
+result=$(maybe_rewrite_trunk_subpath "main/experimental" "$rewrite_cache" 2>/dev/null)
+if [[ $result == "main/experimental" ]]
+then
+  pass "maybe_rewrite_trunk_subpath preserves real 'main/...' branches"
+else
+  fail "real-branch preservation: expected 'main/experimental', got '${result}'"
+fi
+
+# Test: a NON-existent '<trunk>/<rest>' branch still gets rewritten
+# (branch-exists check must be specific — subpath that isn't a real
+# branch should take the rewrite path as before).
+run_test
+result=$(maybe_rewrite_trunk_subpath "main/does-not-exist" "$rewrite_cache")
+if [[ $result == "timvisher/does-not-exist" ]]
+then
+  pass "maybe_rewrite_trunk_subpath still rewrites nonexistent subpaths"
+else
+  fail "nonexistent-subpath rewrite: expected 'timvisher/does-not-exist', got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
