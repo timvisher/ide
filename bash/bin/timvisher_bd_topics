@@ -130,25 +130,47 @@ require_project_root() {
   printf '%s' "$root"
 }
 
-resolve_topic() {
+try_resolve_topic() {
   local input=$1
+  # Output params — names of caller variables for abs/rel paths. Optional;
+  # callers that only probe for success (e.g. `if try_resolve_topic …`)
+  # can omit them.
+  local abs_out_name=${2:-}
+  local rel_out_name=${3:-}
 
-  topic_abs=$(normalize_topic_path "$topics_root_real" "$input") ||
+  local _abs _rel
+  _abs=$(normalize_topic_path "$topics_root_real" "$input") ||
     return 1
 
-  case $topic_abs in
+  case $_abs in
     "$topics_root_real"/*)
-      topic_rel=${topic_abs#"$topics_root_real"/}
+      _rel=${_abs#"$topics_root_real"/}
       ;;
     *)
-      die "Topic must resolve under '%s'" "$topics_root_real"
+      return 1
       ;;
   esac
 
-  if [[ -z $topic_rel || $topic_rel == "$topic_abs" ]]
+  if [[ -z $_rel || $_rel == "$_abs" ]]
   then
-    die "Topic must resolve under '%s'" "$topics_root_real"
+    return 1
   fi
+
+  if [[ -n $abs_out_name ]]
+  then
+    local -n __abs_out=$abs_out_name
+    __abs_out=$_abs
+  fi
+  if [[ -n $rel_out_name ]]
+  then
+    local -n __rel_out=$rel_out_name
+    __rel_out=$_rel
+  fi
+}
+
+resolve_topic() {
+  try_resolve_topic "$@" ||
+    die "Topic must resolve under '%s'" "$topics_root_real"
 }
 
 topic_deactivated_path() {
@@ -531,8 +553,7 @@ case $cmd in
           continue
         fi
 
-        resolve_topic "$prefix_stripped"
-        prefix_abs=$topic_abs
+        resolve_topic "$prefix_stripped" prefix_abs
 
         found=0
         if [[ -d $prefix_abs ]]
@@ -614,7 +635,7 @@ case $cmd in
     topic_input=$(strip_beads_suffix "$1")
     if [[ -n $topic_input ]] && (resolve_topic "$topic_input" >/dev/null 2>&1)
     then
-      resolve_topic "$topic_input"
+      resolve_topic "$topic_input" topic_abs topic_rel
       if [[ ! -d $topic_abs ]]
       then
         bd "$@"
@@ -668,7 +689,7 @@ case $cmd in
     topic_input=$(strip_beads_suffix "$topic_input")
     [[ -n $topic_input ]] || die "Topic argument is empty"
 
-    resolve_topic "$topic_input"
+    resolve_topic "$topic_input" topic_abs topic_rel
 
     beads_dir="$topic_abs/.beads"
     if [[ ! -d $beads_dir ]]
@@ -724,7 +745,7 @@ case $cmd in
       die "Do not include '/.beads' in topic path"
     fi
 
-    resolve_topic "$topic_input"
+    resolve_topic "$topic_input" topic_abs topic_rel
 
     beads_dir="$topic_abs/.beads"
     if [[ -d $beads_dir ]]
@@ -771,7 +792,7 @@ case $cmd in
     topic_input=$(strip_beads_suffix "$1")
     [[ -n $topic_input ]] || die "Topic argument is empty"
 
-    resolve_topic "$topic_input"
+    resolve_topic "$topic_input" topic_abs topic_rel
 
     beads_dir="$topic_abs/.beads"
     if [[ ! -d $beads_dir ]]
@@ -799,7 +820,7 @@ case $cmd in
     topic_input=$(strip_beads_suffix "$1")
     [[ -n $topic_input ]] || die "Topic argument is empty"
 
-    resolve_topic "$topic_input"
+    resolve_topic "$topic_input" topic_abs topic_rel
 
     beads_dir="$topic_abs/.beads"
     if [[ ! -d $beads_dir ]]
@@ -838,7 +859,11 @@ case $cmd in
         [yY]|[yY][eE][sS])
           for topic_rel in "${prunable[@]}"
           do
-            resolve_topic "$topic_rel"
+            # Omit the rel output: reusing the loop variable as a nameref
+            # target is fragile. It works today because try_resolve_topic
+            # reads $1 into a local before writing, but a future refactor
+            # could clobber the loop variable mid-iteration.
+            resolve_topic "$topic_rel" topic_abs
             if [[ -z $topic_abs || $topic_abs == "/" || $topic_abs == "$topics_root_real" ]]
             then
               die "Refusing to remove '%s'" "$topic_abs"
@@ -857,7 +882,7 @@ case $cmd in
         topic_input=$(strip_beads_suffix "$topic_input")
         [[ -n $topic_input ]] || die "Topic argument is empty"
 
-        resolve_topic "$topic_input"
+        resolve_topic "$topic_input" topic_abs topic_rel
 
         beads_dir="$topic_abs/.beads"
         if [[ ! -d $beads_dir ]]
@@ -892,7 +917,7 @@ case $cmd in
     topic_input=$(strip_beads_suffix "$1")
     [[ -n $topic_input ]] || die "Topic argument is empty"
 
-    resolve_topic "$topic_input"
+    resolve_topic "$topic_input" topic_abs topic_rel
 
     beads_dir="$topic_abs/.beads"
     if [[ ! -d $beads_dir ]]
@@ -916,13 +941,8 @@ case $cmd in
     [[ -n $src_input ]] || die "Source topic argument is empty"
     [[ -n $dst_input ]] || die "Destination topic argument is empty"
 
-    resolve_topic "$src_input"
-    src_abs=$topic_abs
-    src_rel=$topic_rel
-
-    resolve_topic "$dst_input"
-    dst_abs=$topic_abs
-    dst_rel=$topic_rel
+    resolve_topic "$src_input" src_abs src_rel
+    resolve_topic "$dst_input" dst_abs dst_rel
 
     if [[ ! -d $src_abs/.beads ]]
     then
@@ -1034,17 +1054,12 @@ case $cmd in
       '~/'*) topic_input="${HOME}/${topic_input#'~'/}" ;;
     esac
 
-    resolved_abs=$(normalize_topic_path "$topics_root_real" "$topic_input") ||
+    if try_resolve_topic "$topic_input" topic_abs topic_rel
+    then
+      printf '%s\n' "$topic_rel"
+    else
       exit 1
-
-    case $resolved_abs in
-      "$topics_root_real"/*)
-        printf '%s\n' "${resolved_abs#"$topics_root_real"/}"
-        ;;
-      *)
-        exit 1
-        ;;
-    esac
+    fi
     ;;
   *)
     usage
