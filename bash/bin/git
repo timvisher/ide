@@ -60,11 +60,783 @@ then
   }
 fi
 
+# ---------------------------------------------------------------------------
+# Agent invocation log
+#
+# When invoked under an agent ($TIMVISHER_AGENT set), append a JSONL record
+# of the invocation. Bare `tee -a` / `>>` rely on O_APPEND atomicity for
+# single write() calls up to PIPE_BUF — fine for our line sizes. Readers
+# MUST treat any line that fails `jq -c .` as a corruption signal and
+# surface it loudly: that's how we'll know if we need real locking or a
+# central collector.
+# ---------------------------------------------------------------------------
+if [[ -n ${TIMVISHER_AGENT:-} ]]
+then
+  if ! command -v jq >/dev/null 2>&1
+  then
+    printf 'WARNING: jq not found; agent git log not written\n' >&2
+  else
+    _timvisher_git__log_file="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git/log.jsonl"
+    mkdir -p "$(dirname "$_timvisher_git__log_file")"
+    jq -cn \
+      --arg wrapper "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")" \
+      --arg cwd "$PWD" \
+      '{ts: now, wrapper: $wrapper, cwd: $cwd, argv: $ARGS.positional}' \
+      --args -- "$@" |
+      tee -a "$_timvisher_git__log_file" >&2 || true
+  fi
+fi
+
 real_git=$(resolve_next_git "${BASH_SOURCE[0]}") ||
   {
     echo "Unable to resolve next git binary in PATH" >&2
     exit 1
   }
+
+# ---------------------------------------------------------------------------
+# Selective-fetch machinery
+#
+# Repos opt in via a marker file at
+#   $_timvisher_git__config_dir/<org>/<repo>/enable-selective-fetch
+# When enabled, we:
+#   - replace the default wildcard refspec with a curated set (main
+#     branch, plus conventional extras — see default_refspecs below)
+#   - add a per-branch refspec for each branch checked out in a
+#     worktree, and for targets of checkout/switch/worktree-add
+#   - scrub refspecs whose upstream ref disappeared before fetch, and
+#     prune local remote-tracking refs that no refspec matches after
+#     successful fetch
+#   - clean up per-branch refspec + local branch on worktree remove
+#   - re-register refspecs after successful push
+# ---------------------------------------------------------------------------
+
+_timvisher_git__config_dir="$HOME/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper"
+
+_timvisher_git__remote=origin
+
+# Extract org/repo from the current remote's URL (_timvisher_git__remote).
+# Handles both SSH (git@github.com:Org/repo.git) and HTTPS (https://github.com/Org/repo.git).
+_timvisher_git__get_org_repo() {
+  local url
+  url=$("$real_git" config --get "remote.${_timvisher_git__remote}.url" 2>/dev/null) || return 1
+
+  local org_repo=""
+  case "$url" in
+    git@*:*)
+      org_repo="${url##*:}"
+      org_repo="${org_repo%.git}"
+      ;;
+    ssh://*)
+      org_repo="${url%.git}"
+      org_repo="${org_repo#ssh://*/}"
+      ;;
+    https://*|http://*)
+      org_repo="${url%.git}"
+      org_repo="${org_repo#http*://*/}"
+      ;;
+  esac
+
+  if [[ -n "$org_repo" ]] && [[ "$org_repo" == */* ]]
+  then
+    echo "$org_repo"
+    return 0
+  fi
+  return 1
+}
+
+_timvisher_git__selective_fetch_enabled() {
+  local org_repo
+  org_repo=$(_timvisher_git__get_org_repo) || return 1
+  [[ -f "${_timvisher_git__config_dir}/${org_repo}/enable-selective-fetch" ]]
+}
+
+_timvisher_git__get_main_branch() {
+  local ref
+  ref=$("$real_git" symbolic-ref "refs/remotes/${_timvisher_git__remote}/HEAD" 2>/dev/null) || {
+    if "$real_git" rev-parse --verify "refs/remotes/${_timvisher_git__remote}/main" >/dev/null 2>&1
+    then
+      echo "main"
+      return 0
+    fi
+    if "$real_git" rev-parse --verify "refs/remotes/${_timvisher_git__remote}/master" >/dev/null 2>&1
+    then
+      echo "master"
+      return 0
+    fi
+    return 1
+  }
+  echo "${ref##*/}"
+}
+
+_timvisher_git__upstream_refspec() {
+  local branch="$1"
+  echo "+refs/heads/$branch:refs/remotes/${_timvisher_git__remote}/$branch"
+}
+
+_timvisher_git__has_refspec() {
+  local refspec="$1"
+  "$real_git" config --local --fixed-value --get-all \
+    "remote.${_timvisher_git__remote}.fetch" "$refspec" >/dev/null 2>&1
+}
+
+_timvisher_git__add_refspec() {
+  local refspec="$1"
+  if ! _timvisher_git__has_refspec "$refspec"
+  then
+    "$real_git" config --local --add "remote.${_timvisher_git__remote}.fetch" "$refspec"
+  fi
+}
+
+_timvisher_git__remove_refspec() {
+  local refspec="$1"
+  "$real_git" config --local --fixed-value --unset-all \
+    "remote.${_timvisher_git__remote}.fetch" "$refspec" 2>/dev/null || true
+}
+
+_timvisher_git__has_selective_fetching() {
+  # True if the wildcard refspec is NOT present (i.e., we're already selective)
+  ! _timvisher_git__has_refspec "+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*"
+}
+
+# The curated refspecs to install when selective fetching is active.
+# The main branch is always installed.  Additional patterns come from
+# the system-extensions config at $config_dir/default-refspec-extras
+# (one branch name or glob per line; `#` comments + blank lines
+# ignored).  Exact names are probed via ls-remote before being
+# installed; globs are installed unconditionally as wildcard refspecs.
+_timvisher_git__default_refspecs() {
+  local main_branch="$1"
+
+  echo "+refs/heads/$main_branch:refs/remotes/${_timvisher_git__remote}/$main_branch"
+
+  local extras_file="${_timvisher_git__config_dir}/default-refspec-extras"
+  [[ -r $extras_file ]] || return 0
+
+  local pattern
+  while IFS= read -r pattern
+  do
+    [[ -z $pattern ]] && continue
+    [[ $pattern == \#* ]] && continue
+    case "$pattern" in
+      *\**)
+        echo "+refs/heads/$pattern:refs/remotes/${_timvisher_git__remote}/$pattern"
+        ;;
+      *)
+        if "$real_git" ls-remote --exit-code --heads "${_timvisher_git__remote}" "$pattern" >/dev/null 2>&1
+        then
+          echo "+refs/heads/$pattern:refs/remotes/${_timvisher_git__remote}/$pattern"
+        fi
+        ;;
+    esac
+  done < "$extras_file"
+}
+
+# Ensure selective fetching is set up: remove wildcard, add defaults, set --no-tags
+_timvisher_git__ensure_refspec_setup() {
+  local main_branch
+  main_branch=$(_timvisher_git__get_main_branch) || return 1
+
+  _timvisher_git__remove_refspec "+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*"
+
+  local refspec
+  while IFS= read -r refspec
+  do
+    _timvisher_git__add_refspec "$refspec"
+  done < <(_timvisher_git__default_refspecs "$main_branch")
+
+  # Ensure refspecs for all branches checked out in worktrees.
+  local line
+  while IFS= read -r line
+  do
+    if [[ "$line" == "branch "* ]]
+    then
+      local wt_branch="${line#branch refs/heads/}"
+      _timvisher_git__ensure_branch_refspec "$wt_branch" true
+    fi
+  done < <("$real_git" worktree list --porcelain)
+
+  if ! "$real_git" config --local --fixed-value --get \
+    "remote.${_timvisher_git__remote}.tagOpt" -- --no-tags >/dev/null 2>&1
+  then
+    "$real_git" config --local "remote.${_timvisher_git__remote}.tagOpt" --no-tags
+  fi
+}
+
+# Add a refspec for a specific branch. Fetches it immediately unless
+# skip_fetch=true (used when a bulk fetch will follow).
+_timvisher_git__ensure_branch_refspec() {
+  local branch="$1"
+  local skip_fetch="${2:-false}"
+
+  # Skip branches already covered by default wildcard/exact refspecs
+  # installed by _timvisher_git__default_refspecs — the main branch
+  # and whatever patterns are listed in default-refspec-extras.
+  local main_branch
+  main_branch=$(_timvisher_git__get_main_branch 2>/dev/null) || true
+
+  if [[ -n $main_branch && "$branch" == "$main_branch" ]]
+  then
+    return 0
+  fi
+
+  local extras_file="${_timvisher_git__config_dir}/default-refspec-extras"
+  if [[ -r $extras_file ]]
+  then
+    local pattern
+    while IFS= read -r pattern
+    do
+      [[ -z $pattern ]] && continue
+      [[ $pattern == \#* ]] && continue
+      # shellcheck disable=SC2053  # intentional glob match on RHS
+      if [[ "$branch" == $pattern ]]
+      then
+        return 0
+      fi
+    done < "$extras_file"
+  fi
+
+  local refspec
+  refspec=$(_timvisher_git__upstream_refspec "$branch")
+  if ! _timvisher_git__has_refspec "$refspec"
+  then
+    if [[ "$skip_fetch" == true ]]
+    then
+      # Only add refspec if the remote-tracking ref already exists;
+      # otherwise a bulk fetch would fail on a deleted branch.
+      if "$real_git" rev-parse --verify "refs/remotes/${_timvisher_git__remote}/$branch" >/dev/null 2>&1
+      then
+        _timvisher_git__add_refspec "$refspec"
+      fi
+    else
+      _timvisher_git__add_refspec "$refspec"
+      if ! "$real_git" fetch "${_timvisher_git__remote}" "$refspec" 2>/dev/null
+      then
+        _timvisher_git__remove_refspec "$refspec"
+      fi
+    fi
+  fi
+}
+
+# Scrub refspecs that would break the next fetch.
+_timvisher_git__scrub_dead_refspecs() {
+  # Prune remote-tracking refs whose remote branch was deleted.  Inject
+  # a temporary wildcard so `git remote prune` sees everything.
+  "$real_git" -c "remote.${_timvisher_git__remote}.fetch=+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*" \
+    remote prune "${_timvisher_git__remote}" 2>/dev/null || true
+
+  local fetch_spec
+  while IFS= read -r fetch_spec
+  do
+    if [[ "$fetch_spec" == +* ]]
+    then
+      local local_part="${fetch_spec%:*}"
+      local_part="${local_part#+}"
+      local upstream_part="${fetch_spec#*:}"
+      if [[ "$local_part" == *\** ]] || [[ "$upstream_part" == *\** ]]
+      then
+        continue
+      fi
+      if [[ -n "$upstream_part" ]] &&
+         ! "$real_git" rev-parse --verify "$upstream_part" >/dev/null 2>&1
+      then
+        _timvisher_git__remove_refspec "$fetch_spec"
+      fi
+    fi
+  done < <("$real_git" config --get-all "remote.${_timvisher_git__remote}.fetch" 2>/dev/null)
+}
+
+# Combined: all three layers. Used by maintenance paths (e.g., worktree prune).
+_timvisher_git__prune_stale_refs() {
+  _timvisher_git__scrub_dead_refspecs
+  _timvisher_git__prune_unmatched_refs
+}
+
+# Remove remote-tracking refs not matched by any configured refspec.
+_timvisher_git__prune_unmatched_refs() {
+  local -a exact_patterns=()
+  local -a prefix_patterns=()
+  local refspec src
+
+  while IFS= read -r refspec
+  do
+    src="${refspec%:*}"
+    src="${src#+refs/heads/}"
+
+    if [[ "$src" == *\* ]]
+    then
+      prefix_patterns+=("${src%\*}")
+    else
+      exact_patterns+=("$src")
+    fi
+  done < <("$real_git" config --get-all "remote.${_timvisher_git__remote}.fetch" 2>/dev/null)
+
+  local -A worktree_branches=()
+  local line
+  while IFS= read -r line
+  do
+    if [[ "$line" == "branch "* ]]
+    then
+      local wt_branch="${line#branch refs/heads/}"
+      worktree_branches[$wt_branch]=1
+    fi
+  done < <("$real_git" worktree list --porcelain)
+
+  _timvisher_git__emit_unmatched_deletes() {
+    local ref branch matched
+
+    while IFS= read -r ref
+    do
+      if [[ "$ref" == "refs/remotes/${_timvisher_git__remote}/HEAD" ]]
+      then
+        continue
+      fi
+
+      branch="${ref#refs/remotes/${_timvisher_git__remote}/}"
+
+      if [[ -n "${worktree_branches[$branch]:-}" ]]
+      then
+        continue
+      fi
+
+      matched=false
+
+      local exact
+      for exact in "${exact_patterns[@]}"
+      do
+        if [[ "$branch" == "$exact" ]]
+        then
+          matched=true
+          break
+        fi
+      done
+
+      if [[ "$matched" == false ]]
+      then
+        local prefix
+        for prefix in "${prefix_patterns[@]}"
+        do
+          if [[ "$branch" == "$prefix"* ]]
+          then
+            matched=true
+            break
+          fi
+        done
+      fi
+
+      if [[ "$matched" == false ]]
+      then
+        echo "delete $ref"
+      fi
+    done < <("$real_git" for-each-ref --format='%(refname)' "refs/remotes/${_timvisher_git__remote}/")
+  }
+
+  _timvisher_git__emit_unmatched_deletes | "$real_git" update-ref --stdin 2>/dev/null || true
+}
+
+# Extract branches from worktree remove args (to clean up their refspecs)
+_timvisher_git__get_worktree_branch() {
+  local worktree_path="$1"
+  local wt_path="" wt_branch=""
+  local line
+  while IFS= read -r line
+  do
+    if [[ "$line" == "worktree "* ]]
+    then
+      wt_path="${line#worktree }"
+    elif [[ "$line" == "branch "* ]]
+    then
+      wt_branch="${line#branch }"
+    elif [[ -z "$line" ]]
+    then
+      local norm_wt norm_target
+      norm_wt=$(cd "$wt_path" 2>/dev/null && pwd -P) || norm_wt="$wt_path"
+      norm_target=$(cd "$worktree_path" 2>/dev/null && pwd -P) || norm_target="$worktree_path"
+      if [[ "$norm_wt" == "$norm_target" ]]
+      then
+        echo "${wt_branch#refs/heads/}"
+        return 0
+      fi
+      wt_path=""
+      wt_branch=""
+    fi
+  done < <("$real_git" worktree list --porcelain)
+  return 1
+}
+
+# Determine which remote a fetch/pull command targets.
+# Echoes "--all" for --all, the explicit remote name, or the default remote.
+_timvisher_git__parse_fetch_remote() {
+  local skip_next=false
+  local found_subcommand=false
+  local has_all=false
+
+  for arg in "$@"
+  do
+    if [[ "$skip_next" == true ]]; then skip_next=false; continue; fi
+
+    if [[ "$found_subcommand" == false ]]
+    then
+      case "$arg" in
+        -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+          skip_next=true; continue ;;
+        --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*)
+          continue ;;
+        -*) continue ;;
+        fetch|pull) found_subcommand=true; continue ;;
+        *) continue ;;
+      esac
+    fi
+
+    case "$arg" in
+      --all) has_all=true ;;
+      --upload-pack|--refmap|--depth|--deepen|--shallow-since|--shallow-exclude|\
+      --jobs|--negotiation-tip|--filter|--server-option|\
+      -u|-j|-o|\
+      --strategy|--strategy-option|--cleanup|-s|-X)
+        skip_next=true ;;
+      -*) ;;
+      *)
+        if "$real_git" config --get "remote.$arg.url" >/dev/null 2>&1
+        then
+          echo "$arg"; return 0
+        fi
+        break ;;
+    esac
+  done
+
+  if [[ "$has_all" == true ]]; then echo "--all"; return 0; fi
+
+  local branch
+  branch=$("$real_git" symbolic-ref --short HEAD 2>/dev/null) || { echo "origin"; return 0; }
+  "$real_git" config --get "branch.$branch.remote" 2>/dev/null || echo "origin"
+}
+
+# Determine which remote a push command targets.
+_timvisher_git__parse_push_remote() {
+  local skip_next=false
+  local found_subcommand=false
+
+  for arg in "$@"
+  do
+    if [[ "$skip_next" == true ]]; then skip_next=false; continue; fi
+
+    if [[ "$found_subcommand" == false ]]
+    then
+      case "$arg" in
+        -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+          skip_next=true; continue ;;
+        --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*)
+          continue ;;
+        -*) continue ;;
+        push) found_subcommand=true; continue ;;
+        *) continue ;;
+      esac
+    fi
+
+    case "$arg" in
+      --repo|--receive-pack|--exec|--recurse-submodules|-o|--push-option)
+        skip_next=true ;;
+      --repo=*|--receive-pack=*|--exec=*|--recurse-submodules=*|--signed=*) ;;
+      -*) ;;
+      *)
+        if "$real_git" config --get "remote.$arg.url" >/dev/null 2>&1
+        then
+          echo "$arg"; return 0
+        fi
+        break ;;
+    esac
+  done
+
+  local branch push_remote
+  branch=$("$real_git" symbolic-ref --short HEAD 2>/dev/null) || { echo "origin"; return 0; }
+  push_remote=$("$real_git" config --get "branch.$branch.pushRemote" 2>/dev/null) ||
+    push_remote=$("$real_git" config --get "remote.pushDefault" 2>/dev/null) ||
+    push_remote=$("$real_git" config --get "branch.$branch.remote" 2>/dev/null) ||
+    push_remote="origin"
+  echo "$push_remote"
+}
+
+# Parse push refspecs into "<op> <branch>" entries, one per line.
+# op = '+' for branches being pushed; '-' for branches being deleted.
+# Exit 2 = --all / --mirror; exit 1 = no refspecs given.
+_timvisher_git__parse_push_refspecs() {
+  local skip_next=false
+  local found_subcommand=false
+  local found_remote=false
+  local delete_mode=false
+  local emitted=false
+
+  for arg in "$@"
+  do
+    if [[ "$skip_next" == true ]]; then skip_next=false; continue; fi
+
+    if [[ "$found_subcommand" == false ]]
+    then
+      case "$arg" in
+        -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+          skip_next=true; continue ;;
+        --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*)
+          continue ;;
+        -*) continue ;;
+        push) found_subcommand=true; continue ;;
+        *) continue ;;
+      esac
+    fi
+
+    case "$arg" in
+      --delete|-d) delete_mode=true; continue ;;
+      --all|--mirror) return 2 ;;
+      --repo|--receive-pack|--exec|--recurse-submodules|-o|--push-option)
+        skip_next=true; continue ;;
+      --repo=*|--receive-pack=*|--exec=*|--recurse-submodules=*|--signed=*) continue ;;
+      -[a-zA-Z][a-zA-Z]*)
+        [[ $arg == *d* ]] && delete_mode=true
+        continue ;;
+      -*) continue ;;
+    esac
+
+    if [[ "$found_remote" == false ]]
+    then
+      if "$real_git" config --get "remote.$arg.url" >/dev/null 2>&1
+      then
+        found_remote=true; continue
+      fi
+      found_remote=true
+    fi
+
+    local src dst
+    if [[ "$arg" == *:* ]]
+    then
+      src="${arg%%:*}"; dst="${arg#*:}"
+    else
+      src="$arg"; dst="$arg"
+    fi
+
+    if [[ -z "$src" ]] || [[ "$delete_mode" == true ]]
+    then
+      [[ -z "$src" ]] && src="$dst"
+      src="${src#refs/heads/}"; src="${src%\^}"
+      if [[ -z "$src" ]] || [[ "$src" == *\** ]]; then continue; fi
+      printf -- '- %s\n' "$src"; emitted=true; continue
+    fi
+
+    dst="${dst#refs/heads/}"
+    if [[ "$dst" == "HEAD" ]]
+    then
+      dst=$("$real_git" symbolic-ref --short HEAD 2>/dev/null) || continue
+    fi
+    if [[ -z "$dst" ]] || [[ "$dst" == *\** ]]; then continue; fi
+    printf -- '+ %s\n' "$dst"; emitted=true
+  done
+
+  if [[ "$emitted" == false ]]; then return 1; fi
+  return 0
+}
+
+# Run a callback for each target remote with selective fetching enabled.
+# target: a remote name or "--all" for all remotes.
+_timvisher_git__for_selective_remotes() {
+  local target="$1" callback="$2"
+  if [[ "$target" == "--all" ]]
+  then
+    local remote
+    while IFS= read -r remote
+    do
+      _timvisher_git__remote="$remote"
+      if _timvisher_git__selective_fetch_enabled 2>/dev/null
+      then
+        "$callback"
+      fi
+    done < <("$real_git" remote)
+  else
+    _timvisher_git__remote="$target"
+    if _timvisher_git__selective_fetch_enabled 2>/dev/null
+    then
+      "$callback"
+    fi
+  fi
+}
+
+_timvisher_git__maintenance_cleanup() {
+  if [[ "$(uname)" == "Darwin" ]]
+  then
+    if "$real_git" for-each-ref --format='%(refname)' "refs/remotes/${_timvisher_git__remote}/" |
+       grep -qx "refs/remotes/${_timvisher_git__remote}/head"
+    then
+      info "Removing stale ref '${_timvisher_git__remote}/head' (collides with HEAD on case-insensitive FS)"
+      "$real_git" update-ref -d "refs/remotes/${_timvisher_git__remote}/head" 2>/dev/null || true
+    fi
+
+    local all_refs duplicated_lower
+    all_refs=$("$real_git" for-each-ref --format='%(refname)' "refs/remotes/${_timvisher_git__remote}/")
+    duplicated_lower=$(echo "$all_refs" | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+
+    if [[ -n "$duplicated_lower" ]]
+    then
+      local lower
+      while IFS= read -r lower
+      do
+        local ref
+        while IFS= read -r ref
+        do
+          info "Removing case-conflicting ref: $ref"
+          "$real_git" update-ref -d "$ref" 2>/dev/null || true
+        done < <(echo "$all_refs" | grep -Fix "$lower")
+      done <<< "$duplicated_lower"
+    fi
+  fi
+}
+
+# Parse subcommand / subcommand_2 from the full command line.
+_timvisher_git__subcommand=""
+_timvisher_git__subcommand_2=""
+_timvisher_git__parse_subcommand() {
+  local skip_next=false
+  local found_sub=false
+  for arg in "$@"
+  do
+    if [[ "$skip_next" == true ]]; then skip_next=false; continue; fi
+
+    case "$arg" in
+      -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+        skip_next=true ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*) ;;
+      -*) ;;
+      *)
+        if [[ "$found_sub" == false ]]
+        then
+          _timvisher_git__subcommand="$arg"
+          found_sub=true
+        else
+          _timvisher_git__subcommand_2="$arg"
+          return 0
+        fi ;;
+    esac
+  done
+}
+
+_timvisher_git__parse_subcommand "$@"
+
+# Pre-hook: ensure refspecs BEFORE real_git for fetch/pull, and parse
+# worktree-remove state so we can clean up afterward.
+_timvisher_git__fetch_target=""
+_timvisher_git__worktree_branch=""
+_timvisher_git__pre_push_branch=""
+
+if _timvisher_git__selective_fetch_enabled 2>/dev/null
+then
+  case "$_timvisher_git__subcommand" in
+    fetch|pull)
+      _timvisher_git__fetch_target=$(_timvisher_git__parse_fetch_remote "$@")
+      _timvisher_git__for_selective_remotes "$_timvisher_git__fetch_target" _timvisher_git__ensure_refspec_setup
+      _timvisher_git__for_selective_remotes "$_timvisher_git__fetch_target" _timvisher_git__scrub_dead_refspecs
+      ;;
+    push)
+      _timvisher_git__pre_push_branch=$("$real_git" symbolic-ref --short HEAD 2>/dev/null) || true
+      ;;
+    worktree)
+      case "$_timvisher_git__subcommand_2" in
+        add)
+          # Parse target branch and ensure its refspec before the add
+          _timvisher_git__wta_skip=false
+          _timvisher_git__wta_found_add=false
+          _timvisher_git__wta_skip_path=false
+          _timvisher_git__wta_target=""
+          _timvisher_git__wta_create=false
+          for _arg in "$@"
+          do
+            if [[ $_timvisher_git__wta_skip == true ]]; then _timvisher_git__wta_skip=false; continue; fi
+            if [[ $_timvisher_git__wta_found_add == false ]]
+            then
+              case "$_arg" in
+                -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+                  _timvisher_git__wta_skip=true; continue ;;
+                add) _timvisher_git__wta_found_add=true; _timvisher_git__wta_skip_path=true; continue ;;
+                *) continue ;;
+              esac
+            fi
+            if [[ $_timvisher_git__wta_skip_path == true ]]
+            then
+              # <path> positional — first non-flag after `add`
+              case "$_arg" in
+                -*) ;;
+                *) _timvisher_git__wta_skip_path=false; continue ;;
+              esac
+            fi
+            case "$_arg" in
+              -b|-B) _timvisher_git__wta_create=true; _timvisher_git__wta_skip=true ;;
+              -d|--detach) break ;;
+              --) break ;;
+              -*) ;;
+              *) _timvisher_git__wta_target="$_arg" ;;
+            esac
+          done
+          if [[ -n $_timvisher_git__wta_target ]]
+          then
+            _timvisher_git__wta_target="${_timvisher_git__wta_target#origin/}"
+            _timvisher_git__ensure_branch_refspec "$_timvisher_git__wta_target"
+          fi
+          ;;
+        remove)
+          _timvisher_git__worktree_path=""
+          _timvisher_git__skip_next=false
+          for _arg in "$@"
+          do
+            if [[ "$_timvisher_git__skip_next" == true ]]
+            then
+              _timvisher_git__skip_next=false; continue
+            fi
+            case "$_arg" in
+              worktree|remove|-f|--force) ;;
+              -*) ;;
+              *) _timvisher_git__worktree_path="$_arg" ;;
+            esac
+          done
+          if [[ -n "$_timvisher_git__worktree_path" ]]
+          then
+            _timvisher_git__worktree_branch=$(_timvisher_git__get_worktree_branch "$_timvisher_git__worktree_path") || true
+          fi
+          ;;
+      esac
+  esac
+
+  # checkout/switch target branch ensure (always, regardless of
+  # selective-fetch; harmless no-op if remote ref already exists).
+  case "$_timvisher_git__subcommand" in
+    checkout|switch)
+      # Parse target branch
+      _timvisher_git__cs_skip=false
+      _timvisher_git__cs_found_sub=false
+      _timvisher_git__cs_create=false
+      _timvisher_git__cs_target=""
+      for _arg in "$@"
+      do
+        if [[ $_timvisher_git__cs_skip == true ]]; then _timvisher_git__cs_skip=false; continue; fi
+        if [[ $_timvisher_git__cs_found_sub == false ]]
+        then
+          case "$_arg" in
+            -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+              _timvisher_git__cs_skip=true; continue ;;
+            switch|checkout) _timvisher_git__cs_found_sub=true; continue ;;
+            *) continue ;;
+          esac
+        fi
+        case "$_arg" in
+          -b|-B|-c|-C) _timvisher_git__cs_create=true; _timvisher_git__cs_skip=true ;;
+          -d|--detach|--orphan) _timvisher_git__cs_target=""; break ;;
+          --) break ;;
+          -*) ;;
+          *) _timvisher_git__cs_target="$_arg" ;;
+        esac
+      done
+      if [[ -n $_timvisher_git__cs_target ]]
+      then
+        _timvisher_git__cs_target="${_timvisher_git__cs_target#origin/}"
+        _timvisher_git__ensure_branch_refspec "$_timvisher_git__cs_target"
+      fi
+      ;;
+  esac
+fi
 
 if [[ -n $TIMVISHER_AGENT ]]
 then
@@ -713,5 +1485,81 @@ upstream_guard__pre "$@"
 upstream_guard__rc=$?
 
 upstream_guard__post "$@"
+
+# ---------------------------------------------------------------------------
+# Selective-fetch post-hook: refspec cleanup after successful git calls.
+# ---------------------------------------------------------------------------
+if _timvisher_git__selective_fetch_enabled 2>/dev/null
+then
+  case "$_timvisher_git__subcommand" in
+    fetch|pull)
+      if [[ "$upstream_guard__rc" == 0 ]]
+      then
+        _timvisher_git__for_selective_remotes "$_timvisher_git__fetch_target" _timvisher_git__prune_unmatched_refs
+      fi
+      ;;
+    worktree)
+      case "$_timvisher_git__subcommand_2" in
+        remove)
+          if [[ "$upstream_guard__rc" == 0 ]] && [[ -n "$_timvisher_git__worktree_branch" ]]
+          then
+            _timvisher_git__remove_refspec "$(_timvisher_git__upstream_refspec "$_timvisher_git__worktree_branch")"
+            "$real_git" branch -D "$_timvisher_git__worktree_branch" 2>/dev/null || true
+          fi
+          ;;
+        prune)
+          if [[ "$upstream_guard__rc" == 0 ]]
+          then
+            _timvisher_git__for_selective_remotes "--all" _timvisher_git__prune_stale_refs
+          fi
+          ;;
+      esac
+      ;;
+    maintenance)
+      _timvisher_git__maintenance_cleanup
+      ;;
+    push)
+      if [[ "$upstream_guard__rc" == 0 ]]
+      then
+        _timvisher_git__push_target=$(_timvisher_git__parse_push_remote "$@")
+        _timvisher_git__remote="$_timvisher_git__push_target"
+
+        if _timvisher_git__selective_fetch_enabled 2>/dev/null
+        then
+          _timvisher_git__refspec_entries=$(_timvisher_git__parse_push_refspecs "$@")
+          _timvisher_git__parse_rc=$?
+
+          case "$_timvisher_git__parse_rc" in
+            0)
+              while IFS=' ' read -r _timvisher_git__ref_op _timvisher_git__ref_branch
+              do
+                [[ -z "$_timvisher_git__ref_branch" ]] && continue
+                case "$_timvisher_git__ref_op" in
+                  +)
+                    _timvisher_git__ensure_branch_refspec "$_timvisher_git__ref_branch"
+                    ;;
+                  -)
+                    _timvisher_git__ref_spec=$(_timvisher_git__upstream_refspec "$_timvisher_git__ref_branch")
+                    _timvisher_git__remove_refspec "$_timvisher_git__ref_spec"
+                    "$real_git" update-ref -d "refs/remotes/${_timvisher_git__remote}/${_timvisher_git__ref_branch}" 2>/dev/null || true
+                    ;;
+                esac
+              done <<< "$_timvisher_git__refspec_entries"
+              ;;
+            1)
+              if [[ -n "$_timvisher_git__pre_push_branch" ]]
+              then
+                _timvisher_git__ensure_branch_refspec "$_timvisher_git__pre_push_branch"
+              fi
+              ;;
+            2)
+              _timvisher_git__ensure_refspec_setup
+              ;;
+          esac
+        fi
+      fi
+      ;;
+  esac
+fi
 
 exit $upstream_guard__rc
