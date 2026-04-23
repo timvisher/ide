@@ -93,11 +93,14 @@ root = sys.argv[1]
 path = sys.argv[2]
 
 if os.path.isabs(path):
-    resolved = os.path.abspath(path)
+    resolved = path
 else:
-    resolved = os.path.abspath(os.path.join(root, path))
+    resolved = os.path.join(root, path)
 
-print(os.path.normpath(resolved))
+# realpath resolves any symlinks in the existing prefix, which keeps
+# results consistent with topics_root_real (which is set via `pwd -P`).
+# Nonexistent suffixes are left as-is.
+print(os.path.realpath(resolved))
 PY
 }
 

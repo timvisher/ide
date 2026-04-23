@@ -24,9 +24,6 @@ run_test() {
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_bd_topics"
 
 tmpdir=$(mktemp -d)
-# Resolve symlinks so paths match the script's `cd && pwd -P` view
-# (mktemp on macOS returns /var/folders/..., actually /private/var/...).
-tmpdir=$(cd "$tmpdir" && pwd -P)
 trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/topics"
