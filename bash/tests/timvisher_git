@@ -1328,6 +1328,41 @@ else
   fail "truthy-variant heal: value='${yes_value}'"
 fi
 
+# Regression (ide-gct): ensure_worktree must heal the NEWLY-created worktree
+# when the cache has extensions.worktreeConfig=true + core.bare=true.  Without
+# the post-add heal, `git worktree add` propagates core.bare=true into the new
+# worktree and the subsequent `git checkout --track -b <branch>` fails with
+# "fatal: this operation must be run in a work tree".
+run_test
+ewp_org="ewporg"
+ewp_repo="ewprepo"
+ewp_cache="$cache_dir/repo_trunks/${ewp_org}/${ewp_repo}"
+mkdir -p "$(dirname "$ewp_cache")"
+"$test_git" init --bare "$ewp_cache" >/dev/null 2>&1
+"$test_git" -C "$ewp_cache" remote add origin "$source_repo"
+"$test_git" -C "$ewp_cache" fetch origin >/dev/null 2>&1
+"$test_git" -C "$ewp_cache" remote set-head origin -a >/dev/null 2>&1
+"$test_git" -C "$ewp_cache" config extensions.worktreeConfig true
+"$test_git" -C "$ewp_cache" config core.bare true
+
+ewp_branch="ewp-feature"
+ewp_wt="$live_repo_dir/${ewp_org}/${ewp_repo}/${ewp_branch}"
+ensure_worktree "${ewp_org}/${ewp_repo}/${ewp_branch}" >/dev/null 2>&1 && ewp_rc=0 || ewp_rc=$?
+
+ewp_override=$("$test_git" -C "$ewp_wt" config --worktree --get core.bare 2>/dev/null) || ewp_override=""
+ewp_inside=$("$test_git" -C "$ewp_wt" rev-parse --is-inside-work-tree 2>/dev/null) || ewp_inside=""
+ewp_head=$("$test_git" -C "$ewp_wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || ewp_head=""
+
+if (( ewp_rc == 0 )) \
+   && [[ $ewp_override == false ]] \
+   && [[ $ewp_inside == true ]] \
+   && [[ $ewp_head == "$ewp_branch" ]]
+then
+  pass "ensure_worktree: heals newly-created worktree when cache has extensions.worktreeConfig+core.bare (ide-gct)"
+else
+  fail "ensure_worktree post-add heal: rc=${ewp_rc} override='${ewp_override}' inside='${ewp_inside}' head='${ewp_head}'"
+fi
+
 # ---------------------------------------------------------------------------
 # die_if_git_component tests
 # ---------------------------------------------------------------------------

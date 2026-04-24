@@ -1114,6 +1114,11 @@ ensure_worktree() {
     command git -C "${trunk_cache}" worktree add --detach "${branch_dir_abs}" "origin/$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
       die "Unable to add worktree ‘${branch_dir_abs}’"
 
+    # Caches with extensions.worktreeConfig=true propagate core.bare=true
+    # into every freshly-added worktree; without the per-worktree override
+    # the next git op dies with "this operation must be run in a work tree".
+    ensure_worktrees_not_poisoned_by_bare "$trunk_cache"
+
     maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-initial-branch-dir-creation
   else
     info "Worktree already exists at ${branch_dir_abs}"
