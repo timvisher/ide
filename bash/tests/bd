@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Tests for bd wrapper
-# Uses mocks since we can't actually build beads in tests.
+# Tests for bd wrapper.
+# The wrapper chmods .beads to 0700 before exec'ing real bd.
+# BD_BINARY overrides the real-bd path so tests don't need homebrew bd installed.
 
 set -euo pipefail
 
@@ -22,70 +23,133 @@ run_test() {
 }
 
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/bd"
-funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Test 1: uses TIMVISHER_GIT_HOME to locate beads source
+# Fake bd: just echoes its args so we can confirm exec reached it.
+cat > "$tmpdir/fake-bd" <<'MOCK'
+#!/usr/bin/env bash
+echo "fake-bd $*"
+MOCK
+chmod +x "$tmpdir/fake-bd"
+
+# --- Test 1: chmods .beads from 0755 to 0700 inside a repo ---
 run_test
-mkdir -p "$tmpdir/git/steveyegge/beads/main"
-# Create a fake bd binary
-cat > "$tmpdir/git/steveyegge/beads/main/bd" <<'MOCK'
-#!/usr/bin/env bash
-echo "bd-mock $*"
-MOCK
-chmod +x "$tmpdir/git/steveyegge/beads/main/bd"
-
-# Create x.pulled file that's recent (so it skips the build)
-touch "$tmpdir/git/steveyegge/beads/main/x.pulled"
-
-# Mock gdate to report x.pulled as recent
-mkdir -p "$tmpdir/mockbin"
-cat > "$tmpdir/mockbin/gdate" <<'MOCK'
-#!/usr/bin/env bash
-if [[ $* == *'-r'* ]]
-then
-  echo "2099-01-01T00:00:00+0000"
-elif [[ $* == *'20 hours ago'* ]]
-then
-  echo "2020-01-01T00:00:00+0000"
-else
-  /opt/homebrew/bin/date "$@"
-fi
-MOCK
-chmod +x "$tmpdir/mockbin/gdate"
-
-result=$(
-  TIMVISHER_GIT_HOME="$tmpdir/git" \
-  PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "source '${funcs_dir}/logging.bash'; exec '$script' status" 2>/dev/null
+mkdir -p "$tmpdir/repo1/.beads"
+git -C "$tmpdir/repo1" init -q
+chmod 0755 "$tmpdir/repo1/.beads"
+(
+  cd "$tmpdir/repo1"
+  BD_BINARY="$tmpdir/fake-bd" "$script" hello >/dev/null
 )
-if [[ $result == *"bd-mock status"* ]]
+perms=$(stat -f '%Lp' "$tmpdir/repo1/.beads")
+if [[ $perms == 700 ]]
 then
-  pass "uses TIMVISHER_GIT_HOME to locate beads and passes args"
+  pass "chmods .beads from 0755 to 0700 in repo root"
 else
-  fail "expected 'bd-mock status', got '${result}'"
+  fail "expected .beads perms=700, got ${perms}"
 fi
 
-# Test 2: exports bd_src to environment
+# --- Test 2: also chmods the redirect target if configured ---
 run_test
-cat > "$tmpdir/git/steveyegge/beads/main/bd" <<'MOCK'
-#!/usr/bin/env bash
-echo "$bd_src"
-MOCK
-chmod +x "$tmpdir/git/steveyegge/beads/main/bd"
-
-result=$(
-  TIMVISHER_GIT_HOME="$tmpdir/git" \
-  PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "source '${funcs_dir}/logging.bash'; exec '$script'" 2>/dev/null
+mkdir -p "$tmpdir/repo2/.beads" "$tmpdir/target2"
+git -C "$tmpdir/repo2" init -q
+printf '%s\n' "$tmpdir/target2" > "$tmpdir/repo2/.beads/redirect"
+chmod 0755 "$tmpdir/repo2/.beads" "$tmpdir/target2"
+(
+  cd "$tmpdir/repo2"
+  BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-if [[ $result == "$tmpdir/git/steveyegge/beads/main" ]]
+local_perms=$(stat -f '%Lp' "$tmpdir/repo2/.beads")
+target_perms=$(stat -f '%Lp' "$tmpdir/target2")
+if [[ $local_perms == 700 && $target_perms == 700 ]]
 then
-  pass "exports bd_src correctly"
+  pass "chmods both .beads and the redirect target to 0700"
 else
-  fail "expected bd_src='${tmpdir}/git/steveyegge/beads/main', got '${result}'"
+  fail "expected both=700, got local=${local_perms} target=${target_perms}"
+fi
+
+# --- Test 3: no-op when outside any git repo (no error, still exec's bd) ---
+run_test
+result=$(
+  cd "$tmpdir"
+  BD_BINARY="$tmpdir/fake-bd" "$script" status 2>&1
+)
+if [[ $result == "fake-bd status" ]]
+then
+  pass "no-op outside a git repo; still exec's bd with args"
+else
+  fail "expected 'fake-bd status', got '${result}'"
+fi
+
+# --- Test 4: no-op when repo has no .beads dir (still exec's bd) ---
+run_test
+mkdir -p "$tmpdir/repo4"
+git -C "$tmpdir/repo4" init -q
+result=$(
+  cd "$tmpdir/repo4"
+  BD_BINARY="$tmpdir/fake-bd" "$script" list 2>&1
+)
+if [[ $result == "fake-bd list" ]]
+then
+  pass "no-op in repo without .beads; still exec's bd"
+else
+  fail "expected 'fake-bd list', got '${result}'"
+fi
+
+# --- Test 5: tolerates a missing redirect target (no error) ---
+run_test
+mkdir -p "$tmpdir/repo5/.beads"
+git -C "$tmpdir/repo5" init -q
+printf '%s\n' "$tmpdir/does-not-exist" > "$tmpdir/repo5/.beads/redirect"
+chmod 0755 "$tmpdir/repo5/.beads"
+result=$(
+  cd "$tmpdir/repo5"
+  BD_BINARY="$tmpdir/fake-bd" "$script" note 2>&1
+)
+local_perms=$(stat -f '%Lp' "$tmpdir/repo5/.beads")
+if [[ $result == "fake-bd note" && $local_perms == 700 ]]
+then
+  pass "tolerates missing redirect target; still chmods local and exec's bd"
+else
+  fail "expected clean exec + local perms=700; got result='${result}' perms=${local_perms}"
+fi
+
+# --- Test 6: CRLF line endings in redirect file don't break path resolution ---
+run_test
+mkdir -p "$tmpdir/repo6/.beads" "$tmpdir/target6"
+git -C "$tmpdir/repo6" init -q
+printf '%s\r\n' "$tmpdir/target6" > "$tmpdir/repo6/.beads/redirect"
+chmod 0755 "$tmpdir/repo6/.beads" "$tmpdir/target6"
+(
+  cd "$tmpdir/repo6"
+  BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
+)
+target_perms=$(stat -f '%Lp' "$tmpdir/target6")
+if [[ $target_perms == 700 ]]
+then
+  pass "strips CRLF from redirect target so chmod reaches the real dir"
+else
+  fail "expected target perms=700 with CRLF redirect, got ${target_perms}"
+fi
+
+# --- Test 7: trailing spaces/tabs in redirect file are stripped ---
+run_test
+mkdir -p "$tmpdir/repo7/.beads" "$tmpdir/target7"
+git -C "$tmpdir/repo7" init -q
+printf '%s  \t\n' "$tmpdir/target7" > "$tmpdir/repo7/.beads/redirect"
+chmod 0755 "$tmpdir/repo7/.beads" "$tmpdir/target7"
+(
+  cd "$tmpdir/repo7"
+  BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
+)
+target_perms=$(stat -f '%Lp' "$tmpdir/target7")
+if [[ $target_perms == 700 ]]
+then
+  pass "strips trailing spaces/tabs from redirect target"
+else
+  fail "expected target perms=700 with trailing whitespace, got ${target_perms}"
 fi
 
 echo ""

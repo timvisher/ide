@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+# bd wrapper — chmod 700 the .beads directory on every invocation so
+# Dropbox/iCloud re-syncs that loosen the perms don't trigger bd's
+# 0755-warning on every call.
+
+if toplevel=$(git rev-parse --show-toplevel 2>/dev/null) && [[ -n $toplevel ]]
+then
+  beads_dir="${toplevel}/.beads"
+  if [[ -d $beads_dir ]]
+  then
+    chmod 700 "$beads_dir" 2>/dev/null || true
+
+    # Follow the redirect to the real DB directory, if configured.
+    if [[ -f ${beads_dir}/redirect ]]
+    then
+      redirect_target=$(< "${beads_dir}/redirect")
+      # $()-substitution already strips trailing newlines. Also strip any
+      # remaining trailing whitespace (CR from CRLF files, tabs, spaces).
+      while [[ $redirect_target == *[[:space:]] ]]
+      do
+        redirect_target=${redirect_target%?}
+      done
+      if [[ -n $redirect_target && -d $redirect_target ]]
+      then
+        chmod 700 "$redirect_target" 2>/dev/null || true
+      fi
+    fi
+  fi
+fi
+
+exec "${BD_BINARY:-/opt/homebrew/bin/bd}" "$@"
