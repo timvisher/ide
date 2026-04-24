@@ -102,6 +102,69 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# aictl_error tests (ide-06u)
+# ---------------------------------------------------------------------------
+
+# Test: aictl_error emits the same error JSON as aictl_die but RETURNS
+# instead of EXITing — the enclosing shell survives so code AFTER a
+# function that invoked aictl_error still runs.  This is the whole
+# reason aictl_error exists: aictl_die's `exit 1` would kill the shell
+# when called from a function sourced into an interactive session.
+run_test
+result=$(bash -c "
+  source '${funcs_dir}/aictl.bash'
+  wrap() {
+    aictl_error test_code 'msg'
+    return \$?
+  }
+  wrap
+  echo 'shell-survived'
+" 2>&1)
+if [[ $result == *'"level":"error"'* ]] \
+   && [[ $result == *'"code":"test_code"'* ]] \
+   && [[ $result == *"shell-survived"* ]]
+then
+  pass "aictl_error returns without exiting shell (ide-06u)"
+else
+  fail "aictl_error return semantics: got '${result}'"
+fi
+
+# Test: aictl_error returns 1 (wrap in function so return works)
+run_test
+rc=0
+bash -c "
+  source '${funcs_dir}/aictl.bash'
+  wrap() { aictl_error tc 'msg'; }
+  wrap
+" >/dev/null 2>&1 || rc=$?
+if (( rc == 1 ))
+then
+  pass "aictl_error returns 1 (ide-06u)"
+else
+  fail "aictl_error should return 1, got rc=$rc"
+fi
+
+# Test: aictl_error supports --flag syntax and suggestions like aictl_die
+run_test
+result=$(bash -c "
+  source '${funcs_dir}/aictl.bash'
+  wrap() {
+    aictl_error --code tc --message m --reason why --doc d.md --suggestion 'fix one' --suggestion 'fix two'
+  }
+  wrap
+" 2>&1 || true)
+if [[ $result == *'"code":"tc"'* ]] \
+   && [[ $result == *'"reason":"why"'* ]] \
+   && [[ $result == *'"doc":"d.md"'* ]] \
+   && [[ $result == *'"fix one"'* ]] \
+   && [[ $result == *'"fix two"'* ]]
+then
+  pass "aictl_error with --flag syntax (ide-06u)"
+else
+  fail "aictl_error --flags: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
 # aictl_warn tests
 # ---------------------------------------------------------------------------
 

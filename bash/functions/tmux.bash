@@ -450,16 +450,17 @@ function ntmux3() {
 
     if [[ -z $detached && -n $TMUX ]]
     then
-        if [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_die &>/dev/null
+        if [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_error &>/dev/null
         then
-            aictl_die \
+            aictl_error \
                 --code "ntmux3_inside_tmux" \
                 --message "ntmux3 cannot attach a new tmux session from inside an existing one — use -d for detached mode." \
                 --reason "Without -d, ntmux3 tries to replace the current tmux client, which isn't supported. Detached mode creates the worktree + session without attaching, which is what agents want anyway." \
                 --doc "ai/HOME/.agents/skills/worktree/SKILL.md" \
                 --suggestion "ntmux3 -d ${clone_target:-<org/repo/branch>}"
+        else
+            echo 'Running ntmux3 inside a tmux session is not supported (pass -d for detached mode)' >&2
         fi
-        echo 'Running ntmux3 inside a tmux Session is not supported (pass -d for detached mode)' >&2
         return 1
     fi
 

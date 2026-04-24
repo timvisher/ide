@@ -139,6 +139,21 @@ aictl_die() {
   exit 1
 }
 
+# Non-terminating error — emits the same error JSON as aictl_die but
+# returns 1 instead of exiting.  Use this from shell FUNCTIONS (sourced
+# into the caller's shell) where `exit` would kill the enclosing
+# interactive shell.  Scripts should prefer aictl_die.
+#
+# Callers should propagate the non-zero return, e.g.:
+#   aictl_error --code ... --message ...
+#   return 1
+# Usage: aictl_error [--code C] [--message M] [--reason R] [--doc D] [--suggestion S]...
+#    or: aictl_error <code> <message> [suggestion...]
+aictl_error() {
+  aictl__emit error "$@"
+  return 1
+}
+
 # Blocking warning — exits unless BOTH TIMVISHER_AGENT_NIRMI=1 and
 # TIMVISHER_AGENT_NIRMI_REASON=<non-empty> are set.
 #
