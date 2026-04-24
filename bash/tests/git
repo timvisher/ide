@@ -41,6 +41,20 @@ echo "$tmpdir/prefix"
 MOCK
 chmod +x "$tmpdir/mockbin/brew"
 
+# Mock ps: lets tests assert behavior based on simulated parent command
+# (dolt/bd/etc.).  When TEST_PARENT_CMD is set and the wrapper is asking
+# for the parent's comm, return it; otherwise fall through to real ps.
+cat > "$tmpdir/mockbin/ps" <<'MOCK'
+#!/usr/bin/env bash
+if [[ -n ${TEST_PARENT_CMD:-} && "$*" == *"-o comm="* ]]
+then
+  echo "$TEST_PARENT_CMD"
+  exit 0
+fi
+exec /bin/ps "$@"
+MOCK
+chmod +x "$tmpdir/mockbin/ps"
+
 # resolve_next_git walks PATH, finds itself, returns the next entry.
 # We need:
 #   1. A PATH entry for the wrapper itself (so "self" is found).
@@ -266,6 +280,103 @@ then
   pass "passes through all args when not agent"
 else
   fail "passes through all args: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Agent invocation log routing
+#
+# The JSON-per-invocation log goes to both stderr and the log file by
+# default (interactive visibility).  When called by dolt or bd — both Go
+# programs that read our output via cmd.CombinedOutput() — it must go to
+# the file only, because stderr would otherwise be captured as part of
+# the git command's stdout and break the caller.
+# ---------------------------------------------------------------------------
+
+# Test: log line goes to stderr under a normal parent (not dolt/bd)
+run_test
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=bash PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1 >/dev/null)
+if [[ $stderr == *'"argv":["status"]'* ]]
+then
+  pass "agent log line appears on stderr under normal parent"
+else
+  fail "expected agent log on stderr, got '${stderr}'"
+fi
+
+# Test: log line is suppressed on stderr when parent is dolt
+run_test
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1 >/dev/null)
+if [[ $stderr == *'"argv":'* ]]
+then
+  fail "expected no agent log on stderr when parent=dolt, got '${stderr}'"
+else
+  pass "agent log line suppressed on stderr when parent=dolt"
+fi
+
+# Test: log line is suppressed on stderr when parent is bd
+run_test
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=bd PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1 >/dev/null)
+if [[ $stderr == *'"argv":'* ]]
+then
+  fail "expected no agent log on stderr when parent=bd, got '${stderr}'"
+else
+  pass "agent log line suppressed on stderr when parent=bd"
+fi
+
+# Test: even when suppressed from stderr, stdout is never polluted
+run_test
+stdout=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>/dev/null)
+if [[ $stdout == *"real-git status"* && $stdout != *'"argv":'* ]]
+then
+  pass "stdout stays clean (no log leak) when parent=dolt"
+else
+  fail "expected clean stdout, got '${stdout}'"
+fi
+
+# Test: log file still gets the entry even under suppression — auditability
+# must not regress just because stderr is being withheld.
+run_test
+log_state="$tmpdir/xdg-state"
+rm -rf "$log_state"
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+  PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" >/dev/null 2>&1
+log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+if [[ -f $log_file ]] && grep -q '"argv":\["status"\]' "$log_file"
+then
+  pass "log file is still written when stderr is suppressed (parent=dolt)"
+else
+  fail "expected log line in ${log_file}; file exists=$([[ -f $log_file ]] && echo y || echo n)"
+fi
+
+# Test: jq-missing warning is also suppressed under a dolt/bd parent
+# (otherwise a host missing jq would still leak stderr into CombinedOutput).
+# Strip jq's locations from PATH; keep /bin so bash/ps are resolvable. Use
+# /bin/bash with an absolute path so the env-var-prefix on bash doesn't try
+# to resolve 'bash' through the restricted nojq_path.
+run_test
+nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$nojq_path" \
+  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" 2>&1 >/dev/null)
+if [[ $stderr == *"jq not found"* ]]
+then
+  fail "expected jq-missing warning suppressed under parent=dolt, got '${stderr}'"
+else
+  pass "jq-missing warning suppressed under parent=dolt"
+fi
+
+# Sanity: jq-missing warning IS printed under normal parent (baseline).
+run_test
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=bash PATH="$nojq_path" \
+  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" 2>&1 >/dev/null)
+if [[ $stderr == *"jq not found"* ]]
+then
+  pass "jq-missing warning printed under normal parent"
+else
+  fail "expected jq-missing warning under normal parent, got '${stderr}'"
 fi
 
 # ---------------------------------------------------------------------------

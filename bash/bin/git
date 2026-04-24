@@ -72,18 +72,43 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n ${TIMVISHER_AGENT:-} ]]
 then
+  # Detect misbehaving Go parents (bd → dolt) that read git output via
+  # cmd.CombinedOutput(), which merges stderr into stdout. Any stderr we
+  # write under such a parent gets captured as part of the git command's
+  # output and breaks the caller. Compute this first so the jq-missing
+  # warning below honors the same suppression.
+  _timvisher_git__parent_cmd=$(ps -p "$PPID" -o comm= 2>/dev/null || true)
+  _timvisher_git__parent_cmd=${_timvisher_git__parent_cmd##*/}
+
   if ! command -v jq >/dev/null 2>&1
   then
-    printf 'WARNING: jq not found; agent git log not written\n' >&2
+    case "$_timvisher_git__parent_cmd" in
+      dolt|bd) ;;
+      *) printf 'WARNING: jq not found; agent git log not written\n' >&2 ;;
+    esac
   else
     _timvisher_git__log_file="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git/log.jsonl"
     mkdir -p "$(dirname "$_timvisher_git__log_file")"
-    jq -cn \
-      --arg wrapper "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")" \
-      --arg cwd "$PWD" \
-      '{ts: now, wrapper: $wrapper, cwd: $cwd, argv: $ARGS.positional}' \
-      --args -- "$@" |
-      tee -a "$_timvisher_git__log_file" >&2 || true
+    # Normal path: log to file AND stderr (interactive visibility).
+    # Suppression path: file only. Remove the dolt/bd branch once bd/dolt
+    # switch to cmd.Output() with separate stderr handling.
+    case "$_timvisher_git__parent_cmd" in
+      dolt|bd)
+        jq -cn \
+          --arg wrapper "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")" \
+          --arg cwd "$PWD" \
+          '{ts: now, wrapper: $wrapper, cwd: $cwd, argv: $ARGS.positional}' \
+          --args -- "$@" >> "$_timvisher_git__log_file" 2>/dev/null || true
+        ;;
+      *)
+        jq -cn \
+          --arg wrapper "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")" \
+          --arg cwd "$PWD" \
+          '{ts: now, wrapper: $wrapper, cwd: $cwd, argv: $ARGS.positional}' \
+          --args -- "$@" |
+          tee -a "$_timvisher_git__log_file" >&2 || true
+        ;;
+    esac
   fi
 fi
 
