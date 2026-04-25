@@ -72,18 +72,27 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n ${TIMVISHER_AGENT:-} ]]
 then
-  # Detect misbehaving Go parents (bd → dolt) that read git output via
-  # cmd.CombinedOutput(), which merges stderr into stdout. Any stderr we
-  # write under such a parent gets captured as part of the git command's
-  # output and breaks the caller. Compute this first so the jq-missing
-  # warning below honors the same suppression.
+  # Detect parents that misread our stderr.
+  #
+  # - dolt, bd: Go parents that read git output via cmd.CombinedOutput(),
+  #   which merges stderr into stdout. Any stderr we write under such a
+  #   parent gets captured as part of git's output and breaks parsing.
+  # - emacs, Emacs, emacsclient: emacs's `process-file` with BUFFER=t
+  #   intermixes stderr into the captured buffer alongside stdout. Magit
+  #   uses this for `magit-git-version` and similar parser-style calls,
+  #   so any stderr noise breaks magit's regex during init asserts.
+  #   Magit itself isn't separately detectable — it runs in-process
+  #   within emacs — so we suppress for any emacs parent.
+  #
+  # Compute this first so the jq-missing warning honors the same
+  # suppression.
   _timvisher_git__parent_cmd=$(ps -p "$PPID" -o comm= 2>/dev/null || true)
   _timvisher_git__parent_cmd=${_timvisher_git__parent_cmd##*/}
 
   if ! command -v jq >/dev/null 2>&1
   then
     case "$_timvisher_git__parent_cmd" in
-      dolt|bd) ;;
+      dolt|bd|emacs|Emacs|emacsclient) ;;
       *) printf 'WARNING: jq not found; agent git log not written\n' >&2 ;;
     esac
   else
@@ -93,7 +102,7 @@ then
     # Suppression path: file only. Remove the dolt/bd branch once bd/dolt
     # switch to cmd.Output() with separate stderr handling.
     case "$_timvisher_git__parent_cmd" in
-      dolt|bd)
+      dolt|bd|emacs|Emacs|emacsclient)
         jq -cn \
           --arg wrapper "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")" \
           --arg cwd "$PWD" \
