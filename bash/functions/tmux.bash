@@ -255,11 +255,28 @@ function ntmux3__session_name_from_path() {
     fi
 
     local candidate_path="$path"
+    local file_path=
 
-    # Handle file paths by using the parent directory
+    # Handle file paths by using the parent directory.  Capture the
+    # absolute, symlink-resolved file path so file-level aliases match
+    # the same canonical form `cd ... && pwd -P` produces below.  Bare
+    # filenames (no slash) are treated as CWD-relative.
     if [[ -f $candidate_path && ! -d $candidate_path ]]
     then
-        candidate_path="${candidate_path%/*}"
+        local input_basename input_parent file_dir
+        input_basename=$(basename "$candidate_path")
+        if [[ $candidate_path == */* ]]
+        then
+            input_parent="${candidate_path%/*}"
+        else
+            input_parent="."
+        fi
+        file_dir=$(cd "$input_parent" 2>/dev/null && pwd -P) || true
+        if [[ -n $file_dir ]]
+        then
+            file_path="${file_dir}/${input_basename}"
+        fi
+        candidate_path="$input_parent"
     fi
 
     if [[ ! -d $candidate_path ]]
@@ -273,6 +290,46 @@ function ntmux3__session_name_from_path() {
     local home_real
     home_real=$(cd "$HOME" && pwd -P) || return 1
 
+    local config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
+    local aliases_file=${config_dir}/ntmux3_path_aliases
+
+    # File-level aliases beat every other rule: most-specific wins.
+    # Only consulted when the input was a file.  We canonicalize the
+    # alias key the same way we canonicalized $file_path (resolve the
+    # parent dir's symlinks, append basename) so symlinks in either the
+    # alias key or the input don't silently bypass the match.
+    if [[ -n $file_path && -r $aliases_file ]]
+    then
+        local line key value expanded_key key_dir key_basename key_parent
+        while IFS= read -r line || [[ -n $line ]]
+        do
+            [[ -z $line ]] && continue
+            [[ $line == \#* ]] && continue
+            key=${line%%=*}
+            value=${line#*=}
+            case $key in
+                '~')   expanded_key="$home_real" ;;
+                '~/'*) expanded_key="${home_real}/${key#'~'/}" ;;
+                *)     expanded_key="$key" ;;
+            esac
+            if [[ $expanded_key == */* ]]
+            then
+                key_basename=$(basename "$expanded_key")
+                key_parent="${expanded_key%/*}"
+                key_dir=$(cd "$key_parent" 2>/dev/null && pwd -P) || key_dir=
+                if [[ -n $key_dir ]]
+                then
+                    expanded_key="${key_dir}/${key_basename}"
+                fi
+            fi
+            if [[ $file_path == "$expanded_key" ]]
+            then
+                printf '%s' "$value"
+                return 0
+            fi
+        done < "$aliases_file"
+    fi
+
     # Try ~/git/ prefix first (existing worktree path)
     local relative="${resolved#${home_real}/git/}"
     if [[ $relative != "$resolved" && -n $relative ]]
@@ -282,8 +339,6 @@ function ntmux3__session_name_from_path() {
     fi
 
     # Try path aliases from config
-    local config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
-    local aliases_file=${config_dir}/ntmux3_path_aliases
     if [[ -r $aliases_file ]]
     then
         local line key value expanded_key
@@ -475,7 +530,10 @@ function ntmux3() {
     ntmux3__open_nonrepo_dir() {
         local dir=$1
         local session_name
-        session_name=$(ntmux3__session_name_from_path "$dir") || true
+        # Use the original file path when the user passed one so that
+        # file-level aliases in ntmux3_path_aliases get a chance to win
+        # over the parent-directory match.
+        session_name=$(ntmux3__session_name_from_path "${target_file:-$dir}") || true
         if [[ -z $session_name ]]
         then
             session_name=$(basename "$dir")

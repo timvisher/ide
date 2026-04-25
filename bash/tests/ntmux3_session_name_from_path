@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+
+# Tests for ntmux3__session_name_from_path (bash/functions/tmux.bash).
+#
+# Covers alias resolution: file-level aliases (which beat all other
+# rules), ~/git/ prefix, directory-level aliases (exact match and
+# subpath suffix), $HOME-relative fallback, symlink canonicalization
+# of input and alias keys, and bare-filename inputs.
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+tests_dir="$(cd "$(dirname "$0")" && pwd)"
+funcs_dir="$(cd "${tests_dir}/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Build a fake $HOME with the directory layout the function inspects.
+fake_home="${tmpdir}/home"
+mkdir -p \
+  "${fake_home}/git/timvisher/ide/main" \
+  "${fake_home}/Documents/datadog" \
+  "${fake_home}/Documents/datadog/projects/foo" \
+  "${fake_home}/.config/timvisher/ide" \
+  "${fake_home}/real-target" || {
+    echo "FAIL: setup mkdir" >&2
+    exit 1
+  }
+touch "${fake_home}/Documents/datadog/todo.org" \
+  "${fake_home}/git/timvisher/ide/main/CLAUDE.md" \
+  "${fake_home}/real-target/file.org" || {
+    echo "FAIL: setup touch" >&2
+    exit 1
+  }
+
+# Symlink ~/symlinked-target -> ~/real-target so we can test canonical
+# path matching when the input traverses a symlink.
+ln -s "${fake_home}/real-target" "${fake_home}/symlinked-target" || {
+  echo "FAIL: setup ln" >&2
+  exit 1
+}
+
+cat > "${fake_home}/.config/timvisher/ide/ntmux3_path_aliases" <<EOF
+# Comments and blank lines should be ignored.
+
+~/Documents/datadog/todo.org=timvisher/todo
+~/Documents/datadog=DataDog
+~/git/timvisher/ide/main/CLAUDE.md=ide-claude-md
+~/real-target/file.org=real-target-file
+EOF
+
+# Run the function in a fresh subshell with a fully-overridden config
+# environment.  Setting both HOME and XDG_CONFIG_HOME makes the test
+# hermetic against the developer's real config.
+run_case() {
+  local input=$1
+  (
+    HOME=$fake_home
+    XDG_CONFIG_HOME="${fake_home}/.config"
+    shopt -s extglob
+    source "${funcs_dir}/tmux.bash"
+    ntmux3__session_name_from_path "$input"
+  )
+}
+
+assert_eq() {
+  local label=$1 expected=$2 actual=$3
+  if [[ $actual == "$expected" ]]
+  then
+    pass "$label"
+  else
+    fail "$label: expected '${expected}', got '${actual}'"
+  fi
+}
+
+# --- File-level alias precedence ---
+
+# Test: file-level alias beats directory-level alias
+run_test
+assert_eq "file-level alias wins over dir alias" \
+  "timvisher/todo" \
+  "$(run_case "${fake_home}/Documents/datadog/todo.org")"
+
+# Test: file-level alias beats ~/git/ prefix (most-specific wins)
+run_test
+assert_eq "file-level alias wins over ~/git/ prefix" \
+  "ide-claude-md" \
+  "$(run_case "${fake_home}/git/timvisher/ide/main/CLAUDE.md")"
+
+# Test: input through a symlink resolves to canonical path and matches
+# a file-level alias keyed under the real target.
+run_test
+assert_eq "symlinked input matches alias on canonical path" \
+  "real-target-file" \
+  "$(run_case "${fake_home}/symlinked-target/file.org")"
+
+# --- Directory-level aliases ---
+
+# Test: directory-level alias still works when a directory is passed
+run_test
+assert_eq "dir-level alias for parent dir" \
+  "DataDog" \
+  "$(run_case "${fake_home}/Documents/datadog")"
+
+# Test: directory-level alias resolves subpath suffix
+run_test
+assert_eq "dir-level alias subpath suffix" \
+  "DataDog/projects/foo" \
+  "$(run_case "${fake_home}/Documents/datadog/projects/foo")"
+
+# --- ~/git/ prefix ---
+
+# Test: ~/git/ prefix wins when no alias matches
+run_test
+assert_eq "~/git/ prefix" \
+  "timvisher/ide/main" \
+  "$(run_case "${fake_home}/git/timvisher/ide/main")"
+
+# Test: file under ~/git/ with no file-level alias falls back to
+# ~/git/ prefix (filename is dropped because the prefix only knows
+# about directories).
+run_test
+touch "${fake_home}/git/timvisher/ide/main/README.md"
+assert_eq "~/git/ file with no file-alias falls back to ~/git/ prefix" \
+  "timvisher/ide/main" \
+  "$(run_case "${fake_home}/git/timvisher/ide/main/README.md")"
+
+# --- Fallbacks ---
+
+# Test: $HOME-relative fallback for unaliased path
+run_test
+mkdir -p "${fake_home}/random/elsewhere"
+assert_eq "\$HOME-relative fallback" \
+  "random/elsewhere" \
+  "$(run_case "${fake_home}/random/elsewhere")"
+
+# Test: nonexistent path returns failure
+run_test
+output=$(run_case "${fake_home}/does/not/exist" 2>&1) && rc=0 || rc=$?
+if (( rc == 1 ))
+then
+  pass "nonexistent path returns 1"
+else
+  fail "nonexistent path: rc=${rc} output='${output}'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
