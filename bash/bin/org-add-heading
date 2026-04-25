@@ -1,25 +1,163 @@
 #!/usr/bin/env bash
 # org-add-heading - Add a new heading to an org file
-# Usage: org-add-heading <file.org> <new-heading> [parent-heading]
 #
-# If parent-heading is provided, adds new heading as a child of that heading.
-# If parent-heading is not provided, adds new heading as a top-level heading at the end.
+# Legacy positional usage (unchanged):
+#   org-add-heading <file.org> <new-heading> [parent-heading]
+#
+# Extended usage with flags:
+#   org-add-heading <file.org> <new-heading> \
+#       [--link='[[file:PATH::*HEADING]]'] \
+#       [--body=- | --body-file=PATH] \
+#       [--tag=NAME ...] \
+#       [--property=KEY=VAL ...]
+#
+# - --link resolves the parent via org-link-search. Only file: links pointing
+#   at the same file as the positional <file> argument are accepted, with a
+#   ::TARGET search component matching org-link-search semantics — *HEADING,
+#   #custom-id, or /regex/. Other link types (id:, custom-id:, etc.) are not
+#   supported.  Mutually exclusive with the positional [parent-heading].
+# - --body=-      reads body content from stdin.
+# - --body-file=PATH reads body content from file. Mutually exclusive with --body.
+# - --tag is repeatable; tags are written inline on the heading line.
+# - --property=KEY=VAL is repeatable; written into a :PROPERTIES: drawer.
 
 set -euo pipefail
 
+usage() {
+  cat >&2 <<'EOF'
+Usage: org-add-heading <file.org> <new-heading> [parent-heading]
+       org-add-heading <file.org> <new-heading> [--link=ORG-LINK]
+                       [--body=- | --body-file=PATH]
+                       [--tag=NAME ...] [--property=KEY=VAL ...]
+
+Examples:
+  org-add-heading todo.org "New Task"
+  org-add-heading todo.org "Subtask" "Parent Task"
+  org-add-heading wiki.org "2026-04-25" \
+      --link='[[file:~/wiki.org::*journal]]' \
+      --body=- --tag=ai_prepped --property=GENERATED-BY=claude
+EOF
+}
+
 if [[ $# -lt 2 ]]
 then
-  echo 'Usage: org-add-heading <file.org> <new-heading> [parent-heading]' >&2
-  echo '' >&2
-  echo 'Examples:' >&2
-  echo '  org-add-heading todo.org "New Task"' >&2
-  echo '  org-add-heading todo.org "Subtask" "Parent Task"' >&2
+  usage
   exit 1
 fi
 
 file="$1"
 new_heading="$2"
-parent_heading="${3:-}"
+shift 2
+
+parent_heading=""
+link_target=""
+body_source=""        # "stdin", "file", or ""
+body_file_path=""
+tags=()
+properties=()
+
+# Require a value for the space-separated form of a flag (e.g. `--link X`).
+# Errors out if $# < 2 (i.e. the flag was the final argument with no value).
+require_value() {
+  local flag="$1"
+  local remaining="$2"
+  if [[ $remaining -lt 2 ]]
+  then
+    echo "Error: flag $flag requires a value" >&2
+    exit 1
+  fi
+}
+
+while [[ $# -gt 0 ]]
+do
+  arg="$1"
+  case "$arg" in
+    --link=*)
+      link_target="${arg#--link=}"
+      ;;
+    --link)
+      require_value --link "$#"
+      shift
+      link_target="$1"
+      ;;
+    --body=-)
+      if [[ -n "$body_source" ]]
+      then
+        echo "Error: --body and --body-file are mutually exclusive" >&2
+        exit 1
+      fi
+      body_source="stdin"
+      ;;
+    --body=*)
+      # Only --body=- is meaningful; reject any other inline value.
+      echo "Error: --body only accepts '-' (stdin); use --body-file=PATH for files" >&2
+      exit 1
+      ;;
+    --body-file=*)
+      if [[ -n "$body_source" ]]
+      then
+        echo "Error: --body and --body-file are mutually exclusive" >&2
+        exit 1
+      fi
+      body_source="file"
+      body_file_path="${arg#--body-file=}"
+      ;;
+    --body-file)
+      if [[ -n "$body_source" ]]
+      then
+        echo "Error: --body and --body-file are mutually exclusive" >&2
+        exit 1
+      fi
+      require_value --body-file "$#"
+      body_source="file"
+      shift
+      body_file_path="$1"
+      ;;
+    --tag=*)
+      tags+=("${arg#--tag=}")
+      ;;
+    --tag)
+      require_value --tag "$#"
+      shift
+      tags+=("$1")
+      ;;
+    --property=*)
+      properties+=("${arg#--property=}")
+      ;;
+    --property)
+      require_value --property "$#"
+      shift
+      properties+=("$1")
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "Error: unknown flag: $arg" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      # Positional parent-heading (legacy).
+      if [[ -n "$parent_heading" ]]
+      then
+        echo "Error: unexpected extra positional argument: $arg" >&2
+        usage
+        exit 1
+      fi
+      parent_heading="$arg"
+      ;;
+  esac
+  shift
+done
+
+# Mutual exclusion: --link vs positional parent-heading.
+if [[ -n "$link_target" && -n "$parent_heading" ]]
+then
+  echo "Error: --link and positional [parent-heading] are mutually exclusive" >&2
+  exit 1
+fi
 
 if [[ ! -f "$file" ]]
 then
@@ -27,26 +165,295 @@ then
   exit 1
 fi
 
+# Validate --link shape:
+#   - must have a ::TARGET search component when it includes a file: prefix
+#   - the resolved file: path must match the positional <file> argument
+# This mirrors the parsing the elisp does (see ELISP_EOF below) but rejects
+# at parse time so the error message is clear.
+if [[ -n "$link_target" ]]
+then
+  # Strip [[..][..]] and [[..]] wrapping if present.
+  link_inner="$link_target"
+  if [[ "$link_inner" =~ ^\[\[(.+)\]\[.+\]\]$ ]]
+  then
+    link_inner="${BASH_REMATCH[1]}"
+  elif [[ "$link_inner" =~ ^\[\[(.+)\]\]$ ]]
+  then
+    link_inner="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$link_inner" == file:* ]]
+  then
+    link_body="${link_inner#file:}"
+    if [[ "$link_body" != *"::"* ]]
+    then
+      echo "Error: --link with a file: prefix requires a ::TARGET search component" >&2
+      echo "       e.g. --link='[[file:${link_body}::*Heading]]'" >&2
+      exit 1
+    fi
+    # Compare resolved absolute paths between the link's file and the positional <file>.
+    link_path="${link_body%%::*}"
+    # Expand ~ manually; bash doesn't expand inside variables.
+    case "$link_path" in
+      "~"|"~/"*)
+        link_path="${HOME}${link_path#~}"
+        ;;
+    esac
+    # Resolve to absolute path without requiring the file to exist beyond what's checked above.
+    link_abs="$(cd "$(dirname "$link_path")" 2>/dev/null && printf '%s/%s\n' "$PWD" "$(basename "$link_path")")"
+    file_abs="$(cd "$(dirname "$file")" 2>/dev/null && printf '%s/%s\n' "$PWD" "$(basename "$file")")"
+    if [[ -z "$link_abs" || -z "$file_abs" || "$link_abs" != "$file_abs" ]]
+    then
+      echo "Error: --link's file (${link_path}) must match the positional <file> argument (${file})" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# Validate property format. We split on the FIRST '=' (KEY=${prop%%=*},
+# VAL=${prop#*=}), so KEY may not contain '=' but VAL may.  Require KEY
+# non-empty.
+for prop in "${properties[@]+"${properties[@]}"}"
+do
+  if [[ "$prop" != *=* ]]
+  then
+    echo "Error: --property must be KEY=VAL: '$prop'" >&2
+    exit 1
+  fi
+  key="${prop%%=*}"
+  if [[ -z "$key" ]]
+  then
+    echo "Error: --property KEY must be non-empty: '$prop'" >&2
+    exit 1
+  fi
+done
+
+# Validate tag format (no colons or whitespace inside).
+for tag in "${tags[@]+"${tags[@]}"}"
+do
+  if [[ -z "$tag" ]]
+  then
+    echo "Error: --tag must be non-empty" >&2
+    exit 1
+  fi
+  if [[ "$tag" == *:* || "$tag" =~ [[:space:]] ]]
+  then
+    echo "Error: --tag must not contain ':' or whitespace: '$tag'" >&2
+    exit 1
+  fi
+done
+
+# Resolve body content into a temp file we can hand to elisp by path.
+# Empty body → empty file (still treated as "no body to insert").
+body_tmp=""
+elisp_tmp=""
+cleanup() {
+  if [[ -n "$body_tmp" && "$body_tmp" != "$body_file_path" && -f "$body_tmp" ]]
+  then
+    rm -f "$body_tmp"
+  fi
+  if [[ -n "$elisp_tmp" && -f "$elisp_tmp" ]]
+  then
+    rm -f "$elisp_tmp"
+  fi
+}
+trap cleanup EXIT
+
+if [[ "$body_source" == "stdin" ]]
+then
+  body_tmp="$(mktemp -t org-add-heading-body.XXXXXX)"
+  cat >"$body_tmp"
+elif [[ "$body_source" == "file" ]]
+then
+  if [[ ! -f "$body_file_path" ]]
+  then
+    echo "Error: --body-file '$body_file_path' not found" >&2
+    exit 1
+  fi
+  if [[ ! -r "$body_file_path" ]]
+  then
+    echo "Error: --body-file '$body_file_path' is not readable" >&2
+    exit 1
+  fi
+  body_tmp="$body_file_path"
+fi
+
+# Legacy path: no --link, no flags-only payload → preserve original behavior.
+# We branch into the legacy elisp only when none of the new features are used,
+# so existing callers see byte-identical behavior.
+legacy_path="false"
+if [[ -z "$link_target" \
+   && -z "$body_source" \
+   && ${#tags[@]} -eq 0 \
+   && ${#properties[@]} -eq 0 ]]
+then
+  legacy_path="true"
+fi
+
+if [[ "$legacy_path" == "true" ]]
+then
+  # User-supplied values reach elisp via environment variables, not via
+  # bash-quoted interpolation into --eval strings. Direct interpolation is a
+  # shell-injection vector (a heading containing a double-quote or backslash
+  # breaks elisp parsing or runs arbitrary code).
+  export ORG_ADD_HEADING_FILE="$file"
+  export ORG_ADD_HEADING_HEADING="$new_heading"
+  export ORG_ADD_HEADING_PARENT="$parent_heading"
+  elisp_tmp="$(mktemp -t org-add-heading-legacy.XXXXXX.el)"
+  cat >"$elisp_tmp" <<'ELISP_EOF'
+(require 'org)
+(let ((file (getenv "ORG_ADD_HEADING_FILE"))
+      (new-heading (getenv "ORG_ADD_HEADING_HEADING"))
+      (parent-heading (or (getenv "ORG_ADD_HEADING_PARENT") "")))
+  (find-file file)
+  (if (string-empty-p parent-heading)
+      ;; Add as top-level heading at end
+      (progn
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))
+        (insert (concat "* " new-heading "\n\n")))
+    ;; Add as child of parent heading
+    (progn
+      (goto-char (point-min))
+      (if (re-search-forward
+           (concat "^\\*+ .*" (regexp-quote parent-heading)) nil t)
+          (let ((parent-level (org-current-level)))
+            (org-end-of-subtree t t)
+            (unless (bolp) (insert "\n"))
+            (insert (make-string (1+ parent-level) ?*)
+                    " " new-heading "\n\n"))
+        (error "Parent heading not found: %s" parent-heading))))
+  (save-buffer))
+ELISP_EOF
+  emacs --batch \
+    --eval "(require 'package)" \
+    --eval "(package-initialize)" \
+    --eval '(load "~/.config/emacs/init.el")' \
+    --load "$elisp_tmp"
+  exit 0
+fi
+
+# Extended path: build elisp that reads structured payload from environment
+# variables and a body file, to avoid shell-escaping arbitrary user content.
+export ORG_ADD_HEADING_FILE="$file"
+export ORG_ADD_HEADING_HEADING="$new_heading"
+export ORG_ADD_HEADING_LINK="$link_target"
+export ORG_ADD_HEADING_PARENT="$parent_heading"
+export ORG_ADD_HEADING_BODY_FILE="${body_tmp:-}"
+# Tags and properties as newline-separated lists.
+ORG_ADD_HEADING_TAGS=""
+for tag in "${tags[@]+"${tags[@]}"}"
+do
+  ORG_ADD_HEADING_TAGS+="${tag}"$'\n'
+done
+export ORG_ADD_HEADING_TAGS
+ORG_ADD_HEADING_PROPS=""
+for prop in "${properties[@]+"${properties[@]}"}"
+do
+  ORG_ADD_HEADING_PROPS+="${prop}"$'\n'
+done
+export ORG_ADD_HEADING_PROPS
+
+# Write the extended-path elisp to a temp file and load via --load. This
+# avoids shell-quoting issues with the elisp's regexes (which contain "\\'"
+# and other tokens that interact badly with bash single-quoted strings).
+elisp_tmp="$(mktemp -t org-add-heading-elisp.XXXXXX.el)"
+cat >"$elisp_tmp" <<'ELISP_EOF'
+(require 'org)
+(require 'ol)
+(let* ((file (getenv "ORG_ADD_HEADING_FILE"))
+       (heading-text (getenv "ORG_ADD_HEADING_HEADING"))
+       (link-target (getenv "ORG_ADD_HEADING_LINK"))
+       (parent-heading (getenv "ORG_ADD_HEADING_PARENT"))
+       (body-file (getenv "ORG_ADD_HEADING_BODY_FILE"))
+       (tags-raw (or (getenv "ORG_ADD_HEADING_TAGS") ""))
+       (props-raw (or (getenv "ORG_ADD_HEADING_PROPS") ""))
+       (tags (split-string tags-raw "\n" t))
+       (props (mapcar
+               (lambda (line)
+                 (let ((eq-pos (string-match "=" line)))
+                   (cons (substring line 0 eq-pos)
+                         (substring line (1+ eq-pos)))))
+               (split-string props-raw "\n" t)))
+       (body (if (and body-file
+                      (not (string-empty-p body-file))
+                      (file-readable-p body-file))
+                 (with-temp-buffer
+                   (insert-file-contents body-file)
+                   (buffer-string))
+               "")))
+  (find-file file)
+  (cond
+   ;; --link path: resolve via org-link-search, walk back to enclosing heading.
+   ((and link-target (not (string-empty-p link-target)))
+    (let* ((link-stripped
+            (cond
+             ;; [[file:PATH::TARGET][LABEL]]
+             ((string-match "\\`\\[\\[\\(.*?\\)\\]\\[.*?\\]\\]\\'" link-target)
+              (match-string 1 link-target))
+             ;; [[file:PATH::TARGET]]
+             ((string-match "\\`\\[\\[\\(.*?\\)\\]\\]\\'" link-target)
+              (match-string 1 link-target))
+             (t link-target)))
+           (search-target
+            (cond
+             ;; file:PATH::TARGET -> open that file, return TARGET to search.
+             ((string-match "\\`file:\\(.*?\\)::\\(.*\\)\\'" link-stripped)
+              (let ((target-file (expand-file-name (match-string 1 link-stripped)))
+                    (target-search (match-string 2 link-stripped)))
+                (find-file target-file)
+                target-search))
+             ;; file:PATH (no ::) -> just open, no search.
+             ((string-match "\\`file:\\(.*\\)\\'" link-stripped)
+              (find-file (expand-file-name (match-string 1 link-stripped)))
+              nil)
+             (t link-stripped))))
+      (when search-target
+        (org-link-search search-target))
+      (org-back-to-heading t)))
+   ;; positional parent-heading path.
+   ((and parent-heading (not (string-empty-p parent-heading)))
+    (goto-char (point-min))
+    (if (re-search-forward
+         (concat "^\\*+ .*" (regexp-quote parent-heading)) nil t)
+        (org-back-to-heading t)
+      (error "Parent heading not found: %s" parent-heading)))
+   ;; No parent: append as top-level.
+   (t
+    (goto-char (point-max))))
+  ;; Insert child (or top-level when no parent).
+  (let* ((at-heading (org-at-heading-p))
+         (parent-level (if at-heading (org-current-level) 0))
+         (new-level (1+ parent-level))
+         (stars (make-string new-level ?*))
+         (tag-str (if tags
+                      (concat " :" (mapconcat (function identity) tags ":") ":")
+                    ""))
+         (heading-line (concat stars " " heading-text tag-str "\n")))
+    (if at-heading
+        (progn
+          (org-end-of-subtree t t)
+          (unless (bolp) (insert "\n")))
+      (unless (bolp) (insert "\n")))
+    (insert heading-line)
+    (when props
+      (insert ":PROPERTIES:\n")
+      (dolist (kv props)
+        (insert (format ":%s: %s\n" (car kv) (cdr kv))))
+      (insert ":END:\n"))
+    (when (and body (not (string-empty-p body)))
+      (insert body)
+      (unless (string-suffix-p "\n" body)
+        (insert "\n")))
+    ;; Append one blank line after the inserted block for visual separation,
+    ;; matching the legacy positional path which always inserted "\n\n" after
+    ;; the heading. Result: file ends with \n\n (or our block is followed by
+    ;; a blank line before the next sibling).
+    (insert "\n"))
+  (save-buffer))
+ELISP_EOF
+
 emacs --batch \
   --eval "(require 'package)" \
   --eval "(package-initialize)" \
   --eval '(load "~/.config/emacs/init.el")' \
-  --eval "(progn
-           (require 'org)
-           (find-file \"$file\")
-           (if (string-empty-p \"$parent_heading\")
-               ;; Add as top-level heading at end
-               (progn
-                 (goto-char (point-max))
-                 (unless (bolp) (insert \"\n\"))
-                 (insert \"* $new_heading\n\n\"))
-             ;; Add as child of parent heading
-             (progn
-               (goto-char (point-min))
-               (if (re-search-forward (concat \"^\\\\*+ .*\" (regexp-quote \"$parent_heading\")) nil t)
-                   (let ((parent-level (org-current-level)))
-                     (org-end-of-subtree t t)
-                     (unless (bolp) (insert \"\n\"))
-                     (insert (make-string (1+ parent-level) ?*) \" $new_heading\n\n\"))
-                 (error \"Parent heading not found: $parent_heading\"))))
-           (save-buffer))"
+  --load "$elisp_tmp"

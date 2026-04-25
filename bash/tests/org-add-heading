@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+
+# Tests for org-add-heading.
+#
+# Most tests exercise the bash argument-parsing layer (fast, no emacs).
+# A handful run actual emacs --batch invocations to validate the legacy
+# regression, trailing-blank-line behavior, and the security fix end-to-end.
+#
+# Set ORG_ADD_HEADING_SKIP_EMACS=1 to skip the emacs-batch tests.
+
+set -euo pipefail
+
+failures=0
+tests=0
+skipped=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+skip() {
+  echo "SKIP: $1"
+  ((skipped++)) || true
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
+script="$bin_dir/org-add-heading"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Helper: stage a fresh org file under $tmpdir and echo its path.
+make_org() {
+  local name="$1"
+  local content="$2"
+  local path="$tmpdir/$name"
+  printf '%s' "$content" >"$path"
+  printf '%s\n' "$path"
+}
+
+# ---------------------------------------------------------------------------
+# Parse-time tests (no emacs invocation)
+# ---------------------------------------------------------------------------
+
+# Test: usage shown when no args
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *"Usage:"* ]]
+then
+  pass "shows usage with no args"
+else
+  fail "no-args did not show usage: $result"
+fi
+
+# Test: usage shown when only file given
+run_test
+result=$("$script" /tmp/x.org 2>&1 || true)
+if [[ $result == *"Usage:"* ]]
+then
+  pass "shows usage with only file arg"
+else
+  fail "single-arg did not show usage: $result"
+fi
+
+# Test: errors on missing file
+run_test
+result=$("$script" /nonexistent/file.org "Heading" 2>&1 || true)
+if [[ $result == *"not found"* ]]
+then
+  pass "errors on missing file"
+else
+  fail "missing file did not error: $result"
+fi
+
+# Test: --link missing value (44r.1.8)
+run_test
+f=$(make_org link-missing.org '* Existing\n')
+result=$("$script" "$f" "H" --link 2>&1 || true)
+if [[ $result == *"--link requires a value"* ]]
+then
+  pass "--link without value errors"
+else
+  fail "--link missing value did not error correctly: $result"
+fi
+
+# Test: --tag missing value (44r.1.8)
+run_test
+result=$("$script" "$f" "H" --tag 2>&1 || true)
+if [[ $result == *"--tag requires a value"* ]]
+then
+  pass "--tag without value errors"
+else
+  fail "--tag missing value did not error correctly: $result"
+fi
+
+# Test: --property missing value (44r.1.8)
+run_test
+result=$("$script" "$f" "H" --property 2>&1 || true)
+if [[ $result == *"--property requires a value"* ]]
+then
+  pass "--property without value errors"
+else
+  fail "--property missing value did not error correctly: $result"
+fi
+
+# Test: --body-file missing value (44r.1.8)
+run_test
+result=$("$script" "$f" "H" --body-file 2>&1 || true)
+if [[ $result == *"--body-file requires a value"* ]]
+then
+  pass "--body-file without value errors"
+else
+  fail "--body-file missing value did not error correctly: $result"
+fi
+
+# Test: --link 'file:PATH' without ::TARGET rejected (44r.1.7)
+run_test
+result=$("$script" "$f" "H" --link="[[file:$f]]" 2>&1 || true)
+if [[ $result == *"requires a ::TARGET"* ]]
+then
+  pass "--link file: without ::TARGET rejected"
+else
+  fail "--link without ::TARGET should have been rejected: $result"
+fi
+
+# Test: --link 'file:OTHER::TARGET' rejected when OTHER != positional file (44r.1.9)
+run_test
+other=$(make_org other.org '* Other\n')
+result=$("$script" "$f" "H" --link="[[file:$other::*Other]]" 2>&1 || true)
+if [[ $result == *"must match the positional"* ]]
+then
+  pass "--link with mismatched file path rejected"
+else
+  fail "--link with OTHER file should have been rejected: $result"
+fi
+
+# Test: --link with matching file accepted at parse time
+# (still reaches emacs; we only check it gets past validation by looking at output;
+#  if emacs is unavailable we'll see a different error than the validation one).
+run_test
+result=$("$script" "$f" "H" --link="[[file:$f::*Existing]]" 2>&1 || true)
+if [[ $result == *"requires a ::TARGET"* || $result == *"must match the positional"* ]]
+then
+  fail "--link with matching file should pass validation: $result"
+else
+  pass "--link with matching file passes validation"
+fi
+
+# Test: --link mutual exclusion with positional parent
+run_test
+result=$("$script" "$f" "H" "Parent" --link="[[file:$f::*X]]" 2>&1 || true)
+if [[ $result == *"mutually exclusive"* ]]
+then
+  pass "--link + positional parent mutually exclusive"
+else
+  fail "--link + parent should be exclusive: $result"
+fi
+
+# Test: --body and --body-file mutual exclusion
+run_test
+echo "body" >"$tmpdir/body.txt"
+result=$(echo "stdin" | "$script" "$f" "H" --body=- --body-file="$tmpdir/body.txt" 2>&1 || true)
+if [[ $result == *"mutually exclusive"* ]]
+then
+  pass "--body and --body-file mutually exclusive"
+else
+  fail "--body + --body-file should be exclusive: $result"
+fi
+
+# Test: --body-file with unreadable file (44r.1.11)
+run_test
+unreadable="$tmpdir/unreadable.txt"
+echo "secret" >"$unreadable"
+chmod 000 "$unreadable"
+result=$("$script" "$f" "H" --body-file="$unreadable" 2>&1 || true)
+chmod 600 "$unreadable"
+if [[ $result == *"not readable"* || $result == *"unreadable"* ]]
+then
+  pass "--body-file unreadable file rejected"
+else
+  fail "--body-file unreadable should error: $result"
+fi
+
+# Test: --body-file with nonexistent file
+run_test
+result=$("$script" "$f" "H" --body-file=/nonexistent/body.txt 2>&1 || true)
+if [[ $result == *"not found"* ]]
+then
+  pass "--body-file nonexistent file rejected"
+else
+  fail "--body-file nonexistent should error: $result"
+fi
+
+# Test: --tag with colon rejected
+run_test
+result=$("$script" "$f" "H" --tag="bad:tag" 2>&1 || true)
+if [[ $result == *"must not contain"* ]]
+then
+  pass "--tag with colon rejected"
+else
+  fail "--tag with colon should error: $result"
+fi
+
+# Test: --tag with whitespace rejected
+run_test
+result=$("$script" "$f" "H" --tag="bad tag" 2>&1 || true)
+if [[ $result == *"must not contain"* ]]
+then
+  pass "--tag with whitespace rejected"
+else
+  fail "--tag with whitespace should error: $result"
+fi
+
+# Test: empty --tag rejected
+run_test
+result=$("$script" "$f" "H" --tag= 2>&1 || true)
+if [[ $result == *"non-empty"* ]]
+then
+  pass "empty --tag rejected"
+else
+  fail "empty --tag should error: $result"
+fi
+
+# Test: --property without = rejected
+run_test
+result=$("$script" "$f" "H" --property=NOEQ 2>&1 || true)
+if [[ $result == *"KEY=VAL"* ]]
+then
+  pass "--property without = rejected"
+else
+  fail "--property without = should error: $result"
+fi
+
+# Test: --property with empty key rejected
+run_test
+result=$("$script" "$f" "H" --property==value 2>&1 || true)
+if [[ $result == *"KEY must be non-empty"* ]]
+then
+  pass "--property with empty key rejected"
+else
+  fail "--property empty key should error: $result"
+fi
+
+# Test: --property value containing = is accepted (split on first =, 44r.1.10)
+# Validation must succeed here; we use --link mismatch to bail out fast without
+# launching emacs.
+run_test
+other_path=$(make_org parse-prop.org '* X\n')
+result=$("$script" "$other_path" "H" --property="K=v=w=x" --link="[[file:$f::*Existing]]" 2>&1 || true)
+# We expect the file-mismatch error from --link, NOT a property error.
+if [[ $result == *"must match the positional"* ]]
+then
+  pass "--property values may contain '=' (split on first '=')"
+else
+  fail "--property=K=v=w=x should validate: got $result"
+fi
+
+# Test: unknown flag rejected
+run_test
+result=$("$script" "$f" "H" --notaflag 2>&1 || true)
+if [[ $result == *"unknown flag"* ]]
+then
+  pass "unknown flag rejected"
+else
+  fail "unknown flag should error: $result"
+fi
+
+# Test: extra positional argument rejected
+run_test
+result=$("$script" "$f" "H" "Parent" "Extra" 2>&1 || true)
+if [[ $result == *"unexpected extra positional"* ]]
+then
+  pass "extra positional argument rejected"
+else
+  fail "extra positional should error: $result"
+fi
+
+# ---------------------------------------------------------------------------
+# Emacs-batch tests
+# ---------------------------------------------------------------------------
+
+if [[ ${ORG_ADD_HEADING_SKIP_EMACS:-0} == 1 ]]
+then
+  skip "emacs-batch tests (ORG_ADD_HEADING_SKIP_EMACS=1)"
+elif ! command -v emacs >/dev/null 2>&1
+then
+  skip "emacs-batch tests (emacs not installed)"
+else
+
+  # Test: legacy positional path appends top-level heading
+  run_test
+  legacy_top=$(make_org legacy-top.org $'* Existing\n')
+  if "$script" "$legacy_top" "New Top" >/dev/null 2>&1 \
+     && grep -q '^\* New Top' "$legacy_top"
+  then
+    pass "legacy: appends top-level heading"
+  else
+    fail "legacy top-level append did not produce expected heading"
+  fi
+
+  # Test: legacy positional path adds child under parent
+  run_test
+  legacy_child=$(make_org legacy-child.org $'* Parent\n')
+  if "$script" "$legacy_child" "Child" "Parent" >/dev/null 2>&1 \
+     && grep -q '^\*\* Child' "$legacy_child"
+  then
+    pass "legacy: adds child under parent"
+  else
+    fail "legacy child add did not produce expected heading"
+  fi
+
+  # Test (44r.1.6): heading with embedded double-quotes and backslashes
+  # is written literally — no shell injection, no elisp parse error.
+  run_test
+  inj=$(make_org injection.org $'* Parent\n')
+  evil='Title with "quotes" and \backslash and ;rm -rf /'
+  if "$script" "$inj" "$evil" "Parent" >/dev/null 2>&1 \
+     && grep -qF "$evil" "$inj"
+  then
+    pass "legacy: special chars in heading written literally (no injection)"
+  else
+    fail "legacy: heading with special chars not preserved"
+  fi
+
+  # Test (44r.1.6): would-be injection payload is treated as literal text.
+  run_test
+  inj2=$(make_org injection2.org $'* Parent\n')
+  evil2='")); (shell-command "echo PWNED > /tmp/org-add-heading-pwned") ;; '
+  rm -f /tmp/org-add-heading-pwned
+  "$script" "$inj2" "$evil2" "Parent" >/dev/null 2>&1 || true
+  if [[ ! -e /tmp/org-add-heading-pwned ]] \
+     && grep -qF "$evil2" "$inj2"
+  then
+    pass "legacy: shell-injection payload neutralized"
+  else
+    fail "legacy: injection payload was executed or heading not preserved"
+    rm -f /tmp/org-add-heading-pwned
+  fi
+
+  # Test: --link with file:PATH::*HEADING (matching positional file)
+  run_test
+  link_ok=$(make_org link-ok.org $'* Anchor\n')
+  if "$script" "$link_ok" "Sibling" --link="[[file:$link_ok::*Anchor]]" >/dev/null 2>&1 \
+     && grep -q '^\*\* Sibling' "$link_ok"
+  then
+    pass "--link file:PATH::*HEADING resolves correctly"
+  else
+    fail "--link file:PATH::*HEADING did not produce expected heading"
+  fi
+
+  # Test: --tag rendering
+  run_test
+  tag_file=$(make_org tags.org $'* Anchor\n')
+  if "$script" "$tag_file" "Tagged" --link="[[file:$tag_file::*Anchor]]" \
+       --tag=foo --tag=bar >/dev/null 2>&1 \
+     && grep -q '^\*\* Tagged :foo:bar:' "$tag_file"
+  then
+    pass "--tag renders inline on heading line"
+  else
+    fail "--tag did not render expected ':foo:bar:'"
+  fi
+
+  # Test: --property rendering
+  run_test
+  prop_file=$(make_org props.org $'* Anchor\n')
+  if "$script" "$prop_file" "Propped" --link="[[file:$prop_file::*Anchor]]" \
+       --property=GENERATED-BY=claude --property=DATE=2026-04-25 >/dev/null 2>&1 \
+     && grep -q ':GENERATED-BY: claude' "$prop_file" \
+     && grep -q ':DATE: 2026-04-25' "$prop_file"
+  then
+    pass "--property renders inside :PROPERTIES: drawer"
+  else
+    fail "--property drawer not rendered correctly"
+  fi
+
+  # Test: --property value with embedded '=' is preserved (44r.1.10)
+  run_test
+  propeq=$(make_org propeq.org $'* Anchor\n')
+  if "$script" "$propeq" "PropEq" --link="[[file:$propeq::*Anchor]]" \
+       --property=URL=https://example.com/?a=1\&b=2 >/dev/null 2>&1 \
+     && grep -q ':URL: https://example.com/?a=1' "$propeq"
+  then
+    pass "--property value containing '=' preserved"
+  else
+    fail "--property value with '=' not preserved"
+  fi
+
+  # Test: --body=- reads from stdin
+  run_test
+  body_stdin=$(make_org body-stdin.org $'* Anchor\n')
+  if printf 'line one\nline two\n' \
+       | "$script" "$body_stdin" "Bodied" --link="[[file:$body_stdin::*Anchor]]" \
+           --body=- >/dev/null 2>&1 \
+     && grep -q '^line one' "$body_stdin" \
+     && grep -q '^line two' "$body_stdin"
+  then
+    pass "--body=- reads from stdin"
+  else
+    fail "--body=- stdin not appended"
+  fi
+
+  # Test: --body-file reads from file
+  run_test
+  body_src="$tmpdir/body-source.txt"
+  printf 'from file body\n' >"$body_src"
+  body_file=$(make_org body-file.org $'* Anchor\n')
+  if "$script" "$body_file" "FromFile" --link="[[file:$body_file::*Anchor]]" \
+       --body-file="$body_src" >/dev/null 2>&1 \
+     && grep -q '^from file body' "$body_file"
+  then
+    pass "--body-file reads from file"
+  else
+    fail "--body-file body not appended"
+  fi
+
+  # Test (44r.1.12): trailing newline behavior — extended path matches legacy.
+  # Both paths produce a file ending with "\n\n" (a final newline followed by
+  # a single blank line) for visual separation between siblings / at EOF.
+  run_test
+  trail=$(make_org trail.org $'* Anchor\n')
+  "$script" "$trail" "Trailing" --link="[[file:$trail::*Anchor]]" >/dev/null 2>&1
+  ext_tail=$(tail -c 2 "$trail" | xxd -p | tr -d '\n')
+  if [[ $ext_tail == "0a0a" ]]
+  then
+    pass "extended path: file ends with \\n\\n"
+  else
+    fail "extended path trailing bytes: expected 0a0a, got $ext_tail"
+  fi
+
+  # Test (44r.1.12): legacy path produces the same trailing \n\n.
+  run_test
+  legacy_trail=$(make_org legacy-trail.org $'* Existing\n')
+  "$script" "$legacy_trail" "After" >/dev/null 2>&1
+  legacy_tail=$(tail -c 2 "$legacy_trail" | xxd -p | tr -d '\n')
+  if [[ $legacy_tail == "0a0a" ]]
+  then
+    pass "legacy path: file ends with \\n\\n"
+  else
+    fail "legacy path trailing bytes: expected 0a0a, got $legacy_tail"
+  fi
+
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed (${skipped} groups skipped)"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
