@@ -1,0 +1,3 @@
+interface:
+  display_name: "Dev CI"
+  short_description: "Run a worktree's local CI hooks via timvisher_dev_ci (hooks ls/run, run-tests)"
