@@ -112,6 +112,25 @@ if [[ $1 == repo && $2 == fork ]]; then
   exit 0
 fi
 
+# --- gh api /repos/<owner>/<repo>/branches/<branch> ---
+# Mock branch existence: known branches return 200, everything else 404.
+# Honor --silent (suppress stdout) the way real `gh api` does.
+if [[ $1 == api && $2 == /repos/*/branches/* ]]; then
+  br_path=${2#/repos/}
+  silent=
+  for arg in "$@"; do
+    [[ $arg == --silent ]] && silent=1
+  done
+  case $br_path in
+    parentorg/parentrepo/branches/main|\
+    myuser/parentrepo/branches/main|\
+    nopush/parentrepo/branches/main)
+      [[ -n $silent ]] || echo '{"name":"main"}'
+      exit 0 ;;
+    *) [[ -n $silent ]] || echo '{"message":"Branch not found"}' >&2; exit 1 ;;
+  esac
+fi
+
 # --- gh api /repos/<owner>/<repo> ---
 if [[ $1 == api && $2 == /repos/* ]]; then
   repo_path=${2#/repos/}
@@ -2013,6 +2032,64 @@ then
   pass "fork rejects malformed input"
 else
   fail "fork malformed: expected nonzero rc + no clone, got rc=${rc} result='${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# should_auto_fork tests
+#
+# Mock gh: nopush/parentrepo is a fork-of-parent that I lack push to.
+# parentorg/parentrepo is a non-fork I lack push to.  Branch "main"
+# exists on each; "feature-x" does not.
+# ---------------------------------------------------------------------------
+
+# Test: triggers when branch missing AND no push rights AND foreign org
+run_test
+should_auto_fork "parentorg/parentrepo/feature-x" && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "should_auto_fork: triggers on missing branch + no push + foreign org"
+else
+  fail "should_auto_fork triggered: expected rc=0, got rc=${rc}"
+fi
+
+# Test: no-op when branch already exists on the named repo
+run_test
+should_auto_fork "parentorg/parentrepo/main" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op when branch exists on the named repo"
+else
+  fail "expected no auto-fork when branch exists, got rc=${rc}"
+fi
+
+# Test: no-op when input org matches gh user (we own it)
+run_test
+should_auto_fork "myuser/parentrepo/feature-x" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op when input org matches gh user"
+else
+  fail "expected no auto-fork on own org, got rc=${rc}"
+fi
+
+# Test: no-op when input is bare org/repo (no branch component)
+run_test
+should_auto_fork "parentorg/parentrepo" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op for bare org/repo (no branch)"
+else
+  fail "expected no auto-fork for org/repo, got rc=${rc}"
+fi
+
+# Test: TIMVISHER_GIT_NO_AUTO_FORK env var disables the feature
+run_test
+TIMVISHER_GIT_NO_AUTO_FORK=1 should_auto_fork "parentorg/parentrepo/feature-x" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: disabled by TIMVISHER_GIT_NO_AUTO_FORK env var"
+else
+  fail "expected env-var disable to suppress auto-fork, got rc=${rc}"
 fi
 
 echo ""
