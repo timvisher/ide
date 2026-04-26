@@ -1109,6 +1109,47 @@ branch_path_for_source() {
   printf '%s;%s' "$branch_dir" "$branch"
 }
 
+# When source belongs to a fork network (its cache has a non-empty
+# x.fork-parent cookie), eagerly ensure that both <parent-org>/<repo>/<trunk>
+# and <fork-org>/<repo>/<trunk> worktrees exist.  Idempotent — does
+# nothing when source is not a fork, when x.fork-parent is missing, or
+# when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set (breaks the recursion when
+# we ensure the trunks themselves).
+#
+# Reads x.fork-parent for the parent spec, derives fork/parent trunks
+# from each cache's origin/HEAD, then calls ensure_worktree for each.
+# Fails soft (warn-only) — the user's requested worktree must succeed
+# even if a sibling trunk creation hits a snag.
+ensure_fork_trunks() {
+  [[ -n ${TIMVISHER_GIT_SKIP_FORK_TRUNKS:-} ]] && return 0
+
+  local source=$1 trunk_cache=$2
+  local fork_parent_file="${trunk_cache}/x.fork-parent"
+  [[ -r $fork_parent_file ]] || return 0
+
+  local parent_spec
+  parent_spec=$(< "$fork_parent_file")
+  parent_spec=${parent_spec%$'\n'}
+  [[ -n $parent_spec ]] || return 0
+
+  local fork_org fork_repo fork_trunk
+  fork_org=$(get_org "$source") || return 0
+  fork_repo=$(get_repo "$source") || return 0
+  fork_trunk=$(get_trunk_branch_name_from_cache "$trunk_cache") || return 0
+
+  local parent_cache parent_trunk
+  parent_cache="${repo_trunks_dir}/${parent_spec}"
+  [[ -d $parent_cache ]] || return 0
+  parent_trunk=$(get_trunk_branch_name_from_cache "$parent_cache") || return 0
+
+  info "%s is part of fork network of %s; ensuring trunk worktrees" "$source" "$parent_spec"
+
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_worktree "${parent_spec}/${parent_trunk}" ||
+    warn "Failed to ensure parent trunk worktree '${parent_spec}/${parent_trunk}'"
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_worktree "${fork_org}/${fork_repo}/${fork_trunk}" ||
+    warn "Failed to ensure fork trunk worktree '${fork_org}/${fork_repo}/${fork_trunk}'"
+}
+
 ensure_worktree() {
   local source=$1
   die_if_git_component "ensure_worktree: source" "$source"
@@ -1264,7 +1305,12 @@ ensure_worktree() {
     else
       exit 1
     fi
-  )
+  ) || return $?
+
+  # Eagerly create sibling trunk worktrees when source is in a fork
+  # network.  Stdout discarded so trunk paths don't pollute the path
+  # ensure_worktree returns.  Recursion guarded inside ensure_fork_trunks.
+  ensure_fork_trunks "$source" "$trunk_cache" >/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
