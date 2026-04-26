@@ -1786,7 +1786,8 @@ PATHS
     Bare `timvisher_dev_ci` (no args):
       - Outside any worktree: runs every dev branch in the registry.
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
-        that worktree (equivalent to `timvisher_dev_ci .`).
+        that worktree's root (resolved via `git rev-parse --show-toplevel`,
+        so subdirs of a worktree work too).
 
 AGENT USAGE
     To run the project's full local CI suite from inside a worktree:

@@ -231,6 +231,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# hooks run: -C flag selects worktree, hook arg comes after
+# ---------------------------------------------------------------------------
+
+run_test
+rm -f "$marker"
+# Run from outside the worktree, point at it via -C. This exercises the
+# arg parser distinguishing -C PATH from hook-name positionals.
+out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run -C "$fake_wt" run-tests.sh 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ -f $marker ]]
+then
+  pass "hooks run -C PATH HOOK runs the named hook in the targeted worktree"
+else
+  fail "hooks run -C: rc=$rc marker_exists=$( [[ -f $marker ]] && echo yes || echo no ) out='$out'"
+fi
+
+run_test
+# -C without an argument should error cleanly (not get parsed as a hook).
+out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run -C 2>&1)
+rc=$?
+if (( rc != 0 )) && [[ $out == *'"code":"dev_ci_hooks_run_missing_C_arg"'* ]]
+then
+  pass "hooks run -C (no arg) emits dev_ci_hooks_run_missing_C_arg"
+else
+  fail "hooks run -C no arg: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
 # run-tests convenience wraps hooks run run-tests.sh
 # ---------------------------------------------------------------------------
 
