@@ -1829,6 +1829,86 @@ else
   fail "expected x.fork-parent unchanged, got: '$(< "$parent_marker")'"
 fi
 
+# ---------------------------------------------------------------------------
+# ensure_fork_trunks tests
+#
+# Tests stub ensure_worktree inside a subshell and capture the spec
+# arguments it would have received.  Real ensure_worktree isn't run —
+# we're verifying the trigger logic, not worktree creation.
+# ---------------------------------------------------------------------------
+
+# Test: ensure_fork_trunks ensures both parent and fork trunks when
+# x.fork-parent is non-empty.
+run_test
+fork_cache_eft=$(preexisting_cache forkuser parentrepo)
+parent_cache_eft=$(preexisting_cache parentorg parentrepo)
+printf '%s' "parentorg/parentrepo" > "$fork_cache_eft/x.fork-parent"
+printf '' > "$parent_cache_eft/x.fork-parent"
+trunk_eft=$(get_trunk_branch_name_from_cache "$fork_cache_eft")
+result=$(
+  ensure_worktree() {
+    printf 'CALL %s SKIP=%s\n' "$1" "${TIMVISHER_GIT_SKIP_FORK_TRUNKS:-unset}"
+  }
+  ensure_fork_trunks "forkuser/parentrepo/feature-branch" "$fork_cache_eft" 2>/dev/null
+)
+expected="CALL parentorg/parentrepo/${trunk_eft} SKIP=1
+CALL forkuser/parentrepo/${trunk_eft} SKIP=1"
+if [[ $result == "$expected" ]]
+then
+  pass "ensure_fork_trunks ensures parent and fork trunks with recursion guard set"
+else
+  fail "expected:\n${expected}\ngot:\n${result}"
+fi
+
+# Test: ensure_fork_trunks is a no-op for a non-fork (empty x.fork-parent)
+run_test
+nonfork_cache_eft=$(preexisting_cache nonforkorg parentrepo)
+printf '' > "$nonfork_cache_eft/x.fork-parent"
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  ensure_fork_trunks "nonforkorg/parentrepo/anything" "$nonfork_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when x.fork-parent is empty (non-fork)"
+else
+  fail "expected no calls, got: '${result}'"
+fi
+
+# Test: ensure_fork_trunks is a no-op when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set
+run_test
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_fork_trunks "forkuser/parentrepo/x" "$fork_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set"
+else
+  fail "expected no calls (guard set), got: '${result}'"
+fi
+
+# Test: ensure_fork_trunks is a no-op when x.fork-parent is missing entirely
+run_test
+unprobed_cache_eft=$(preexisting_cache unprobedorg parentrepo)
+rm -f "$unprobed_cache_eft/x.fork-parent"
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  ensure_fork_trunks "unprobedorg/parentrepo/x" "$unprobed_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when x.fork-parent file is absent"
+else
+  fail "expected no calls (no marker), got: '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
