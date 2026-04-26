@@ -335,6 +335,16 @@ find_pushable_fork() {
   return 1
 }
 
+# Probe GitHub for a repo's parent fork.  Prints the parent spec on
+# stdout (e.g. "gastownhall/beads") if `<spec>` is a fork; prints
+# nothing for non-forks or when `gh` is unavailable / unauthenticated.
+# Always exits 0 — callers treat empty output as "not a fork".
+probe_fork_parent() {
+  local spec=$1
+  command -v gh >/dev/null 2>&1 || return 0
+  command gh api "/repos/${spec}" --jq '.parent.full_name // empty' 2>/dev/null || true
+}
+
 # Safely remove the upstream remote only when no branches track it.
 # In a worktree setup all worktrees share remotes; removing upstream
 # would strip branch.*.remote=upstream from branches in other worktrees.
@@ -610,6 +620,31 @@ ensure_worktrees_not_poisoned_by_bare() {
   done < <(command git -C "$cache_dir" worktree list --porcelain 2>/dev/null)
 }
 
+# Initialize a bare cache repository.  Optional `alternates_objects_dir`
+# (path to another bare repo's objects/) is written into
+# `objects/info/alternates` BEFORE remote-add + fetch, so the initial
+# fetch only downloads objects unique to this repo.  Used by cache_trunk
+# to share object storage across forks of the same upstream.
+init_bare_cache() {
+  local repo_dir=$1 origin_url=$2 alternates_objects_dir=${3:-}
+
+  command git init --bare "$repo_dir" >&2 ||
+    die "init_bare_cache: Unable to init bare cache at ‘${repo_dir}’"
+
+  if [[ -n $alternates_objects_dir ]]
+  then
+    printf '%s\n' "$alternates_objects_dir" > "${repo_dir}/objects/info/alternates" ||
+      die "init_bare_cache: Unable to write alternates for ‘${repo_dir}’"
+  fi
+
+  command git -C "$repo_dir" remote add origin "$origin_url" >&2 ||
+    die "init_bare_cache: Unable to add origin remote for ‘${repo_dir}’"
+  command git -C "$repo_dir" fetch --prune origin >&2 ||
+    die "init_bare_cache: Unable to fetch origin for ‘${repo_dir}’"
+  command git -C "$repo_dir" remote set-head origin -a >&2 ||
+    die "init_bare_cache: Unable to set origin HEAD for ‘${repo_dir}’"
+}
+
 cache_trunk() {
   local source=$1
   local org repo
@@ -662,21 +697,31 @@ cache_trunk() {
       warn "cache_trunk: Unable to update origin/HEAD for ${org_repo}; continuing with stale cache"
   else
     info "${org_repo} is not cached"
-    # Trunk caches are bare repos so there is no working tree to
-    # accidentally touch and `git rev-parse --git-common-dir` returns
-    # the cache dir itself (not a `.git` subdir).  The default --bare
-    # refspec mirrors `refs/heads/*:refs/heads/*`, which is the wrong
-    # shape for downstream code that reads `refs/remotes/origin/*`;
-    # use `init --bare` + `remote add origin` instead to get the
-    # standard `+refs/heads/*:refs/remotes/origin/*` refspec.
-    command git init --bare "$repo_dir" >&2 ||
-      die "cache_trunk: Unable to init bare cache at ‘${repo_dir}’"
-    command git -C "$repo_dir" remote add origin "$clone_source" >&2 ||
-      die "cache_trunk: Unable to add origin remote for ‘${org_repo}’"
-    command git -C "$repo_dir" fetch --prune origin >&2 ||
-      die "cache_trunk: Unable to fetch origin for ‘${org_repo}’"
-    command git -C "$repo_dir" remote set-head origin -a >&2 ||
-      die "cache_trunk: Unable to set origin HEAD for ‘${org_repo}’"
+
+    # Probe whether this is a fork on GitHub.  If so, recursively cache
+    # the parent first and wire this cache's objects/info/alternates to
+    # the parent's objects/, so the initial fetch only downloads
+    # fork-unique objects.  Empty parent_spec means "not a fork" (or
+    # `gh` unavailable) — falls through to a standard self-contained
+    # bare cache.
+    local parent_spec=""
+    parent_spec=$(probe_fork_parent "${org_repo}") || parent_spec=""
+
+    local alternates_objects_dir=""
+    if [[ -n $parent_spec ]]
+    then
+      info "${org_repo} is a fork of ${parent_spec}; sharing objects via alternates"
+      local parent_cache
+      parent_cache=$(cache_trunk "$parent_spec") ||
+        die "cache_trunk: Unable to cache parent ‘${parent_spec}’ for fork ‘${org_repo}’"
+      alternates_objects_dir="${parent_cache}/objects"
+    fi
+
+    init_bare_cache "$repo_dir" "$clone_source" "$alternates_objects_dir"
+
+    # Record the probe result so future cache_trunk runs on this repo
+    # don't have to re-query GitHub.  Empty file = "checked, not a fork".
+    printf '%s' "$parent_spec" > "${repo_dir}/x.fork-parent" || true
 
     maybe_execute_hook "${org}" "${repo}" post-cache
   fi
