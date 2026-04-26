@@ -90,6 +90,28 @@ if [[ $1 == repo && $2 == view ]]; then
   exit 0
 fi
 
+# --- gh api user (for current_gh_user) ---
+if [[ $1 == api && $2 == user ]]; then
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
+    shift
+  done
+  json='{"login":"myuser"}'
+  if [[ -n $jq_expr ]]; then
+    echo "$json" | jq -r "$jq_expr"
+  else
+    echo "$json"
+  fi
+  exit 0
+fi
+
+# --- gh repo fork (for the fork command) ---
+if [[ $1 == repo && $2 == fork ]]; then
+  exit 0
+fi
+
 # --- gh api /repos/<owner>/<repo> ---
 if [[ $1 == api && $2 == /repos/* ]]; then
   repo_path=${2#/repos/}
@@ -1907,6 +1929,90 @@ then
   pass "ensure_fork_trunks no-op when x.fork-parent file is absent"
 else
   fail "expected no calls (no marker), got: '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# fork command tests
+#
+# Mock gh returns user "myuser" and treats myuser/parentrepo as an
+# existing fork of parentorg/parentrepo, so the gh repo fork code path
+# is skipped.  We stub clone in a subshell to capture what the fork
+# command would have delegated to.
+# ---------------------------------------------------------------------------
+
+# Test: current_gh_user returns the mocked login
+run_test
+result=$(current_gh_user)
+if [[ $result == "myuser" ]]
+then
+  pass "current_gh_user returns the configured gh login"
+else
+  fail "current_gh_user: expected 'myuser', got '${result}'"
+fi
+
+# Test: fork delegates to clone with <gh-user>/<repo>/<branch>
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "parentorg/parentrepo/feature-branch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/feature-branch" ]]
+then
+  pass "fork delegates to clone with <gh-user>/<repo>/<branch>"
+else
+  fail "fork branch: expected 'CLONE myuser/parentrepo/feature-branch', got '${result}'"
+fi
+
+# Test: fork without branch defaults to <gh-user>/<repo>
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "parentorg/parentrepo" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo" ]]
+then
+  pass "fork without branch defaults to <gh-user>/<repo>"
+else
+  fail "fork no-branch: expected 'CLONE myuser/parentrepo', got '${result}'"
+fi
+
+# Test: fork on own org skips the fork step and clones directly
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "myuser/parentrepo/anybranch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/anybranch" ]]
+then
+  pass "fork on own org clones directly without forking"
+else
+  fail "fork own-org: expected 'CLONE myuser/parentrepo/anybranch', got '${result}'"
+fi
+
+# Test: fork accepts an absolute path under live_repo_dir
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "$live_dir/parentorg/parentrepo/feature-branch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/feature-branch" ]]
+then
+  pass "fork accepts an absolute path under live_repo_dir"
+else
+  fail "fork live-path: expected 'CLONE myuser/parentrepo/feature-branch', got '${result}'"
+fi
+
+# Test: fork errors out when input lacks org/repo
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "no-slash" 2>/dev/null
+) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "fork rejects malformed input"
+else
+  fail "fork malformed: expected nonzero rc + no clone, got rc=${rc} result='${result}'"
 fi
 
 echo ""
