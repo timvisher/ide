@@ -345,6 +345,17 @@ probe_fork_parent() {
   command gh api "/repos/${spec}" --jq '.parent.full_name // empty' 2>/dev/null || true
 }
 
+# Resolve the current GitHub user via `gh api user`.  Caches the result
+# inside gh's own response cache (--cache 876000h ≈ 100y) since the
+# logged-in user doesn't change between sessions.  Prints login on
+# stdout; returns non-zero if gh isn't installed or auth fails.
+current_gh_user() {
+  command -v gh >/dev/null 2>&1 ||
+    { error "current_gh_user: gh is not installed"; return 1; }
+  command gh api user --cache 876000h --jq .login 2>/dev/null ||
+    { error "current_gh_user: failed to resolve gh user (auth?)"; return 1; }
+}
+
 # Safely remove the upstream remote only when no branches track it.
 # In a worktree setup all worktrees share remotes; removing upstream
 # would strip branch.*.remote=upstream from branches in other worktrees.
@@ -2054,6 +2065,110 @@ clone_stacked() {
   printf '%s' "$target_dir"
 }
 
+# ---------------------------------------------------------------------------
+# Fork: gh repo fork + clone of the resulting <gh-user>/<repo>/<branch>
+#
+# One-shot.  Forks <upstream-org>/<upstream-repo> on GitHub if needed,
+# waits for the fork to become visible, and delegates to clone — which
+# (via ide-19x's auto-trunks behavior) ensures parent trunk + fork
+# trunk worktrees alongside the requested branch worktree.
+#
+# Idempotent:
+#   - If <gh-user>/<upstream-repo> already exists as a fork of the
+#     specified parent, skip the gh repo fork call.
+#   - If a name collision exists (gh-user has a same-named repo that
+#     is not a fork of this parent), fail loudly.
+# ---------------------------------------------------------------------------
+fork_usage() {
+  printf 'Usage: timvisher_git fork <org>/<repo>[/<branch>]\n' >&2
+  printf '       timvisher_git fork ~/git/<org>/<repo>/<branch>\n' >&2
+  return 1
+}
+
+fork() {
+  local input=${1:-}
+  [[ -n $input ]] || { fork_usage; return 1; }
+
+  # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
+  case $input in
+    '~')   input="$HOME" ;;
+    '~/'*) input="${HOME}/${input#'~'/}" ;;
+  esac
+
+  # Strip ~/git/ prefix if present, so absolute paths resolve to the
+  # same shorthand form as direct `org/repo[/branch]` input.
+  local spec
+  spec=$(strip_live_prefix "$input")
+
+  local parent_org parent_repo branch_tail=""
+  case $spec in
+    */*/*)
+      parent_org=$(get_org "$spec") || die "fork: unable to extract org from '%s'" "$spec"
+      parent_repo=$(get_repo "$spec") || die "fork: unable to extract repo from '%s'" "$spec"
+      branch_tail=${spec#*/}
+      branch_tail=${branch_tail#*/}
+      ;;
+    */*)
+      parent_org=$(get_org "$spec") || die "fork: unable to extract org from '%s'" "$spec"
+      parent_repo=$(get_repo "$spec") || die "fork: unable to extract repo from '%s'" "$spec"
+      ;;
+    *)
+      fork_usage
+      return 1
+      ;;
+  esac
+
+  local gh_user
+  gh_user=$(current_gh_user) ||
+    die "fork: unable to determine gh user; ensure 'gh auth login' has been run"
+
+  if [[ $gh_user == "$parent_org" ]]
+  then
+    info "fork: %s/%s is already owned by %s; nothing to fork" \
+      "$parent_org" "$parent_repo" "$gh_user"
+  else
+    local fork_spec="${gh_user}/${parent_repo}"
+    local existing_parent
+    existing_parent=$(probe_fork_parent "$fork_spec") || existing_parent=""
+
+    if [[ -n $existing_parent && $existing_parent != "${parent_org}/${parent_repo}" ]]
+    then
+      die "fork: %s already exists but is a fork of %s, not %s/%s" \
+        "$fork_spec" "$existing_parent" "$parent_org" "$parent_repo"
+    fi
+
+    if command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+    then
+      info "fork: %s already exists; skipping gh repo fork" "$fork_spec"
+    else
+      info "fork: forking %s/%s as %s" "$parent_org" "$parent_repo" "$fork_spec"
+      command gh repo fork "${parent_org}/${parent_repo}" --clone=false >&2 ||
+        die "fork: 'gh repo fork %s/%s' failed" "$parent_org" "$parent_repo"
+
+      # Wait for the new fork to become visible — gh creates forks
+      # asynchronously and the API can return 404 for several seconds
+      # after the fork command returns.
+      local attempts=0
+      until command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+      do
+        ((attempts++))
+        if (( 30 < attempts ))
+        then
+          die "fork: timed out waiting for %s to become visible" "$fork_spec"
+        fi
+        sleep 1
+      done
+    fi
+  fi
+
+  local clone_target="${gh_user}/${parent_repo}"
+  if [[ -n $branch_tail ]]
+  then
+    clone_target="${clone_target}/${branch_tail}"
+  fi
+  clone "$clone_target"
+}
+
 is_branch_ish() {
   local source=${1:-}
 
@@ -2429,6 +2544,7 @@ worktree_gc() {
 
 case $1 in
   clone)        clone "${@:2}" ;;
+  fork)         fork "${@:2}" ;;
   info)         info__cmd "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
   rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
