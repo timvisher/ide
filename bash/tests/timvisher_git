@@ -1746,6 +1746,89 @@ else
   fail "init_bare_cache alternates: expected '${parent_objects}', got '$(cat "$ibc_cache_alt/objects/info/alternates" 2>/dev/null || echo MISSING)'"
 fi
 
+# ---------------------------------------------------------------------------
+# cache_trunk auto-migration of existing fork caches to alternates
+#
+# The mock gh recognizes myuser/parentrepo as a fork of parentorg/parentrepo
+# and parentorg/parentrepo as a non-fork, so we use those for these tests.
+# ---------------------------------------------------------------------------
+
+# Helper: pre-create a bare cache like cache_trunk would have on the
+# pre-3252cca branch (no x.fork-parent, no alternates).  Origin URL is
+# the shared $source_repo so the existing-cache fetch path works.
+preexisting_cache() {
+  local org=$1 repo=$2
+  local dir="$cache_dir/repo_trunks/${org}/${repo}"
+  mkdir -p "$cache_dir/repo_trunks/${org}"
+  "$test_git" init --bare "$dir" >/dev/null 2>&1
+  # Idempotent: only add origin if it isn't already configured (helper
+  # may be called after a prior test left state via cache_trunk's
+  # recursive parent-cache creation).
+  "$test_git" -C "$dir" remote get-url origin >/dev/null 2>&1 ||
+    "$test_git" -C "$dir" remote add origin "$source_repo" 2>/dev/null
+  "$test_git" -C "$dir" fetch origin >/dev/null 2>&1
+  "$test_git" -C "$dir" remote set-head origin -a >/dev/null 2>&1
+  printf '%s\n' "$dir"
+}
+
+# Test: cache_trunk on an existing fork cache (no x.fork-parent yet)
+# writes alternates pointing at the parent's objects.  Both caches
+# pre-exist for this test — the not-cached creation path hardcodes
+# https://github.com/... URLs that aren't reachable in tests.
+run_test
+parent_cache=$(preexisting_cache parentorg parentrepo)
+fork_cache=$(preexisting_cache myuser parentrepo)
+result=$(cache_trunk "myuser/parentrepo" 2>/dev/null)
+alt_file="$fork_cache/objects/info/alternates"
+parent_marker="$fork_cache/x.fork-parent"
+if [[ -f $alt_file ]] &&
+   [[ $(< "$alt_file") == "${parent_cache}/objects" ]] &&
+   [[ -f $parent_marker ]] &&
+   [[ $(< "$parent_marker") == "parentorg/parentrepo" ]]
+then
+  pass "cache_trunk auto-migrates existing fork cache to alternates"
+else
+  fail "auto-migrate fork: alt=$([[ -f $alt_file ]] && cat "$alt_file" || echo MISSING) marker=$([[ -f $parent_marker ]] && cat "$parent_marker" || echo MISSING)"
+fi
+
+# Test: cache_trunk on an existing non-fork cache writes empty
+# x.fork-parent so future calls don't re-probe.  Mock gh returns no
+# parent for parentorg/parentrepo, so the marker should be empty and no
+# alternates should be set.
+run_test
+nonfork_cache=$(preexisting_cache parentorg2 nonfork)
+# parentorg2/nonfork isn't in the mock; mock will exit 1 → empty.
+# Use parentorg/parentrepo which mock recognizes as a non-fork.
+rm -rf "$cache_dir/repo_trunks/parentorg2"
+nonfork_cache=$(preexisting_cache parentorg parentrepo)
+# Remove the auto-created alt/marker files we may have left over from
+# the prior test:
+rm -f "$nonfork_cache/x.fork-parent" "$nonfork_cache/objects/info/alternates"
+result=$(cache_trunk "parentorg/parentrepo" 2>/dev/null)
+alt_file="$nonfork_cache/objects/info/alternates"
+parent_marker="$nonfork_cache/x.fork-parent"
+if [[ -f $parent_marker ]] && [[ -z $(< "$parent_marker") ]] && [[ ! -f $alt_file ]]
+then
+  pass "cache_trunk auto-migrates non-fork: empty marker, no alternates"
+else
+  fail "auto-migrate non-fork: marker=$([[ -f $parent_marker ]] && cat "$parent_marker" || echo MISSING) alt=$([[ -f $alt_file ]] && cat "$alt_file" || echo absent-as-expected)"
+fi
+
+# Test: cache_trunk on an existing cache that ALREADY has x.fork-parent
+# does not re-probe — the cookie's contents are honored as-is.
+run_test
+preserved_cache=$(preexisting_cache altuser parentrepo)
+# Pre-write a sentinel value that no probe could legitimately return.
+printf '%s' "I-was-already-probed" > "$preserved_cache/x.fork-parent"
+result=$(cache_trunk "altuser/parentrepo" 2>/dev/null)
+parent_marker="$preserved_cache/x.fork-parent"
+if [[ $(< "$parent_marker") == "I-was-already-probed" ]]
+then
+  pass "cache_trunk respects existing x.fork-parent cookie (no re-probe)"
+else
+  fail "expected x.fork-parent unchanged, got: '$(< "$parent_marker")'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

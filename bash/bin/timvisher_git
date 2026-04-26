@@ -672,6 +672,36 @@ cache_trunk() {
     migrate_cache_to_bare_if_needed "$repo_dir"
     sweep_bogus_worktrees_in_cache "$repo_dir"
     info "${org_repo} is already cached"
+
+    # First-touch migration: if this cache predates the shared-objects
+    # work and has no x.fork-parent cookie yet, probe the parent and
+    # wire alternates retroactively.  We don't repack ourselves —
+    # `git gc` (auto or manual) hardcodes `repack -d -l`, so the next
+    # natural gc on this bare repo will collapse the local pack against
+    # the alternates and reclaim duplicated objects on its own schedule.
+    if [[ ! -e ${repo_dir}/x.fork-parent ]]
+    then
+      local existing_parent_spec=""
+      existing_parent_spec=$(probe_fork_parent "${org_repo}") || existing_parent_spec=""
+
+      if [[ -n $existing_parent_spec ]]
+      then
+        info "${org_repo} is a fork of ${existing_parent_spec}; wiring alternates retroactively"
+        local existing_parent_cache
+        existing_parent_cache=$(cache_trunk "$existing_parent_spec") ||
+          die "cache_trunk: Unable to cache parent ‘${existing_parent_spec}’ for fork ‘${org_repo}’"
+
+        local alt_file="${repo_dir}/objects/info/alternates"
+        if [[ ! -e $alt_file ]]
+        then
+          printf '%s\n' "${existing_parent_cache}/objects" > "$alt_file" ||
+            die "cache_trunk: Unable to write alternates for ‘${org_repo}’"
+        fi
+      fi
+
+      printf '%s' "$existing_parent_spec" > "${repo_dir}/x.fork-parent" || true
+    fi
+
     local fetch_output
     if fetch_output=$(command git -C "${repo_dir}" fetch --prune origin 2>&1)
     then
