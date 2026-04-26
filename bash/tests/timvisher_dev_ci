@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_dev_ci's agent-facing surface: --help, hooks
+# subcommand, run-tests convenience, and structured error paths.
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
+  { echo "cannot resolve script_dir" >&2; exit 1; }
+script="${script_dir}/bin/timvisher_dev_ci"
+
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Override TIMVISHER_GIT_HOME so all path validation runs against the
+# fixture, not the real ~/git/.  Also override XDG_CONFIG_HOME so the
+# DEV_CI_REGISTRY default lands in a fresh empty dir (avoids reading
+# the real registry).
+export TIMVISHER_GIT_HOME="$tmpdir/git"
+export XDG_CONFIG_HOME="$tmpdir/config"
+mkdir -p "$TIMVISHER_GIT_HOME" "$XDG_CONFIG_HOME"
+
+# ---------------------------------------------------------------------------
+# --help
+# ---------------------------------------------------------------------------
+
+run_test
+out=$("$script" --help 2>&1)
+rc=$?
+if (( rc == 0 )) &&
+   [[ $out == *"NAME"* ]] &&
+   [[ $out == *"timvisher_dev_ci"* ]] &&
+   [[ $out == *"AGENT USAGE"* ]] &&
+   [[ $out == *"HOOK CASCADE"* ]] &&
+   [[ $out == *"run-tests"* ]]
+then
+  pass "--help prints structured help and exits 0"
+else
+  fail "--help: rc=$rc, output missing expected sections"
+fi
+
+run_test
+out=$("$script" -h 2>&1)
+if [[ $out == *"NAME"* ]]
+then
+  pass "-h alias works"
+else
+  fail "-h alias missing NAME"
+fi
+
+run_test
+out=$("$script" help 2>&1)
+if [[ $out == *"NAME"* ]]
+then
+  pass "help alias works"
+else
+  fail "help alias missing NAME"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks: subcommand validation
+# ---------------------------------------------------------------------------
+
+run_test
+out=$("$script" hooks 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"type":"instruction"'* ]] &&
+   [[ $out == *'"level":"error"'* ]] &&
+   [[ $out == *'"code":"dev_ci_hooks_no_subcommand"'* ]]
+then
+  pass "hooks (no subcommand) emits aictl_die JSON"
+else
+  fail "hooks: rc=$rc out='$out'"
+fi
+
+run_test
+out=$("$script" hooks frob 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_hooks_unknown_subcommand"'* ]] &&
+   [[ $out == *"frob"* ]]
+then
+  pass "hooks frob emits dev_ci_hooks_unknown_subcommand JSON"
+else
+  fail "hooks frob: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks ls: path validation (cwd outside TIMVISHER_GIT_HOME)
+# ---------------------------------------------------------------------------
+
+run_test
+out=$(cd "$tmpdir" && "$script" hooks ls 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_path_not_in_git_home"'* ]] &&
+   [[ $out == *"$TIMVISHER_GIT_HOME"* ]]
+then
+  pass "hooks ls outside TIMVISHER_GIT_HOME emits structured error with the right path"
+else
+  fail "hooks ls outside git home: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks ls: explicit non-existent path
+# ---------------------------------------------------------------------------
+
+run_test
+out=$("$script" hooks ls "$tmpdir/does-not-exist" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_path_not_dir"'* ]]
+then
+  pass "hooks ls non-existent path emits dev_ci_path_not_dir"
+else
+  fail "hooks ls non-existent: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks ls: valid worktree under TIMVISHER_GIT_HOME (no resolvable hooks)
+# ---------------------------------------------------------------------------
+
+# Build a fake worktree at $TIMVISHER_GIT_HOME/myorg/myrepo/dev/.  We
+# don't need it to be a real git repo for hooks ls -- just a directory
+# under the right path shape.  Use the canonical (symlink-resolved)
+# path for assertions because the script outputs `pwd -P` form.
+fake_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/myrepo/dev"
+mkdir -p "$fake_wt_unresolved"
+fake_wt=$(cd "$fake_wt_unresolved" && pwd -P)
+
+# fork_network_main_owner calls `timvisher_gh info .forkNetwork.mainOwner`
+# which hits the GitHub API.  Stub it via PATH so the test doesn't make
+# network calls and doesn't depend on `timvisher_gh` being installed.
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "info .forkNetwork.mainOwner") echo "myorg" ;;
+  "info .me") echo "myorg" ;;
+  *) echo "(mock) unhandled: $*" >&2; exit 2 ;;
+esac
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_gh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls 2>&1)
+rc=$?
+if (( rc == 0 )) &&
+   [[ $out == *"hooks for $fake_wt"* ]] &&
+   [[ $out == *"run-tests.sh"* ]] &&
+   [[ $out == *"(none)"* ]]
+then
+  pass "hooks ls in valid worktree lists KNOWN_HOOKS with (none) when unresolved"
+else
+  fail "hooks ls valid worktree: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks run: explicit unresolvable hook
+# ---------------------------------------------------------------------------
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run nope.sh 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_hook_unresolvable"'* ]] &&
+   [[ $out == *"nope.sh"* ]]
+then
+  pass "hooks run nope.sh hard-errors with dev_ci_hook_unresolvable"
+else
+  fail "hooks run nope.sh: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks run: no args, no resolvable hooks
+# ---------------------------------------------------------------------------
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_hooks_run_none_resolved"'* ]]
+then
+  pass "hooks run (no args, nothing resolved) errors with dev_ci_hooks_run_none_resolved"
+else
+  fail "hooks run none resolved: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks run: explicit hook resolves and executes (end-to-end)
+# ---------------------------------------------------------------------------
+
+# Drop a hook into REPO_HOOKS_EXT_DIR (XDG_CONFIG_HOME-rooted) at level
+# 1 (fork-network repo), so it resolves for any branch under myorg/myrepo.
+hook_dir="$XDG_CONFIG_HOME/timvisher/ide/timvisher_dev_ci/hooks/myorg/myrepo"
+mkdir -p "$hook_dir"
+marker="$tmpdir/hook-ran"
+cat > "$hook_dir/run-tests.sh" <<HOOK
+#!/usr/bin/env bash
+echo "ran: \$0"
+touch "$marker"
+HOOK
+chmod +x "$hook_dir/run-tests.sh"
+
+run_test
+rm -f "$marker"
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run run-tests.sh 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ -f $marker ]]
+then
+  pass "hooks run run-tests.sh resolves and executes the hook"
+else
+  fail "hooks run end-to-end: rc=$rc marker_exists=$( [[ -f $marker ]] && echo yes || echo no ) out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# run-tests convenience wraps hooks run run-tests.sh
+# ---------------------------------------------------------------------------
+
+run_test
+rm -f "$marker"
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" run-tests 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ -f $marker ]]
+then
+  pass "run-tests convenience executes the resolved run-tests.sh"
+else
+  fail "run-tests convenience: rc=$rc marker_exists=$( [[ -f $marker ]] && echo yes || echo no ) out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# hooks run: failing hook surfaces dev_ci_hook_failed
+# ---------------------------------------------------------------------------
+
+cat > "$hook_dir/run-tests.sh" <<'HOOK'
+#!/usr/bin/env bash
+echo "intentional failure" >&2
+exit 7
+HOOK
+chmod +x "$hook_dir/run-tests.sh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run run-tests.sh 2>&1)
+rc=$?
+if (( rc != 0 )) && [[ $out == *'"code":"dev_ci_hook_failed"'* ]]
+then
+  pass "failing hook surfaces dev_ci_hook_failed JSON"
+else
+  fail "failing hook: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# Unknown top-level command
+# ---------------------------------------------------------------------------
+
+run_test
+out=$("$script" totally-bogus 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_unknown_command"'* ]] &&
+   [[ $out == *"totally-bogus"* ]]
+then
+  pass "unknown command emits dev_ci_unknown_command JSON"
+else
+  fail "unknown command: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+echo
+echo "Tests: $tests, Failures: $failures"
+exit $failures
