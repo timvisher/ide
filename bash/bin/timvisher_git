@@ -356,6 +356,62 @@ current_gh_user() {
     { error "current_gh_user: failed to resolve gh user (auth?)"; return 1; }
 }
 
+# Detect whether a clone target should trigger an auto-fork: the user
+# typed `<spec-org>/<spec-repo>/<branch>` where the branch does not
+# exist on the named repo and we don't have push rights to it.  In
+# that case the most useful interpretation is "fork the repo and
+# create the branch in my copy" rather than failing or creating a
+# stale local branch tracking nothing.
+#
+# Returns 0 (true) when auto-fork should fire, non-zero otherwise.
+# Bypassed entirely when TIMVISHER_GIT_NO_AUTO_FORK is set.
+should_auto_fork() {
+  [[ -z ${TIMVISHER_GIT_NO_AUTO_FORK:-} ]] || return 1
+
+  local target=$1
+
+  # Only `org/repo/branch` shorthands; URLs and bare org/repo (no
+  # branch) have explicit semantics that don't fit this rewrite.
+  case $target in
+    */*/*) ;;
+    *) return 1 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  local spec_org spec_repo branch
+  spec_org=$(get_org "$target") || return 1
+  spec_repo=$(get_repo "$target") || return 1
+  branch=${target#*/}
+  branch=${branch#*/}
+  [[ -n $branch ]] || return 1
+
+  # Already operating in our own namespace — push rights guaranteed.
+  local gh_user
+  gh_user=$(current_gh_user 2>/dev/null) || return 1
+  [[ $gh_user != "$spec_org" ]] || return 1
+
+  # Branch existence — short cache to avoid hammering the API on
+  # repeated ntmux3 invocations of the same target.  --silent + stdout
+  # redirect both: --silent is the documented gh contract, stdout
+  # redirect is belt-and-suspenders for any wrapper that doesn't honor
+  # --silent.
+  if command gh api "/repos/${spec_org}/${spec_repo}/branches/${branch}" \
+       --cache 60s --silent >/dev/null 2>&1
+  then
+    return 1
+  fi
+
+  # Push rights.
+  local push
+  push=$(command gh api "/repos/${spec_org}/${spec_repo}" \
+           --cache 60s --jq '.permissions.push // false' 2>/dev/null) ||
+    return 1
+  [[ $push != "true" ]] || return 1
+
+  return 0
+}
+
 # Safely remove the upstream remote only when no branches track it.
 # In a worktree setup all worktrees share remotes; removing upstream
 # would strip branch.*.remote=upstream from branches in other worktrees.
@@ -1923,6 +1979,18 @@ clone() {
   # the local-directory checks below.
   if [[ $remote_target != /* ]] && is_branch_ish "$remote_target"
   then
+    # Auto-fork: a branch that doesn't exist on the named repo, on a
+    # repo we can't push to.  The most useful interpretation is "fork
+    # and create the branch in my copy".  Delegates to fork(), which
+    # handles the gh repo fork call and re-enters clone with the
+    # rewritten <gh-user>/<repo>/<branch> target.
+    if should_auto_fork "$remote_target"
+    then
+      info "auto-fork: branch missing on '%s' and no push rights — forking" "$remote_target"
+      fork "$remote_target"
+      return
+    fi
+
     # If the original target was a non-existent path under ~/git/,
     # confirm before creating a new worktree (interactive only).
     if [[ -t 0 && ! -d $resolved_target && $resolved_target == "${live_repo_dir}/"* ]]
