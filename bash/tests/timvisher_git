@@ -1670,6 +1670,82 @@ else
   fail "nonexistent-subpath rewrite: expected 'timvisher/does-not-exist', got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# probe_fork_parent tests
+# ---------------------------------------------------------------------------
+
+# Test: returns parent for a fork (mock gh has myuser/parentrepo as fork
+# of parentorg/parentrepo)
+run_test
+result=$(probe_fork_parent "myuser/parentrepo")
+if [[ $result == "parentorg/parentrepo" ]]
+then
+  pass "probe_fork_parent returns parent spec for a fork"
+else
+  fail "probe_fork_parent fork: expected 'parentorg/parentrepo', got '${result}'"
+fi
+
+# Test: returns empty for a non-fork
+run_test
+result=$(probe_fork_parent "parentorg/parentrepo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty for a non-fork"
+else
+  fail "probe_fork_parent non-fork: expected empty, got '${result}'"
+fi
+
+# Test: returns empty when gh is unavailable (failure must be graceful —
+# cache_trunk falls back to a self-contained cache when probe is empty)
+run_test
+result=$(PATH=/usr/bin:/bin probe_fork_parent "myuser/parentrepo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty when gh is unavailable"
+else
+  fail "probe_fork_parent without gh: expected empty, got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# init_bare_cache tests
+# ---------------------------------------------------------------------------
+
+# Set up a fresh source repo for these tests so we have a real origin URL
+# to fetch from.
+ibc_source="$tmpdir/ibc_source"
+"$test_git" init "$ibc_source" >/dev/null 2>&1
+"$test_git" -C "$ibc_source" -c user.email=t@t -c user.name=T -c core.hooksPath=/dev/null \
+  commit --allow-empty -m initial >/dev/null 2>&1
+
+# Test: init_bare_cache initializes a bare repo with origin remote (no alternates)
+run_test
+ibc_cache="$tmpdir/ibc_cache_plain"
+init_bare_cache "$ibc_cache" "$ibc_source" "" >/dev/null 2>&1
+if [[ -d $ibc_cache ]] &&
+   "$test_git" -C "$ibc_cache" rev-parse --is-bare-repository 2>/dev/null | grep -qx true &&
+   [[ ! -e $ibc_cache/objects/info/alternates ]] &&
+   [[ $("$test_git" -C "$ibc_cache" remote get-url origin) == "$ibc_source" ]]
+then
+  pass "init_bare_cache initializes a bare repo with origin and no alternates"
+else
+  fail "init_bare_cache plain: bare/origin/no-alternates check failed at ${ibc_cache}"
+fi
+
+# Test: init_bare_cache writes alternates BEFORE fetch when given a parent
+# objects path
+run_test
+parent_objects="$tmpdir/some/parent/objects"
+mkdir -p "$parent_objects"
+ibc_cache_alt="$tmpdir/ibc_cache_alt"
+init_bare_cache "$ibc_cache_alt" "$ibc_source" "$parent_objects" >/dev/null 2>&1
+if [[ -f $ibc_cache_alt/objects/info/alternates ]] &&
+   [[ $(< "$ibc_cache_alt/objects/info/alternates") == "$parent_objects" ]]
+then
+  pass "init_bare_cache writes alternates path to objects/info/alternates"
+else
+  fail "init_bare_cache alternates: expected '${parent_objects}', got '$(cat "$ibc_cache_alt/objects/info/alternates" 2>/dev/null || echo MISSING)'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
