@@ -160,7 +160,13 @@ if [[ $1 == api && $2 == /repos/* ]]; then
       json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
       ;;
     *)
-      echo '{"message":"Not Found"}' >&2; exit 1 ;;
+      # Match real gh behavior: error body goes to STDOUT (not stderr),
+      # then exit non-zero.  This is what real `gh api` does for HTTP 4xx
+      # responses.  Catching this correctly is what the probe_fork_parent
+      # 404-leak fix relies on.
+      echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+      exit 1
+      ;;
   esac
   if [[ -n $jq_expr ]]; then
     echo "$json" | jq -r "$jq_expr"
@@ -1745,6 +1751,17 @@ then
   pass "probe_fork_parent returns empty when gh is unavailable"
 else
   fail "probe_fork_parent without gh: expected empty, got '${result}'"
+fi
+
+# Test: returns empty for a non-existent repo (gh writes 404 body to
+# STDOUT and exits non-zero — must NOT leak that body as the parent).
+run_test
+result=$(probe_fork_parent "definitely-not/a-real-repo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty for a 404 (doesn't leak error body)"
+else
+  fail "probe_fork_parent 404: expected empty, got '${result}'"
 fi
 
 # ---------------------------------------------------------------------------
