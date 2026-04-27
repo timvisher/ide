@@ -4,7 +4,11 @@ on getActiveTabUrl()
 		display dialog msg
 		error msg
 	end if
-	tell application "Vivaldi" to get URL of active tab of front window
+	tell application "Vivaldi"
+		set jsf to (POSIX path of (path to home folder) & "/git/ide/AppleScript/Script Libraries/timvisher Browser.getActiveTabURL.js")
+		set js to (read (open for access jsf))
+		execute active tab of front window javascript js
+	end tell
 end getActiveTabUrl
 
 -- getActiveTabUrl()
