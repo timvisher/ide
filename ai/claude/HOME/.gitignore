@@ -1,1 +1,6 @@
+# ~/.config/git/gitignore globally ignores `.claude` (and CLAUDE.md
+# etc.) so per-clone Claude state doesn't leak into commits. This
+# clone hosts the shared, repo-tracked Claude config under
+# ai/claude/HOME/.claude/, so re-include the directory here. The inner
+# .gitignore narrows what's actually tracked (settings.json + hooks/).
 !/.claude/

@@ -24,6 +24,14 @@ then
   cur=$(pwd -P 2>/dev/null) || cur=
   while [[ -n $cur && $cur != / ]]
   do
+    # Invariant: cur stays at or under toplevel_real. If symlinks or
+    # other oddities push pwd outside the toplevel tree, abort rather
+    # than walk to /.
+    case $cur in
+      "$toplevel_real"|"$toplevel_real"/*) ;;
+      *) break ;;
+    esac
+
     if [[ -d "$cur/.beads" ]]
     then
       beads_dir="$cur/.beads"

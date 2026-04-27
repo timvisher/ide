@@ -1,1 +1,7 @@
+# Parent .gitignore re-included this `.claude/` directory against the
+# global `.claude` ignore. Once a directory is re-included, the global
+# pattern still matches files inside it as residual; explicitly negate
+# the pieces we actually track. hooks/ is tracked by directory rule
+# in git-ls-files so no extra entry needed here, but settings.json
+# requires its own negation since it's a file directly under .claude/.
 !/settings.json

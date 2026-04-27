@@ -37,6 +37,11 @@ echo "fake-bd $*"
 MOCK
 chmod +x "$tmpdir/fake-bd"
 
+# Permission probe uses absolute /usr/bin/stat (BSD form `-f '%Lp'`).
+# Tim's PATH puts coreutils gnubin first, so a bare `stat` resolves to
+# GNU stat which doesn't accept `-f '%Lp'`. macOS-only test suite, so
+# the hardcoded path is acceptable here.
+
 # --- Test 1: chmods .beads from 0755 to 0700 inside a repo ---
 run_test
 mkdir -p "$tmpdir/repo1/.beads"
