@@ -330,7 +330,7 @@ gh_pr() {
   if [[ -r pr.md.url ]]
   then
     info ''pr.md.url' already exists. Opening'
-    open -a 'Google Chrome'
+    osascript -e 'tell script "timvisher Browser" to activate()'
     open "$(< pr.md.url)"
     return
   fi
@@ -438,7 +438,7 @@ resolve_pr_url() {
 
   if [[ -z $url ]]
   then
-    url=$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window' 2>/dev/null) || true
+    url=$(osascript -e 'tell script "timvisher Browser" to getActiveTabURL()' 2>/dev/null) || true
   fi
 
   if ! [[ $url == *github*/pull/?* ]]

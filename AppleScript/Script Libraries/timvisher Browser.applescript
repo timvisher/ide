@@ -1,5 +1,9 @@
 property currentBrowser : "Vivaldi"
 
+on activate()
+  tell application (currentBrowser of script "timvisher Browser") to activate
+end doActivate
+
 on getActiveTabUrl()
 	tell script (currentBrowser of script "timvisher Browser") to getActiveTabUrl()
 end getActiveTabUrl
