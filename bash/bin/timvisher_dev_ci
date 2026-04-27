@@ -79,13 +79,15 @@ REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/timvisher_
 BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli)
 
 # Single source of truth for hook names recognised by `hooks ls` and
-# the "run all" form of `hooks run`.  Adding a new hook?  Add it here
-# and the help text below.
+# the "run all" form of `hooks run`. Order matters: `hooks run` (no
+# args) executes hooks in array order, so pre-* MUST precede the base
+# hook of the same name. Adding a new hook? Add it here AND in the
+# help text below.
 KNOWN_HOOKS=(
-    run-tests.sh
-    post-integrate.sh
     pre-run-tests.sh
+    run-tests.sh
     pre-post-integrate.sh
+    post-integrate.sh
 )
 
 # ---------------------------------------------------------------------------
@@ -1593,6 +1595,16 @@ resolve_worktree_path() {
             --code "dev_ci_path_unreadable" \
             --message "Cannot resolve '${path}'"
 
+    # Belt-and-suspenders: aictl_die exits today, so reaching this
+    # check with empty $resolved shouldn't happen. But the codebase
+    # could grow a non-exiting aictl variant, and an empty $resolved
+    # would silently fall through the prefix check below since "" !=
+    # "${git_base}*" is true. Trip explicitly instead.
+    [[ -n $resolved ]] ||
+        aictl_die \
+            --code "dev_ci_path_unreadable" \
+            --message "pwd -P returned empty for '${path}'"
+
     local git_base
     git_base=$(canonical_git_home)
     if [[ $resolved != "${git_base}"* ]]
@@ -1644,6 +1656,17 @@ cmd_hooks_run() {
     while (( 0 < $# ))
     do
         case $1 in
+            --)
+                # End-of-flags marker — everything after this is hook
+                # names. Defensive against a future hook accidentally
+                # named `-C` or starting with a hyphen.
+                shift
+                while (( 0 < $# ))
+                do
+                    hook_args+=("$1")
+                    shift
+                done
+                ;;
             -C)
                 if [[ $# -lt 2 ]]
                 then
@@ -1770,6 +1793,7 @@ SYNOPSIS
     # Direct hook invocation in the controlling TTY (no tmux, no nested agent):
     timvisher_dev_ci hooks ls [PATH]                     # list resolved hooks
     timvisher_dev_ci hooks run [HOOK ...] [-C PATH]      # run hooks (all known if HOOK omitted)
+    timvisher_dev_ci hooks run [-C PATH] -- [HOOK ...]   # `--` ends flags before hook names
     timvisher_dev_ci run-tests [-C PATH]                 # convenience for: hooks run run-tests.sh
 
     # Misc:
