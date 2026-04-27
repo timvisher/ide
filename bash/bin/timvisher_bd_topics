@@ -283,6 +283,33 @@ read_current_topic() {
   printf '%s' "$topic_rel"
 }
 
+# Walk up from CWD within topics_root to find the closest directory
+# whose .beads is a real beads init (not just a redirect). Prints the
+# topic-relative path and returns 0 if found; returns 1 otherwise.
+find_topic_rel_for_cwd() {
+  local cwd
+  cwd=$(pwd -P 2>/dev/null) || return 1
+
+  case $cwd in
+    "$topics_root_real")    return 1 ;;
+    "$topics_root_real"/*)  ;;
+    *)                      return 1 ;;
+  esac
+
+  local cur=$cwd
+  while [[ $cur != "$topics_root_real" && -n $cur && $cur != / ]]
+  do
+    if [[ -d "$cur/.beads" && ! -f "$cur/.beads/redirect" ]]
+    then
+      printf '%s' "${cur#"$topics_root_real"/}"
+      return 0
+    fi
+    cur=$(dirname "$cur")
+  done
+
+  return 1
+}
+
 list_deactivated_topics_older_than_days() {
   local base_dir=$1
   local days=$2
@@ -599,6 +626,15 @@ case $cmd in
     fi
     ;;
   current)
+    # When CWD is inside a topic directory, return that topic without
+    # consulting the project-root state. Otherwise fall back to the
+    # topic.txt the user last `set` for the surrounding repo.
+    if topic_rel=$(find_topic_rel_for_cwd) && [[ -n $topic_rel ]]
+    then
+      printf '%s\n' "$topic_rel"
+      exit 0
+    fi
+
     repo_root=$(require_project_root) || exit 1
 
     state_dir=$(migrate_state_dir "$repo_root")
@@ -649,10 +685,16 @@ case $cmd in
       then
         shift
       fi
+      # Run bd from inside the topic dir so its dolt-server lookup
+      # (which is CWD-anchored) connects to the right embeddeddolt
+      # server. Setting BEADS_DIR alone leaves config & data pointing
+      # at different topics — `where` reports the named topic but
+      # `list` returns issues from whichever server is running for
+      # CWD's .beads.
       beads_dir="$topic_abs/.beads"
       if [[ -d $beads_dir ]]
       then
-        BEADS_DIR="$beads_dir" bd "$@"
+        (cd "$topic_abs" && BEADS_DIR="$beads_dir" bd "$@")
         exit $?
       fi
 

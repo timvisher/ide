@@ -234,6 +234,47 @@ else
   fail "mv dual-call: result='${result}'"
 fi
 
+# Test: `current` returns the topic dir CWD lives in, even when the
+# surrounding repo has a topic.txt pointing somewhere else. Mirrors the
+# real-world setup where the topics root is itself a git repo and the
+# repo's last-set topic shadows the topic the user is actually in.
+run_test
+mkdir -p "$tmpdir/topics/Incidents/100/.beads"
+: > "$tmpdir/topics/Incidents/100/.beads/beads.db"
+git -C "$tmpdir/topics" init -q 2>/dev/null
+mkdir -p "$tmpdir/topics/.timvisher_bd_topics"
+printf 'wrong/topic\n' > "$tmpdir/topics/.timvisher_bd_topics/topic.txt"
+result=$(cd "$tmpdir/topics/Incidents/100" && run_cli current 2>&1)
+if [[ $result == "Incidents/100" ]]
+then
+  pass "current returns the topic dir CWD is in, not the repo's topic.txt"
+else
+  fail "expected 'Incidents/100', got '${result}'"
+fi
+
+# Test: `current` walks up from CWD to find the closest topic dir.
+run_test
+mkdir -p "$tmpdir/topics/Incidents/100/sub/dir"
+result=$(cd "$tmpdir/topics/Incidents/100/sub/dir" && run_cli current 2>&1)
+if [[ $result == "Incidents/100" ]]
+then
+  pass "current walks up to the closest topic dir"
+else
+  fail "expected 'Incidents/100' from nested CWD, got '${result}'"
+fi
+
+# Test: `current` from a non-topic dir under topics root falls back to
+# the surrounding repo's topic.txt.
+run_test
+mkdir -p "$tmpdir/topics/no-beads-here"
+result=$(cd "$tmpdir/topics/no-beads-here" && run_cli current 2>&1)
+if [[ $result == "wrong/topic" ]]
+then
+  pass "current falls back to repo's topic.txt when CWD has no topic ancestor"
+else
+  fail "expected 'wrong/topic' fallback, got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
