@@ -162,6 +162,230 @@ assert_passes no-stalling-stop.sh \
   "We could rebase the commit, or revert it." \
   "no-stalling: passes 'rebase the commit, or revert'"
 
+# ---------------------------------------------------------------------------
+# worktree-lock-pretool.sh + worktree-lock-sessionend.sh
+# ---------------------------------------------------------------------------
+#
+# These hooks are not pattern-based — they manage filesystem locks
+# under ~/.claude/locks/<slug>/ keyed by session_id. Each test gets a
+# fresh temp git worktree and a clean lockdir so cases don't bleed.
+# Lockdirs go under $tmpdir (not the real $HOME) by overriding HOME
+# for the hook invocation.
+
+# Use a sandboxed HOME so tests never touch the user's real lockdir.
+# The repo's git wrapper sources $HOME/.functions/logging.bash, so the
+# test HOME has to expose that path or the wrapper bails before the
+# hook ever sees the input. Symlink the user's real .functions in.
+wlock_home="$tmpdir/home"
+mkdir -p "$wlock_home/.claude/locks"
+[[ -d $HOME/.functions ]] && ln -sf "$HOME/.functions" "$wlock_home/.functions"
+
+wlock_slug() { printf '%s' "${1//\//-}"; }
+wlock_lockdir() { printf '%s/.claude/locks/%s' "$wlock_home" "$(wlock_slug "$1")"; }
+
+wlock_init_worktree() {
+  # Initializes a worktree at the given path and prints its
+  # canonical-path form. macOS $TMPDIR resolves through /private/...,
+  # and `git rev-parse --show-toplevel` returns the resolved form, so
+  # the hook's lock slug derives from the resolved path. Tests must
+  # use the same form when computing expected lockdirs.
+  local wt=$1
+  rm -rf -- "$wt"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  touch "$wt/transcript.jsonl"
+  ( cd "$wt" && pwd -P )
+}
+
+wlock_input() {
+  local sess=$1 tp=$2 tool=$3 path=$4 key=${5:-file_path}
+  if [[ -z $path ]]
+  then
+    jq -nc --arg s "$sess" --arg tp "$tp" --arg t "$tool" \
+      '{session_id:$s, transcript_path:$tp, tool_name:$t, tool_input:{}}'
+  else
+    jq -nc --arg s "$sess" --arg tp "$tp" --arg t "$tool" \
+      --arg p "$path" --arg k "$key" \
+      '{session_id:$s, transcript_path:$tp, tool_name:$t,
+        tool_input: {($k): $p}}'
+  fi
+}
+
+wlock_run_pre() { HOME="$wlock_home" "${hooks_dir}/worktree-lock-pretool.sh"; }
+wlock_run_end() { HOME="$wlock_home" "${hooks_dir}/worktree-lock-sessionend.sh"; }
+
+WT_A=$(wlock_init_worktree "$tmpdir/wt-A")
+WT_B=$(wlock_init_worktree "$tmpdir/wt-B")
+LOCK_A="$(wlock_lockdir "$WT_A")"
+LOCK_B="$(wlock_lockdir "$WT_B")"
+
+# T1: fresh acquire — empty stdout, owner.json names sess-A.
+run_test
+out=$(printf '%s' "$(wlock_input sess-A "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ -e "$LOCK_A/active/owner.json" ]] \
+  && [[ $(jq -r .session_id "$LOCK_A/active/owner.json") == sess-A ]]
+then
+  pass "wlock-pre: fresh Edit acquires; owner=sess-A"
+else
+  fail "wlock-pre: fresh acquire — out='$out' owner=$(cat "$LOCK_A/active/owner.json" 2>/dev/null)"
+fi
+
+# T2: reentrant by same session — silent allow.
+run_test
+out=$(printf '%s' "$(wlock_input sess-A "$WT_A/transcript.jsonl" Write "$WT_A/g.txt")" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_A/active/owner.json") == sess-A ]]
+then
+  pass "wlock-pre: reentrant by sess-A"
+else
+  fail "wlock-pre: reentrant — expected silent, got '$out'"
+fi
+
+# T3: contention by other session, owner live → deny JSON.
+run_test
+out=$(printf '%s' "$(wlock_input sess-B "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre)
+if printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+then
+  pass "wlock-pre: contention denies sess-B"
+else
+  fail "wlock-pre: contention — expected deny JSON, got '$out'"
+fi
+
+# T4: stale transcript → other session reclaims.
+run_test
+touch -d '2020-01-01' "$WT_A/transcript.jsonl"
+out=$(printf '%s' "$(wlock_input sess-B "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_A/active/owner.json") == sess-B ]]
+then
+  pass "wlock-pre: sess-B reclaims stale-transcript lock"
+else
+  fail "wlock-pre: stale reclaim — out='$out' owner=$(jq -r .session_id "$LOCK_A/active/owner.json" 2>/dev/null)"
+fi
+
+# T5: missing transcript → reclaim.
+run_test
+touch "$WT_A/transcript.jsonl"
+printf '%s' "$(wlock_input sess-B "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre >/dev/null  # ensure sess-B holds
+rm -f "$WT_A/transcript.jsonl"
+out=$(printf '%s' "$(wlock_input sess-A "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_A/active/owner.json") == sess-A ]]
+then
+  pass "wlock-pre: sess-A reclaims missing-transcript lock"
+else
+  fail "wlock-pre: missing-transcript reclaim — owner=$(jq -r .session_id "$LOCK_A/active/owner.json" 2>/dev/null)"
+fi
+
+# T6: cross-worktree — Edit anchored on file's worktree, not cwd's.
+run_test
+touch "$WT_A/transcript.jsonl"
+out=$(printf '%s' "$(wlock_input sess-C "$WT_A/transcript.jsonl" Edit "$WT_B/f.txt")" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ -e "$LOCK_B/active/owner.json" ]] \
+  && [[ $(jq -r .session_id "$LOCK_B/active/owner.json") == sess-C ]]
+then
+  pass "wlock-pre: cross-worktree Edit locks target's worktree"
+else
+  fail "wlock-pre: cross-worktree — expected lock on WT_B; got out='$out' owner=$(jq -r .session_id "$LOCK_B/active/owner.json" 2>/dev/null)"
+fi
+
+# T7: NotebookEdit anchors on tool_input.notebook_path.
+run_test
+WT_NB=$(wlock_init_worktree "$tmpdir/wt-nb")
+LOCK_NB="$(wlock_lockdir "$WT_NB")"
+out=$(printf '%s' "$(wlock_input sess-D "$WT_NB/transcript.jsonl" NotebookEdit "$WT_NB/x.ipynb" notebook_path)" | wlock_run_pre)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_NB/active/owner.json") == sess-D ]]
+then
+  pass "wlock-pre: NotebookEdit anchors on notebook_path"
+else
+  fail "wlock-pre: NotebookEdit — owner=$(jq -r .session_id "$LOCK_NB/active/owner.json" 2>/dev/null)"
+fi
+
+# T8: outside-repo target — no lock attempted.
+run_test
+WT_OUT="$tmpdir/not-a-repo"
+mkdir -p "$WT_OUT"
+LOCK_OUT="$(wlock_lockdir "$WT_OUT")"
+out=$(printf '%s' "$(wlock_input sess-E "$WT_A/transcript.jsonl" Edit "$WT_OUT/orphan.txt")" | wlock_run_pre)
+if [[ -z $out ]] && [[ ! -e "$LOCK_OUT/active" ]]
+then
+  pass "wlock-pre: outside-repo target no-ops"
+else
+  fail "wlock-pre: outside-repo — out='$out' lock=$(ls "$LOCK_OUT/active" 2>/dev/null)"
+fi
+
+# T9: missing tool_input.file_path → no-op.
+run_test
+out=$(printf '%s' "$(wlock_input sess-F "$WT_A/transcript.jsonl" Edit '')" | wlock_run_pre)
+if [[ -z $out ]]
+then
+  pass "wlock-pre: missing file_path no-ops"
+else
+  fail "wlock-pre: missing file_path — got '$out'"
+fi
+
+# T10: unmatched tool name (Read) → no-op even when matcher fired.
+run_test
+out=$(printf '%s' "$(wlock_input sess-G "$WT_A/transcript.jsonl" Read "$WT_A/f.txt")" | wlock_run_pre)
+if [[ -z $out ]]
+then
+  pass "wlock-pre: non-mutating tool name no-ops"
+else
+  fail "wlock-pre: Read tool — got '$out'"
+fi
+
+# T11: SessionEnd by non-owner — lock untouched.
+run_test
+# Reset: sess-A holds WT_A.
+rm -rf -- "$LOCK_A/active"
+printf '%s' "$(wlock_input sess-A "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre >/dev/null
+end_in=$(jq -nc '{session_id: "sess-not-owner"}')
+printf '%s' "$end_in" | wlock_run_end
+if [[ -e "$LOCK_A/active/owner.json" ]] \
+  && [[ $(jq -r .session_id "$LOCK_A/active/owner.json") == sess-A ]]
+then
+  pass "wlock-end: non-owner SessionEnd is a no-op"
+else
+  fail "wlock-end: non-owner SessionEnd evicted owner"
+fi
+
+# T12: SessionEnd by owner — releases.
+run_test
+end_in=$(jq -nc '{session_id: "sess-A"}')
+printf '%s' "$end_in" | wlock_run_end
+if [[ ! -e "$LOCK_A/active" ]]
+then
+  pass "wlock-end: owner SessionEnd releases the lock"
+else
+  fail "wlock-end: owner SessionEnd left active/ behind"
+fi
+
+# T13: SessionEnd scans every lockdir — one session can hold multiple.
+run_test
+# Reset both lockdirs so sess-X starts from a clean slate; previous
+# tests may have left WT_B owned by another session.
+rm -rf -- "$LOCK_A/active" "$LOCK_B/active"
+printf '%s' "$(wlock_input sess-X "$WT_A/transcript.jsonl" Edit "$WT_A/f.txt")" | wlock_run_pre >/dev/null
+printf '%s' "$(wlock_input sess-X "$WT_A/transcript.jsonl" Edit "$WT_B/f.txt")" | wlock_run_pre >/dev/null
+if [[ ! -e "$LOCK_A/active/owner.json" ]] || [[ ! -e "$LOCK_B/active/owner.json" ]] \
+  || [[ $(jq -r .session_id "$LOCK_A/active/owner.json") != sess-X ]] \
+  || [[ $(jq -r .session_id "$LOCK_B/active/owner.json") != sess-X ]]
+then
+  fail "wlock-end: setup — sess-X did not acquire both worktrees"
+else
+  end_in=$(jq -nc '{session_id: "sess-X"}')
+  printf '%s' "$end_in" | wlock_run_end
+  if [[ ! -e "$LOCK_A/active" ]] && [[ ! -e "$LOCK_B/active" ]]
+  then
+    pass "wlock-end: owner SessionEnd releases all held worktrees"
+  else
+    fail "wlock-end: multi-worktree release left $(ls -d "$LOCK_A/active" "$LOCK_B/active" 2>/dev/null)"
+  fi
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
