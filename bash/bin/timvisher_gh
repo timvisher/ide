@@ -351,7 +351,7 @@ gh_pr() {
   command git push -v origin HEAD ||
     die 'Unable to git push'
 
-  open -a 'Google Chrome'
+  osascript -e 'tell script "timvisher Browser" to activate()'
 
   local pr_url
   pr_url=$(
@@ -400,7 +400,7 @@ gh_issue() {
   if [[ -r issue.md.url ]]
   then
     info ''issue.md.url' already exists. Opening'
-    open -a 'Google Chrome'
+    osascript -e 'tell script "timvisher Browser" to activate()'
     open "$(< issue.md.url)"
     return
   fi
@@ -408,7 +408,7 @@ gh_issue() {
   [[ -r issue.md ]] ||
     die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
 
-  open -a 'Google Chrome'
+  osascript -e 'tell script "timvisher Browser" to activate()'
 
   local issue_url
   issue_url=$(
@@ -438,7 +438,7 @@ resolve_pr_url() {
 
   if [[ -z $url ]]
   then
-    url=$(osascript -e 'tell script "timvisher Browser" to getActiveTabURL()' 2>/dev/null) || true
+    url=$(osascript -e 'tell script "timvisher Browser" to getActiveTabUrl()' 2>/dev/null) || true
   fi
 
   if ! [[ $url == *github*/pull/?* ]]
