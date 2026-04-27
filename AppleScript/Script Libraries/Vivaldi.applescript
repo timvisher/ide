@@ -4,9 +4,9 @@ on getActiveTabUrl()
 		display dialog msg
 		error msg
 	end if
+	set jsf to (POSIX path of (path to home folder) & "bin/browser_js/active-tab-url.js")
+	set js to (read POSIX file jsf)
 	tell application "Vivaldi"
-		set jsf to (POSIX path of (path to home folder) & "/git/ide/AppleScript/Script Libraries/timvisher Browser.getActiveTabURL.js")
-		set js to (read (open for access jsf))
 		execute active tab of front window javascript js
 	end tell
 end getActiveTabUrl

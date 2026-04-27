@@ -1,8 +1,8 @@
 property currentBrowser : "Vivaldi"
 
 on activate()
-  tell application (currentBrowser of script "timvisher Browser") to activate
-end doActivate
+	tell application (currentBrowser of script "timvisher Browser") to activate
+end activate
 
 on getActiveTabUrl()
 	tell script (currentBrowser of script "timvisher Browser") to getActiveTabUrl()
@@ -20,7 +20,7 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 	tell script (currentBrowser of script "timvisher Browser") to makeNewProfile2 given profileIdentifier:profileIdentifier, URL:urlArg
 end makeNewProfile2
 
-makeNewProfileWindow("")
+--makeNewProfileWindow("")
 
 on getTabWithUrl(u)
 	tell script (currentBrowser of script "timvisher Browser") to getTabWithUrl(u)
