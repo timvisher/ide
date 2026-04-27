@@ -4,7 +4,11 @@ on getActiveTabUrl()
 		display dialog msg
 		error msg
 	end if
-	tell application "Vivaldi" to get URL of active tab of front window
+	tell application "Vivaldi"
+		set jsf to (POSIX path of (path to home folder) & "/git/ide/AppleScript/Script Libraries/timvisher Browser.getActiveTabURL.js")
+		set js to (read (open for access jsf))
+		execute active tab of front window javascript js
+	end tell
 end getActiveTabUrl
 
 -- getActiveTabUrl()
@@ -59,7 +63,7 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 	delay 1
 end makeNewProfile2
 
-makeNewProfileWindow("")
+--makeNewProfileWindow("")
 --makeNewProfile2 given profileIdentifier:""
 --makeNewProfile2 given profileIdentifier:"Personal"
 -- The following doesn't work because AppleScript. When a handler uses given you must pass at least one argument using given to get any of the defaults

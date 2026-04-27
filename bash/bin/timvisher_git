@@ -335,6 +335,106 @@ find_pushable_fork() {
   return 1
 }
 
+# Probe GitHub for a repo's parent fork.  Prints the parent spec on
+# stdout (e.g. "gastownhall/beads") if `<spec>` is a fork; prints
+# nothing for non-forks, when `gh` is unavailable / unauthenticated,
+# or when the repo doesn't exist.  Always exits 0 — callers treat
+# empty output as "not a fork or unknown".
+#
+# `gh api` writes the response body to stdout even on HTTP 4xx (with a
+# non-zero exit code), so we must capture both and only emit stdout
+# when gh exited successfully.  Without this guard, a 404 lookup would
+# leak the error JSON ('{"message":"Not Found",...}') into the caller's
+# downstream logic.
+probe_fork_parent() {
+  local spec=$1
+  command -v gh >/dev/null 2>&1 || return 0
+
+  local out rc
+  out=$(command gh api "/repos/${spec}" --jq '.parent.full_name // empty' 2>/dev/null)
+  rc=$?
+  (( rc == 0 )) || return 0
+  printf '%s' "$out"
+}
+
+# Resolve the current GitHub user via `gh api user`.  Caches the result
+# inside gh's own response cache (--cache 876000h ≈ 100y) since the
+# logged-in user doesn't change between sessions.  Prints login on
+# stdout; returns non-zero if gh isn't installed or auth fails.
+#
+# Captures stdout separately so a 4xx error body (which gh writes to
+# stdout, not stderr) doesn't leak as a faux "login" to the caller.
+current_gh_user() {
+  command -v gh >/dev/null 2>&1 ||
+    { error "current_gh_user: gh is not installed"; return 1; }
+
+  local out rc
+  out=$(command gh api user --cache 876000h --jq .login 2>/dev/null)
+  rc=$?
+  if (( rc != 0 ))
+  then
+    error "current_gh_user: failed to resolve gh user (auth?)"
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# Detect whether a clone target should trigger an auto-fork: the user
+# typed `<spec-org>/<spec-repo>/<branch>` where the branch does not
+# exist on the named repo and we don't have push rights to it.  In
+# that case the most useful interpretation is "fork the repo and
+# create the branch in my copy" rather than failing or creating a
+# stale local branch tracking nothing.
+#
+# Returns 0 (true) when auto-fork should fire, non-zero otherwise.
+# Bypassed entirely when TIMVISHER_GIT_NO_AUTO_FORK is set.
+should_auto_fork() {
+  [[ -z ${TIMVISHER_GIT_NO_AUTO_FORK:-} ]] || return 1
+
+  local target=$1
+
+  # Only `org/repo/branch` shorthands; URLs and bare org/repo (no
+  # branch) have explicit semantics that don't fit this rewrite.
+  case $target in
+    */*/*) ;;
+    *) return 1 ;;
+  esac
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  local spec_org spec_repo branch
+  spec_org=$(get_org "$target") || return 1
+  spec_repo=$(get_repo "$target") || return 1
+  branch=${target#*/}
+  branch=${branch#*/}
+  [[ -n $branch ]] || return 1
+
+  # Already operating in our own namespace — push rights guaranteed.
+  local gh_user
+  gh_user=$(current_gh_user 2>/dev/null) || return 1
+  [[ $gh_user != "$spec_org" ]] || return 1
+
+  # Branch existence — short cache to avoid hammering the API on
+  # repeated ntmux3 invocations of the same target.  --silent + stdout
+  # redirect both: --silent is the documented gh contract, stdout
+  # redirect is belt-and-suspenders for any wrapper that doesn't honor
+  # --silent.
+  if command gh api "/repos/${spec_org}/${spec_repo}/branches/${branch}" \
+       --cache 60s --silent >/dev/null 2>&1
+  then
+    return 1
+  fi
+
+  # Push rights.
+  local push
+  push=$(command gh api "/repos/${spec_org}/${spec_repo}" \
+           --cache 60s --jq '.permissions.push // false' 2>/dev/null) ||
+    return 1
+  [[ $push != "true" ]] || return 1
+
+  return 0
+}
+
 # Safely remove the upstream remote only when no branches track it.
 # In a worktree setup all worktrees share remotes; removing upstream
 # would strip branch.*.remote=upstream from branches in other worktrees.
@@ -610,6 +710,31 @@ ensure_worktrees_not_poisoned_by_bare() {
   done < <(command git -C "$cache_dir" worktree list --porcelain 2>/dev/null)
 }
 
+# Initialize a bare cache repository.  Optional `alternates_objects_dir`
+# (path to another bare repo's objects/) is written into
+# `objects/info/alternates` BEFORE remote-add + fetch, so the initial
+# fetch only downloads objects unique to this repo.  Used by cache_trunk
+# to share object storage across forks of the same upstream.
+init_bare_cache() {
+  local repo_dir=$1 origin_url=$2 alternates_objects_dir=${3:-}
+
+  command git init --bare "$repo_dir" >&2 ||
+    die "init_bare_cache: Unable to init bare cache at ‘${repo_dir}’"
+
+  if [[ -n $alternates_objects_dir ]]
+  then
+    printf '%s\n' "$alternates_objects_dir" > "${repo_dir}/objects/info/alternates" ||
+      die "init_bare_cache: Unable to write alternates for ‘${repo_dir}’"
+  fi
+
+  command git -C "$repo_dir" remote add origin "$origin_url" >&2 ||
+    die "init_bare_cache: Unable to add origin remote for ‘${repo_dir}’"
+  command git -C "$repo_dir" fetch --prune origin >&2 ||
+    die "init_bare_cache: Unable to fetch origin for ‘${repo_dir}’"
+  command git -C "$repo_dir" remote set-head origin -a >&2 ||
+    die "init_bare_cache: Unable to set origin HEAD for ‘${repo_dir}’"
+}
+
 cache_trunk() {
   local source=$1
   local org repo
@@ -637,6 +762,36 @@ cache_trunk() {
     migrate_cache_to_bare_if_needed "$repo_dir"
     sweep_bogus_worktrees_in_cache "$repo_dir"
     info "${org_repo} is already cached"
+
+    # First-touch migration: if this cache predates the shared-objects
+    # work and has no x.fork-parent cookie yet, probe the parent and
+    # wire alternates retroactively.  We don't repack ourselves —
+    # `git gc` (auto or manual) hardcodes `repack -d -l`, so the next
+    # natural gc on this bare repo will collapse the local pack against
+    # the alternates and reclaim duplicated objects on its own schedule.
+    if [[ ! -e ${repo_dir}/x.fork-parent ]]
+    then
+      local existing_parent_spec=""
+      existing_parent_spec=$(probe_fork_parent "${org_repo}") || existing_parent_spec=""
+
+      if [[ -n $existing_parent_spec ]]
+      then
+        info "${org_repo} is a fork of ${existing_parent_spec}; wiring alternates retroactively"
+        local existing_parent_cache
+        existing_parent_cache=$(cache_trunk "$existing_parent_spec") ||
+          die "cache_trunk: Unable to cache parent ‘${existing_parent_spec}’ for fork ‘${org_repo}’"
+
+        local alt_file="${repo_dir}/objects/info/alternates"
+        if [[ ! -e $alt_file ]]
+        then
+          printf '%s\n' "${existing_parent_cache}/objects" > "$alt_file" ||
+            die "cache_trunk: Unable to write alternates for ‘${org_repo}’"
+        fi
+      fi
+
+      printf '%s' "$existing_parent_spec" > "${repo_dir}/x.fork-parent" || true
+    fi
+
     local fetch_output
     if fetch_output=$(command git -C "${repo_dir}" fetch --prune origin 2>&1)
     then
@@ -662,21 +817,31 @@ cache_trunk() {
       warn "cache_trunk: Unable to update origin/HEAD for ${org_repo}; continuing with stale cache"
   else
     info "${org_repo} is not cached"
-    # Trunk caches are bare repos so there is no working tree to
-    # accidentally touch and `git rev-parse --git-common-dir` returns
-    # the cache dir itself (not a `.git` subdir).  The default --bare
-    # refspec mirrors `refs/heads/*:refs/heads/*`, which is the wrong
-    # shape for downstream code that reads `refs/remotes/origin/*`;
-    # use `init --bare` + `remote add origin` instead to get the
-    # standard `+refs/heads/*:refs/remotes/origin/*` refspec.
-    command git init --bare "$repo_dir" >&2 ||
-      die "cache_trunk: Unable to init bare cache at ‘${repo_dir}’"
-    command git -C "$repo_dir" remote add origin "$clone_source" >&2 ||
-      die "cache_trunk: Unable to add origin remote for ‘${org_repo}’"
-    command git -C "$repo_dir" fetch --prune origin >&2 ||
-      die "cache_trunk: Unable to fetch origin for ‘${org_repo}’"
-    command git -C "$repo_dir" remote set-head origin -a >&2 ||
-      die "cache_trunk: Unable to set origin HEAD for ‘${org_repo}’"
+
+    # Probe whether this is a fork on GitHub.  If so, recursively cache
+    # the parent first and wire this cache's objects/info/alternates to
+    # the parent's objects/, so the initial fetch only downloads
+    # fork-unique objects.  Empty parent_spec means "not a fork" (or
+    # `gh` unavailable) — falls through to a standard self-contained
+    # bare cache.
+    local parent_spec=""
+    parent_spec=$(probe_fork_parent "${org_repo}") || parent_spec=""
+
+    local alternates_objects_dir=""
+    if [[ -n $parent_spec ]]
+    then
+      info "${org_repo} is a fork of ${parent_spec}; sharing objects via alternates"
+      local parent_cache
+      parent_cache=$(cache_trunk "$parent_spec") ||
+        die "cache_trunk: Unable to cache parent ‘${parent_spec}’ for fork ‘${org_repo}’"
+      alternates_objects_dir="${parent_cache}/objects"
+    fi
+
+    init_bare_cache "$repo_dir" "$clone_source" "$alternates_objects_dir"
+
+    # Record the probe result so future cache_trunk runs on this repo
+    # don't have to re-query GitHub.  Empty file = "checked, not a fork".
+    printf '%s' "$parent_spec" > "${repo_dir}/x.fork-parent" || true
 
     maybe_execute_hook "${org}" "${repo}" post-cache
   fi
@@ -1034,6 +1199,47 @@ branch_path_for_source() {
   printf '%s;%s' "$branch_dir" "$branch"
 }
 
+# When source belongs to a fork network (its cache has a non-empty
+# x.fork-parent cookie), eagerly ensure that both <parent-org>/<repo>/<trunk>
+# and <fork-org>/<repo>/<trunk> worktrees exist.  Idempotent — does
+# nothing when source is not a fork, when x.fork-parent is missing, or
+# when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set (breaks the recursion when
+# we ensure the trunks themselves).
+#
+# Reads x.fork-parent for the parent spec, derives fork/parent trunks
+# from each cache's origin/HEAD, then calls ensure_worktree for each.
+# Fails soft (warn-only) — the user's requested worktree must succeed
+# even if a sibling trunk creation hits a snag.
+ensure_fork_trunks() {
+  [[ -n ${TIMVISHER_GIT_SKIP_FORK_TRUNKS:-} ]] && return 0
+
+  local source=$1 trunk_cache=$2
+  local fork_parent_file="${trunk_cache}/x.fork-parent"
+  [[ -r $fork_parent_file ]] || return 0
+
+  local parent_spec
+  parent_spec=$(< "$fork_parent_file")
+  parent_spec=${parent_spec%$'\n'}
+  [[ -n $parent_spec ]] || return 0
+
+  local fork_org fork_repo fork_trunk
+  fork_org=$(get_org "$source") || return 0
+  fork_repo=$(get_repo "$source") || return 0
+  fork_trunk=$(get_trunk_branch_name_from_cache "$trunk_cache") || return 0
+
+  local parent_cache parent_trunk
+  parent_cache="${repo_trunks_dir}/${parent_spec}"
+  [[ -d $parent_cache ]] || return 0
+  parent_trunk=$(get_trunk_branch_name_from_cache "$parent_cache") || return 0
+
+  info "%s is part of fork network of %s; ensuring trunk worktrees" "$source" "$parent_spec"
+
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_worktree "${parent_spec}/${parent_trunk}" ||
+    warn "Failed to ensure parent trunk worktree '${parent_spec}/${parent_trunk}'"
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_worktree "${fork_org}/${fork_repo}/${fork_trunk}" ||
+    warn "Failed to ensure fork trunk worktree '${fork_org}/${fork_repo}/${fork_trunk}'"
+}
+
 ensure_worktree() {
   local source=$1
   die_if_git_component "ensure_worktree: source" "$source"
@@ -1189,7 +1395,12 @@ ensure_worktree() {
     else
       exit 1
     fi
-  )
+  ) || return $?
+
+  # Eagerly create sibling trunk worktrees when source is in a fork
+  # network.  Stdout discarded so trunk paths don't pollute the path
+  # ensure_worktree returns.  Recursion guarded inside ensure_fork_trunks.
+  ensure_fork_trunks "$source" "$trunk_cache" >/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -1791,6 +2002,18 @@ clone() {
   # the local-directory checks below.
   if [[ $remote_target != /* ]] && is_branch_ish "$remote_target"
   then
+    # Auto-fork: a branch that doesn't exist on the named repo, on a
+    # repo we can't push to.  The most useful interpretation is "fork
+    # and create the branch in my copy".  Delegates to fork(), which
+    # handles the gh repo fork call and re-enters clone with the
+    # rewritten <gh-user>/<repo>/<branch> target.
+    if should_auto_fork "$remote_target"
+    then
+      info "auto-fork: branch missing on '%s' and no push rights — forking" "$remote_target"
+      fork "$remote_target"
+      return
+    fi
+
     # If the original target was a non-existent path under ~/git/,
     # confirm before creating a new worktree (interactive only).
     if [[ -t 0 && ! -d $resolved_target && $resolved_target == "${live_repo_dir}/"* ]]
@@ -1931,6 +2154,110 @@ clone_stacked() {
   fi
 
   printf '%s' "$target_dir"
+}
+
+# ---------------------------------------------------------------------------
+# Fork: gh repo fork + clone of the resulting <gh-user>/<repo>/<branch>
+#
+# One-shot.  Forks <upstream-org>/<upstream-repo> on GitHub if needed,
+# waits for the fork to become visible, and delegates to clone — which
+# (via ide-19x's auto-trunks behavior) ensures parent trunk + fork
+# trunk worktrees alongside the requested branch worktree.
+#
+# Idempotent:
+#   - If <gh-user>/<upstream-repo> already exists as a fork of the
+#     specified parent, skip the gh repo fork call.
+#   - If a name collision exists (gh-user has a same-named repo that
+#     is not a fork of this parent), fail loudly.
+# ---------------------------------------------------------------------------
+fork_usage() {
+  printf 'Usage: timvisher_git fork <org>/<repo>[/<branch>]\n' >&2
+  printf '       timvisher_git fork ~/git/<org>/<repo>/<branch>\n' >&2
+  return 1
+}
+
+fork() {
+  local input=${1:-}
+  [[ -n $input ]] || { fork_usage; return 1; }
+
+  # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
+  case $input in
+    '~')   input="$HOME" ;;
+    '~/'*) input="${HOME}/${input#'~'/}" ;;
+  esac
+
+  # Strip ~/git/ prefix if present, so absolute paths resolve to the
+  # same shorthand form as direct `org/repo[/branch]` input.
+  local spec
+  spec=$(strip_live_prefix "$input")
+
+  local parent_org parent_repo branch_tail=""
+  case $spec in
+    */*/*)
+      parent_org=$(get_org "$spec") || die "fork: unable to extract org from '%s'" "$spec"
+      parent_repo=$(get_repo "$spec") || die "fork: unable to extract repo from '%s'" "$spec"
+      branch_tail=${spec#*/}
+      branch_tail=${branch_tail#*/}
+      ;;
+    */*)
+      parent_org=$(get_org "$spec") || die "fork: unable to extract org from '%s'" "$spec"
+      parent_repo=$(get_repo "$spec") || die "fork: unable to extract repo from '%s'" "$spec"
+      ;;
+    *)
+      fork_usage
+      return 1
+      ;;
+  esac
+
+  local gh_user
+  gh_user=$(current_gh_user) ||
+    die "fork: unable to determine gh user; ensure 'gh auth login' has been run"
+
+  if [[ $gh_user == "$parent_org" ]]
+  then
+    info "fork: %s/%s is already owned by %s; nothing to fork" \
+      "$parent_org" "$parent_repo" "$gh_user"
+  else
+    local fork_spec="${gh_user}/${parent_repo}"
+    local existing_parent
+    existing_parent=$(probe_fork_parent "$fork_spec") || existing_parent=""
+
+    if [[ -n $existing_parent && $existing_parent != "${parent_org}/${parent_repo}" ]]
+    then
+      die "fork: %s already exists but is a fork of %s, not %s/%s" \
+        "$fork_spec" "$existing_parent" "$parent_org" "$parent_repo"
+    fi
+
+    if command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+    then
+      info "fork: %s already exists; skipping gh repo fork" "$fork_spec"
+    else
+      info "fork: forking %s/%s as %s" "$parent_org" "$parent_repo" "$fork_spec"
+      command gh repo fork "${parent_org}/${parent_repo}" --clone=false >&2 ||
+        die "fork: 'gh repo fork %s/%s' failed" "$parent_org" "$parent_repo"
+
+      # Wait for the new fork to become visible — gh creates forks
+      # asynchronously and the API can return 404 for several seconds
+      # after the fork command returns.
+      local attempts=0
+      until command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+      do
+        ((attempts++))
+        if (( 30 < attempts ))
+        then
+          die "fork: timed out waiting for %s to become visible" "$fork_spec"
+        fi
+        sleep 1
+      done
+    fi
+  fi
+
+  local clone_target="${gh_user}/${parent_repo}"
+  if [[ -n $branch_tail ]]
+  then
+    clone_target="${clone_target}/${branch_tail}"
+  fi
+  clone "$clone_target"
 }
 
 is_branch_ish() {
@@ -2308,6 +2635,7 @@ worktree_gc() {
 
 case $1 in
   clone)        clone "${@:2}" ;;
+  fork)         fork "${@:2}" ;;
   info)         info__cmd "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
   rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;

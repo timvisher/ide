@@ -90,6 +90,47 @@ if [[ $1 == repo && $2 == view ]]; then
   exit 0
 fi
 
+# --- gh api user (for current_gh_user) ---
+if [[ $1 == api && $2 == user ]]; then
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
+    shift
+  done
+  json='{"login":"myuser"}'
+  if [[ -n $jq_expr ]]; then
+    echo "$json" | jq -r "$jq_expr"
+  else
+    echo "$json"
+  fi
+  exit 0
+fi
+
+# --- gh repo fork (for the fork command) ---
+if [[ $1 == repo && $2 == fork ]]; then
+  exit 0
+fi
+
+# --- gh api /repos/<owner>/<repo>/branches/<branch> ---
+# Mock branch existence: known branches return 200, everything else 404.
+# Honor --silent (suppress stdout) the way real `gh api` does.
+if [[ $1 == api && $2 == /repos/*/branches/* ]]; then
+  br_path=${2#/repos/}
+  silent=
+  for arg in "$@"; do
+    [[ $arg == --silent ]] && silent=1
+  done
+  case $br_path in
+    parentorg/parentrepo/branches/main|\
+    myuser/parentrepo/branches/main|\
+    nopush/parentrepo/branches/main)
+      [[ -n $silent ]] || echo '{"name":"main"}'
+      exit 0 ;;
+    *) [[ -n $silent ]] || echo '{"message":"Branch not found"}' >&2; exit 1 ;;
+  esac
+fi
+
 # --- gh api /repos/<owner>/<repo> ---
 if [[ $1 == api && $2 == /repos/* ]]; then
   repo_path=${2#/repos/}
@@ -119,7 +160,13 @@ if [[ $1 == api && $2 == /repos/* ]]; then
       json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
       ;;
     *)
-      echo '{"message":"Not Found"}' >&2; exit 1 ;;
+      # Match real gh behavior: error body goes to STDOUT (not stderr),
+      # then exit non-zero.  This is what real `gh api` does for HTTP 4xx
+      # responses.  Catching this correctly is what the probe_fork_parent
+      # 404-leak fix relies on.
+      echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+      exit 1
+      ;;
   esac
   if [[ -n $jq_expr ]]; then
     echo "$json" | jq -r "$jq_expr"
@@ -1668,6 +1715,398 @@ then
   pass "maybe_rewrite_trunk_subpath still rewrites nonexistent subpaths"
 else
   fail "nonexistent-subpath rewrite: expected 'timvisher/does-not-exist', got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# probe_fork_parent tests
+# ---------------------------------------------------------------------------
+
+# Test: returns parent for a fork (mock gh has myuser/parentrepo as fork
+# of parentorg/parentrepo)
+run_test
+result=$(probe_fork_parent "myuser/parentrepo")
+if [[ $result == "parentorg/parentrepo" ]]
+then
+  pass "probe_fork_parent returns parent spec for a fork"
+else
+  fail "probe_fork_parent fork: expected 'parentorg/parentrepo', got '${result}'"
+fi
+
+# Test: returns empty for a non-fork
+run_test
+result=$(probe_fork_parent "parentorg/parentrepo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty for a non-fork"
+else
+  fail "probe_fork_parent non-fork: expected empty, got '${result}'"
+fi
+
+# Test: returns empty when gh is unavailable (failure must be graceful —
+# cache_trunk falls back to a self-contained cache when probe is empty)
+run_test
+result=$(PATH=/usr/bin:/bin probe_fork_parent "myuser/parentrepo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty when gh is unavailable"
+else
+  fail "probe_fork_parent without gh: expected empty, got '${result}'"
+fi
+
+# Test: returns empty for a non-existent repo (gh writes 404 body to
+# STDOUT and exits non-zero — must NOT leak that body as the parent).
+run_test
+result=$(probe_fork_parent "definitely-not/a-real-repo")
+if [[ -z $result ]]
+then
+  pass "probe_fork_parent returns empty for a 404 (doesn't leak error body)"
+else
+  fail "probe_fork_parent 404: expected empty, got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# init_bare_cache tests
+# ---------------------------------------------------------------------------
+
+# Set up a fresh source repo for these tests so we have a real origin URL
+# to fetch from.
+ibc_source="$tmpdir/ibc_source"
+"$test_git" init "$ibc_source" >/dev/null 2>&1
+"$test_git" -C "$ibc_source" -c user.email=t@t -c user.name=T -c core.hooksPath=/dev/null \
+  commit --allow-empty -m initial >/dev/null 2>&1
+
+# Test: init_bare_cache initializes a bare repo with origin remote (no alternates)
+run_test
+ibc_cache="$tmpdir/ibc_cache_plain"
+init_bare_cache "$ibc_cache" "$ibc_source" "" >/dev/null 2>&1
+if [[ -d $ibc_cache ]] &&
+   "$test_git" -C "$ibc_cache" rev-parse --is-bare-repository 2>/dev/null | grep -qx true &&
+   [[ ! -e $ibc_cache/objects/info/alternates ]] &&
+   [[ $("$test_git" -C "$ibc_cache" remote get-url origin) == "$ibc_source" ]]
+then
+  pass "init_bare_cache initializes a bare repo with origin and no alternates"
+else
+  fail "init_bare_cache plain: bare/origin/no-alternates check failed at ${ibc_cache}"
+fi
+
+# Test: init_bare_cache writes alternates BEFORE fetch when given a parent
+# objects path
+run_test
+parent_objects="$tmpdir/some/parent/objects"
+mkdir -p "$parent_objects"
+ibc_cache_alt="$tmpdir/ibc_cache_alt"
+init_bare_cache "$ibc_cache_alt" "$ibc_source" "$parent_objects" >/dev/null 2>&1
+if [[ -f $ibc_cache_alt/objects/info/alternates ]] &&
+   [[ $(< "$ibc_cache_alt/objects/info/alternates") == "$parent_objects" ]]
+then
+  pass "init_bare_cache writes alternates path to objects/info/alternates"
+else
+  fail "init_bare_cache alternates: expected '${parent_objects}', got '$(cat "$ibc_cache_alt/objects/info/alternates" 2>/dev/null || echo MISSING)'"
+fi
+
+# ---------------------------------------------------------------------------
+# cache_trunk auto-migration of existing fork caches to alternates
+#
+# The mock gh recognizes myuser/parentrepo as a fork of parentorg/parentrepo
+# and parentorg/parentrepo as a non-fork, so we use those for these tests.
+# ---------------------------------------------------------------------------
+
+# Helper: pre-create a bare cache like cache_trunk would have on the
+# pre-3252cca branch (no x.fork-parent, no alternates).  Origin URL is
+# the shared $source_repo so the existing-cache fetch path works.
+preexisting_cache() {
+  local org=$1 repo=$2
+  local dir="$cache_dir/repo_trunks/${org}/${repo}"
+  mkdir -p "$cache_dir/repo_trunks/${org}"
+  "$test_git" init --bare "$dir" >/dev/null 2>&1
+  # Idempotent: only add origin if it isn't already configured (helper
+  # may be called after a prior test left state via cache_trunk's
+  # recursive parent-cache creation).
+  "$test_git" -C "$dir" remote get-url origin >/dev/null 2>&1 ||
+    "$test_git" -C "$dir" remote add origin "$source_repo" 2>/dev/null
+  "$test_git" -C "$dir" fetch origin >/dev/null 2>&1
+  "$test_git" -C "$dir" remote set-head origin -a >/dev/null 2>&1
+  printf '%s\n' "$dir"
+}
+
+# Test: cache_trunk on an existing fork cache (no x.fork-parent yet)
+# writes alternates pointing at the parent's objects.  Both caches
+# pre-exist for this test — the not-cached creation path hardcodes
+# https://github.com/... URLs that aren't reachable in tests.
+run_test
+parent_cache=$(preexisting_cache parentorg parentrepo)
+fork_cache=$(preexisting_cache myuser parentrepo)
+result=$(cache_trunk "myuser/parentrepo" 2>/dev/null)
+alt_file="$fork_cache/objects/info/alternates"
+parent_marker="$fork_cache/x.fork-parent"
+if [[ -f $alt_file ]] &&
+   [[ $(< "$alt_file") == "${parent_cache}/objects" ]] &&
+   [[ -f $parent_marker ]] &&
+   [[ $(< "$parent_marker") == "parentorg/parentrepo" ]]
+then
+  pass "cache_trunk auto-migrates existing fork cache to alternates"
+else
+  fail "auto-migrate fork: alt=$([[ -f $alt_file ]] && cat "$alt_file" || echo MISSING) marker=$([[ -f $parent_marker ]] && cat "$parent_marker" || echo MISSING)"
+fi
+
+# Test: cache_trunk on an existing non-fork cache writes empty
+# x.fork-parent so future calls don't re-probe.  Mock gh returns no
+# parent for parentorg/parentrepo, so the marker should be empty and no
+# alternates should be set.
+run_test
+nonfork_cache=$(preexisting_cache parentorg2 nonfork)
+# parentorg2/nonfork isn't in the mock; mock will exit 1 → empty.
+# Use parentorg/parentrepo which mock recognizes as a non-fork.
+rm -rf "$cache_dir/repo_trunks/parentorg2"
+nonfork_cache=$(preexisting_cache parentorg parentrepo)
+# Remove the auto-created alt/marker files we may have left over from
+# the prior test:
+rm -f "$nonfork_cache/x.fork-parent" "$nonfork_cache/objects/info/alternates"
+result=$(cache_trunk "parentorg/parentrepo" 2>/dev/null)
+alt_file="$nonfork_cache/objects/info/alternates"
+parent_marker="$nonfork_cache/x.fork-parent"
+if [[ -f $parent_marker ]] && [[ -z $(< "$parent_marker") ]] && [[ ! -f $alt_file ]]
+then
+  pass "cache_trunk auto-migrates non-fork: empty marker, no alternates"
+else
+  fail "auto-migrate non-fork: marker=$([[ -f $parent_marker ]] && cat "$parent_marker" || echo MISSING) alt=$([[ -f $alt_file ]] && cat "$alt_file" || echo absent-as-expected)"
+fi
+
+# Test: cache_trunk on an existing cache that ALREADY has x.fork-parent
+# does not re-probe — the cookie's contents are honored as-is.
+run_test
+preserved_cache=$(preexisting_cache altuser parentrepo)
+# Pre-write a sentinel value that no probe could legitimately return.
+printf '%s' "I-was-already-probed" > "$preserved_cache/x.fork-parent"
+result=$(cache_trunk "altuser/parentrepo" 2>/dev/null)
+parent_marker="$preserved_cache/x.fork-parent"
+if [[ $(< "$parent_marker") == "I-was-already-probed" ]]
+then
+  pass "cache_trunk respects existing x.fork-parent cookie (no re-probe)"
+else
+  fail "expected x.fork-parent unchanged, got: '$(< "$parent_marker")'"
+fi
+
+# ---------------------------------------------------------------------------
+# ensure_fork_trunks tests
+#
+# Tests stub ensure_worktree inside a subshell and capture the spec
+# arguments it would have received.  Real ensure_worktree isn't run —
+# we're verifying the trigger logic, not worktree creation.
+# ---------------------------------------------------------------------------
+
+# Test: ensure_fork_trunks ensures both parent and fork trunks when
+# x.fork-parent is non-empty.
+run_test
+fork_cache_eft=$(preexisting_cache forkuser parentrepo)
+parent_cache_eft=$(preexisting_cache parentorg parentrepo)
+printf '%s' "parentorg/parentrepo" > "$fork_cache_eft/x.fork-parent"
+printf '' > "$parent_cache_eft/x.fork-parent"
+trunk_eft=$(get_trunk_branch_name_from_cache "$fork_cache_eft")
+result=$(
+  ensure_worktree() {
+    printf 'CALL %s SKIP=%s\n' "$1" "${TIMVISHER_GIT_SKIP_FORK_TRUNKS:-unset}"
+  }
+  ensure_fork_trunks "forkuser/parentrepo/feature-branch" "$fork_cache_eft" 2>/dev/null
+)
+expected="CALL parentorg/parentrepo/${trunk_eft} SKIP=1
+CALL forkuser/parentrepo/${trunk_eft} SKIP=1"
+if [[ $result == "$expected" ]]
+then
+  pass "ensure_fork_trunks ensures parent and fork trunks with recursion guard set"
+else
+  fail "expected:\n${expected}\ngot:\n${result}"
+fi
+
+# Test: ensure_fork_trunks is a no-op for a non-fork (empty x.fork-parent)
+run_test
+nonfork_cache_eft=$(preexisting_cache nonforkorg parentrepo)
+printf '' > "$nonfork_cache_eft/x.fork-parent"
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  ensure_fork_trunks "nonforkorg/parentrepo/anything" "$nonfork_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when x.fork-parent is empty (non-fork)"
+else
+  fail "expected no calls, got: '${result}'"
+fi
+
+# Test: ensure_fork_trunks is a no-op when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set
+run_test
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  TIMVISHER_GIT_SKIP_FORK_TRUNKS=1 ensure_fork_trunks "forkuser/parentrepo/x" "$fork_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when TIMVISHER_GIT_SKIP_FORK_TRUNKS is set"
+else
+  fail "expected no calls (guard set), got: '${result}'"
+fi
+
+# Test: ensure_fork_trunks is a no-op when x.fork-parent is missing entirely
+run_test
+unprobed_cache_eft=$(preexisting_cache unprobedorg parentrepo)
+rm -f "$unprobed_cache_eft/x.fork-parent"
+result=$(
+  ensure_worktree() {
+    printf 'SHOULD_NOT_BE_CALLED %s\n' "$1"
+  }
+  ensure_fork_trunks "unprobedorg/parentrepo/x" "$unprobed_cache_eft" 2>/dev/null
+)
+if [[ -z $result ]]
+then
+  pass "ensure_fork_trunks no-op when x.fork-parent file is absent"
+else
+  fail "expected no calls (no marker), got: '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# fork command tests
+#
+# Mock gh returns user "myuser" and treats myuser/parentrepo as an
+# existing fork of parentorg/parentrepo, so the gh repo fork code path
+# is skipped.  We stub clone in a subshell to capture what the fork
+# command would have delegated to.
+# ---------------------------------------------------------------------------
+
+# Test: current_gh_user returns the mocked login
+run_test
+result=$(current_gh_user)
+if [[ $result == "myuser" ]]
+then
+  pass "current_gh_user returns the configured gh login"
+else
+  fail "current_gh_user: expected 'myuser', got '${result}'"
+fi
+
+# Test: fork delegates to clone with <gh-user>/<repo>/<branch>
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "parentorg/parentrepo/feature-branch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/feature-branch" ]]
+then
+  pass "fork delegates to clone with <gh-user>/<repo>/<branch>"
+else
+  fail "fork branch: expected 'CLONE myuser/parentrepo/feature-branch', got '${result}'"
+fi
+
+# Test: fork without branch defaults to <gh-user>/<repo>
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "parentorg/parentrepo" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo" ]]
+then
+  pass "fork without branch defaults to <gh-user>/<repo>"
+else
+  fail "fork no-branch: expected 'CLONE myuser/parentrepo', got '${result}'"
+fi
+
+# Test: fork on own org skips the fork step and clones directly
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "myuser/parentrepo/anybranch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/anybranch" ]]
+then
+  pass "fork on own org clones directly without forking"
+else
+  fail "fork own-org: expected 'CLONE myuser/parentrepo/anybranch', got '${result}'"
+fi
+
+# Test: fork accepts an absolute path under live_repo_dir
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "$live_dir/parentorg/parentrepo/feature-branch" 2>/dev/null
+)
+if [[ $result == "CLONE myuser/parentrepo/feature-branch" ]]
+then
+  pass "fork accepts an absolute path under live_repo_dir"
+else
+  fail "fork live-path: expected 'CLONE myuser/parentrepo/feature-branch', got '${result}'"
+fi
+
+# Test: fork errors out when input lacks org/repo
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "no-slash" 2>/dev/null
+) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "fork rejects malformed input"
+else
+  fail "fork malformed: expected nonzero rc + no clone, got rc=${rc} result='${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# should_auto_fork tests
+#
+# Mock gh: nopush/parentrepo is a fork-of-parent that I lack push to.
+# parentorg/parentrepo is a non-fork I lack push to.  Branch "main"
+# exists on each; "feature-x" does not.
+# ---------------------------------------------------------------------------
+
+# Test: triggers when branch missing AND no push rights AND foreign org
+run_test
+should_auto_fork "parentorg/parentrepo/feature-x" && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "should_auto_fork: triggers on missing branch + no push + foreign org"
+else
+  fail "should_auto_fork triggered: expected rc=0, got rc=${rc}"
+fi
+
+# Test: no-op when branch already exists on the named repo
+run_test
+should_auto_fork "parentorg/parentrepo/main" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op when branch exists on the named repo"
+else
+  fail "expected no auto-fork when branch exists, got rc=${rc}"
+fi
+
+# Test: no-op when input org matches gh user (we own it)
+run_test
+should_auto_fork "myuser/parentrepo/feature-x" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op when input org matches gh user"
+else
+  fail "expected no auto-fork on own org, got rc=${rc}"
+fi
+
+# Test: no-op when input is bare org/repo (no branch component)
+run_test
+should_auto_fork "parentorg/parentrepo" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op for bare org/repo (no branch)"
+else
+  fail "expected no auto-fork for org/repo, got rc=${rc}"
+fi
+
+# Test: TIMVISHER_GIT_NO_AUTO_FORK env var disables the feature
+run_test
+TIMVISHER_GIT_NO_AUTO_FORK=1 should_auto_fork "parentorg/parentrepo/feature-x" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: disabled by TIMVISHER_GIT_NO_AUTO_FORK env var"
+else
+  fail "expected env-var disable to suppress auto-fork, got rc=${rc}"
 fi
 
 echo ""

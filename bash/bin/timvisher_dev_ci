@@ -50,8 +50,19 @@ source ~/.functions/logging.bash ||
         exit 1
     }
 
-parallel git -C '{}' pull ::: ~/git/xenodium/*/main >&2 ||
-  die "Couldn't pull xenodium mains"
+source ~/.functions/aictl.bash ||
+    {
+        echo "Unable to source aictl functions" >&2
+        exit 1
+    }
+
+# Pull xenodium mains before any orchestration work.  Moved into
+# cmd_run so lightweight subcommands (--help, hooks, run-tests, status,
+# clean, worktrees) don't pay the network cost.
+pull_xenodium_mains() {
+    parallel git -C '{}' pull ::: ~/git/xenodium/*/main >&2 ||
+        die "Couldn't pull xenodium mains"
+}
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -66,6 +77,16 @@ REPO_HOOKS_DIR="${SELF_DIR}/timvisher_dev_ci.config/hooks"
 REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/timvisher_dev_ci/hooks"
 
 BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli)
+
+# Single source of truth for hook names recognised by `hooks ls` and
+# the "run all" form of `hooks run`.  Adding a new hook?  Add it here
+# and the help text below.
+KNOWN_HOOKS=(
+    run-tests.sh
+    post-integrate.sh
+    pre-run-tests.sh
+    pre-post-integrate.sh
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -145,12 +166,25 @@ read_active_worktrees() {
 # Cache for fork_network_main_owner lookups.  Keyed by "org/repo".
 declare -A _fork_network_cache
 
+# Resolve the canonical (symlinks resolved, trailing-slash-terminated)
+# TIMVISHER_GIT_HOME for prefix comparisons.  Falls back to the
+# unresolved value if the directory does not exist yet.
+canonical_git_home() {
+    local base="${TIMVISHER_GIT_HOME:-${HOME}/git}"
+    if [[ -d $base ]]
+    then
+        base=$(cd "$base" && pwd -P)
+    fi
+    printf '%s/' "$base"
+}
+
 # Resolve the org/repo/branch-parts relative path for a worktree.
 # Usage: worktree_rel_path "/path/to/worktree"
 worktree_rel_path() {
     local worktree_path=$1
 
-    local git_base="${TIMVISHER_GIT_HOME:-${HOME}/git}/"
+    local git_base
+    git_base=$(canonical_git_home)
     if [[ $worktree_path != "${git_base}"* ]]
     then
         error "worktree_rel_path: '%s' is not under '%s'" "$worktree_path" "$git_base"
@@ -1538,7 +1572,287 @@ print_summary() {
 # Top-level subcommands
 # ---------------------------------------------------------------------------
 
+# Resolve a path argument to an absolute, canonical worktree path.
+# Defaults to $PWD when arg is empty.  Errors via aictl_die if the
+# path is not under TIMVISHER_GIT_HOME, which the hook cascade
+# requires (see find_hooks).
+resolve_worktree_path() {
+    local path=${1:-$PWD}
+
+    if [[ ! -d $path ]]
+    then
+        aictl_die \
+            --code "dev_ci_path_not_dir" \
+            --message "'${path}' is not a directory" \
+            --suggestion "cd into a worktree under \$TIMVISHER_GIT_HOME and retry"
+    fi
+
+    local resolved
+    resolved=$(cd "$path" && pwd -P) ||
+        aictl_die \
+            --code "dev_ci_path_unreadable" \
+            --message "Cannot resolve '${path}'"
+
+    local git_base
+    git_base=$(canonical_git_home)
+    if [[ $resolved != "${git_base}"* ]]
+    then
+        aictl_die \
+            --code "dev_ci_path_not_in_git_home" \
+            --message "'${resolved}' is not under TIMVISHER_GIT_HOME ('${git_base}')" \
+            --reason "The hook cascade resolves <org>/<repo>/<branch-parts> from the worktree path, which requires the worktree be under \$TIMVISHER_GIT_HOME (default ~/git/)." \
+            --suggestion "cd into a worktree managed by timvisher_git" \
+            --suggestion "Or set TIMVISHER_GIT_HOME to override the expected root"
+    fi
+
+    printf '%s' "$resolved"
+}
+
+# `hooks ls [path]` — list every KNOWN_HOOKS entry with its
+# cascade-resolved paths (or "(none)" if unresolvable).
+cmd_hooks_ls() {
+    local worktree_path
+    worktree_path=$(resolve_worktree_path "${1:-}") || exit $?
+
+    printf 'hooks for %s:\n\n' "$worktree_path"
+
+    local hook_name
+    for hook_name in "${KNOWN_HOOKS[@]}"
+    do
+        printf '  %s\n' "$hook_name"
+        local resolved
+        if resolved=$(find_hooks "$worktree_path" "$hook_name" 2>/dev/null) && [[ -n $resolved ]]
+        then
+            while IFS= read -r path
+            do
+                printf '    %s\n' "$path"
+            done <<<"$resolved"
+        else
+            printf '    (none)\n'
+        fi
+    done
+}
+
+# `hooks run [hook ...] [-C path]` — run hooks foregrounded in the
+# controlling TTY (no tmux, no nested agent).  No hook args = run all
+# KNOWN_HOOKS that resolve.  Explicit hook args = run those, hard
+# error on any unresolvable name.
+cmd_hooks_run() {
+    local -a hook_args=()
+    local worktree_arg=""
+
+    while (( 0 < $# ))
+    do
+        case $1 in
+            -C)
+                if [[ $# -lt 2 ]]
+                then
+                    aictl_die \
+                        --code "dev_ci_hooks_run_missing_C_arg" \
+                        --message "'-C' requires a path argument" \
+                        --suggestion "timvisher_dev_ci hooks run -C /path/to/worktree [hook ...]"
+                fi
+                worktree_arg=$2
+                shift 2
+                ;;
+            *)
+                hook_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    local worktree_path
+    worktree_path=$(resolve_worktree_path "$worktree_arg") || exit $?
+
+    local -a hooks_to_run=()
+    if [[ ${#hook_args[@]} == 0 ]]
+    then
+        # Default: run every KNOWN_HOOKS entry that resolves.
+        local h
+        for h in "${KNOWN_HOOKS[@]}"
+        do
+            find_hooks "$worktree_path" "$h" >/dev/null 2>&1 && hooks_to_run+=("$h")
+        done
+
+        if [[ ${#hooks_to_run[@]} == 0 ]]
+        then
+            aictl_die \
+                --code "dev_ci_hooks_run_none_resolved" \
+                --message "No KNOWN_HOOKS resolved for '${worktree_path}'; nothing to run" \
+                --reason "Every entry in KNOWN_HOOKS (run-tests.sh, post-integrate.sh, pre-run-tests.sh, pre-post-integrate.sh) was checked across all 4 cascade levels and none had a matching script." \
+                --suggestion "Run 'timvisher_dev_ci hooks ls' to see the empty cascade" \
+                --suggestion "Add a hook script under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<branch-parts>]/" \
+                --suggestion "Or run timvisher_dev_ci's full pipeline ('timvisher_dev_ci .'), which can launch an agent to author run-tests.sh"
+        fi
+    else
+        # Explicit list: every named hook must resolve.
+        local h
+        local -a missing=()
+        for h in "${hook_args[@]}"
+        do
+            find_hooks "$worktree_path" "$h" >/dev/null 2>&1 ||
+                missing+=("$h")
+        done
+
+        if (( 0 < ${#missing[@]} ))
+        then
+            local missing_str=${missing[*]}
+            aictl_die \
+                --code "dev_ci_hook_unresolvable" \
+                --message "Hook(s) not found in cascade for '${worktree_path}': ${missing_str}" \
+                --reason "Explicit hook names must resolve via the 4-level cascade. An unresolvable hook usually means it has not been written yet for this worktree, or the hook name was misspelled." \
+                --suggestion "Run 'timvisher_dev_ci hooks ls' to see what's available" \
+                --suggestion "Add the hook under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<branch-parts>]/"
+        fi
+
+        hooks_to_run=("${hook_args[@]}")
+    fi
+
+    local h
+    for h in "${hooks_to_run[@]}"
+    do
+        info "running hook: %s" "$h"
+        if ! run_hooks "$worktree_path" "$h"
+        then
+            aictl_die \
+                --code "dev_ci_hook_failed" \
+                --message "Hook '${h}' failed in '${worktree_path}'" \
+                --reason "The hook script exited non-zero. Stderr/stdout was streamed above." \
+                --suggestion "Check the hook output above for the failing step" \
+                --suggestion "Re-run the failing step directly from '${worktree_path}' to iterate"
+        fi
+    done
+}
+
+cmd_hooks() {
+    local sub=${1:-}
+    case $sub in
+        ls)  cmd_hooks_ls "${@:2}" ;;
+        run) cmd_hooks_run "${@:2}" ;;
+        '')
+            aictl_die \
+                --code "dev_ci_hooks_no_subcommand" \
+                --message "'hooks' requires a subcommand: ls or run" \
+                --suggestion "timvisher_dev_ci hooks ls           # list resolved hooks for current worktree" \
+                --suggestion "timvisher_dev_ci hooks run          # run every resolved hook" \
+                --suggestion "timvisher_dev_ci hooks run HOOK     # run named hook(s)" \
+                --suggestion "timvisher_dev_ci --help"
+            ;;
+        *)
+            aictl_die \
+                --code "dev_ci_hooks_unknown_subcommand" \
+                --message "Unknown 'hooks' subcommand: '${sub}' (available: ls, run)" \
+                --suggestion "timvisher_dev_ci hooks ls" \
+                --suggestion "timvisher_dev_ci hooks run" \
+                --suggestion "timvisher_dev_ci --help"
+            ;;
+    esac
+}
+
+# Convenience: run-tests = hooks run run-tests.sh.  Accepts -C path
+# the same way 'hooks run' does.
+cmd_run_tests() {
+    cmd_hooks_run run-tests.sh "$@"
+}
+
+print_help() {
+    cat <<'EOF'
+NAME
+    timvisher_dev_ci — local CI orchestrator for dev integration branches
+
+SYNOPSIS
+    # Full pipeline (sync + integrate + push), orchestrated via tmux + agents:
+    timvisher_dev_ci                          # all dev branches in registry
+                                              #   (or current worktree, when run from inside one)
+    timvisher_dev_ci [run] PATH ...           # specific dev branches
+
+    # Direct hook invocation in the controlling TTY (no tmux, no nested agent):
+    timvisher_dev_ci hooks ls [PATH]                     # list resolved hooks
+    timvisher_dev_ci hooks run [HOOK ...] [-C PATH]      # run hooks (all known if HOOK omitted)
+    timvisher_dev_ci run-tests [-C PATH]                 # convenience for: hooks run run-tests.sh
+
+    # Misc:
+    timvisher_dev_ci status [PATH ...]        # show CI status of worktrees
+    timvisher_dev_ci clean [PATH ...]         # remove status files
+    timvisher_dev_ci worktrees active         # list active worktree paths
+    timvisher_dev_ci --help|-h|help           # this message
+
+PATHS
+    PATH defaults to $PWD when omitted from any subcommand.
+    All paths must be under $TIMVISHER_GIT_HOME (default ~/git/) so the
+    hook cascade can resolve <org>/<repo>/<branch-parts>.
+
+    Bare `timvisher_dev_ci` (no args):
+      - Outside any worktree: runs every dev branch in the registry.
+      - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
+        that worktree's root (resolved via `git rev-parse --show-toplevel`,
+        so subdirs of a worktree work too).
+
+AGENT USAGE
+    To run the project's full local CI suite from inside a worktree:
+
+        timvisher_dev_ci run-tests
+
+    This runs the cascade-resolved run-tests.sh hook(s) for the current
+    worktree in the controlling TTY -- no tmux, no nested agent. The
+    hook script encodes project-specific test conventions (correct
+    build tags, lint flags, env vars). Prefer it over invoking
+    `make test` / `golangci-lint` / `pytest` directly.
+
+    To see exactly what would run:
+
+        timvisher_dev_ci hooks ls
+
+    To run every known hook in one go (run-tests.sh + post-integrate.sh
+    + pre-* extension hooks):
+
+        timvisher_dev_ci hooks run
+
+    Difference from bare `timvisher_dev_ci`: bare invocation does
+    pull --rebase, agent-driven conflict resolution, octopus merge,
+    test verification, and push -- the full CI pipeline. `hooks` and
+    `run-tests` only run the hook scripts. For "did my changes
+    break tests?", use `run-tests`.
+
+KNOWN HOOKS
+    run-tests.sh             Full local CI suite (lint + test + build).
+    post-integrate.sh        Runs after a successful integrate
+                             (e.g. build + install).
+    pre-run-tests.sh         Extension hook executed before run-tests.sh.
+    pre-post-integrate.sh    Extension hook executed before post-integrate.sh.
+
+HOOK CASCADE
+    For a worktree at ~/git/<org>/<repo>/<branch-parts>/, hooks are
+    resolved across 4 levels (general → specific):
+
+        1. <fork-network-main-owner>/<repo>/<hook>
+        2. <my-github-user>/<repo>/<hook>
+        3. <fork-network-main-owner>/<repo>/<branch-parts>/<hook>
+        4. <my-github-user>/<repo>/<branch-parts>/<hook>
+
+    For each level, two directories are checked in order:
+        a. bash/bin/timvisher_dev_ci.config/hooks/  (checked-in, in this repo)
+        b. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/  (machine-specific)
+
+    All matching hooks run in cascade order (no shadowing). Resolved
+    paths are deduplicated so the same file is never executed twice.
+
+EXIT
+    0   success
+    1   failure (structured JSON on stderr: type/level/code/message
+        plus reason/suggestions/doc fields when applicable)
+
+ENVIRONMENT
+    TIMVISHER_GIT_HOME            Worktree root (default: ~/git)
+    TIMVISHER_DEV_CI_REGISTRY     Path to dev branch registry file
+                                  (default: ~/.config/timvisher/ide/timvisher_dev_ci/branches)
+EOF
+}
+
 cmd_run() {
+    pull_xenodium_mains
+
     info "Phase 0: upgrading agent tooling"
     if ! brew upgrade "${BREW_UPGRADE_PACKAGES[@]}" 2>&1
     then
@@ -1632,28 +1946,119 @@ cmd_clean() {
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
+#
+# Dispatch order:
+#   1. --help / -h / help      handled first so help is always cheap
+#   2. Known subcommands by NAME (BEFORE the dir-sniff, so a literal
+#      './hooks' or './run-tests' directory cannot shadow them)
+#   3. Bare invocation         no args → DTRT based on cwd
+#   4. Path shortcut            first arg is a readable directory → cmd_run
+#   5. Unknown                  aictl_die with --help suggestion
 
-if [[ $# -ne 0 && -d $1 && -r $1 ]]
+# 1. Help bypass.
+case ${1:-} in
+    -h|--help|help)
+        print_help
+        exit 0
+        ;;
+esac
+
+# 2. Known subcommands by name.
+case ${1:-} in
+    run)
+        shift
+        cmd_run "$@"
+        exit
+        ;;
+    status)
+        shift
+        cmd_status "$@"
+        exit
+        ;;
+    clean)
+        shift
+        cmd_clean "$@"
+        exit
+        ;;
+    hooks)
+        shift
+        cmd_hooks "$@"
+        exit
+        ;;
+    run-tests)
+        shift
+        cmd_run_tests "$@"
+        exit
+        ;;
+    worktrees)
+        shift
+        case ${1:-} in
+            active)
+                shift
+                cmd_worktrees_active "$@"
+                exit
+                ;;
+            *)
+                aictl_die \
+                    --code "dev_ci_worktrees_unknown_subcommand" \
+                    --message "worktrees: unknown subcommand '${1:-}' (available: active)" \
+                    --suggestion "timvisher_dev_ci worktrees active"
+                ;;
+        esac
+        ;;
+    __sync_trunk_resolve)
+        shift
+        cmd__sync_trunk_resolve "$@"
+        exit
+        ;;
+    __sync)
+        shift
+        cmd__sync "$@"
+        exit
+        ;;
+    __integrate)
+        shift
+        cmd__integrate "$@"
+        exit
+        ;;
+    __ensure_tests)
+        shift
+        cmd__ensure_tests "$@"
+        exit
+        ;;
+esac
+
+# 3. Bare invocation: scope to current worktree if cwd is under
+# $TIMVISHER_GIT_HOME, else fall back to the registry.
+if [[ $# == 0 ]]
+then
+    git_base=$(canonical_git_home)
+    if toplevel=$(git rev-parse --show-toplevel 2>/dev/null) &&
+       [[ -d $toplevel ]]
+    then
+        toplevel_real=$(cd "$toplevel" && pwd -P)
+        if [[ $toplevel_real == "${git_base}"* ]]
+        then
+            info "bare invocation inside worktree '%s'; scoping pipeline to it" "$toplevel_real"
+            cmd_run "$toplevel_real"
+            exit
+        fi
+    fi
+    cmd_run
+    exit
+fi
+
+# 4. Path shortcut: first arg is a readable directory.
+if [[ -d $1 && -r $1 ]]
 then
     cmd_run "$@"
-else
-    case ${1:-run} in
-        run)             cmd_run "${@:2}" ;;
-        status)          cmd_status "${@:2}" ;;
-        clean)           cmd_clean "${@:2}" ;;
-        worktrees)
-            case ${2:-} in
-                active) cmd_worktrees_active "${@:3}" ;;
-                *)      die "worktrees: unknown subcommand '%s' (available: active)" "${2:-}" ;;
-            esac
-            ;;
-        __sync_trunk_resolve) cmd__sync_trunk_resolve "${@:2}" ;;
-        __sync)          cmd__sync "${@:2}" ;;
-        __integrate)     cmd__integrate "${@:2}" ;;
-        __ensure_tests)  cmd__ensure_tests "${@:2}" ;;
-        *)
-            echo "Usage: timvisher_dev_ci [run|status|clean|worktrees active] [dev_path ...]" >&2
-            exit 1
-            ;;
-    esac
+    exit
 fi
+
+# 5. Unknown.
+aictl_die \
+    --code "dev_ci_unknown_command" \
+    --message "Unknown command: '$1'" \
+    --suggestion "timvisher_dev_ci --help" \
+    --suggestion "timvisher_dev_ci hooks ls    # list resolved hooks for current worktree" \
+    --suggestion "timvisher_dev_ci run-tests   # run cascade-resolved run-tests.sh"
