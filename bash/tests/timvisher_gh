@@ -110,6 +110,36 @@ echo "mock-open $*" >> "$MOCK_LOG"
 MOCK
 chmod +x "$tmpdir/mockbin/open"
 
+# Mock osascript: timvisher_gh now routes URL opens through
+# `osascript -e '...openUrl(item 1 of argv)...' "$url"` so the URL
+# lands in currentBrowser instead of the system default. The script
+# body is in argv[0..N-1] and the URL is the trailing positional arg
+# after `--`-style separation; we just record argv to MOCK_LOG and
+# whitelist 'mock-open' assertions to also match this path.
+cat > "$tmpdir/mockbin/osascript" <<'MOCK'
+#!/usr/bin/env bash
+url=
+for arg in "$@"
+do
+  case $arg in
+    -e|-l) ;;  # flag; next arg is its value but we don't track which
+    *)
+      # Heuristic: any plain arg matching http(s):// is the URL we
+      # opened. Tests assert on the URL substring.
+      if [[ $arg == http*://* ]]
+      then
+        url=$arg
+      fi
+      ;;
+  esac
+done
+if [[ -n $url ]]
+then
+  echo "mock-open $url" >> "$MOCK_LOG"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/osascript"
+
 test_path="$tmpdir/mockbin:$PATH"
 
 # --- dispatch tests ---

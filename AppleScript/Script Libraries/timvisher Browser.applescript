@@ -10,6 +10,13 @@ on activate()
 	tell application (my currentBrowser()) to activate
 end activate
 
+on openUrl(u)
+	tell application (my currentBrowser())
+		activate
+		open location u
+	end tell
+end openUrl
+
 on getActiveTabUrl()
 	tell script (my currentBrowser()) to getActiveTabUrl()
 end getActiveTabUrl

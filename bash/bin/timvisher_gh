@@ -330,8 +330,9 @@ gh_pr() {
   if [[ -r pr.md.url ]]
   then
     info ''pr.md.url' already exists. Opening'
-    osascript -e 'tell script "timvisher Browser" to activate()'
-    open "$(< pr.md.url)"
+    osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$(< pr.md.url)"
     return
   fi
 
@@ -366,7 +367,9 @@ gh_pr() {
 
   tee <<<"$pr_url" pr.md.url
 
-  open "$pr_url"
+  osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$pr_url"
 }
 
 # --- subcommand: issue ---
@@ -400,8 +403,9 @@ gh_issue() {
   if [[ -r issue.md.url ]]
   then
     info ''issue.md.url' already exists. Opening'
-    osascript -e 'tell script "timvisher Browser" to activate()'
-    open "$(< issue.md.url)"
+    osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$(< issue.md.url)"
     return
   fi
 
@@ -421,7 +425,9 @@ gh_issue() {
 
   tee <<<"$issue_url" issue.md.url
 
-  open "$issue_url"
+  osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$issue_url"
 }
 
 # --- subcommand: comment ---
