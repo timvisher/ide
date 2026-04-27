@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+
+# Tests for the Stop hooks under ai/claude/HOME/.claude/hooks/.
+# Covers positive (should-block) and negative (should-pass) cases for
+# pattern-based hooks. Each test feeds a synthetic transcript through
+# the hook and checks whether `decision: "block"` is emitted.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)/.."
+hooks_dir="${repo_root}/ai/claude/HOME/.claude/hooks"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+tp="$tmpdir/transcript.jsonl"
+input_file="$tmpdir/input.json"
+
+# Run a hook with the given assistant text. Returns the hook's stdout.
+run_hook() {
+  local hook=$1
+  local text=$2
+  local stop_active=${3:-false}
+
+  # Use jq to safely build the transcript JSON regardless of quoting.
+  jq -nc --arg t "$text" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}' > "$tp"
+  jq -nc --arg p "$tp" --argjson sa "$stop_active" \
+    '{transcript_path:$p, stop_hook_active:$sa}' > "$input_file"
+
+  "${hooks_dir}/${hook}" < "$input_file"
+}
+
+assert_blocks() {
+  local hook=$1 text=$2 label=$3
+  run_test
+  result=$(run_hook "$hook" "$text")
+  if [[ -n $result ]] && printf '%s' "$result" | jq -e '.decision == "block"' >/dev/null
+  then
+    pass "$label"
+  else
+    fail "$label — expected block, got: '${result}'"
+  fi
+}
+
+assert_passes() {
+  local hook=$1 text=$2 label=$3
+  run_test
+  result=$(run_hook "$hook" "$text")
+  if [[ -z $result ]]
+  then
+    pass "$label"
+  else
+    fail "$label — expected pass, got: '${result}'"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# no-push-stop.sh
+# ---------------------------------------------------------------------------
+
+# Asking permission
+assert_blocks no-push-stop.sh "Should I push?" \
+  "no-push: blocks 'should I push?'"
+assert_blocks no-push-stop.sh "Want me to push?" \
+  "no-push: blocks 'want me to push?'"
+assert_blocks no-push-stop.sh "All set. Ready to push when you are." \
+  "no-push: blocks 'ready to push'"
+
+# Declarative
+assert_blocks no-push-stop.sh "I'll push the branch now." \
+  "no-push: blocks 'I will push'"
+assert_blocks no-push-stop.sh "Let me push these commits." \
+  "no-push: blocks 'let me push'"
+
+# Announce-then-defer (the case from the live transcript)
+assert_blocks no-push-stop.sh \
+  "I haven't pushed — flagging since you have a wip commit underneath." \
+  "no-push: blocks 'haven't pushed —' announcement"
+assert_blocks no-push-stop.sh \
+  "let me know if you want this rebased/pushed somewhere" \
+  "no-push: blocks 'rebased/pushed somewhere' offer"
+
+# Plan/list items
+assert_blocks no-push-stop.sh "$(printf '1. Build\n2. Test\n3. Push to origin')" \
+  "no-push: blocks numbered '3. Push' plan item"
+assert_blocks no-push-stop.sh "Then push to origin." \
+  "no-push: blocks 'Then push'"
+
+# False-positive checks (must PASS)
+assert_passes no-push-stop.sh "I haven't pushed it to the array yet." \
+  "no-push: passes 'haven't pushed it to the array' (array.push prose)"
+assert_passes no-push-stop.sh "I pushed somewhere earlier in the function." \
+  "no-push: passes 'pushed somewhere' (function-flow prose)"
+assert_passes no-push-stop.sh "If you want push notifications, install the app." \
+  "no-push: passes 'push notifications'"
+assert_passes no-push-stop.sh "We can use array.push to add items." \
+  "no-push: passes 'array.push' technical prose"
+
+# Loop guard — when stop_hook_active=true, the hook must stay silent
+# even on a normally-blocking phrase. Without this the harness would
+# loop on the rule injection.
+run_test
+result=$(run_hook no-push-stop.sh "Should I push?" true)
+if [[ -z $result ]]
+then
+  pass "no-push: silent on second-stop loop guard"
+else
+  fail "no-push: loop guard didn't suppress: '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# no-stalling-stop.sh
+# ---------------------------------------------------------------------------
+
+# Ownership dodging
+assert_blocks no-stalling-stop.sh \
+  "This is a pre-existing bug; not from my recent changes." \
+  "no-stalling: blocks 'pre-existing bug … not from'"
+assert_blocks no-stalling-stop.sh \
+  "That's an existing issue we should triage separately." \
+  "no-stalling: blocks dismissive 'existing issue'"
+
+# Session-length self-stopping
+assert_blocks no-stalling-stop.sh "This session has gotten long; let me wrap up." \
+  "no-stalling: blocks 'session has gotten long'"
+assert_blocks no-stalling-stop.sh "Good place to stop for now." \
+  "no-stalling: blocks 'good place to stop'"
+
+# Permission-seeking
+assert_blocks no-stalling-stop.sh "Should I commit?" \
+  "no-stalling: blocks 'should I commit?'"
+assert_blocks no-stalling-stop.sh "Want me to keep going?" \
+  "no-stalling: blocks 'want me to keep going?'"
+
+# False-positive checks
+assert_passes no-stalling-stop.sh \
+  "The pre-existing API contract requires this field." \
+  "no-stalling: passes 'pre-existing API contract' prose"
+assert_passes no-stalling-stop.sh \
+  "I've filed an existing issue on GitHub for this." \
+  "no-stalling: passes 'an existing issue on GitHub'"
+assert_passes no-stalling-stop.sh \
+  "This list is getting long; will trim it." \
+  "no-stalling: passes 'list is getting long'"
+assert_passes no-stalling-stop.sh "Is there a typo in this commit?" \
+  "no-stalling: passes 'a typo in this commit?'"
+assert_passes no-stalling-stop.sh \
+  "We could rebase the commit, or revert it." \
+  "no-stalling: passes 'rebase the commit, or revert'"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
