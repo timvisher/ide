@@ -509,6 +509,25 @@ or 'good to note but not actionable'. ALL findings are actionable.
 
 For each finding, note which reviewer(s) flagged it.
 
+After your report, append the following section VERBATIM (heading and
+all) as the final section of your output. This is so the rule is the
+freshest context for the agent reading your report — do not paraphrase
+or summarize it:
+
+---
+
+## GOLDEN RULE
+
+EVERY finding from this review is YOUR responsibility. Nothing in the
+diff is "pre-existing" or "not our commit". If it is in the diff, it
+ships with your work. Investigate and fix ALL findings. Never dismiss
+a finding. Never say "not actionable" or "good to note". For findings
+you cannot fix immediately, file a beads issue with investigation
+notes and reference the bd id in your reply — that is investigation,
+not dismissal.
+
+---
+
 SYNTHESIS_HEADER
 
         for i in "${!names[@]}"
