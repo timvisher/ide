@@ -337,30 +337,37 @@ find_pushable_fork() {
 
 # Probe GitHub for a repo's parent fork.  Prints the parent spec on
 # stdout (e.g. "gastownhall/beads") if `<spec>` is a fork; prints
-# nothing for non-forks, when `gh` is unavailable / unauthenticated,
-# or when the repo doesn't exist.  Always exits 0 — callers treat
-# empty output as "not a fork or unknown".
+# nothing for non-forks. Returns:
+#   - exit 0, stdout=<parent_full_name>: the repo is a fork; that's
+#     its parent.
+#   - exit 0, stdout='': the repo exists and is NOT a fork.
+#   - exit 1: probe failed (gh missing, auth expired, network error,
+#     repo doesn't exist). Caller must distinguish — treating this
+#     as "not a fork" silently caches a wrong negative.
 #
 # `gh api` writes the response body to stdout even on HTTP 4xx (with a
 # non-zero exit code), so we must capture both and only emit stdout
-# when gh exited successfully.  Without this guard, a 404 lookup would
+# when gh exited successfully. Without this guard, a 404 lookup would
 # leak the error JSON ('{"message":"Not Found",...}') into the caller's
 # downstream logic.
 probe_fork_parent() {
   local spec=$1
-  command -v gh >/dev/null 2>&1 || return 0
+  command -v gh >/dev/null 2>&1 || return 1
 
   local out rc
   out=$(command gh api "/repos/${spec}" --jq '.parent.full_name // empty' 2>/dev/null)
   rc=$?
-  (( rc == 0 )) || return 0
+  (( rc == 0 )) || return 1
   printf '%s' "$out"
 }
 
-# Resolve the current GitHub user via `gh api user`.  Caches the result
-# inside gh's own response cache (--cache 876000h ≈ 100y) since the
-# logged-in user doesn't change between sessions.  Prints login on
-# stdout; returns non-zero if gh isn't installed or auth fails.
+# Resolve the current GitHub user via `gh api user`. Caches the result
+# in gh's own response cache for 24h — long enough that day-to-day
+# operations don't repeatedly hit the API, short enough that
+# re-authenticating against a different account (personal ↔ work) takes
+# effect within a day. Bust manually with `gh api user --cache 0` or
+# `rm -rf ~/.cache/gh`. Prints login on stdout; returns non-zero if gh
+# isn't installed or auth fails.
 #
 # Captures stdout separately so a 4xx error body (which gh writes to
 # stdout, not stderr) doesn't leak as a faux "login" to the caller.
@@ -369,7 +376,7 @@ current_gh_user() {
     { error "current_gh_user: gh is not installed"; return 1; }
 
   local out rc
-  out=$(command gh api user --cache 876000h --jq .login 2>/dev/null)
+  out=$(command gh api user --cache 24h --jq .login 2>/dev/null)
   rc=$?
   if (( rc != 0 ))
   then
@@ -419,13 +426,29 @@ should_auto_fork() {
   # redirect both: --silent is the documented gh contract, stdout
   # redirect is belt-and-suspenders for any wrapper that doesn't honor
   # --silent.
-  if command gh api "/repos/${spec_org}/${spec_repo}/branches/${branch}" \
+  #
+  # URL-encode the branch name so slash-containing branches (e.g.
+  # `feature/foo`) hit `/branches/feature%2Ffoo` instead of being
+  # split into `/branches/feature/foo` (which 404s and would falsely
+  # trigger auto-fork). Plain `printf | jq -sRr @uri` percent-encodes
+  # all reserved chars including `/`.
+  local branch_encoded
+  branch_encoded=$(printf '%s' "$branch" | jq -sRr @uri)
+  if command gh api "/repos/${spec_org}/${spec_repo}/branches/${branch_encoded}" \
        --cache 60s --silent >/dev/null 2>&1
   then
     return 1
   fi
 
   # Push rights.
+  #
+  # Caveat: GitHub's `permissions.push` flag reports repo-level write,
+  # not whether the branch the user named is actually pushable. A
+  # collaborator with write access to a repo whose branch creation is
+  # restricted via branch protection still gets `push: true` here, so
+  # auto-fork doesn't fire — the user discovers the restriction at
+  # actual push time. There's no cheap pre-check API, so we accept
+  # that and let the eventual `git push` surface the real error.
   local push
   push=$(command gh api "/repos/${spec_org}/${spec_repo}" \
            --cache 60s --jq '.permissions.push // false' 2>/dev/null) ||
@@ -772,24 +795,34 @@ cache_trunk() {
     if [[ ! -e ${repo_dir}/x.fork-parent ]]
     then
       local existing_parent_spec=""
-      existing_parent_spec=$(probe_fork_parent "${org_repo}") || existing_parent_spec=""
+      local probe_rc=0
+      existing_parent_spec=$(probe_fork_parent "${org_repo}") || probe_rc=$?
 
-      if [[ -n $existing_parent_spec ]]
+      if (( probe_rc == 0 ))
       then
-        info "${org_repo} is a fork of ${existing_parent_spec}; wiring alternates retroactively"
-        local existing_parent_cache
-        existing_parent_cache=$(cache_trunk "$existing_parent_spec") ||
-          die "cache_trunk: Unable to cache parent ‘${existing_parent_spec}’ for fork ‘${org_repo}’"
-
-        local alt_file="${repo_dir}/objects/info/alternates"
-        if [[ ! -e $alt_file ]]
+        if [[ -n $existing_parent_spec ]]
         then
-          printf '%s\n' "${existing_parent_cache}/objects" > "$alt_file" ||
-            die "cache_trunk: Unable to write alternates for ‘${org_repo}’"
-        fi
-      fi
+          info "${org_repo} is a fork of ${existing_parent_spec}; wiring alternates retroactively"
+          local existing_parent_cache
+          existing_parent_cache=$(cache_trunk "$existing_parent_spec") ||
+            die "cache_trunk: Unable to cache parent ‘${existing_parent_spec}’ for fork ‘${org_repo}’"
 
-      printf '%s' "$existing_parent_spec" > "${repo_dir}/x.fork-parent" || true
+          local alt_file="${repo_dir}/objects/info/alternates"
+          if [[ ! -e $alt_file ]]
+          then
+            printf '%s\n' "${existing_parent_cache}/objects" > "$alt_file" ||
+              die "cache_trunk: Unable to write alternates for ‘${org_repo}’"
+          fi
+        fi
+
+        # Only cache the result when the probe SUCCEEDED. Empty marker
+        # now unambiguously means "probed, not a fork" — distinct from
+        # "never probed". On probe failure (gh missing, transient net
+        # error) we leave the cookie absent so the next call retries.
+        printf '%s' "$existing_parent_spec" > "${repo_dir}/x.fork-parent" || true
+      else
+        warn "cache_trunk: Could not probe fork parent for ${org_repo} (gh missing, auth expired, or network error); skipping alternates wiring — will retry on next call"
+      fi
     fi
 
     local fetch_output
@@ -821,14 +854,13 @@ cache_trunk() {
     # Probe whether this is a fork on GitHub.  If so, recursively cache
     # the parent first and wire this cache's objects/info/alternates to
     # the parent's objects/, so the initial fetch only downloads
-    # fork-unique objects.  Empty parent_spec means "not a fork" (or
-    # `gh` unavailable) — falls through to a standard self-contained
-    # bare cache.
+    # fork-unique objects.
     local parent_spec=""
-    parent_spec=$(probe_fork_parent "${org_repo}") || parent_spec=""
+    local probe_rc=0
+    parent_spec=$(probe_fork_parent "${org_repo}") || probe_rc=$?
 
     local alternates_objects_dir=""
-    if [[ -n $parent_spec ]]
+    if (( probe_rc == 0 )) && [[ -n $parent_spec ]]
     then
       info "${org_repo} is a fork of ${parent_spec}; sharing objects via alternates"
       local parent_cache
@@ -839,9 +871,15 @@ cache_trunk() {
 
     init_bare_cache "$repo_dir" "$clone_source" "$alternates_objects_dir"
 
-    # Record the probe result so future cache_trunk runs on this repo
-    # don't have to re-query GitHub.  Empty file = "checked, not a fork".
-    printf '%s' "$parent_spec" > "${repo_dir}/x.fork-parent" || true
+    if (( probe_rc == 0 ))
+    then
+      # Record the probe result so future cache_trunk runs on this
+      # repo don't have to re-query GitHub. Empty file = "checked, not
+      # a fork". Skip writing on probe failure so the next call retries.
+      printf '%s' "$parent_spec" > "${repo_dir}/x.fork-parent" || true
+    else
+      warn "cache_trunk: Could not probe fork parent for ${org_repo} (gh missing, auth expired, or network error); cached without alternates — will retry probe on next call"
+    fi
 
     maybe_execute_hook "${org}" "${repo}" post-cache
   fi
@@ -2219,17 +2257,32 @@ fork() {
       "$parent_org" "$parent_repo" "$gh_user"
   else
     local fork_spec="${gh_user}/${parent_repo}"
-    local existing_parent
-    existing_parent=$(probe_fork_parent "$fork_spec") || existing_parent=""
-
-    if [[ -n $existing_parent && $existing_parent != "${parent_org}/${parent_repo}" ]]
-    then
-      die "fork: %s already exists but is a fork of %s, not %s/%s" \
-        "$fork_spec" "$existing_parent" "$parent_org" "$parent_repo"
-    fi
 
     if command gh api "/repos/${fork_spec}" >/dev/null 2>&1
     then
+      # Repo exists at the fork name. Confirm it's actually a fork
+      # of the requested parent — without this, a same-named repo
+      # that's NOT a fork (or is a fork of a different parent) would
+      # be silently picked up as if it were ours, and clone would
+      # pull the wrong code.
+      local existing_parent=""
+      local probe_rc=0
+      existing_parent=$(probe_fork_parent "$fork_spec") || probe_rc=$?
+
+      if (( probe_rc != 0 ))
+      then
+        die "fork: %s exists but probing its fork parent failed (gh missing, auth expired, or network error). Refusing to clone without verifying it's a fork of %s/%s." \
+          "$fork_spec" "$parent_org" "$parent_repo"
+      fi
+
+      if [[ $existing_parent != "${parent_org}/${parent_repo}" ]]
+      then
+        die "fork: %s already exists but is %s, not a fork of %s/%s. Refusing to overwrite." \
+          "$fork_spec" \
+          "${existing_parent:+a fork of $existing_parent}${existing_parent:-not a fork}" \
+          "$parent_org" "$parent_repo"
+      fi
+
       info "fork: %s already exists; skipping gh repo fork" "$fork_spec"
     else
       info "fork: forking %s/%s as %s" "$parent_org" "$parent_repo" "$fork_spec"
@@ -2238,8 +2291,10 @@ fork() {
 
       # Wait for the new fork to become visible — gh creates forks
       # asynchronously and the API can return 404 for several seconds
-      # after the fork command returns.
+      # after the fork command returns. Backoff caps at ~5s so we
+      # don't burn rate-limit on a stuck fork.
       local attempts=0
+      local delay=1
       until command gh api "/repos/${fork_spec}" >/dev/null 2>&1
       do
         ((attempts++))
@@ -2247,7 +2302,8 @@ fork() {
         then
           die "fork: timed out waiting for %s to become visible" "$fork_spec"
         fi
-        sleep 1
+        sleep "$delay"
+        (( delay < 5 )) && delay=$(( delay + 1 ))
       done
     fi
   fi

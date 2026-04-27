@@ -159,6 +159,15 @@ if [[ $1 == api && $2 == /repos/* ]]; then
     pushable/ownedrepo)
       json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
       ;;
+    parentorg/collisionrepo)
+      json='{"fork":false,"parent":null,"permissions":{"push":false},"topics":[],"default_branch":"main"}'
+      ;;
+    myuser/collisionrepo)
+      # Same name as parentorg's repo but NOT a fork of it. The fork
+      # command must die loudly here instead of silently cloning this
+      # unrelated repo.
+      json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
+      ;;
     *)
       # Match real gh behavior: error body goes to STDOUT (not stderr),
       # then exit non-zero.  This is what real `gh api` does for HTTP 4xx
@@ -2049,6 +2058,24 @@ then
   pass "fork rejects malformed input"
 else
   fail "fork malformed: expected nonzero rc + no clone, got rc=${rc} result='${result}'"
+fi
+
+# Test: fork dies when an unrelated repo with the fork name exists.
+# parentorg/collisionrepo is the request; myuser/collisionrepo also
+# exists but is NOT a fork. Without the collision check, fork would
+# silently clone myuser/collisionrepo (the unrelated repo) instead
+# of forking parentorg/collisionrepo and cloning that.
+run_test
+result=$(
+  clone() { printf 'CLONE %s\n' "$1"; }
+  fork "parentorg/collisionrepo" 2>&1
+) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"already exists but is not a fork"* ]] && \
+   [[ $result != *"CLONE"* ]]
+then
+  pass "fork dies on name collision with non-fork"
+else
+  fail "fork collision: expected die with 'not a fork', no clone; got rc=${rc} result='${result}'"
 fi
 
 # ---------------------------------------------------------------------------
