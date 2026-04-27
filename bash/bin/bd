@@ -3,29 +3,62 @@
 # bd wrapper — chmod 700 the .beads directory on every invocation so
 # Dropbox/iCloud re-syncs that loosen the perms don't trigger bd's
 # 0755-warning on every call.
+#
+# Also anchor bd at the closest .beads at-or-below the git toplevel.
+# Without this, bd's auto-discovery drifts past a topic directory's
+# real .beads up to the surrounding repo's .beads/redirect — common
+# when the topics root is itself a git repo.
 
-if toplevel=$(git rev-parse --show-toplevel 2>/dev/null) && [[ -n $toplevel ]]
+beads_dir=""
+should_anchor=0
+
+if [[ -n ${BEADS_DIR:-} ]]
 then
-  beads_dir="${toplevel}/.beads"
-  if [[ -d $beads_dir ]]
-  then
-    chmod 700 "$beads_dir" 2>/dev/null || true
-
-    # Follow the redirect to the real DB directory, if configured.
-    if [[ -f ${beads_dir}/redirect ]]
+  # Caller already anchored bd (e.g. `timvisher_bd_topics bd <topic>
+  # -- …`). Honor it as-is — just chmod so Dropbox/iCloud re-syncs
+  # don't trigger the 0755 warning — and never override.
+  beads_dir="$BEADS_DIR"
+elif toplevel=$(git rev-parse --show-toplevel 2>/dev/null) && [[ -n $toplevel ]]
+then
+  toplevel_real=$(cd "$toplevel" 2>/dev/null && pwd -P) || toplevel_real=$toplevel
+  cur=$(pwd -P 2>/dev/null) || cur=
+  while [[ -n $cur && $cur != / ]]
+  do
+    if [[ -d "$cur/.beads" ]]
     then
-      redirect_target=$(< "${beads_dir}/redirect")
-      # $()-substitution already strips trailing newlines. Also strip any
-      # remaining trailing whitespace (CR from CRLF files, tabs, spaces).
-      while [[ $redirect_target == *[[:space:]] ]]
-      do
-        redirect_target=${redirect_target%?}
-      done
-      if [[ -n $redirect_target && -d $redirect_target ]]
-      then
-        chmod 700 "$redirect_target" 2>/dev/null || true
-      fi
+      beads_dir="$cur/.beads"
+      # Anchor only when below the toplevel; at-or-above, bd's normal
+      # discovery (and any redirect-following) handles the right thing.
+      [[ "${beads_dir%/.beads}" == "$toplevel_real" ]] || should_anchor=1
+      break
     fi
+    [[ $cur != "$toplevel_real" ]] || break
+    cur=$(dirname "$cur")
+  done
+fi
+
+if [[ -n $beads_dir ]]
+then
+  chmod 700 "$beads_dir" 2>/dev/null || true
+
+  if [[ -f "${beads_dir}/redirect" ]]
+  then
+    redirect_target=$(< "${beads_dir}/redirect")
+    # $()-substitution already strips trailing newlines. Also strip any
+    # remaining trailing whitespace (CR from CRLF files, tabs, spaces).
+    while [[ $redirect_target == *[[:space:]] ]]
+    do
+      redirect_target=${redirect_target%?}
+    done
+    if [[ -n $redirect_target && -d $redirect_target ]]
+    then
+      chmod 700 "$redirect_target" 2>/dev/null || true
+    fi
+  elif (( should_anchor ))
+  then
+    # Below the git toplevel and not a redirect — anchor bd here so
+    # auto-discovery doesn't drift up to a parent .beads/redirect.
+    export BEADS_DIR="$beads_dir"
   fi
 fi
 

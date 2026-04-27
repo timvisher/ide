@@ -25,6 +25,9 @@ run_test() {
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/bd"
 
 tmpdir=$(mktemp -d)
+# Canonicalize: macOS /var → /private/var, and the bd wrapper does
+# `pwd -P` so the BEADS_DIR it sets uses the resolved path.
+tmpdir=$(cd "$tmpdir" && pwd -P)
 trap 'rm -rf "$tmpdir"' EXIT
 
 # Fake bd: just echoes its args so we can confirm exec reached it.
@@ -43,7 +46,7 @@ chmod 0755 "$tmpdir/repo1/.beads"
   cd "$tmpdir/repo1"
   BD_BINARY="$tmpdir/fake-bd" "$script" hello >/dev/null
 )
-perms=$(stat -f '%Lp' "$tmpdir/repo1/.beads")
+perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo1/.beads")
 if [[ $perms == 700 ]]
 then
   pass "chmods .beads from 0755 to 0700 in repo root"
@@ -61,8 +64,8 @@ chmod 0755 "$tmpdir/repo2/.beads" "$tmpdir/target2"
   cd "$tmpdir/repo2"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-local_perms=$(stat -f '%Lp' "$tmpdir/repo2/.beads")
-target_perms=$(stat -f '%Lp' "$tmpdir/target2")
+local_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo2/.beads")
+target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target2")
 if [[ $local_perms == 700 && $target_perms == 700 ]]
 then
   pass "chmods both .beads and the redirect target to 0700"
@@ -108,7 +111,7 @@ result=$(
   cd "$tmpdir/repo5"
   BD_BINARY="$tmpdir/fake-bd" "$script" note 2>&1
 )
-local_perms=$(stat -f '%Lp' "$tmpdir/repo5/.beads")
+local_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo5/.beads")
 if [[ $result == "fake-bd note" && $local_perms == 700 ]]
 then
   pass "tolerates missing redirect target; still chmods local and exec's bd"
@@ -126,7 +129,7 @@ chmod 0755 "$tmpdir/repo6/.beads" "$tmpdir/target6"
   cd "$tmpdir/repo6"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-target_perms=$(stat -f '%Lp' "$tmpdir/target6")
+target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target6")
 if [[ $target_perms == 700 ]]
 then
   pass "strips CRLF from redirect target so chmod reaches the real dir"
@@ -144,12 +147,75 @@ chmod 0755 "$tmpdir/repo7/.beads" "$tmpdir/target7"
   cd "$tmpdir/repo7"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-target_perms=$(stat -f '%Lp' "$tmpdir/target7")
+target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target7")
 if [[ $target_perms == 700 ]]
 then
   pass "strips trailing spaces/tabs from redirect target"
 else
   fail "expected target perms=700 with trailing whitespace, got ${target_perms}"
+fi
+
+# Fake bd that prints whether BEADS_DIR was set by the caller.
+cat > "$tmpdir/echo-bd" <<'MOCK'
+#!/usr/bin/env bash
+echo "BEADS_DIR=${BEADS_DIR:-}"
+MOCK
+chmod +x "$tmpdir/echo-bd"
+
+# --- Test 8: anchors BEADS_DIR at a topic dir below the git toplevel ---
+# Mirrors the user's drift case: topics root is a git repo, the actual
+# topic lives in a subdirectory. Without BEADS_DIR, bd's auto-discovery
+# walks up to the topics-root .beads/redirect and uses the wrong topic.
+run_test
+mkdir -p "$tmpdir/repo8/Incidents/53555/.beads" "$tmpdir/repo8/.beads" "$tmpdir/wrong-target"
+git -C "$tmpdir/repo8" init -q
+printf '%s\n' "$tmpdir/wrong-target/.beads" > "$tmpdir/repo8/.beads/redirect"
+result=$(
+  cd "$tmpdir/repo8/Incidents/53555"
+  BD_BINARY="$tmpdir/echo-bd" "$script"
+)
+if [[ $result == "BEADS_DIR=$tmpdir/repo8/Incidents/53555/.beads" ]]
+then
+  pass "anchors BEADS_DIR at the topic dir, not the surrounding repo's redirect"
+else
+  fail "expected BEADS_DIR at topic dir; got '${result}'"
+fi
+
+# --- Test 9: at-or-above git toplevel, leaves BEADS_DIR unset so the
+#     existing redirect-following discovery still applies ---
+run_test
+mkdir -p "$tmpdir/repo9/.beads" "$tmpdir/target9"
+git -C "$tmpdir/repo9" init -q
+printf '%s\n' "$tmpdir/target9" > "$tmpdir/repo9/.beads/redirect"
+result=$(
+  cd "$tmpdir/repo9"
+  BD_BINARY="$tmpdir/echo-bd" "$script"
+)
+if [[ $result == "BEADS_DIR=" ]]
+then
+  pass "does not override BEADS_DIR when at the git toplevel with a redirect"
+else
+  fail "expected BEADS_DIR unset; got '${result}'"
+fi
+
+# --- Test 10: a caller-supplied BEADS_DIR is preserved as-is ---
+# `timvisher_bd_topics bd <topic> -- …` exports BEADS_DIR to point at
+# an explicit topic. The wrapper must not clobber it with a CWD walk,
+# even when CWD lives inside a different topic dir below a git repo.
+run_test
+mkdir -p "$tmpdir/repo10/Incidents/53555/.beads" "$tmpdir/repo10/.beads" "$tmpdir/explicit-target/.beads"
+git -C "$tmpdir/repo10" init -q
+printf '%s\n' "$tmpdir/repo10/.beads/redirect-target" > "$tmpdir/repo10/.beads/redirect"
+result=$(
+  cd "$tmpdir/repo10/Incidents/53555"
+  BEADS_DIR="$tmpdir/explicit-target/.beads" \
+    BD_BINARY="$tmpdir/echo-bd" "$script"
+)
+if [[ $result == "BEADS_DIR=$tmpdir/explicit-target/.beads" ]]
+then
+  pass "preserves a caller-supplied BEADS_DIR (timvisher_bd_topics bd <topic>)"
+else
+  fail "expected explicit BEADS_DIR preserved; got '${result}'"
 fi
 
 echo ""
