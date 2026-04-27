@@ -6,9 +6,17 @@
 # Usage:
 #   timvisher_agents_install <dir>...
 #
-# Each <dir> should contain .agents/skills/ and/or .agents/languages/.
-# Skills and language docs are symlinked into ~/.agents/skills/ and
-# ~/.agents/languages/ respectively.
+# Each <dir> is an "agent home root" — its contents mirror what should
+# end up under $HOME for some agent. Recognized subpaths:
+#
+#   <dir>/.agents/skills/<name>     → ~/.agents/skills/<name>
+#   <dir>/.agents/languages/<name>  → ~/.agents/languages/<name>
+#   <dir>/.claude/hooks/<name>      → ~/.claude/hooks/<name>
+#
+# Typical layout in a config repo:
+#   <repo>/ai/HOME/        — cross-agent home (skills, languages)
+#   <repo>/ai/claude/HOME/ — Claude-specific home (hooks, etc.)
+# Pass both as separate args.
 #
 # After installing, the following symlinks are created/verified:
 #   - ~/AGENTS.md            → ~/git/ide/ai/HOME/AGENTS.md
@@ -28,6 +36,42 @@
 # Uses Python as a portable fallback since macOS realpath lacks -m.
 canon_path() {
   python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
+# Preferred prefixes for symlink targets. When a target's canonical path
+# lies under one of these prefixes (after resolving symlinks), rewrite the
+# link to use the preferred form instead. This keeps installed symlinks
+# stable across worktrees — e.g. `~/.config/timvisher/ide/...` rather than
+# `~/git/DataDog/timvisher-ide-datadog-system-extensions/main/...`.
+preferred_prefixes=(
+  "${HOME}/.config/timvisher/ide"
+  "${HOME}/git/ide"
+)
+
+# Given a path, return the preferred form if its canonical form lies under
+# a preferred prefix; otherwise return the canonical form.
+prefer_path() {
+  local path=$1
+  local canon
+  canon=$(canon_path "$path")
+  local pref
+  for pref in "${preferred_prefixes[@]}"
+  do
+    [[ -d $pref ]] || continue
+    local pref_canon
+    pref_canon=$(canon_path "$pref")
+    if [[ $canon == "$pref_canon" ]]
+    then
+      printf '%s\n' "$pref"
+      return
+    fi
+    if [[ $canon == "${pref_canon}"/* ]]
+    then
+      printf '%s%s\n' "$pref" "${canon#"$pref_canon"}"
+      return
+    fi
+  done
+  printf '%s\n' "$canon"
 }
 
 require_python3() {
@@ -61,6 +105,8 @@ ensure_dir() {
 }
 
 # Create or verify a symlink. Errors if target exists and points elsewhere.
+# If the existing symlink resolves to the same file but its literal text
+# differs from the desired text, the link is rewritten so it matches.
 ensure_symlink() {
   local link=$1
   local target=$2
@@ -80,24 +126,31 @@ ensure_symlink() {
     fi
     # Resolve the desired target (may be relative to CWD)
     target_resolved=$(canon_path "$target")
-    if [[ $existing_resolved != "$target_resolved" ]]
+    if [[ $existing_resolved == "$target_resolved" ]]
     then
-      if [[ ! -e $link ]]
+      # Same underlying file. Update the literal text if it differs from
+      # the desired (e.g., raw worktree path → preferred prefix).
+      if [[ $existing_raw != "$target" ]]
       then
-        # Dangling symlink — safe to replace
         rm "$link"
         ln -s "$target" "$link"
-        info 'Replaced dangling symlink '%s' → '%s'' "$link" "$target"
-      else
-        found_error "'${link}' resolves to '${existing_resolved}', not '${target_resolved}'"
+        info "Updated symlink '%s' → '%s' (was → '%s')" "$link" "$target" "$existing_raw"
       fi
+    elif [[ ! -e $link ]]
+    then
+      # Dangling symlink — safe to replace
+      rm "$link"
+      ln -s "$target" "$link"
+      info "Replaced dangling symlink '%s' → '%s'" "$link" "$target"
+    else
+      found_error "'${link}' resolves to '${existing_resolved}', not '${target_resolved}'"
     fi
   elif [[ -e $link ]]
   then
     found_error "'${link}' exists and is not a symlink"
   else
     ln -s "$target" "$link"
-    info 'Created symlink '%s' → '%s'' "$link" "$target"
+    info "Created symlink '%s' → '%s'" "$link" "$target"
   fi
 }
 
@@ -118,7 +171,7 @@ do_install_from() {
       # Remove trailing slash and canonicalize to absolute path so the
       # symlink target resolves correctly from ~/.agents/skills/
       skill=${skill%/}
-      ensure_symlink "${HOME}/.agents/skills/${name}" "$(canon_path "$skill")"
+      ensure_symlink "${HOME}/.agents/skills/${name}" "$(prefer_path "$skill")"
     done
   fi
 
@@ -132,25 +185,46 @@ do_install_from() {
       [[ -f $lang ]] || continue
       local name
       name=$(basename "$lang")
-      ensure_symlink "${HOME}/.agents/languages/${name}" "$(canon_path "$lang")"
+      ensure_symlink "${HOME}/.agents/languages/${name}" "$(prefer_path "$lang")"
     done
+  fi
+
+  local claude_hooks_dir="${dir}/.claude/hooks"
+  if [[ -d $claude_hooks_dir ]]
+  then
+    found_something=true
+    if [[ ! -d ${HOME}/.claude ]]
+    then
+      # shellcheck disable=SC2088 # ~ is intentional in log message
+      warn '~/.claude does not exist; skipping Claude hooks from %s' "$dir"
+    else
+      ensure_dir "${HOME}/.claude/hooks"
+      local hook
+      for hook in "${claude_hooks_dir}"/*
+      do
+        [[ -f $hook ]] || continue
+        local name
+        name=$(basename "$hook")
+        ensure_symlink "${HOME}/.claude/hooks/${name}" "$(prefer_path "$hook")"
+      done
+    fi
   fi
 
   if [[ $found_something == false ]]
   then
-    found_error "No .agents/skills/ or .agents/languages/ directory found in '${dir}'"
+    found_error "No .agents/skills/, .agents/languages/, or .claude/hooks/ directory found in '${dir}'"
   fi
 }
 
 do_resolve() {
   # ~/AGENTS.md → ~/git/ide/ai/HOME/AGENTS.md
-  ensure_symlink "${HOME}/AGENTS.md" "$(canon_path "${HOME}/git/ide/ai/HOME/AGENTS.md")"
+  ensure_symlink "${HOME}/AGENTS.md" "$(prefer_path "${HOME}/git/ide/ai/HOME/AGENTS.md")"
 
   # ~/.claude/CLAUDE.md → ~/AGENTS.md
   if [[ -d ${HOME}/.claude ]]
   then
-    ensure_symlink "${HOME}/.claude/CLAUDE.md" "$(canon_path "${HOME}/AGENTS.md")"
-    ensure_symlink "${HOME}/.claude/skills" "$(canon_path "${HOME}/.agents/skills")"
+    ensure_symlink "${HOME}/.claude/CLAUDE.md" "$(prefer_path "${HOME}/AGENTS.md")"
+    ensure_symlink "${HOME}/.claude/skills" "$(prefer_path "${HOME}/.agents/skills")"
   else
     # shellcheck disable=SC2088 # ~ is intentional in log message
     warn '~/.claude does not exist; skipping Claude symlinks'
@@ -160,7 +234,7 @@ do_resolve() {
   # ~/.codex/skills/<name> → ~/.agents/skills/<name> (preserving .system/)
   if [[ -d ${HOME}/.codex ]]
   then
-    ensure_symlink "${HOME}/.codex/AGENTS.md" "$(canon_path "${HOME}/AGENTS.md")"
+    ensure_symlink "${HOME}/.codex/AGENTS.md" "$(prefer_path "${HOME}/AGENTS.md")"
 
     if [[ -d ${HOME}/.codex/skills ]]
     then
@@ -172,7 +246,7 @@ do_resolve() {
         name=$(basename "$skill")
         # Remove trailing slash
         skill=${skill%/}
-        ensure_symlink "${HOME}/.codex/skills/${name}" "$(canon_path "${HOME}/.agents/skills/${name}")"
+        ensure_symlink "${HOME}/.codex/skills/${name}" "$(prefer_path "${HOME}/.agents/skills/${name}")"
       done
     else
       # shellcheck disable=SC2088 # ~ is intentional in log message
