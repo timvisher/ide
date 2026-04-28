@@ -34,8 +34,22 @@ history and editing.
   Example: `diff -ua "AppleScript/background noise.applescript" <(git
   show HEAD:"AppleScript/background noise.applescript")`.
 
-#### Adding new files
+#### Adding or editing files
 
-Default to UTF-8 (no BOM). Avoid Script Editor's UTF-16 LE BOM unless
-you specifically need Script Editor round-trip — once a file is UTF-16,
-every programmatic edit becomes a sed exercise.
+- **Prefer pure ASCII when feasible.** Script Editor does NOT read UTF-8
+  correctly; UTF-8 is only safe for files Script Editor will never open.
+  Avoid `¬` (use a temp variable to break long expressions across lines
+  instead), avoid smart quotes (`""`), avoid ellipsis (`…` -> `...`).
+  Pure-ASCII files have no encoding ambiguity and edit cleanly.
+- **When non-ASCII is unavoidable** (and the file may be opened in
+  Script Editor), use the encoding Script Editor produces — MacRoman
+  by default, UTF-16 LE BOM if Script Editor's preferences are set
+  that way. Add a `working-tree-encoding` entry to `.gitattributes`:
+  ```
+  AppleScript/some[[:space:]]file.applescript diff working-tree-encoding=MACINTOSH
+  AppleScript/some[[:space:]]other.applescript diff working-tree-encoding=UTF-16LE-BOM
+  ```
+  Git will then store the file as UTF-8 internally and round-trip the
+  working-tree bytes through `iconv` on checkout/checkin.
+- **Never write UTF-8 to a file Script Editor will edit.** Doing so
+  breaks Script Editor's parser at any non-ASCII byte.

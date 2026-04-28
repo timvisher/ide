@@ -24,7 +24,7 @@ on executeJsInActiveTab(js)
 		display dialog msg
 		error msg
 	end if
-	-- `execute … javascript …` is Chrome/Chromium-specific terminology.
+	-- `execute ... javascript ...` is Chrome/Chromium-specific terminology.
 	-- `using terms from` lets the compiler resolve it while the runtime
 	-- target stays dynamic (Chrome, Vivaldi, etc. share this dictionary).
 	using terms from application "Google Chrome"
@@ -39,8 +39,8 @@ on executeJsFileInActiveTab(jsFile)
 end executeJsFileInActiveTab
 
 on executeHomePOSIXJsFileInActiveTab(homeFolderPosixPath)
-	executeJsFileInActiveTab(POSIX file ¬
-		((POSIX path of (path to home folder)) & homeFolderPosixPath))
+	set fullPath to (POSIX path of (path to home folder)) & homeFolderPosixPath
+	executeJsFileInActiveTab(POSIX file fullPath)
 end executeHomePOSIXJsFileInActiveTab
 
 on getActiveTabUrl()
