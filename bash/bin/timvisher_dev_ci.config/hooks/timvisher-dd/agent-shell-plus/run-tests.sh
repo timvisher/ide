@@ -6,6 +6,11 @@
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
+# Confirm an `upstream` remote is configured. The streaming-dedup
+# branch needs to push to upstream; bailing here surfaces a missing
+# remote before tests run rather than after a failed `git push`.
+git remote -v show upstream || exit 1
+
 git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
 
 echo "--- bin/test (byte-compile, ERT, README check) ---"
