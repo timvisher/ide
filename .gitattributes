@@ -4,6 +4,7 @@ AppleScript/break[[:space:]]-[[:space:]]start.applescript diff working-tree-enco
 
 # Mac OS Roman AppleScript files saved by Script Editor.app
 AppleScript/Script[[:space:]]Libraries/Vivaldi.applescript diff working-tree-encoding=MACINTOSH
+AppleScript/ntmux3[[:space:]]current[[:space:]]tab.applescript diff working-tree-encoding=MACINTOSH
 
 # Use bd merge for beads JSONL files
 .beads/beads.jsonl merge=beads
