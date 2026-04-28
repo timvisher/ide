@@ -9,7 +9,9 @@
 #       [--link='[[file:PATH::*HEADING]]'] \
 #       [--body=- | --body-file=PATH] \
 #       [--tag=NAME ...] \
-#       [--property=KEY=VAL ...]
+#       [--property=KEY=VAL ...] \
+#       [--position=top|bottom] \
+#       [--creation-timestamp[=TIMESTAMP]]
 #
 # - --link resolves the parent via org-link-search. Only file: links pointing
 #   at the same file as the positional <file> argument are accepted, with a
@@ -19,7 +21,22 @@
 # - --body=-      reads body content from stdin.
 # - --body-file=PATH reads body content from file. Mutually exclusive with --body.
 # - --tag is repeatable; tags are written inline on the heading line.
-# - --property=KEY=VAL is repeatable; written into a :PROPERTIES: drawer.
+# - --property=KEY=VAL is repeatable; written into a :PROPERTIES: drawer that
+#   respects org-adapt-indentation (matches what org-capture produces).
+# - --position=top|bottom controls placement within the parent's subtree.
+#   Default is bottom (after all existing children, before the parent's next
+#   sibling). top inserts as the first child — after the parent's metadata
+#   (planning, drawers) and any leading body text, but before the first
+#   existing child heading. For top-level inserts (no parent), top inserts
+#   before the first heading in the file; bottom appends at end-of-file.
+#   Specifying --position=top forces the extended elisp path even when used
+#   with the positional [parent-heading] form.
+# - --creation-timestamp emits an inactive org timestamp after the PROPERTIES
+#   drawer (or after the heading line when no drawer is present), wrapped by
+#   blank lines. With no value, the current local time is used in the
+#   "[YYYY-MM-DD Day HH:MM]" format. With =TIMESTAMP, the literal value is
+#   inserted (the caller is responsible for shape). Mirrors the %U token
+#   from the user's org-capture templates.
 
 set -euo pipefail
 
@@ -29,13 +46,16 @@ Usage: org-add-heading <file.org> <new-heading> [parent-heading]
        org-add-heading <file.org> <new-heading> [--link=ORG-LINK]
                        [--body=- | --body-file=PATH]
                        [--tag=NAME ...] [--property=KEY=VAL ...]
+                       [--position=top|bottom]
+                       [--creation-timestamp[=TIMESTAMP]]
 
 Examples:
   org-add-heading todo.org "New Task"
   org-add-heading todo.org "Subtask" "Parent Task"
   org-add-heading wiki.org "2026-04-25" \
       --link='[[file:~/wiki.org::*journal]]' \
-      --body=- --tag=ai_prepped --property=GENERATED-BY=claude
+      --body=- --tag=ai_prepped --property=GENERATED-BY=claude \
+      --position=top --creation-timestamp
 EOF
 }
 
@@ -55,6 +75,9 @@ body_source=""        # "stdin", "file", or ""
 body_file_path=""
 tags=()
 properties=()
+position="bottom"     # "top" or "bottom"
+creation_timestamp_set="false"
+creation_timestamp=""
 
 # Require a value for the space-separated form of a flag (e.g. `--link X`).
 # Errors out if $# < 2 (i.e. the flag was the final argument with no value).
@@ -128,6 +151,23 @@ do
       require_value --property "$#"
       shift
       properties+=("$1")
+      ;;
+    --position=*)
+      position="${arg#--position=}"
+      ;;
+    --position)
+      require_value --position "$#"
+      shift
+      position="$1"
+      ;;
+    --creation-timestamp=*)
+      creation_timestamp="${arg#--creation-timestamp=}"
+      creation_timestamp_set="true"
+      ;;
+    --creation-timestamp)
+      # No value form: generate current local time in inactive-timestamp shape.
+      creation_timestamp="$(date +'[%Y-%m-%d %a %H:%M]')"
+      creation_timestamp_set="true"
       ;;
     --help|-h)
       usage
@@ -227,6 +267,13 @@ do
   fi
 done
 
+# Validate --position value.
+if [[ "$position" != "top" && "$position" != "bottom" ]]
+then
+  echo "Error: --position must be 'top' or 'bottom': '$position'" >&2
+  exit 1
+fi
+
 # Validate tag format (no colons or whitespace inside).
 for tag in "${tags[@]+"${tags[@]}"}"
 do
@@ -284,7 +331,9 @@ legacy_path="false"
 if [[ -z "$link_target" \
    && -z "$body_source" \
    && ${#tags[@]} -eq 0 \
-   && ${#properties[@]} -eq 0 ]]
+   && ${#properties[@]} -eq 0 \
+   && "$position" == "bottom" \
+   && "$creation_timestamp_set" == "false" ]]
 then
   legacy_path="true"
 fi
@@ -339,6 +388,9 @@ export ORG_ADD_HEADING_HEADING="$new_heading"
 export ORG_ADD_HEADING_LINK="$link_target"
 export ORG_ADD_HEADING_PARENT="$parent_heading"
 export ORG_ADD_HEADING_BODY_FILE="${body_tmp:-}"
+export ORG_ADD_HEADING_POSITION="$position"
+export ORG_ADD_HEADING_CREATION_TIMESTAMP="$creation_timestamp"
+export ORG_ADD_HEADING_CREATION_TIMESTAMP_SET="$creation_timestamp_set"
 # Tags and properties as newline-separated lists.
 ORG_ADD_HEADING_TAGS=""
 for tag in "${tags[@]+"${tags[@]}"}"
@@ -380,8 +432,18 @@ cat >"$elisp_tmp" <<'ELISP_EOF'
                  (with-temp-buffer
                    (insert-file-contents body-file)
                    (buffer-string))
-               "")))
+               ""))
+       (position (or (getenv "ORG_ADD_HEADING_POSITION") "bottom"))
+       (creation-timestamp-set
+        (string= (or (getenv "ORG_ADD_HEADING_CREATION_TIMESTAMP_SET") "")
+                 "true"))
+       (creation-timestamp (getenv "ORG_ADD_HEADING_CREATION_TIMESTAMP")))
   (find-file file)
+  ;; Force org-mode so org-adapt-indentation, org-current-level, and
+  ;; org-link-search behave predictably regardless of how the buffer
+  ;; opened (e.g. filename without a .org suffix).
+  (unless (derived-mode-p 'org-mode)
+    (org-mode))
   (cond
    ;; --link path: resolve via org-link-search, walk back to enclosing heading.
    ((and link-target (not (string-empty-p link-target)))
@@ -429,21 +491,72 @@ cat >"$elisp_tmp" <<'ELISP_EOF'
                       (concat " :" (mapconcat (function identity) tags ":") ":")
                     ""))
          (heading-line (concat stars " " heading-text tag-str "\n")))
-    (if at-heading
-        (progn
-          (org-end-of-subtree t t)
-          (unless (bolp) (insert "\n")))
+    (cond
+     ;; Child + top: insert as first child of parent. Skip parent's
+     ;; meta-data (planning, drawers), then position before the first
+     ;; existing child heading inside the parent's subtree. With no
+     ;; existing children, this lands at end-of-subtree (same as
+     ;; bottom).
+     ((and at-heading (string= position "top"))
+      (org-end-of-meta-data t)
+      (let ((subtree-end (save-excursion (org-end-of-subtree t t) (point))))
+        (if (re-search-forward "^\\*+ " subtree-end t)
+            (beginning-of-line)
+          (goto-char subtree-end)))
       (unless (bolp) (insert "\n")))
+     ;; Child + bottom: existing behavior (after all existing children).
+     (at-heading
+      (org-end-of-subtree t t)
+      (unless (bolp) (insert "\n")))
+     ;; Top-level + top: before first heading in file. If no headings
+     ;; exist yet, fall through to end-of-file.
+     ((string= position "top")
+      (goto-char (point-min))
+      (if (re-search-forward "^\\*+ " nil t)
+          (beginning-of-line)
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))))
+     ;; Top-level + bottom: existing behavior (already at point-max
+     ;; from the parent-resolution cond above).
+     (t
+      (unless (bolp) (insert "\n"))))
     (insert heading-line)
-    (when props
-      (insert ":PROPERTIES:\n")
-      (dolist (kv props)
-        (insert (format ":%s: %s\n" (car kv) (cdr kv))))
-      (insert ":END:\n"))
-    (when (and body (not (string-empty-p body)))
-      (insert body)
-      (unless (string-suffix-p "\n" body)
-        (insert "\n")))
+    ;; Indentation is driven by org-adapt-indentation:
+    ;;   t              -> drawer + body text both indented (parent + 1) spaces
+    ;;   'headline-data -> drawer indented, body text not
+    ;;   nil            -> neither indented
+    ;; This matches what org-capture / native org-mode editing produces in
+    ;; the surrounding file.
+    (let* ((adapt (and (boundp 'org-adapt-indentation) org-adapt-indentation))
+           ;; org-adapt-indentation indents to (heading-level + 1) spaces
+           ;; (one space past the stars, matching what org-capture writes).
+           (indent-string (make-string (1+ new-level) ?\s))
+           (drawer-indent (if (memq adapt '(t headline-data))
+                              indent-string
+                            ""))
+           (body-indent   (if (eq adapt t)
+                              indent-string
+                            "")))
+      (when props
+        (insert drawer-indent ":PROPERTIES:\n")
+        (dolist (kv props)
+          (insert drawer-indent (format ":%s: %s\n" (car kv) (cdr kv))))
+        (insert drawer-indent ":END:\n"))
+      ;; Creation timestamp: blank line, indented timestamp line. The blank
+      ;; line before the body (if any) is added below.
+      (when (and creation-timestamp-set
+                 (not (string-empty-p creation-timestamp)))
+        (insert "\n" body-indent creation-timestamp "\n"))
+      (when (and body (not (string-empty-p body)))
+        ;; Separator before body when timestamp precedes it. Without a
+        ;; timestamp, the body comes immediately after the drawer (or
+        ;; heading line), preserving the prior shape.
+        (when (and creation-timestamp-set
+                   (not (string-empty-p creation-timestamp)))
+          (insert "\n"))
+        (insert body)
+        (unless (string-suffix-p "\n" body)
+          (insert "\n"))))
     ;; Append one blank line after the inserted block for visual separation,
     ;; matching the legacy positional path which always inserted "\n\n" after
     ;; the heading. Result: file ends with \n\n (or our block is followed by

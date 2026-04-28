@@ -284,6 +284,38 @@ else
   fail "extra positional should error: $result"
 fi
 
+# Test: --position with invalid value rejected
+run_test
+result=$("$script" "$f" "H" --position=middle 2>&1 || true)
+if [[ $result == *"--position must be"* ]]
+then
+  pass "--position invalid value rejected"
+else
+  fail "--position=middle should error: $result"
+fi
+
+# Test: --position missing value
+run_test
+result=$("$script" "$f" "H" --position 2>&1 || true)
+if [[ $result == *"--position requires a value"* ]]
+then
+  pass "--position without value errors"
+else
+  fail "--position missing value did not error correctly: $result"
+fi
+
+# Test: --creation-timestamp with explicit value parses (no error)
+run_test
+result=$("$script" "$f" "H" --creation-timestamp="[2026-04-27 Mon 15:57]" \
+    --link="[[file:/elsewhere.org::*X]]" 2>&1 || true)
+# We expect file-mismatch error from --link, NOT a timestamp parse error.
+if [[ $result == *"must match the positional"* ]]
+then
+  pass "--creation-timestamp=VALUE parses cleanly"
+else
+  fail "--creation-timestamp=VALUE did not validate: $result"
+fi
+
 # ---------------------------------------------------------------------------
 # Emacs-batch tests
 # ---------------------------------------------------------------------------
@@ -446,6 +478,165 @@ else
     pass "legacy path: file ends with \\n\\n"
   else
     fail "legacy path trailing bytes: expected 0a0a, got $legacy_tail"
+  fi
+
+  # Test: --position=top inserts as first child (before existing children)
+  run_test
+  ptop=$(make_org pos-top.org $'* Parent\n** Existing 1\n** Existing 2\n')
+  "$script" "$ptop" "First" --link="[[file:$ptop::*Parent]]" \
+      --position=top >/dev/null 2>&1
+  # Expect order: Parent, First, Existing 1, Existing 2
+  order=$(grep -n '^\*' "$ptop" | head -4 | cut -d: -f2- | tr '\n' '|')
+  if [[ $order == '* Parent|** First|** Existing 1|** Existing 2|' ]]
+  then
+    pass "--position=top inserts before existing children"
+  else
+    fail "--position=top order wrong: $order"
+  fi
+
+  # Test: --position=top with no existing children behaves like bottom
+  run_test
+  ptop_empty=$(make_org pos-top-empty.org $'* Parent\n* Sibling\n')
+  "$script" "$ptop_empty" "OnlyChild" --link="[[file:$ptop_empty::*Parent]]" \
+      --position=top >/dev/null 2>&1
+  order=$(grep -n '^\*' "$ptop_empty" | head -3 | cut -d: -f2- | tr '\n' '|')
+  if [[ $order == '* Parent|** OnlyChild|* Sibling|' ]]
+  then
+    pass "--position=top with no children lands inside parent"
+  else
+    fail "--position=top empty-parent order wrong: $order"
+  fi
+
+  # Test: --position=top skips parent's PROPERTIES drawer
+  run_test
+  ptop_props=$(make_org pos-top-props.org \
+      $'* Parent\n:PROPERTIES:\n:foo: bar\n:END:\n** Existing\n* Sibling\n')
+  "$script" "$ptop_props" "First" --link="[[file:$ptop_props::*Parent]]" \
+      --position=top >/dev/null 2>&1
+  # Expected sequence: Parent → PROPERTIES drawer → First → Existing → Sibling.
+  # Compare structural lines (headings + drawer markers).
+  structure=$(grep -E '^\* |^\*\* |^:PROPERTIES:|^:END:' "$ptop_props" | tr '\n' '|')
+  expected='* Parent|:PROPERTIES:|:END:|** First|** Existing|* Sibling|'
+  if [[ "$structure" == "$expected" ]]
+  then
+    pass "--position=top respects PROPERTIES drawer"
+  else
+    fail "--position=top around PROPERTIES drawer wrong: $structure"
+  fi
+
+  # Test: --position=bottom is the default and matches existing behavior
+  run_test
+  pbot=$(make_org pos-bottom.org $'* Parent\n** Existing 1\n* Sibling\n')
+  "$script" "$pbot" "Last" --link="[[file:$pbot::*Parent]]" >/dev/null 2>&1
+  order=$(grep -n '^\*' "$pbot" | cut -d: -f2- | tr '\n' '|')
+  if [[ $order == '* Parent|** Existing 1|** Last|* Sibling|' ]]
+  then
+    pass "--position default (bottom) lands after existing children"
+  else
+    fail "default position order wrong: $order"
+  fi
+
+  # Test: --position=top forces extended path for positional parent-heading
+  run_test
+  ppos=$(make_org pos-positional.org $'* Parent\n** Existing\n* Sibling\n')
+  "$script" "$ppos" "First" "Parent" --position=top >/dev/null 2>&1
+  order=$(grep -n '^\*' "$ppos" | cut -d: -f2- | tr '\n' '|')
+  if [[ $order == '* Parent|** First|** Existing|* Sibling|' ]]
+  then
+    pass "--position=top works with positional parent-heading"
+  else
+    fail "--position=top + positional parent order wrong: $order"
+  fi
+
+  # Test: top-level --position=top inserts before first heading in file
+  run_test
+  ptop_toplevel=$(make_org pos-toplevel.org $'* First Existing\n* Second\n')
+  "$script" "$ptop_toplevel" "Brand New" --position=top \
+      --tag=marker >/dev/null 2>&1
+  order=$(grep -n '^\*' "$ptop_toplevel" | cut -d: -f2- | tr '\n' '|')
+  if [[ $order == '* Brand New :marker:|* First Existing|* Second|' ]]
+  then
+    pass "--position=top top-level inserts before first heading"
+  else
+    fail "--position=top top-level order wrong: $order"
+  fi
+
+  # Test: PROPERTIES drawer is indented per org-adapt-indentation (= t).
+  # For a level-2 child, org-mode convention is 3 spaces (level + 1).
+  run_test
+  ind_props=$(make_org indent-props.org $'* Anchor\n')
+  "$script" "$ind_props" "Indented" --link="[[file:$ind_props::*Anchor]]" \
+      --property=K=v >/dev/null 2>&1
+  if grep -q '^   :PROPERTIES:$' "$ind_props" \
+     && grep -q '^   :K: v$'        "$ind_props" \
+     && grep -q '^   :END:$'         "$ind_props"
+  then
+    pass "PROPERTIES drawer indented to match org-adapt-indentation"
+  else
+    fail "PROPERTIES drawer not indented:"
+    cat "$ind_props"
+  fi
+
+  # Test: --creation-timestamp emits an indented timestamp line, separated
+  # by blank lines, between drawer and body.
+  run_test
+  cts=$(make_org cts.org $'* Anchor\n')
+  printf 'body line\n' \
+    | "$script" "$cts" "Stamped" --link="[[file:$cts::*Anchor]]" \
+        --property=K=v --body=- \
+        --creation-timestamp="[2026-04-27 Mon 12:34]" >/dev/null 2>&1
+  # Expected layout (level-2 child, indent = 3):
+  #   * Anchor
+  #   ** Stamped
+  #      :PROPERTIES:
+  #      :K: v
+  #      :END:
+  #   <blank>
+  #      [2026-04-27 Mon 12:34]
+  #   <blank>
+  #   body line
+  #   <blank>
+  expected=$'* Anchor\n** Stamped\n   :PROPERTIES:\n   :K: v\n   :END:\n\n   [2026-04-27 Mon 12:34]\n\nbody line\n\n'
+  # Read bytes verbatim — $() strips trailing newlines.
+  actual=$(cat "$cts"; printf x)
+  actual=${actual%x}
+  if [[ "$actual" == "$expected" ]]
+  then
+    pass "--creation-timestamp emits indented timestamp between drawer and body"
+  else
+    fail "--creation-timestamp layout wrong:"
+    diff <(printf '%s' "$expected") <(printf '%s' "$actual") || true
+  fi
+
+  # Test: --creation-timestamp without explicit value uses current local time.
+  # We just check the shape "[YYYY-MM-DD Day HH:MM]" is present.
+  run_test
+  cts_auto=$(make_org cts-auto.org $'* Anchor\n')
+  "$script" "$cts_auto" "Auto" --link="[[file:$cts_auto::*Anchor]]" \
+      --creation-timestamp >/dev/null 2>&1
+  if grep -qE '^   \[[0-9]{4}-[0-9]{2}-[0-9]{2} [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}\]$' "$cts_auto"
+  then
+    pass "--creation-timestamp (no value) emits current time"
+  else
+    fail "--creation-timestamp auto did not produce expected shape:"
+    cat "$cts_auto"
+  fi
+
+  # Test: --creation-timestamp without drawer still emits the timestamp.
+  run_test
+  cts_no_props=$(make_org cts-no-props.org $'* Anchor\n')
+  printf 'body\n' \
+    | "$script" "$cts_no_props" "Stamped" --link="[[file:$cts_no_props::*Anchor]]" \
+        --body=- --creation-timestamp="[2026-04-27 Mon 12:34]" >/dev/null 2>&1
+  expected=$'* Anchor\n** Stamped\n\n   [2026-04-27 Mon 12:34]\n\nbody\n\n'
+  actual=$(cat "$cts_no_props"; printf x)
+  actual=${actual%x}
+  if [[ "$actual" == "$expected" ]]
+  then
+    pass "--creation-timestamp without drawer still emits timestamp"
+  else
+    fail "--creation-timestamp without drawer layout wrong:"
+    diff <(printf '%s' "$expected") <(printf '%s' "$actual") || true
   fi
 
 fi
