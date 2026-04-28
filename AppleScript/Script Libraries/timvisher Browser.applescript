@@ -6,7 +6,7 @@ on currentBrowser()
 	return browserName
 end currentBrowser
 
-on activate()
+on activate {}
 	tell application (my currentBrowser()) to activate
 end activate
 
