@@ -162,6 +162,11 @@ do
       ;;
     --creation-timestamp=*)
       creation_timestamp="${arg#--creation-timestamp=}"
+      if [[ -z $creation_timestamp ]]
+      then
+        echo "Error: --creation-timestamp= requires a non-empty value (use --creation-timestamp with no = for the current local time)." >&2
+        exit 1
+      fi
       creation_timestamp_set="true"
       ;;
     --creation-timestamp)
@@ -441,7 +446,9 @@ cat >"$elisp_tmp" <<'ELISP_EOF'
   (find-file file)
   ;; Force org-mode so org-adapt-indentation, org-current-level, and
   ;; org-link-search behave predictably regardless of how the buffer
-  ;; opened (e.g. filename without a .org suffix).
+  ;; opened (e.g. filename without a .org suffix). `derived-mode-p`
+  ;; covers any major mode derived from org-mode (org-roam-mode and
+  ;; friends are minor modes, so this doesn't collide with them).
   (unless (derived-mode-p 'org-mode)
     (org-mode))
   (cond

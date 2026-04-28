@@ -1194,8 +1194,46 @@ cmd__ensure_tests() {
     local level1_path="${REPO_HOOKS_DIR}/${main_owner}/${_wt_repo}/run-tests.sh"
     local level2_path="${REPO_HOOKS_DIR}/${me}/${_wt_repo}/run-tests.sh"
     local fork_repo_dir="${REPO_HOOKS_DIR}/${main_owner}/${_wt_repo}"
+    # When me == main_owner (e.g. fresh clone of upstream rather than
+    # the user's fork, or `gh_me` failed and fell back to $_wt_org),
+    # Level 1 and Level 2 collapse to the same path. Surface that in
+    # the prompt rather than presenting them as distinct levels.
+    local levels_collide="false"
+    if [[ $level1_path == "$level2_path" ]]
+    then
+        levels_collide="true"
+    fi
 
     mkdir -p "$(dirname "$target_path")"
+
+    local cascade_levels_block
+    if [[ $levels_collide == "true" ]]
+    then
+        cascade_levels_block="- Level 1 / Level 2 (collide for this worktree -- this clone is on
+  the fork-network main owner, so \"your repo\" and \"the upstream
+  repo\" are the same path):
+    ${level1_path}
+- Level 3/4 (this branch only):
+    ${target_path}
+
+Default to the Level 1/2 path (${level1_path}) when the script has
+no branch-specific dependencies.  Use Level 3/4 only when the
+script genuinely differs by branch.  Note that anything you write
+at the broader path applies to every fork the user maintains of
+this repo, so be conservative -- prefer Level 3/4 if uncertain."
+    else
+        cascade_levels_block="- Level 1 (fork-network repo, applies to every fork):
+    ${level1_path}
+- Level 2 (your repo, applies to all your branches):
+    ${level2_path}
+- Level 3/4 (this branch only):
+    ${target_path}
+
+Default to Level 2 (${level2_path}) when the script has no
+branch-specific dependencies.  Use Level 3/4 only when the script
+genuinely differs by branch.  Use Level 1 only when you intend to
+contribute the hook upstream."
+    fi
 
     local prompt_file
     prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") ||
@@ -1246,17 +1284,7 @@ cascade run (no shadowing), so a broader-level hook eliminates
 per-branch duplication.  Pick the broadest level whose semantics
 match the script you're writing:
 
-- Level 1 (fork-network repo, applies to every fork):
-    ${level1_path}
-- Level 2 (your repo, applies to all your branches):
-    ${level2_path}
-- Level 3/4 (this branch only):
-    ${target_path}
-
-Default to Level 2 (${level2_path}) when the script has no
-branch-specific dependencies.  Use Level 3/4 only when the script
-genuinely differs by branch.  Use Level 1 only when you intend to
-contribute the hook upstream.
+${cascade_levels_block}
 
 When you write at Level 1 or Level 2, look for redundant
 per-branch hooks under ${fork_repo_dir}/<branch>/run-tests.sh
