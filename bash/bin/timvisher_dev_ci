@@ -1173,8 +1173,10 @@ cmd__ensure_tests() {
         return 0
     fi
 
-    # New hooks created by the agent go into the checked-in config dir
-    # under the fork network main owner (level 3: fork-network branch).
+    # Compute the candidate paths for each cascade level.  The agent
+    # chooses one at write time -- broader levels (1, 2) avoid
+    # per-branch duplication when the script has no branch-specific
+    # dependencies; narrower levels (3, 4) handle the diverging case.
     local rel
     rel=$(worktree_rel_path "$worktree_path") || {
         warn "ensure_tests: cannot determine rel path for '%s'" "$worktree_path"
@@ -1184,9 +1186,14 @@ cmd__ensure_tests() {
     decompose_rel "$rel"
     local main_owner
     main_owner=$(fork_network_main_owner "$worktree_path") || main_owner=$_wt_org
+    local me
+    me=$(gh_me) || me=$_wt_org
     local target_rel="${main_owner}/${_wt_repo}"
     [[ -n $_wt_branch ]] && target_rel="${target_rel}/${_wt_branch}"
     local target_path="${REPO_HOOKS_DIR}/${target_rel}/run-tests.sh"
+    local level1_path="${REPO_HOOKS_DIR}/${main_owner}/${_wt_repo}/run-tests.sh"
+    local level2_path="${REPO_HOOKS_DIR}/${me}/${_wt_repo}/run-tests.sh"
+    local fork_repo_dir="${REPO_HOOKS_DIR}/${main_owner}/${_wt_repo}"
 
     mkdir -p "$(dirname "$target_path")"
 
@@ -1197,11 +1204,20 @@ cmd__ensure_tests() {
     cat > "$prompt_file" <<PROMPT_EOF
 You are in a git worktree at ${worktree_path}.
 
-This project is missing a run-tests.sh script. Create one.
+Sanity check first.  Run:
+
+    timvisher_dev_ci hooks ls
+
+If a run-tests.sh hook already resolves at any cascade level for
+this worktree, do not create a new one -- exit 0.  The orchestrator
+checks too, but this guards against drift between the internal
+find_hook helper and the public CLI.
+
+Otherwise this project is missing a run-tests.sh script.  Create one.
 
 run-tests.sh should be a bash script that runs the full local CI
 suite for this project -- everything that CI would check on a pull
-request. This includes:
+request.  This includes:
 
 - Linting (e.g. eslint, golangci-lint, shellcheck, flake8)
 - Formatting checks (e.g. prettier --check, gofmt, black --check)
@@ -1210,10 +1226,13 @@ request. This includes:
 - Byte-compilation if applicable (e.g. emacs batch-byte-compile for .el files)
 
 Examine the project structure to determine which tools and test
-frameworks are in use. Look at:
+frameworks are in use.  Look at:
 - Makefile, package.json, go.mod, setup.py/pyproject.toml, Cask, etc.
 - Existing CI configuration (.github/workflows/, .gitlab-ci.yml, etc.)
 - README or CONTRIBUTING docs for test instructions
+- Existing hooks for sibling branches under
+  ${fork_repo_dir}/ -- they often already encode the right
+  invocation; lift their content rather than reinventing.
 
 The script should:
 - Use #!/usr/bin/env bash
@@ -1222,8 +1241,30 @@ The script should:
 - Print clear headers before each step (e.g. "--- lint ---", "--- test ---")
 - Be executable (chmod +x)
 
-Write the script to ${target_path} and make it executable.
-Do not run the tests yourself -- just create the script.
+Cascade level choice.  All matching hooks across the 4-level
+cascade run (no shadowing), so a broader-level hook eliminates
+per-branch duplication.  Pick the broadest level whose semantics
+match the script you're writing:
+
+- Level 1 (fork-network repo, applies to every fork):
+    ${level1_path}
+- Level 2 (your repo, applies to all your branches):
+    ${level2_path}
+- Level 3/4 (this branch only):
+    ${target_path}
+
+Default to Level 2 (${level2_path}) when the script has no
+branch-specific dependencies.  Use Level 3/4 only when the script
+genuinely differs by branch.  Use Level 1 only when you intend to
+contribute the hook upstream.
+
+When you write at Level 1 or Level 2, look for redundant
+per-branch hooks under ${fork_repo_dir}/<branch>/run-tests.sh
+whose content is now covered by the broader hook -- delete those
+files so the cascade does not run the same logic twice.
+
+Whichever path you pick, write the script there, make it
+executable, and stop.  Do not run the tests yourself.
 PROMPT_EOF
 
     info "ensure_tests: launching agent to create run-tests.sh at '%s'" "$target_path"
