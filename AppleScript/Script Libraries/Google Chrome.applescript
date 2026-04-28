@@ -1,20 +1,3 @@
-on getActiveTabUrl()
-	if application "Google Chrome" is not running then
-		set msg to "Google Chrome is not running. No active tab to get"
-		display dialog msg
-		error msg
-	end if
-	tell application "Google Chrome" to get URL of active tab of front window
-end getActiveTabUrl
-
--- getActiveTabUrl()
-
-on getActiveTabYtDlpUrl()
-	tell script "timvisher utilities" to doShellScript({¬
-		POSIX path of (path to home folder) & "bin/chrome_js_in_active_tab", ¬
-		POSIX path of (path to home folder) & "bin/browser_js/yt-dlp-url.js"})
-end getActiveTabYtDlpUrl
-
 on makeNewProfileWindow(profileIdentifier)
 	makeNewProfile2 given profileIdentifier:profileIdentifier
 end makeNewProfileWindow
@@ -59,7 +42,7 @@ on makeNewProfile2 given profileIdentifier:profileIdentifier : "", URL:urlArg : 
 	delay 1
 end makeNewProfile2
 
-makeNewProfileWindow("")
+--makeNewProfileWindow("")
 --makeNewProfile2 given profileIdentifier:""
 --makeNewProfile2 given profileIdentifier:"user@example.com"
 -- The following doesn't work because AppleScript. When a handler uses given you must pass at least one argument using given to get any of the defaults

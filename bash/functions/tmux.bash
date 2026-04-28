@@ -406,13 +406,13 @@ function ntmux3() {
             ntmux3_command_from_clipboard=$(pbpaste)
             clone_target=${ntmux3_command_from_clipboard#ntmux3 }
         else
-            clone_target="$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window')"
+            clone_target="$(osascript -e 'tell script "timvisher Browser" to getActiveTabUrl()')"
 
             if [[ $clone_target == https://github.com/*/pull/* ]]
             then
                 # Handle PR URL
                 local head_ref
-                head_ref="$(osascript -e 'tell application "Google Chrome" to execute active tab of front window javascript "document.querySelector(\".head-ref\").textContent"')"
+                head_ref="$(osascript -e 'tell script "timvisher Browser" to executeJsInActiveTab("document.querySelector(\".head-ref\").textContent")')"
                 expected_pr_md_url=${clone_target%/*}
                 if [[ $expected_pr_md_url == */pull ]]
                 then

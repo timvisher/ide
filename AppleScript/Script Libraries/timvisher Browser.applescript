@@ -17,12 +17,38 @@ on openUrl(u)
 	end tell
 end openUrl
 
+on executeJsInActiveTab(js)
+	set b to my currentBrowser()
+	if application b is not running then
+		set msg to b & " is not running. No active tab to query."
+		display dialog msg
+		error msg
+	end if
+	-- `execute … javascript …` is Chrome/Chromium-specific terminology.
+	-- `using terms from` lets the compiler resolve it while the runtime
+	-- target stays dynamic (Chrome, Vivaldi, etc. share this dictionary).
+	using terms from application "Google Chrome"
+		tell application b
+			execute active tab of front window javascript js
+		end tell
+	end using terms from
+end executeJsInActiveTab
+
+on executeJsFileInActiveTab(jsFile)
+	executeJsInActiveTab((read jsFile))
+end executeJsFileInActiveTab
+
+on executeHomePOSIXJsFileInActiveTab(homeFolderPosixPath)
+	executeJsFileInActiveTab(POSIX file ¬
+		((POSIX path of (path to home folder)) & homeFolderPosixPath))
+end executeHomePOSIXJsFileInActiveTab
+
 on getActiveTabUrl()
-	tell script (my currentBrowser()) to getActiveTabUrl()
+	executeHomePOSIXJsFileInActiveTab("bin/browser_js/active-tab-url.js")
 end getActiveTabUrl
 
 on getActiveTabYtDlpUrl()
-	tell script (my currentBrowser()) to getActiveTabYtDlpUrl()
+	executeHomePOSIXJsFileInActiveTab("bin/browser_js/yt-dlp-url.js")
 end getActiveTabYtDlpUrl
 
 on makeNewProfileWindow(profileIdentifier)

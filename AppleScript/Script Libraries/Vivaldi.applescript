@@ -1,34 +1,3 @@
-on getActiveTabUrl()
-	if application "Vivaldi" is not running then
-		set msg to "Vivaldi is not running. No active tab to get"
-		display dialog msg
-		error msg
-	end if
-	set jsf to (POSIX path of (path to home folder) & "bin/browser_js/active-tab-url.js")
-	-- Surface the missing helper clearly. Without this AppleScript
-	-- raises a generic file-not-found, so the caller cannot tell that
-	-- the install (~/bin -> ~/git/ide/bash/bin symlink) never ran.
-	tell application "System Events"
-		if not (exists file jsf) then
-			set msg to "active-tab-url.js missing at " & jsf & " -- run `bash ~/git/ide/bash/install.bash` to relink ~/bin."
-			display dialog msg
-			error msg
-		end if
-	end tell
-	set js to (read POSIX file jsf)
-	tell application "Vivaldi"
-		execute active tab of front window javascript js
-	end tell
-end getActiveTabUrl
-
--- getActiveTabUrl()
-
-on getActiveTabYtDlpUrl()
-	tell script "timvisher utilities" to doShellScript({¬
-		POSIX path of (path to home folder) & "bin/vivaldi_js_in_active_tab", ¬
-		POSIX path of (path to home folder) & "bin/browser_js/yt-dlp-url.js"})
-end getActiveTabYtDlpUrl
-
 on makeNewProfileWindow(profileIdentifier)
 	makeNewProfile2 given profileIdentifier:profileIdentifier
 end makeNewProfileWindow

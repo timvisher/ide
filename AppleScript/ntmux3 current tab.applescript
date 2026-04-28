@@ -1,7 +1,7 @@
-tell script "Google Chrome" to set theUrl to getActiveTabUrl()
+tell script "timvisher Browser" to set theUrl to getActiveTabUrl()
 
 if (theUrl does not start with "https://github.com/" and theUrl does not contain "/pull/") then
-	set errorMessage to "Ô" & theUrl & "Õ doesn't look like a PR"
+	set errorMessage to "ï¿½" & theUrl & "ï¿½ doesn't look like a PR"
 	display dialog errorMessage
 	error errorMessage
 end if
