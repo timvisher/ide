@@ -556,6 +556,14 @@ Any other context has undefined behavior."
 
 (add-hook 'emacs-lisp-mode-hook 'eldoc-mode)
 
+(defun timvisher-disable-gfm-electric-backquote ()
+  "Disable gfm-mode's electric backquote.
+A text-expander snippet handles ``` insertion in a way I prefer
+over the code-block language minibuffer prompt."
+  (setq-local markdown-gfm-use-electric-backquote nil))
+
+(add-hook 'gfm-mode-hook 'timvisher-disable-gfm-electric-backquote)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
