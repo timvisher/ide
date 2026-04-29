@@ -320,6 +320,130 @@ else
   fail "bypass JSON escape: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# aictl_info tests
+# ---------------------------------------------------------------------------
+
+# Test: aictl_info outputs level:info with code and message
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'info message'" 2>&1 || true)
+if [[ $result == *'"level":"info"'* ]] && [[ $result == *'"code":"test_code"'* ]] && [[ $result == *'info message'* ]]
+then
+  pass "aictl_info outputs level:info with code and message"
+else
+  fail "aictl_info output: got '${result}'"
+fi
+
+# Test: aictl_info exits zero (success channel — it's not a failure)
+run_test
+rc=0
+bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" >/dev/null 2>&1 || rc=$?
+if (( rc == 0 ))
+then
+  pass "aictl_info exits zero"
+else
+  fail "aictl_info should exit zero, got rc=$rc"
+fi
+
+# Test: aictl_info does NOT include retryable field — info is not a failure
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" 2>&1 || true)
+if [[ $result != *'"retryable"'* ]]
+then
+  pass "aictl_info omits retryable field"
+else
+  fail "aictl_info should omit retryable: got '${result}'"
+fi
+
+# Test: aictl_info supports --flag syntax including suggestions
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --doc 'd.md' --suggestion 'do x' --suggestion 'then y'" 2>&1)
+if [[ $result == *'"code":"tc"'* ]] && [[ $result == *'"doc":"d.md"'* ]] && [[ $result == *'"do x"'* ]] && [[ $result == *'"then y"'* ]]
+then
+  pass "aictl_info with --flag syntax and suggestions"
+else
+  fail "aictl_info --flags: got '${result}'"
+fi
+
+# Test: aictl_info still type:instruction (consistent shape across levels)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1)
+if [[ $result == *'"type":"instruction"'* ]]
+then
+  pass "aictl_info type is 'instruction'"
+else
+  fail "aictl_info type: got '${result}'"
+fi
+
+# Test: bin/aictl exposes the info subcommand
+run_test
+bin_aictl="$(cd "$(dirname "$0")/../bin" && pwd)/aictl"
+rc=0
+result=$("$bin_aictl" info bin_test 'from bin' 2>&1) || rc=$?
+if (( rc == 0 )) && [[ $result == *'"level":"info"'* ]] && [[ $result == *'"code":"bin_test"'* ]]
+then
+  pass "bin/aictl info subcommand exits 0 with level:info"
+else
+  fail "bin/aictl info: rc=$rc, got '${result}'"
+fi
+
+# Test: aictl_info supports --reason (other levels emit it; info should too)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --reason 'because reasons'" 2>&1 || true)
+if [[ $result == *'"reason":"because reasons"'* ]]
+then
+  pass "aictl_info emits --reason"
+else
+  fail "aictl_info reason: got '${result}'"
+fi
+
+# Test: aictl_info writes JSON to stderr, not stdout. Other levels rely
+# on this; the main payload must not bleed into stdout where it would
+# collide with non-aictl-aware callers.
+run_test
+out=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>/dev/null)
+err=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+if [[ -z $out ]] && [[ $err == *'"level":"info"'* ]]
+then
+  pass "aictl_info writes to stderr only (stdout is empty)"
+else
+  fail "aictl_info stream split: stdout='${out}' stderr='${err}'"
+fi
+
+# Test: aictl_info suggestions emit as a JSON array, not a flat string
+# concatenation. A naive implementation that joined them would still
+# pass the substring tests above, so this asserts the array shape.
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --suggestion 'do x' --suggestion 'then y'" 2>&1)
+if [[ $result == *'"suggestions":["do x","then y"]'* ]]
+then
+  pass "aictl_info suggestions emit as JSON array"
+else
+  fail "aictl_info suggestions array: got '${result}'"
+fi
+
+# Test: aictl_info JSON-escapes the code field (regression for
+# aictl__emit emitting _code raw)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code 'has\"quote' --message m" 2>&1)
+if [[ $result == *'"code":"has\"quote"'* ]]
+then
+  pass "aictl_info escapes quote in code"
+else
+  fail "aictl_info code escape: got '${result}'"
+fi
+
+# Test: aictl_info accepts empty --code and --message (consistency with
+# the other levels — no validation on either field)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code '' --message ''" 2>&1)
+if [[ $result == *'"code":""'* ]] && [[ $result == *'"message":""'* ]]
+then
+  pass "aictl_info accepts empty code and message"
+else
+  fail "aictl_info empty fields: got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

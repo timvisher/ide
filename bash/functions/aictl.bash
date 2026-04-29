@@ -6,11 +6,13 @@
 # "Most CLIs are built for humans. Agents need more than that."
 #
 # Provides:
-#   aictl_die  - Fatal error, always exits non-zero (not bypassable)
-#   aictl_warn - Blocking warning, exits unless NIRMI + REASON both set
+#   aictl_die   - Fatal error, always exits non-zero (not bypassable)
+#   aictl_error - Same as die but returns instead of exits
+#   aictl_warn  - Blocking warning, exits unless NIRMI + REASON both set
+#   aictl_info  - Structured non-error instruction; returns 0
 #
 # Output is JSON to stderr:
-#   {"type":"instruction","level":"error|warning|bypass","code":"...","message":"...", ...}
+#   {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
 #
 # The warning emission deliberately omits any ready-to-paste bypass
 # command or mechanism detail. Agents that need to bypass must read the
@@ -90,17 +92,20 @@ aictl__emit() {
 
   aictl__parse_args "$@"
 
-  local escaped_message
+  local escaped_code escaped_message
+  escaped_code=$(aictl__json_escape "$_code")
   escaped_message=$(aictl__json_escape "$_message")
 
   printf '{"type":"instruction","level":"%s","code":"%s","message":"%s"' \
-    "$level" "$_code" "$escaped_message" >&2
+    "$level" "$escaped_code" "$escaped_message" >&2
 
   if [[ -n $_reason ]]
   then
     printf ',"reason":"%s"' "$(aictl__json_escape "$_reason")" >&2
   fi
 
+  # info (and any other unrecognized level) gets no retryable field —
+  # info is informational, not a failure, so retry semantics don't apply.
   if [[ $level == error ]]
   then
     printf ',"retryable":false' >&2
@@ -152,6 +157,23 @@ aictl_die() {
 aictl_error() {
   aictl__emit error "$@"
   return 1
+}
+
+# Structured non-error instruction — emits level:info JSON to stderr
+# and returns 0.  Use this when a successful command needs to convey
+# typed payload back to the agent (paths produced, counts, next-step
+# suggestions) rather than plain stdout that the agent has to parse.
+#
+# Diagnostic per-step messages should still go through logging.bash
+# (info/warn/error) — those are auto-structured under TIMVISHER_AGENT.
+# Reserve aictl_info for "here's what I produced, here's what to do
+# next" instructions at meaningful boundaries.
+#
+# Usage: aictl_info [--code C] [--message M] [--reason R] [--doc D] [--suggestion S]...
+#    or: aictl_info <code> <message> [suggestion...]
+aictl_info() {
+  aictl__emit info "$@"
+  return 0
 }
 
 # Blocking warning — exits unless BOTH TIMVISHER_AGENT_NIRMI=1 and

@@ -3,8 +3,9 @@
 # aictl - Agent-friendly CLI messaging tool
 #
 # Usage:
-#   aictl die <code> <message> [suggestion...]
+#   aictl die  <code> <message> [suggestion...]
 #   aictl warn <code> <message> [suggestion...]
+#   aictl info <code> <message> [suggestion...]
 #
 # Environment:
 #   TIMVISHER_AGENT_NIRMI=1  Bypass warn guards (prints notice, continues)
@@ -24,13 +25,18 @@ case "${1:-}" in
     shift
     aictl_warn "$@"
     ;;
+  info)
+    shift
+    aictl_info "$@"
+    ;;
   *)
     cat >&2 <<'USAGE'
-Usage: aictl {die|warn} <code> <message> [suggestion...]
+Usage: aictl {die|warn|info} <code> <message> [suggestion...]
 
 Commands:
   die   Fatal error, always exits non-zero (not bypassable)
   warn  Blocking warning, exits unless TIMVISHER_AGENT_NIRMI=1
+  info  Structured non-error instruction, exits zero
 
 Environment:
   TIMVISHER_AGENT_NIRMI=1  Bypass warn guards (prints notice, continues)
