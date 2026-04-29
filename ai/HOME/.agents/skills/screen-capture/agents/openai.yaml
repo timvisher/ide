@@ -1,0 +1,3 @@
+interface:
+  display_name: "Screen capture"
+  short_description: "Capture all macOS displays to durable storage and read them"
