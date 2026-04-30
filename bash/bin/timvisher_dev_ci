@@ -76,7 +76,7 @@ SELF_DIR=$(dirname "$SELF")
 REPO_HOOKS_DIR="${SELF_DIR}/timvisher_dev_ci.config/hooks"
 REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/timvisher_dev_ci/hooks"
 
-BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli)
+BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli beads)
 
 # Single source of truth for hook names recognised by `hooks ls` and
 # the "run all" form of `hooks run`. Order matters: `hooks run` (no
