@@ -238,19 +238,65 @@ Returns a plist with :start-line and :end-line."
      "%s"
      (url-encode-url file-url))))
 
+(defun github-source-link--push-sha-or-error
+    ()
+  "Return the sha that @{push} points at, or signal a helpful error."
+  (or (magit-rev-parse "@{push}")
+      (error (concat "No @{push} for current branch. "
+                     "Set an upstream first "
+                     "(e.g., git push -u <remote> <branch>)."))))
+
+(defun github-source-link--push-branch-name-or-error
+    ()
+  "Return @{push}'s remote-side short name (with the remote prefix stripped)."
+  (let ((push-branch (magit-get-push-branch)))
+    (unless push-branch
+      (error "No push branch configured for the current branch"))
+    (replace-regexp-in-string "\\`[^/]+/" "" push-branch)))
+
+(defun github-source-link--require-clean-vs-push
+    (path)
+  "Error if PATH differs between @{push} and the working tree.
+Folds in committed-but-unpublished changes and uncommitted edits in one check."
+  (unless (magit-git-success "diff" "--quiet" "@{push}" "--" path)
+    (error "%s has unpublished changes vs @{push}" path)))
+
+(defun github-source-link--require-ancestor-of-push
+    (rev)
+  "Error unless REV is reachable from @{push}."
+  (unless (magit-git-success "merge-base" "--is-ancestor" rev "@{push}")
+    (error "%s is not reachable from @{push} — push it first" rev)))
+
+(defun github-source-link--gh-verify
+    (user repo sha)
+  "Error unless SHA is accessible at github.com/USER/REPO via authenticated gh."
+  (unless (zerop (call-process "gh" nil nil nil
+                               "api" "--silent"
+                               (format "repos/%s/%s/commits/%s"
+                                       user repo sha)))
+    (error (concat "gh api could not reach %s/%s @ %s "
+                   "(commit unpublished, gh unauthenticated, "
+                   "or network unreachable)")
+           user repo sha)))
+
 (defun github-source-link-string
     (arg)
-  (when (magit-anything-modified-p nil (or (buffer-file-name) "."))
-    (error (concat "Cannot generate a source link as there "
-                   "are modifications in the source tree.")))
-  (let* ((remote-url (or (magit-get "remote" (magit-get-push-remote) "url")
+  (let* ((diff-path (or (magit-file-relative-name) "."))
+         (remote-url (or (magit-get "remote" (magit-get-push-remote) "url")
                          (magit-get "remote" (magit-get-remote) "url")))
          (user (github-url-to-user-name remote-url))
          (repo (github-url-to-repo-name remote-url))
-         (commit-hash (if (prefix-arg-count-p arg 1)
-                          (magit-get-current-branch)
-                        (or magit-buffer-revision
-                            (magit-rev-parse "HEAD"))))
+         (link-sha (cond
+                    (magit-buffer-revision
+                     (github-source-link--require-ancestor-of-push
+                      magit-buffer-revision)
+                     (magit-rev-parse magit-buffer-revision))
+                    (t
+                     (github-source-link--require-clean-vs-push diff-path)
+                     (github-source-link--push-sha-or-error))))
+         (rev-segment (if (prefix-arg-count-p arg 1)
+                          (github-source-link--push-branch-name-or-error)
+                        link-sha))
          (line-range (source-link--get-line-range))
          (starting-line (plist-get line-range :start-line))
          (ending-line (plist-get line-range :end-line))
@@ -260,35 +306,31 @@ Returns a plist with :start-line and :end-line."
                    (format "https://github.com/%s/%s/blob/%s/%s"
                            user
                            repo
-                           commit-hash
+                           rev-segment
                            (magit-file-relative-name))
                  (format "https://github.com/%s/%s/blob/%s/%s#L%d%s"
                          user
                          repo
-                         commit-hash
+                         rev-segment
                          (magit-file-relative-name)
                          starting-line
                          (if (/= starting-line ending-line)
                              (format "-L%d" ending-line)
-                           ""))))
-         (encoded-link (url-encode-url
-                        link)))
-    encoded-link))
+                           "")))))
+    (github-source-link--gh-verify user repo link-sha)
+    (url-encode-url link)))
 
 (defun github-source-link
     (arg)
   "Displays a link to the currently highlighted source code in github.
 
-The link defaults to the current commit's link for stability.
+The link defaults to the @{push} commit, so it's stable and known to
+exist on the remote.  Errors if the file has unpublished changes vs
+@{push} or if authenticated gh can't reach the commit on github.com.
 
-With a single prefix arg, the link will use the current branch
-rather than the current commit's hash."
+With a single prefix arg, the link uses the @{push} branch's
+remote-side name rather than the commit hash."
   (interactive "p")
-  ;; TODO an idea here would be to not just error out but somehow verify
-  ;; that nothing has changed since the last public commit for _this file_
-  ;; at least and then generate a link based on that. In that way it's the
-  ;; _remote's_ commit that matters (as we know that has at least been
-  ;; published) and whether or not there's a diff from there.
   (let* ((encoded-link (github-source-link-string arg)))
     (kill-new encoded-link)
     (message "Saved %s to the kill ring"
