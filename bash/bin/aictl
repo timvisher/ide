@@ -16,6 +16,44 @@ source ~/.functions/aictl.bash ||
     exit 1
   }
 
+aictl__config_dispatch() {
+  source ~/.functions/aictl_config.bash ||
+    {
+      echo "Unable to source aictl_config functions" >&2
+      exit 1
+    }
+
+  case "${1:-}" in
+    update)
+      shift
+      aictl_config_update "$@"
+      ;;
+    show)
+      shift
+      aictl_config_show "$@"
+      ;;
+    paths)
+      shift
+      aictl_config_paths "$@"
+      ;;
+    tools)
+      aictl_config_tools
+      ;;
+    *)
+      cat >&2 <<'USAGE'
+Usage: aictl config {update|show|paths|tools} [tool...]
+
+Commands:
+  update [tool...]   Regen merged config for tool(s); default: all
+  show <tool>        Print merged result without writing
+  paths <tool>       Print base/overlay/target paths
+  tools              List configured tools
+USAGE
+      exit 2
+      ;;
+  esac
+}
+
 case "${1:-}" in
   die)
     shift
@@ -29,14 +67,19 @@ case "${1:-}" in
     shift
     aictl_info "$@"
     ;;
+  config)
+    shift
+    aictl__config_dispatch "$@"
+    ;;
   *)
     cat >&2 <<'USAGE'
-Usage: aictl {die|warn|info} <code> <message> [suggestion...]
+Usage: aictl {die|warn|info|config} <args>
 
 Commands:
-  die   Fatal error, always exits non-zero (not bypassable)
-  warn  Blocking warning, exits unless TIMVISHER_AGENT_NIRMI=1
-  info  Structured non-error instruction, exits zero
+  die     Fatal error, always exits non-zero (not bypassable)
+  warn    Blocking warning, exits unless TIMVISHER_AGENT_NIRMI=1
+  info    Structured non-error instruction, exits zero
+  config  Layered config merge for AI clients (codex, claude)
 
 Environment:
   TIMVISHER_AGENT_NIRMI=1  Bypass warn guards (prints notice, continues)
