@@ -144,6 +144,24 @@ real_git=$(resolve_next_git "${BASH_SOURCE[0]}") ||
 #   - re-register refspecs after successful push
 # ---------------------------------------------------------------------------
 
+# Refspec-extras files consulted by selective fetching. Both are
+# optional; lines from all readable files are merged and deduped.
+#
+#   _timvisher_git__core_config_dir — patterns that apply across every
+#   selective-fetch repo regardless of org (e.g. the user's personal
+#   branch namespace). Lives in the core ide source repo.
+#
+#   _timvisher_git__config_dir — patterns layered on top by the
+#   system-extensions install (e.g. employer-specific branch
+#   conventions). Empty by default.
+#
+# TODO: support per-repo refspec extras. A file like
+#   $_timvisher_git__config_dir/<org>/<repo>/refspec-extras
+# next to the existing enable-selective-fetch marker would let a repo
+# contribute patterns without polluting the global defaults — and would
+# be the right home for things like green/fix-merge-*/devflow-copy-of-*
+# that are dd-source-specific rather than universally DataDog.
+_timvisher_git__core_config_dir="${TIMVISHER_GIT_HOME:-$HOME/git}/ide/git/wrapper"
 _timvisher_git__config_dir="$HOME/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper"
 
 _timvisher_git__remote=origin
@@ -232,25 +250,42 @@ _timvisher_git__has_selective_fetching() {
   ! _timvisher_git__has_refspec "+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*"
 }
 
+# Emit refspec-extras lines from every readable extras file, deduped
+# and stripped of blanks + `#`-comments. Order follows the file list
+# (core first, then system-extensions); within a file, original order
+# is preserved. Used by both _timvisher_git__default_refspecs (to pick
+# what to install) and _timvisher_git__ensure_branch_refspec (to skip
+# branches already covered).
+_timvisher_git__refspec_extras_lines() {
+  local files=(
+    "${_timvisher_git__core_config_dir}/default-refspec-extras"
+    "${_timvisher_git__config_dir}/default-refspec-extras"
+  )
+  local file
+  for file in "${files[@]}"
+  do
+    [[ -r $file ]] || continue
+    cat -- "$file"
+  done | awk '
+    /^[[:space:]]*$/  { next }
+    /^[[:space:]]*#/  { next }
+    !seen[$0]++       { print }
+  '
+}
+
 # The curated refspecs to install when selective fetching is active.
 # The main branch is always installed.  Additional patterns come from
-# the system-extensions config at $config_dir/default-refspec-extras
-# (one branch name or glob per line; `#` comments + blank lines
-# ignored).  Exact names are probed via ls-remote before being
-# installed; globs are installed unconditionally as wildcard refspecs.
+# the refspec-extras files (see _timvisher_git__refspec_extras_lines).
+# Exact names are probed via ls-remote before being installed; globs
+# are installed unconditionally as wildcard refspecs.
 _timvisher_git__default_refspecs() {
   local main_branch="$1"
 
   echo "+refs/heads/$main_branch:refs/remotes/${_timvisher_git__remote}/$main_branch"
 
-  local extras_file="${_timvisher_git__config_dir}/default-refspec-extras"
-  [[ -r $extras_file ]] || return 0
-
   local pattern
   while IFS= read -r pattern
   do
-    [[ -z $pattern ]] && continue
-    [[ $pattern == \#* ]] && continue
     case "$pattern" in
       *\**)
         echo "+refs/heads/$pattern:refs/remotes/${_timvisher_git__remote}/$pattern"
@@ -262,7 +297,7 @@ _timvisher_git__default_refspecs() {
         fi
         ;;
     esac
-  done < "$extras_file"
+  done < <(_timvisher_git__refspec_extras_lines)
 }
 
 # Ensure selective fetching is set up: remove wildcard, add defaults, set --no-tags
@@ -304,7 +339,7 @@ _timvisher_git__ensure_branch_refspec() {
 
   # Skip branches already covered by default wildcard/exact refspecs
   # installed by _timvisher_git__default_refspecs — the main branch
-  # and whatever patterns are listed in default-refspec-extras.
+  # and whatever patterns are merged from the refspec-extras files.
   local main_branch
   main_branch=$(_timvisher_git__get_main_branch 2>/dev/null) || true
 
@@ -313,21 +348,15 @@ _timvisher_git__ensure_branch_refspec() {
     return 0
   fi
 
-  local extras_file="${_timvisher_git__config_dir}/default-refspec-extras"
-  if [[ -r $extras_file ]]
-  then
-    local pattern
-    while IFS= read -r pattern
-    do
-      [[ -z $pattern ]] && continue
-      [[ $pattern == \#* ]] && continue
-      # shellcheck disable=SC2053  # intentional glob match on RHS
-      if [[ "$branch" == $pattern ]]
-      then
-        return 0
-      fi
-    done < "$extras_file"
-  fi
+  local pattern
+  while IFS= read -r pattern
+  do
+    # shellcheck disable=SC2053  # intentional glob match on RHS
+    if [[ "$branch" == $pattern ]]
+    then
+      return 0
+    fi
+  done < <(_timvisher_git__refspec_extras_lines)
 
   local refspec
   refspec=$(_timvisher_git__upstream_refspec "$branch")

@@ -1,0 +1,13 @@
+# Additional refspec patterns the ide git wrapper installs in repos
+# that opt into selective fetching (via a sibling enable-selective-fetch
+# marker at <org>/<repo>/enable-selective-fetch).
+#
+# Each line is a branch name or glob.  Exact names are probed via
+# ls-remote before being installed; globs are installed unconditionally
+# as wildcard refspecs.  Blank lines and `#`-comments are ignored.
+#
+# Also drives the "skip creating a per-branch refspec" list in
+# ensure_branch_refspec — any branch matching a pattern here is
+# considered already covered and will not get its own refspec entry.
+
+timvisher/*
