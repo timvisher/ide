@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 
-host=relaxation-videos.gemedet.twonegatives.com
-port=32354
+host=relaxation-videos.tailaac45d.ts.net
 
-if nc -zvG5 "$host" "$port"
+if nc -zvG5 "$host" "443"
 then
-  curl --fail --output-dir /tmp --output "relaxation videos.${host}:${port}.m3u8" \
-    "http://${host}:${port}/relaxation%20videos.${host}:${port}.m3u8" &&
-    open -a VLC -n "/tmp/relaxation videos.${host}:${port}.m3u8" \
+  curl --fail --output-dir /tmp --output "relaxation videos.${host}.m3u8" \
+    "https://${host}/relaxation%20videos.${host}.m3u8" &&
+    open -a VLC -n "/tmp/relaxation videos.${host}.m3u8" \
       --args --loop --random --no-audio --video-wallpaper
 else
-  printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" "$port" >&2
+  printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" >&2
   printf 'Falling back to local Relaxation Videos\n' >&2
   open -a VLC -n ~/Movies/'Relaxation Videos'/videos \
     --args --loop --random --no-audio --video-wallpaper
