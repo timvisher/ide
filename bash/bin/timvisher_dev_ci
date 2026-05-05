@@ -700,7 +700,7 @@ Your job:
    possible.
 4. After resolving the merge, commit the merge result (e.g.
    'git merge --continue' or 'git commit'). Do NOT push -- the
-   caller handles pushing after you finish.
+   caller runs tests and pushes after you finish.
 
 When done, write 'pass' to '${status_file}'.
 If you cannot resolve a conflict, write 'fail' to '${status_file}'.
@@ -731,7 +731,27 @@ PROMPT_EOF
         final_status=fail
     fi
 
-    # Push after successful agent resolution (agents cannot push).
+    # Verify tests deterministically after the agent resolves the merge
+    # but before pushing.  A failing test means upstream changes (or the
+    # resolution) broke the trunk; don't propagate that to feature
+    # worktrees via Phase 1.
+    if [[ $final_status == pass ]]
+    then
+        if find_hook "$worktree_path" "run-tests.sh" >/dev/null 2>&1
+        then
+            info "sync_trunk_resolve: verifying tests in '%s'" "$worktree_path"
+            run_ext_hook "$worktree_path" "pre-run-tests.sh"
+            if ! run_hooks "$worktree_path" "run-tests.sh"
+            then
+                warn "sync_trunk_resolve: tests failed in '%s'" "$worktree_path"
+                final_status=fail
+            fi
+        else
+            info "sync_trunk_resolve: no run-tests.sh; skipping test verification"
+        fi
+    fi
+
+    # Push after successful agent resolution and tests (agents cannot push).
     if [[ $final_status == pass ]]
     then
         info "sync_trunk_resolve: pushing '%s' to origin" "$trunk_branch"
@@ -1320,8 +1340,10 @@ PROMPT_EOF
 
 # Sync soft fork trunks: for each unique soft fork repo (detected by the
 # x.timvisher_git.soft-fork cookie), merge upstream into origin/<trunk>
-# using timvisher_git sync-trunk.  If the non-interactive merge fails
-# (conflicts), launch an agent in the trunk worktree to resolve.
+# using timvisher_git sync-trunk --no-push, then run tests on the merged
+# trunk and push only if tests pass.  If the non-interactive merge fails
+# (conflicts), launch an agent in the trunk worktree to resolve; the
+# agent path also runs tests before pushing.
 sync_soft_fork_trunks() {
     local -A seen_repos  # keyed by git common dir
 
@@ -1338,9 +1360,23 @@ sync_soft_fork_trunks() {
 
         info "sync_trunk: syncing soft fork repo for '%s'" "$dir"
         local trunk_wt
-        if trunk_wt=$(timvisher_git sync-trunk "$dir")
+        if trunk_wt=$(timvisher_git sync-trunk --no-push "$dir")
         then
-            info "sync_trunk: succeeded"
+            # Empty stdout means "already up to date" — nothing merged,
+            # nothing to test, nothing to push.
+            if [[ -z $trunk_wt ]]
+            then
+                info "sync_trunk: trunk already up to date"
+                continue
+            fi
+
+            info "sync_trunk: merged; testing trunk at '%s' before push" "$trunk_wt"
+            if test_and_push_trunk "$trunk_wt"
+            then
+                info "sync_trunk: succeeded"
+            else
+                error "sync_trunk: tests or push failed for '%s'; skipping push" "$trunk_wt"
+            fi
         else
             # sync-trunk prints the trunk worktree path on conflict.
             if [[ -n $trunk_wt && -d $trunk_wt ]]
@@ -1372,6 +1408,36 @@ sync_soft_fork_trunks() {
             fi
         fi
     done
+}
+
+# Run run-tests.sh hooks against a trunk worktree, then push to origin
+# if they pass.  Returns 0 on test+push success, non-zero otherwise.
+# A worktree with no resolved run-tests.sh hook still pushes (matching
+# the previous unconditional-push behavior for repos without a hook).
+#
+# Hooks are run with cwd set to the trunk worktree.  run_hooks itself
+# does not cd, and existing callers (cmd__sync, cmd__integrate) cd
+# explicitly before invoking it; sync_soft_fork_trunks runs in the
+# orchestrator's cwd so the cd has to happen here.
+test_and_push_trunk() {
+    local trunk_wt=$1
+
+    if find_hook "$trunk_wt" "run-tests.sh" >/dev/null 2>&1
+    then
+        if ! (
+            cd "$trunk_wt" &&
+                run_ext_hook "$trunk_wt" "pre-run-tests.sh" &&
+                run_hooks "$trunk_wt" "run-tests.sh"
+        )
+        then
+            warn "sync_trunk: tests failed in '%s'" "$trunk_wt"
+            return 1
+        fi
+    else
+        info "sync_trunk: no run-tests.sh resolved for '%s'; skipping test verification" "$trunk_wt"
+    fi
+
+    push_to_remote "$trunk_wt"
 }
 
 # Verify all feature worktrees have clean working trees.

@@ -1617,12 +1617,28 @@ derive_worktree_path() {
 # sync-trunk: merge upstream/<trunk> into origin/<trunk> for soft forks
 #
 # Finds (or creates) the trunk worktree, fetches, merges upstream, and
-# pushes.  Non-interactive: exits non-zero on merge conflicts so the
-# caller can arrange for agent-driven resolution.  On conflict, prints
-# the trunk worktree path to stdout.
+# (by default) pushes.  Non-interactive: exits non-zero on merge conflicts
+# so the caller can arrange for agent-driven resolution.  On conflict,
+# prints the trunk worktree path to stdout.
+#
+# With --no-push, skips the push and prints the trunk worktree path on
+# success so the caller can interpose work (e.g. tests) before pushing.
+# When the trunk is already up to date, prints nothing and returns 0
+# regardless of --no-push.
 # ---------------------------------------------------------------------------
 
 sync_trunk() {
+  local no_push=false
+  while (( $# ))
+  do
+    case $1 in
+      --no-push) no_push=true; shift ;;
+      --) shift; break ;;
+      -*) die "sync_trunk: unknown option '%s'" "$1" ;;
+      *) break ;;
+    esac
+  done
+
   local dir=${1:-.}
   dir=$(cd "$dir" && pwd -P) || die "sync_trunk: invalid path '%s'" "$dir"
 
@@ -1721,6 +1737,13 @@ sync_trunk() {
     git -C "$trunk_wt" merge --abort >&2 2>/dev/null || true
     printf '%s' "$trunk_wt"
     return 1
+  fi
+
+  if $no_push
+  then
+    info "sync_trunk: --no-push; deferring push to caller"
+    printf '%s' "$trunk_wt"
+    return 0
   fi
 
   info "sync_trunk: pushing %s to origin" "$trunk_branch"
@@ -1863,12 +1886,17 @@ Other subcommands
     Query metadata about the current worktree.
     Fields: .org, .repo, .branch, .absPath, .prefixPath
 
-  timvisher_git sync-trunk <path>
+  timvisher_git sync-trunk [--no-push] <path>
     For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
     Finds or creates the trunk worktree, merges upstream/<trunk> into
     <trunk>, and pushes to origin.  Non-interactive; exits non-zero on
     merge conflicts and prints the trunk worktree path to stdout so the
     caller can arrange for agent-driven resolution.
+
+    --no-push  Skip the push step.  On a successful merge, prints the
+               trunk worktree path to stdout so the caller can run tests
+               or other checks before pushing.  No-op when the trunk is
+               already up to date with upstream.
 
   timvisher_git <git-args...>
     Passes through to git (with agent safety wrappers).
