@@ -1,16 +1,43 @@
 #!/usr/bin/env bash
 
+# # FIXME can't source logging.bash when executed from AppleScript?
+# source ~/.functions/logging.bash ||
+#   {
+#     echo "Unable to source logging functions" >&2
+#     exit 1
+#   }
+
 host=relaxation-videos.tailaac45d.ts.net
 
-if nc -zvG5 "$host" "443"
-then
-  curl --fail --output-dir /tmp --output "relaxation videos.${host}.m3u8" \
-    "https://${host}/relaxation%20videos.${host}.m3u8" &&
+while (( SECONDS < 30 ))
+do
+  nc -zvG5 "$host" "443" &&
     open -a VLC -n "/tmp/relaxation videos.${host}.m3u8" \
-      --args --loop --random --no-audio --video-wallpaper
-else
-  printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" >&2
-  printf 'Falling back to local Relaxation Videos\n' >&2
-  open -a VLC -n ~/Movies/'Relaxation Videos'/videos \
-    --args --loop --random --no-audio --video-wallpaper
-fi
+         --args --loop --random --no-audio --video-wallpaper &&
+    gtimeout 60s osascript \
+             -e 'repeat' \
+             -e '  if application "VLC" is running then' \
+             -e '    tell application "VLC"' \
+             -e '      if playing then exit' \
+             -e '    end tell' \
+             -e '    log "looping"' \
+             -e '    delay 0.5' \
+             -e '  end if' \
+             -e 'end repeat' &&
+    date -u "+%FT%T%z INFO Relaxation Videos playing in $((SECONDS)) seconds"  >&2 &&
+    exit
+
+  if (( 2 < $(osascript -e 'tell application "System Events" to get count of (application processes whose name is "VLC")') ))
+  then
+    date -u '+%FT%T%z ERROR More than 2 running VLCs. Impossible!' >&2
+    exit 1
+  fi
+
+  date -u "+%FT%T%z INFO Looping after $((SECONDS)) seconds" >&2
+  sleep 0.5
+done
+
+printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" >&2
+printf 'Falling back to local Relaxation Videos\n' >&2
+open -a VLC -n ~/Movies/'Relaxation Videos'/videos \
+     --args --loop --random --no-audio --video-wallpaper
