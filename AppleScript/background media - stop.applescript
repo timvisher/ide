@@ -8,9 +8,7 @@ repeat while application "VLC" is running
 	end try
 end repeat
 
-(*
 repeat while application "Spotify" is running
 	tell application "Spotify" to quit
 	delay 0.5
 end repeat
-*)
