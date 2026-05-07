@@ -43,13 +43,26 @@ tell application "System Events"
 end tell
 
 try
-	tell script "timvisher utilities" to doShellScript({POSIX path of (path to home folder) & "git/ide/bash/bin/timvisher_EXP_relaxation_videos"})
-	set tryUntil to (current date) + 10
+	if application "Tailscale" is not running then
+		tell application "Tailscale" to run
+		tell application "System Events"
+			repeat until visible of application process "Tailscale"
+				delay 0.5
+			end repeat
+		end tell
+	end if
+	tell application "System Events"
+		repeat while visible of application process "Tailscale" is true
+			set visible of application process "Tailscale" to false
+		end repeat
+	end tell
+	tell script "timvisher utilities" to doShellScript({"bash", "-lc", POSIX path of (path to home folder) & "git/ide/bash/bin/timvisher_EXP_relaxation_videos"})
+	set tryUntil to (current date) + 60
 	tell application "System Events"
 		repeat until 0 is less than (count of windows of application process "VLC")
 			delay 0.1
 			if tryUntil is less than (current date) then
-				set m to "VLC failed to create windows in less than 10 seconds. Giving up."
+				set m to "VLC failed to create windows in less than 60 seconds. Giving up."
 				display notification m
 				error m
 			end if
