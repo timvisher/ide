@@ -12,6 +12,8 @@ host=relaxation-videos.tailaac45d.ts.net
 while (( SECONDS < 30 ))
 do
   nc -zvG5 "$host" "443" &&
+    curl --fail --output-dir /tmp --output "relaxation videos.${host}.m3u8" \
+     "https://${host}/relaxation%20videos.${host}.m3u8" &&
     open -a VLC -n "/tmp/relaxation videos.${host}.m3u8" \
          --args --loop --random --no-audio --video-wallpaper &&
     gtimeout 60s osascript \
