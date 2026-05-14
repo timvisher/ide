@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 
-eval "$(/opt/homebrew/bin/brew shellenv)"
+# Pull `brew shellenv` from whichever prefix is present on this host.
+# Apple Silicon installs to /opt/homebrew, Intel Mac to /usr/local,
+# Linuxbrew to /home/linuxbrew/.linuxbrew. First match wins.
+for brew_path in /opt/homebrew/bin/brew \
+                 /usr/local/bin/brew \
+                 /home/linuxbrew/.linuxbrew/bin/brew
+do
+  if [[ -x $brew_path ]]
+  then
+    eval "$("$brew_path" shellenv)"
+    break
+  fi
+done
+unset brew_path
 
 # The deprecation warning was hard coded into the macOS bash binary so
-# this is the only way to disable it.
+# this is the only way to disable it. No-op on Linux.
 # https://support.apple.com/en-us/HT208050
 export BASH_SILENCE_DEPRECATION_WARNING=1
 
