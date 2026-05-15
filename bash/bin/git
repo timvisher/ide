@@ -1198,16 +1198,65 @@ then
 
   if [[ $subcommand == add ]]
   then
+    add_guard__has_force=false
     for x in "$@"
     do
       if [[ $x == -f || $x == --force ]]
+      then
+        add_guard__has_force=true
+        break
+      fi
+    done
+
+    if [[ $add_guard__has_force == true ]]
+    then
+      # Narrow allow-path: cfctl shells out `git add -f` from its post-init
+      # lockfile fixup (domains/cloud-networks/apps/cfctl/internal/fixups/
+      # fixups.go gitAdd). That's a structured, intentional operation we've
+      # built — not an agent typing -f because it didn't read .gitignore.
+      # If a cfctl process is in the ancestor chain, pass -f through.
+      #
+      # Mirrors the bd-dolt push allow-path below: ancestor walk via a
+      # single `ps -axww` call. Only argv positions 0 and 1 count
+      # (binary or shebang interpreter+script), to reject false positives
+      # from `cfctl` appearing as a regular argument further along.
+      add_guard__is_cfctl_ancestor() {
+        local -A parent_of args_of
+        local pid ppid cmd
+        while read -r pid ppid cmd
+        do
+          parent_of[$pid]=$ppid
+          args_of[$pid]=$cmd
+        done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
+
+        local depth=0
+        pid=$PPID
+        while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
+        do
+          local -a toks=()
+          read -ra toks <<< "${args_of[$pid]:-}"
+          local j
+          for (( j=0; j<${#toks[@]} && j<2; j++ ))
+          do
+            if [[ ${toks[$j]##*/} == cfctl ]]
+            then
+              return 0
+            fi
+          done
+          pid=${parent_of[$pid]:-}
+          (( depth++ ))
+        done
+        return 1
+      }
+
+      if ! add_guard__is_cfctl_ancestor
       then
         aictl_die \
           --code "git_add_force_blocked" \
           --message "Agents must NEVER use 'git add -f'. Files ignored by .gitignore are ignored for a reason." \
           --suggestion "Ask the human to add the file manually if it should be tracked"
       fi
-    done
+    fi
   fi
 
   if [[ $subcommand == worktree ]]
