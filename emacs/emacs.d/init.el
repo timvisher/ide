@@ -835,7 +835,8 @@ the secret references cannot be resolved."
   :ensure t
   :defer t
   :commands (agent-shell-anthropic-start-claude-code
-             agent-shell-openai-start-codex)
+             agent-shell-openai-start-codex
+             agent-shell-resume-session)
   :bind ("C-c A" . agent-shell)
   :custom
   (agent-shell-session-strategy 'new)
