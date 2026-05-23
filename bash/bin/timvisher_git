@@ -402,7 +402,14 @@ should_auto_fork() {
 
   # Only `org/repo/branch` shorthands; URLs and bare org/repo (no
   # branch) have explicit semantics that don't fit this rewrite.
+  # URL forms (https://, git@, etc.) match `*/*/*` because they
+  # contain many slashes — filter them out explicitly before the
+  # shorthand match, otherwise a PR URL like
+  # `https://github.com/<org>/<repo>/pull/<N>` gets treated as a
+  # branch named `github.com/<org>/<repo>/pull/<N>` and auto-fork
+  # fires on the (correctly missing) "branch".
   case $target in
+    https://*|http://*|ssh://*|git://*|file://*|git@*:*) return 1 ;;
     */*/*) ;;
     *) return 1 ;;
   esac

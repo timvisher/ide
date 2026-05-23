@@ -2136,6 +2136,39 @@ else
   fail "expected env-var disable to suppress auto-fork, got rc=${rc}"
 fi
 
+# Test: no-op for PR URLs — auto-fork is only for org/repo/branch
+# shorthands, but URLs match the */*/* shape too because they have
+# many slashes.  Regression: ntmux3 of a PR URL on a foreign repo
+# treated the entire URL tail as the "branch" and forked spuriously.
+run_test
+should_auto_fork "https://github.com/parentorg/parentrepo/pull/698" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op for PR URLs"
+else
+  fail "expected no auto-fork for PR URL, got rc=${rc}"
+fi
+
+# Test: no-op for tree URLs
+run_test
+should_auto_fork "https://github.com/parentorg/parentrepo/tree/feature-x" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op for tree URLs"
+else
+  fail "expected no auto-fork for tree URL, got rc=${rc}"
+fi
+
+# Test: no-op for SSH (SCP-style) URLs
+run_test
+should_auto_fork "git@github.com:parentorg/parentrepo.git" && rc=0 || rc=$?
+if (( 0 < rc ))
+then
+  pass "should_auto_fork: no-op for git@ SSH URLs"
+else
+  fail "expected no auto-fork for git@ URL, got rc=${rc}"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
