@@ -11,6 +11,7 @@ source ~/git/ide/bash/ai/agents.bash ||
   die "Couldn't source agents.bash"
 
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
+export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-opus[1m]}"
 
 export TIMVISHER_CLAUDE=true
 
