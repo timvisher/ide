@@ -275,6 +275,57 @@ else
   fail "expected 'wrong/topic' fallback, got '${result}'"
 fi
 
+# Test: mv stops the source topic's dolt server so the next bd call
+# auto-starts a fresh server. A live dolt sql-server cannot serve its
+# database after the parent dir is renamed; leaving it running puts the
+# topic into a "database not found" state until manual cleanup.
+run_test
+mkdir -p "$tmpdir/topics/stop-dolt-src/.beads"
+: > "$tmpdir/topics/stop-dolt-src/.beads/beads.db"
+sleep 60 &
+sleep_pid=$!
+printf '%s' "$sleep_pid" > "$tmpdir/topics/stop-dolt-src/.beads/dolt-server.pid"
+printf '%s' "54321" > "$tmpdir/topics/stop-dolt-src/.beads/dolt-server.port"
+result=$(run_cli mv stop-dolt-src stop-dolt-dst 2>&1)
+sleep 0.2
+if [[ -d "$tmpdir/topics/stop-dolt-dst" ]] &&
+    ! kill -0 "$sleep_pid" 2>/dev/null &&
+    [[ ! -e "$tmpdir/topics/stop-dolt-dst/.beads/dolt-server.pid" ]] &&
+    [[ ! -e "$tmpdir/topics/stop-dolt-dst/.beads/dolt-server.port" ]]
+then
+  pass "mv stops the source topic's dolt server and clears pid/port files"
+else
+  alive=no
+  if kill -0 "$sleep_pid" 2>/dev/null
+  then
+    alive=yes
+    kill "$sleep_pid" 2>/dev/null || true
+  fi
+  fail "mv-stops-dolt: alive='${alive}' dst-exists='$([[ -d "$tmpdir/topics/stop-dolt-dst" ]] && echo yes || echo no)' result='${result}'"
+fi
+wait "$sleep_pid" 2>/dev/null || true
+
+# Test: mv tolerates a stale pid file (process already exited) without
+# leaving pid/port files behind.
+run_test
+mkdir -p "$tmpdir/topics/stale-pid-src/.beads"
+: > "$tmpdir/topics/stale-pid-src/.beads/beads.db"
+# Spawn and immediately reap a short-lived process to get a definitely-dead pid.
+( exec true ) &
+dead_pid=$!
+wait "$dead_pid" 2>/dev/null || true
+printf '%s' "$dead_pid" > "$tmpdir/topics/stale-pid-src/.beads/dolt-server.pid"
+printf '%s' "54322" > "$tmpdir/topics/stale-pid-src/.beads/dolt-server.port"
+result=$(run_cli mv stale-pid-src stale-pid-dst 2>&1)
+if [[ -d "$tmpdir/topics/stale-pid-dst" ]] &&
+    [[ ! -e "$tmpdir/topics/stale-pid-dst/.beads/dolt-server.pid" ]] &&
+    [[ ! -e "$tmpdir/topics/stale-pid-dst/.beads/dolt-server.port" ]]
+then
+  pass "mv tolerates stale pid file and clears pid/port"
+else
+  fail "mv-stale-pid: result='${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

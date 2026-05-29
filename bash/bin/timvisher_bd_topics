@@ -501,6 +501,49 @@ list_subscribers() {
   done < "$subs_file"
 }
 
+stop_dolt_server() {
+  local topic_abs=$1
+  local beads_dir="$topic_abs/.beads"
+  local pid_file="$beads_dir/dolt-server.pid"
+  local port_file="$beads_dir/dolt-server.port"
+
+  if [[ ! -f $pid_file ]]
+  then
+    rm -f "$port_file"
+    return 0
+  fi
+
+  local pid
+  pid=$(< "$pid_file")
+
+  if [[ -z $pid ]] || ! kill -0 "$pid" 2>/dev/null
+  then
+    rm -f "$pid_file" "$port_file"
+    return 0
+  fi
+
+  info "Stopping dolt server (pid '%s') for '%s'" "$pid" "$topic_abs"
+  kill "$pid" 2>/dev/null || true
+
+  local i
+  for i in {1..50}
+  do
+    if ! kill -0 "$pid" 2>/dev/null
+    then
+      break
+    fi
+    sleep 0.1
+  done
+
+  if kill -0 "$pid" 2>/dev/null
+  then
+    warn "Dolt server (pid '%s') did not exit; sending SIGKILL" "$pid"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$pid_file" "$port_file"
+}
+
 set_topic() {
   local repo_root=$1
   local topic_rel=$2
@@ -999,6 +1042,13 @@ case $cmd in
     # Show subscribers before moving
     info "Subscribers for '%s':" "$src_rel"
     list_subscribers "$src_abs"
+
+    # Stop the source topic's dolt server before the move. The server's
+    # in-memory database catalog uses absolute paths; after a rename it
+    # cannot resolve its database and every subsequent `bd` invocation
+    # fails with "database not found". Stopping leaves a clean pid/port
+    # slot so the next `bd` call auto-starts a fresh server in place.
+    stop_dolt_server "$src_abs"
 
     # Move the topic directory
     mkdir -p "$(dirname "$dst_abs")" ||
