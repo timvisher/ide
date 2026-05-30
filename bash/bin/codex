@@ -14,6 +14,15 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-op://Private/OpenAI API Secret Key/cred
 
 export TIMVISHER_CODEX=true
 
+# Every non-interactive bash subshell codex spawns (snapshot validator
+# AND tool-call subshells) sources this. ~/.bashrc isn't read in those
+# shells, so the shopts our interactive shell uses — extglob, globstar
+# — aren't enabled, and codex chokes when re-parsing function bodies
+# dumped by `declare -f`. The init file must stay cheap; it runs on
+# every subshell. Clobbers any pre-existing BASH_ENV for codex's
+# subprocesses, which is fine in practice (we have no other consumers).
+export BASH_ENV="$HOME/git/ide/bash/lib/codex_bash_env.bash"
+
 p=$(brew --prefix)
 
 exec op run --no-masking -- "${p}/bin/codex" "$@"
