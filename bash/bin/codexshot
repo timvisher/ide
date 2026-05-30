@@ -25,7 +25,7 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 # expecting a continuation that never comes).
 run_shot() {
     iconv -c -f UTF-8 -t UTF-8 |
-        codex exec --full-auto --sandbox read-only --json - |
+        codex exec --sandbox read-only --json - |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
