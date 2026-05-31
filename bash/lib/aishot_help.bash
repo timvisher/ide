@@ -25,9 +25,8 @@ Subcommands:
 
 ## Agent instructions
 
-When invoking \`${cmd} review\`, use a subagent to run it — the review
-can take 1-3 minutes. The command handles all prompt construction
-internally; just run it:
+When invoking \`${cmd} review\`, use a subagent to run it. The command
+handles all prompt construction internally; just run it:
 
     Bash({ command: "${cmd} review", run_in_background: true })
 
@@ -52,8 +51,8 @@ Exits with an error if there is nothing to review.
 
 ## Agent instructions
 
-Use a subagent to run this command — the review can take 1-3 minutes.
-The command handles all prompt construction internally; just run it:
+Use a subagent to run this command. The command handles all prompt
+construction internally; just run it:
 
     Bash({ command: "${cmd} review", run_in_background: true })
 
