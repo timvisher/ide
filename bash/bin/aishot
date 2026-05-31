@@ -611,7 +611,20 @@ do_review() {
     mapfile -t reviewer_list <<< "$validated"
 
     setup_run_dir || return 1
-    do_make_review_prompt > "${RUN_DIR}/prompt.txt" || return 1
+
+    # Prepend SHOT_PREAMBLE so the prompt the reviewers see matches
+    # what per-shot `*shot review` sends (which goes through
+    # `aishot review make-prompt | run_shot` and gets the preamble via
+    # do_make_prompt). Without this, `aishot review` and per-shot
+    # review prompts diverge — the per-shot path tells the reviewer
+    # "read AGENTS.md first, don't run project tooling", `aishot
+    # review` does not.
+    local review_prompt
+    review_prompt=$(do_make_review_prompt) || return 1
+    {
+        printf '%s' "$SHOT_PREAMBLE"
+        printf '%s' "$review_prompt"
+    } > "${RUN_DIR}/prompt.txt"
 
     _run_shots "${RUN_DIR}/prompt.txt" \
         _review_synthesis_preamble review \
