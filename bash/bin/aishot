@@ -25,9 +25,10 @@ Usage: aishot [--with=claude,codex,gemini] <prompt>
 Run a prompt across multiple AI one-shot tools in parallel, then
 synthesize the responses via claudeshot.
 
+A bare `<prompt>` (or piped stdin) is the default action. The other
+forms are subcommands.
+
 Subcommands:
-  <prompt>             Run the prompt across selected shots and
-                       synthesize. Reads stdin if no <prompt> arg.
   review               Build a diff-based review prompt and run it.
   review make-prompt   Build the review prompt and print it to stdout.
   make-prompt          Read stdin, prepend the shot preamble, and
@@ -98,9 +99,22 @@ validate_reviewer() {
 }
 
 # Validate and dedupe a CSV of reviewer names. Echoes one validated
-# name per line on stdout; non-zero exit if any name is unknown.
+# name per line on stdout; non-zero exit if the CSV is empty, has any
+# stray comma, or names any unknown reviewer.
 validate_reviewers() {
     local csv=$1
+    if [[ -z $csv ]]
+    then
+        echo "Error: reviewer list is empty (--with= needs at least one name)." >&2
+        return 1
+    fi
+    # `read -ra` silently drops a trailing empty field, so catch stray
+    # commas by inspecting the raw string before tokenising.
+    if [[ $csv == ,* || $csv == *, || $csv == *,,* ]]
+    then
+        echo "Error: reviewer list has a stray comma: '${csv}'." >&2
+        return 1
+    fi
     local -a raw_list
     IFS=',' read -ra raw_list <<< "$csv"
     local -A seen=()
@@ -429,19 +443,24 @@ EOF
 # review findings must not be dismissed or deduplicated.
 _review_synthesis_preamble() {
     cat <<'EOF'
-You are reviewing code review reports from multiple independent AI reviewers. Each reviewer examined the same diff independently.
+You are reviewing code review reports from multiple independent AI
+reviewers. Each reviewer examined the same diff independently.
 
 Synthesize their findings into a single unified report:
 
-1. **High confidence** — issues flagged by multiple reviewers (these are very likely real)
-2. **Worth investigating** — issues flagged by only one reviewer (may be real, may be false positive)
-3. **Disagreements** — where reviewers contradict each other (give your assessment)
+1. **High confidence** — issues flagged by multiple reviewers (these
+   are very likely real)
+2. **Worth investigating** — issues flagged by only one reviewer (may
+   be real, may be false positive)
+3. **Disagreements** — where reviewers contradict each other (give
+   your assessment)
 4. **Missing tests** — union of all test gaps identified
 5. **Questions** — union of all questions raised
 
-IMPORTANT: Do NOT dismiss any finding. Every finding from every reviewer
-is actionable. Do not say any finding is 'pre-existing', 'not our code',
-or 'good to note but not actionable'. ALL findings are actionable.
+IMPORTANT: Do NOT dismiss any finding. Every finding from every
+reviewer is actionable. Do not say any finding is 'pre-existing',
+'not our code', or 'good to note but not actionable'. ALL findings
+are actionable.
 
 For each finding, note which reviewer(s) flagged it.
 
@@ -470,11 +489,14 @@ EOF
 # Requires RUN_DIR to be set (via setup_run_dir).
 #   $1 = prompt file path
 #   $2 = name of function that emits the synthesis preamble
-#   $3.. = validated shot names
+#   $3 = label used in headings and progress messages
+#        (e.g. "review" → "# claude review" / "Synthesizing 2 reviews…")
+#   $4.. = validated shot names
 _run_shots() {
     local prompt_file=$1
     local synthesis_preamble_func=$2
-    shift 2
+    local label=$3
+    shift 3
 
     local pids=()
     local names=()
@@ -484,7 +506,7 @@ _run_shots() {
     for r in "$@"
     do
         local shot_cmd="${r}shot"
-        echo ">>> Starting ${r}..." >&2
+        echo ">>> Starting ${r} ${label}..." >&2
         "$shot_cmd" < "$prompt_file" > "${RUN_DIR}/${r}.out" 2>"${RUN_DIR}/${r}.err" &
         pids+=($!)
         names+=("$r")
@@ -511,7 +533,7 @@ _run_shots() {
     do
         if (( exit_codes[i] != 0 ))
         then
-            echo ">>> WARNING: ${names[$i]} failed (exit ${exit_codes[$i]}, output may be partial)." >&2
+            echo ">>> WARNING: ${names[$i]} ${label} failed (exit ${exit_codes[$i]}, output may be partial)." >&2
         else
             (( successful++ ))
         fi
@@ -531,7 +553,7 @@ _run_shots() {
             if (( exit_codes[i] == 0 ))
             then
                 {
-                    echo "# ${names[$i]} response"
+                    echo "# ${names[$i]} ${label}"
                     echo
                     cat "${RUN_DIR}/${names[$i]}.out"
                 } | tee "${RUN_DIR}/output.txt"
@@ -549,7 +571,7 @@ _run_shots() {
         do
             if (( exit_codes[i] == 0 ))
             then
-                echo "## ${names[$i]} response"
+                echo "## ${names[$i]} ${label}"
                 echo
                 cat "${RUN_DIR}/${names[$i]}.out"
                 echo
@@ -557,7 +579,7 @@ _run_shots() {
         done
     } > "${RUN_DIR}/synthesis_prompt.txt"
 
-    echo ">>> Synthesizing ${successful} responses..." >&2
+    echo ">>> Synthesizing ${successful} ${label}s..." >&2
     claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
 }
 
@@ -591,13 +613,17 @@ do_review() {
     setup_run_dir || return 1
     do_make_review_prompt > "${RUN_DIR}/prompt.txt" || return 1
 
-    _run_shots "${RUN_DIR}/prompt.txt" _review_synthesis_preamble "${reviewer_list[@]}"
+    _run_shots "${RUN_DIR}/prompt.txt" \
+        _review_synthesis_preamble review \
+        "${reviewer_list[@]}"
 }
 
 do_oneshot() {
     local reviewers=$DEFAULT_REVIEWERS
-    local prompt_args=()
 
+    # Parse leading flag-shaped args only; first non-flag (or `--`)
+    # ends option parsing so a `--help` or `--foo` embedded in the
+    # prompt isn't misread as a control flag.
     while (( 0 < $# ))
     do
         case "$1" in
@@ -609,21 +635,29 @@ do_oneshot() {
                 show_help
                 return 0
                 ;;
-            *)
-                prompt_args+=("$1")
+            --)
                 shift
+                break
+                ;;
+            --*|-?)
+                echo "Error: Unknown flag '${1}'." >&2
+                show_help >&2
+                return 1
+                ;;
+            *)
+                break
                 ;;
         esac
     done
 
-    # Resolve prompt: positional args win; otherwise read stdin if
-    # piped. Show help on no args + tty, error on no args + empty pipe
-    # (so an agent harness that closes stdin doesn't silently fire
-    # shots against an empty prompt).
+    # Resolve prompt: any remaining positional args win; otherwise read
+    # stdin if piped. Show help on no args + tty, error on no args +
+    # empty pipe (so an agent harness that closes stdin doesn't
+    # silently fire shots against an empty prompt).
     local prompt_text
-    if (( 0 < ${#prompt_args[@]} ))
+    if (( 0 < $# ))
     then
-        prompt_text="${prompt_args[*]}"
+        prompt_text="$*"
     elif [[ -t 0 ]]
     then
         show_help >&2
@@ -635,6 +669,12 @@ do_oneshot() {
             echo "Error: No <prompt> arg and stdin is empty." >&2
             return 1
         fi
+    fi
+
+    if [[ -z $prompt_text ]]
+    then
+        echo "Error: <prompt> is empty." >&2
+        return 1
     fi
 
     local validated
@@ -649,7 +689,9 @@ do_oneshot() {
         printf '%s' "$prompt_text"
     } > "${RUN_DIR}/prompt.txt"
 
-    _run_shots "${RUN_DIR}/prompt.txt" _oneshot_synthesis_preamble "${reviewer_list[@]}"
+    _run_shots "${RUN_DIR}/prompt.txt" \
+        _oneshot_synthesis_preamble response \
+        "${reviewer_list[@]}"
 }
 
 case "$1" in
