@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# Orchestrate multiple AI one-shot reviewers and synthesize results.
+# Orchestrate multiple AI one-shot commands and synthesize results.
 #
-# Usage: aishot review [--with=claude,codex,gemini]
+# Usage: aishot [--with=claude,codex,gemini] <prompt>
+#        echo "prompt" | aishot [--with=...]
+#        aishot review [--with=...]
 #        aishot review make-prompt
 #        aishot make-prompt
 #        aishot --help
@@ -13,39 +15,43 @@ DEFAULT_REVIEWERS="claude,codex"
 
 show_help() {
     cat <<'EOF'
-Usage: aishot review [--with=claude,codex,gemini]
+Usage: aishot [--with=claude,codex,gemini] <prompt>
+       echo "prompt" | aishot [--with=...]
+       aishot review [--with=...]
        aishot review make-prompt
        aishot make-prompt
        aishot --help
 
-Orchestrate multiple AI one-shot commands in parallel, then synthesize
-the results via claudeshot.
+Run a prompt across multiple AI one-shot tools in parallel, then
+synthesize the responses via claudeshot.
 
 Subcommands:
-  review              Run parallel code reviews and synthesize findings.
-  review make-prompt  Build a review prompt with all diffs inlined,
-                      prepend the shot preamble, and print to stdout.
-  make-prompt         Read stdin, prepend the shot preamble, and print
-                      to stdout.
+  <prompt>             Run the prompt across selected shots and
+                       synthesize. Reads stdin if no <prompt> arg.
+  review               Build a diff-based review prompt and run it.
+  review make-prompt   Build the review prompt and print it to stdout.
+  make-prompt          Read stdin, prepend the shot preamble, and
+                       print to stdout.
 
-Options (review):
-  --with=LIST   Comma-separated list of reviewers to use.
+Options:
+  --with=LIST   Comma-separated list of shots to use.
                 Available: claude, codex, gemini.
                 Default: claude,codex
 
 ## Agent instructions
 
-When invoking `aishot review`, use a subagent to run it — it launches
-multiple reviewers in parallel then synthesizes, so it can take 3-5
-minutes. The command handles everything internally; just run it:
+Use a subagent to run aishot — it launches multiple shots in parallel
+and synthesizes the results. The command handles everything
+internally; just run it:
 
+    Bash({ command: "aishot 'your prompt'", run_in_background: true })
     Bash({ command: "aishot review", run_in_background: true })
 
-For maximum effort (all available reviewers):
+For maximum coverage (all available shots):
 
-    Bash({ command: "aishot review --with=claude,codex,gemini", run_in_background: true })
+    Bash({ command: "aishot --with=claude,codex,gemini 'your prompt'", run_in_background: true })
 
-GOLDEN RULE: EVERY finding from the review is YOUR responsibility.
+GOLDEN RULE: EVERY finding from a review is YOUR responsibility.
 Nothing in the diff is "pre-existing" or "not our commit". If it is in
 the diff, it ships with your work. Investigate and fix ALL findings.
 Never dismiss a finding. Never say "not actionable" or "good to note".
@@ -68,8 +74,8 @@ Options:
 
 ## Agent instructions
 
-Use a subagent to run this command — it can take 3-5 minutes. The
-command handles everything internally; just run it:
+Use a subagent to run this command. The command handles everything
+internally; just run it:
 
     Bash({ command: "aishot review", run_in_background: true })
 
@@ -89,6 +95,25 @@ validate_reviewer() {
             return 1
             ;;
     esac
+}
+
+# Validate and dedupe a CSV of reviewer names. Echoes one validated
+# name per line on stdout; non-zero exit if any name is unknown.
+validate_reviewers() {
+    local csv=$1
+    local -a raw_list
+    IFS=',' read -ra raw_list <<< "$csv"
+    local -A seen=()
+    local r
+    for r in "${raw_list[@]}"
+    do
+        validate_reviewer "$r" || return 1
+        if [[ -z ${seen[$r]+x} ]]
+        then
+            seen[$r]=1
+            echo "$r"
+        fi
+    done
 }
 
 # Set up persistent run directory with XDG canonical path and repo-local
@@ -381,118 +406,29 @@ PR_MD_NOTICE
     done
 }
 
-do_review() {
-    local reviewers=$DEFAULT_REVIEWERS
+# Synthesis preamble emitted ahead of multiple shot responses to a
+# generic prompt. Echoed by _run_shots when 2+ shots succeed.
+_oneshot_synthesis_preamble() {
+    cat <<'EOF'
+You are synthesizing responses from multiple independent AI agents to
+the same prompt. Each agent answered independently.
 
-    while (( 0 < $# ))
-    do
-        case "$1" in
-            --with=*)
-                reviewers=${1#--with=}
-                shift
-                ;;
-            --help|-h)
-                show_review_help
-                return 0
-                ;;
-            *)
-                echo "Error: Unknown option '${1}'" >&2
-                show_review_help >&2
-                return 1
-                ;;
-        esac
-    done
+Combine their responses into a single coherent answer:
 
-    # Validate and deduplicate reviewers
-    IFS=',' read -ra raw_list <<< "$reviewers"
-    local -A seen=()
-    local reviewer_list=()
-    local r
-    for r in "${raw_list[@]}"
-    do
-        validate_reviewer "$r" || return 1
-        if [[ -z ${seen[$r]+x} ]]
-        then
-            seen[$r]=1
-            reviewer_list+=("$r")
-        fi
-    done
+1. **Consensus** — points where multiple agents agreed
+2. **Unique contributions** — useful points raised by only one agent
+3. **Disagreements** — where agents contradict each other (give your
+   own assessment)
+4. **Open questions** — anything ambiguous or worth following up
 
-    # Build the review prompt and log all run artifacts
-    setup_run_dir || return 1
+Note which agent(s) contributed to each point.
+EOF
+}
 
-    do_make_review_prompt > "${RUN_DIR}/prompt.txt" || return 1
-
-    # Launch reviewers in parallel
-    local pids=()
-    local names=()
-    local exit_codes=()
-
-    for r in "${reviewer_list[@]}"
-    do
-        local shot_cmd="${r}shot"
-        echo ">>> Starting ${r} review..." >&2
-        "$shot_cmd" < "${RUN_DIR}/prompt.txt" > "${RUN_DIR}/${r}.out" 2>"${RUN_DIR}/${r}.err" &
-        pids+=($!)
-        names+=("$r")
-    done
-
-    # Wait for all reviewers, track exit codes
-    local i
-    for i in "${!pids[@]}"
-    do
-        local ec=0
-        wait "${pids[$i]}" || ec=$?
-        exit_codes[i]=$ec
-    done
-
-    # Log run metadata
-    {
-        echo "reviewers: ${names[*]}"
-        for i in "${!names[@]}"
-        do
-            echo "${names[$i]}: exit=${exit_codes[$i]}"
-        done
-    } > "${RUN_DIR}/meta.txt"
-
-    # Determine successes and failures by exit code
-    local successful=0
-    for i in "${!names[@]}"
-    do
-        if (( exit_codes[i] != 0 ))
-        then
-            echo ">>> WARNING: ${names[$i]} review failed (exit ${exit_codes[$i]}, output may be partial)." >&2
-        else
-            (( successful++ ))
-        fi
-    done
-
-    if (( successful < 1 ))
-    then
-        echo "Error: All reviewers failed." >&2
-        return 1
-    fi
-
-    # Single reviewer — skip synthesis, output directly
-    if (( successful < 2 ))
-    then
-        for i in "${!names[@]}"
-        do
-            if (( exit_codes[i] == 0 ))
-            then
-                {
-                    echo "# ${names[$i]} review"
-                    echo
-                    cat "${RUN_DIR}/${names[$i]}.out"
-                } | tee "${RUN_DIR}/output.txt"
-            fi
-        done
-        return 0
-    fi
-
-    # Multiple reviewers — synthesize via claudeshot
-    {
-        cat <<'SYNTHESIS_HEADER'
+# Synthesis preamble for code review reports. Stronger framing because
+# review findings must not be dismissed or deduplicated.
+_review_synthesis_preamble() {
+    cat <<'EOF'
 You are reviewing code review reports from multiple independent AI reviewers. Each reviewer examined the same diff independently.
 
 Synthesize their findings into a single unified report:
@@ -527,14 +463,93 @@ notes and reference the bd id in your reply — that is investigation,
 not dismissal.
 
 ---
+EOF
+}
 
-SYNTHESIS_HEADER
+# Run validated shots in parallel against prompt_file, then synthesize.
+# Requires RUN_DIR to be set (via setup_run_dir).
+#   $1 = prompt file path
+#   $2 = name of function that emits the synthesis preamble
+#   $3.. = validated shot names
+_run_shots() {
+    local prompt_file=$1
+    local synthesis_preamble_func=$2
+    shift 2
+
+    local pids=()
+    local names=()
+    local exit_codes=()
+
+    local r
+    for r in "$@"
+    do
+        local shot_cmd="${r}shot"
+        echo ">>> Starting ${r}..." >&2
+        "$shot_cmd" < "$prompt_file" > "${RUN_DIR}/${r}.out" 2>"${RUN_DIR}/${r}.err" &
+        pids+=($!)
+        names+=("$r")
+    done
+
+    local i
+    for i in "${!pids[@]}"
+    do
+        local ec=0
+        wait "${pids[$i]}" || ec=$?
+        exit_codes[i]=$ec
+    done
+
+    {
+        echo "shots: ${names[*]}"
+        for i in "${!names[@]}"
+        do
+            echo "${names[$i]}: exit=${exit_codes[$i]}"
+        done
+    } > "${RUN_DIR}/meta.txt"
+
+    local successful=0
+    for i in "${!names[@]}"
+    do
+        if (( exit_codes[i] != 0 ))
+        then
+            echo ">>> WARNING: ${names[$i]} failed (exit ${exit_codes[$i]}, output may be partial)." >&2
+        else
+            (( successful++ ))
+        fi
+    done
+
+    if (( successful < 1 ))
+    then
+        echo "Error: All shots failed." >&2
+        return 1
+    fi
+
+    # Single shot — skip synthesis, output directly
+    if (( successful < 2 ))
+    then
+        for i in "${!names[@]}"
+        do
+            if (( exit_codes[i] == 0 ))
+            then
+                {
+                    echo "# ${names[$i]} response"
+                    echo
+                    cat "${RUN_DIR}/${names[$i]}.out"
+                } | tee "${RUN_DIR}/output.txt"
+            fi
+        done
+        return 0
+    fi
+
+    # Multiple shots — synthesize via claudeshot
+    {
+        "$synthesis_preamble_func"
+        echo
 
         for i in "${!names[@]}"
         do
             if (( exit_codes[i] == 0 ))
             then
-                echo "## ${names[$i]} review output"
+                echo "## ${names[$i]} response"
                 echo
                 cat "${RUN_DIR}/${names[$i]}.out"
                 echo
@@ -542,8 +557,99 @@ SYNTHESIS_HEADER
         done
     } > "${RUN_DIR}/synthesis_prompt.txt"
 
-    echo ">>> Synthesizing ${successful} reviews..." >&2
+    echo ">>> Synthesizing ${successful} responses..." >&2
     claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
+}
+
+do_review() {
+    local reviewers=$DEFAULT_REVIEWERS
+
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --with=*)
+                reviewers=${1#--with=}
+                shift
+                ;;
+            --help|-h)
+                show_review_help
+                return 0
+                ;;
+            *)
+                echo "Error: Unknown option '${1}'" >&2
+                show_review_help >&2
+                return 1
+                ;;
+        esac
+    done
+
+    local validated
+    validated=$(validate_reviewers "$reviewers") || return 1
+    local -a reviewer_list
+    mapfile -t reviewer_list <<< "$validated"
+
+    setup_run_dir || return 1
+    do_make_review_prompt > "${RUN_DIR}/prompt.txt" || return 1
+
+    _run_shots "${RUN_DIR}/prompt.txt" _review_synthesis_preamble "${reviewer_list[@]}"
+}
+
+do_oneshot() {
+    local reviewers=$DEFAULT_REVIEWERS
+    local prompt_args=()
+
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --with=*)
+                reviewers=${1#--with=}
+                shift
+                ;;
+            --help|-h)
+                show_help
+                return 0
+                ;;
+            *)
+                prompt_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Resolve prompt: positional args win; otherwise read stdin if
+    # piped. Show help on no args + tty, error on no args + empty pipe
+    # (so an agent harness that closes stdin doesn't silently fire
+    # shots against an empty prompt).
+    local prompt_text
+    if (( 0 < ${#prompt_args[@]} ))
+    then
+        prompt_text="${prompt_args[*]}"
+    elif [[ -t 0 ]]
+    then
+        show_help >&2
+        return 1
+    else
+        prompt_text=$(cat)
+        if [[ -z $prompt_text ]]
+        then
+            echo "Error: No <prompt> arg and stdin is empty." >&2
+            return 1
+        fi
+    fi
+
+    local validated
+    validated=$(validate_reviewers "$reviewers") || return 1
+    local -a reviewer_list
+    mapfile -t reviewer_list <<< "$validated"
+
+    setup_run_dir || return 1
+
+    {
+        printf '%s' "$SHOT_PREAMBLE"
+        printf '%s' "$prompt_text"
+    } > "${RUN_DIR}/prompt.txt"
+
+    _run_shots "${RUN_DIR}/prompt.txt" _oneshot_synthesis_preamble "${reviewer_list[@]}"
 }
 
 case "$1" in
@@ -572,13 +678,9 @@ case "$1" in
         show_help
         exit 0
         ;;
-    "")
-        show_help >&2
-        exit 1
-        ;;
     *)
-        echo "Error: Unknown subcommand '${1}'" >&2
-        show_help >&2
-        exit 1
+        # No subcommand or unknown first arg — treat all args as the
+        # prompt (do_oneshot will fall back to stdin if no args).
+        do_oneshot "$@"
         ;;
 esac
