@@ -612,6 +612,21 @@ function ntmux3() {
     # Remote is always tried first.  If clone fails on a non-git
     # directory (e.g. relative path that isn't an org/repo shorthand),
     # fall back to opening it as a local session.
+
+    # Tell an agent up front that this is a long-running op and that the
+    # worktree it produces is NOT ready until the completion instruction.
+    # The worktree is built in a hidden temp dir and only moved to its
+    # canonical path when fully ready, so the canonical path does not even
+    # exist until then — editing earlier races the build (ide-8hi).
+    if [[ -n $detached && -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_notice &>/dev/null
+    then
+        aictl_notice \
+            --code "ntmux3_worktree_building" \
+            --message "Creating a worktree for '${clone_target}' — a long-running operation (clone, checkout, maintenance, any stacking). Do NOT use or edit the worktree until you see the 'ntmux3_worktree_ready' instruction with its path." \
+            --reason "ntmux3 builds the worktree in a hidden temp dir and moves it into its canonical path only when fully ready, so the canonical path does not exist until then. Touching it earlier races the build and edits can be clobbered (e.g. by a stacking reset --hard)." \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+    fi
+
     local branch_dir
     branch_dir=$(TIMVISHER_NTMUX=1 timvisher_git clone "$clone_target" ${stack_on_base:+"$stack_on_base"}) || {
         if [[ -d $clone_target ]] &&
@@ -630,6 +645,16 @@ function ntmux3() {
             ntmux3__fail "Unable to set branch_dir"
             return 1
         }
+
+    # The clone returns only once the worktree is fully built and moved
+    # into place, so this is the readiness signal the opener promised.
+    if [[ -n $detached && -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_info &>/dev/null
+    then
+        aictl_info \
+            --code "ntmux3_worktree_ready" \
+            --message "Worktree ready at '${branch_dir}'. It is now safe to use and edit." \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+    fi
 
     # Derive session name from the returned directory
     local session_name
