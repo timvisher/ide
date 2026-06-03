@@ -1359,25 +1359,53 @@ ensure_worktree() {
   mkdir -p "$branch_dir_parent" ||
     die "Unable to create branch directory parent ‘${branch_dir_parent}’"
 
-  if ! [[ -d ${branch_dir_abs} ]]; then
-    info "Creating worktree ‘${branch_dir_abs}’ from cache ‘${trunk_cache}’"
+  # Where we actually build.  A brand-new worktree is built in a hidden
+  # temp sibling and moved into the canonical path as the very last step,
+  # so the canonical path never appears until the worktree is fully ready
+  # (checked out, tracking configured, slow post-create maintenance done).
+  # The path is predictable, so an agent that runs `ntmux3 -d` in the
+  # background must not be able to cd into and edit a half-built worktree
+  # and have its edits clobbered (e.g. by a stacking reset).  See ide-8hi.
+  # Existing worktrees are repaired in place — there is no race for those.
+  local build_dir=$branch_dir_abs
+  local building_in_temp=
+
+  if ! [[ -d ${branch_dir_abs} ]]
+  then
+    build_dir=$(mktemp -d "${branch_dir_parent}/.x.ntmux3-building.XXXXXX") ||
+      die "Unable to create temp build dir under ‘${branch_dir_parent}’"
+    building_in_temp=1
+
+    info "Creating worktree ‘${branch_dir_abs}’ from cache ‘${trunk_cache}’ (building in ‘${build_dir}’)"
     command git -C "${trunk_cache}" worktree prune >&2
-    command git -C "${trunk_cache}" worktree add --detach "${branch_dir_abs}" "origin/$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
-      die "Unable to add worktree ‘${branch_dir_abs}’"
+    command git -C "${trunk_cache}" worktree add --detach "${build_dir}" "origin/$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
+      die "Unable to add worktree ‘${build_dir}’"
+
+    # Mark the worktree not-ready for the whole build.  Removed only once
+    # it is fully built and moved into place; a surviving marker means the
+    # build did not finish (recovery / inspection signal).
+    : > "${build_dir}/x.ntmux3-building" ||
+      die "Unable to write x.ntmux3-building marker in ‘${build_dir}’"
 
     # Caches with extensions.worktreeConfig=true propagate core.bare=true
     # into every freshly-added worktree; without the per-worktree override
     # the next git op dies with "this operation must be run in a work tree".
     ensure_worktrees_not_poisoned_by_bare "$trunk_cache"
 
-    maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-initial-branch-dir-creation
+    # Run post-create maintenance (index/commit-graph/gc — the slow part)
+    # against the temp build dir, so that whole window stays invisible at
+    # the canonical path.
+    (
+      cd "$build_dir" &&
+        maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-initial-branch-dir-creation
+    )
   else
     info "Worktree already exists at ${branch_dir_abs}"
   fi
 
   (
-    cd "$branch_dir_abs" ||
-      die "Unable to cd to ‘${branch_dir_abs}’"
+    cd "$build_dir" ||
+      die "Unable to cd to ‘${build_dir}’"
 
     local errors
 
@@ -1436,16 +1464,34 @@ ensure_worktree() {
     if [[ -z $errors ]]; then
       configure_remotes_and_tracking "$trunk_cache" "$source"
       maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-make-branch-dir
-      printf '%s' "$branch_dir_abs"
     else
       exit 1
     fi
   ) || return $?
 
+  # Publish: move the freshly-built worktree into its canonical location
+  # as the final step, then drop the not-ready marker.  Use mv + `git
+  # worktree repair` (submodule-agnostic) rather than `git worktree move`.
+  # The rename is within the same parent dir, so it is atomic on a single
+  # filesystem.
+  if [[ -n $building_in_temp ]]
+  then
+    [[ ! -e $branch_dir_abs ]] ||
+      die "Refusing to publish worktree: ‘${branch_dir_abs}’ appeared during build"
+    mv "$build_dir" "$branch_dir_abs" ||
+      die "Unable to move worktree from ‘${build_dir}’ to ‘${branch_dir_abs}’"
+    command git -C "${trunk_cache}" worktree repair "$branch_dir_abs" >&2 ||
+      die "Unable to repair worktree at ‘${branch_dir_abs}’ after move"
+    rm -f "${branch_dir_abs}/x.ntmux3-building" ||
+      warn "Unable to remove x.ntmux3-building marker in ‘${branch_dir_abs}’ (non-fatal)"
+  fi
+
   # Eagerly create sibling trunk worktrees when source is in a fork
   # network.  Stdout discarded so trunk paths don't pollute the path
   # ensure_worktree returns.  Recursion guarded inside ensure_fork_trunks.
   ensure_fork_trunks "$source" "$trunk_cache" >/dev/null || true
+
+  printf '%s' "$branch_dir_abs"
 }
 
 # ---------------------------------------------------------------------------
@@ -1775,7 +1821,7 @@ on the same target — existing worktrees are verified and repaired.
 When [stack-on-base] is provided, the target worktree is "stacked" on
 the base: the base worktree is cloned first (ensuring it exists), then
 the target is reset --hard to the base branch's HEAD.  Both arguments
-must resolve to the same org/repo.  An x.stack-pending marker provides
+must resolve to the same org/repo.  An x.ntmux3-building marker provides
 idempotent recovery from partial failures.
 
 Resolution order
@@ -2205,25 +2251,32 @@ clone_stacked() {
   target_dir=$(ensure_worktree "$target") ||
     die "clone_stacked: unable to clone target '%s'" "$target"
 
-  # Stack if: target was just created, OR x.stack-pending exists (recovery).
-  local stack_pending_file="${target_dir}/x.stack-pending"
-  if [[ -n $target_was_new || -f $stack_pending_file ]]
+  # Stack if: target was just created, OR x.ntmux3-building exists (a prior
+  # run was interrupted between writing the marker and finishing the reset).
+  #
+  # The marker is the same x.ntmux3-building used by ensure_worktree to flag
+  # an unready worktree: ensure_worktree clears it once the target is built
+  # and moved into place, then we re-assert it here for the reset window
+  # (the only window in which the *canonical* path exists but the worktree
+  # is still being mutated).  Its content is the stack base, for recovery.
+  local building_marker="${target_dir}/x.ntmux3-building"
+  if [[ -n $target_was_new || -f $building_marker ]]
   then
     info "clone_stacked: stacking '%s' onto base branch '%s'" "$target" "$base_branch"
 
     # Write the marker before resetting, for idempotent recovery.
-    printf '%s\n' "$stack_on_base" > "$stack_pending_file" ||
-      die "clone_stacked: unable to write x.stack-pending in '%s'" "$target_dir"
+    printf '%s\n' "$stack_on_base" > "$building_marker" ||
+      die "clone_stacked: unable to write x.ntmux3-building in '%s'" "$target_dir"
 
     git -C "$target_dir" reset --hard "$base_branch" >&2 ||
       die "clone_stacked: git reset --hard '%s' failed in '%s'" "$base_branch" "$target_dir"
 
-    rm -f "$stack_pending_file" ||
-      warn "clone_stacked: unable to remove x.stack-pending (non-fatal)"
+    rm -f "$building_marker" ||
+      warn "clone_stacked: unable to remove x.ntmux3-building (non-fatal)"
 
     info "clone_stacked: target '%s' is now stacked on '%s'" "$target" "$base_branch"
   else
-    info "clone_stacked: target already exists and no x.stack-pending; skipping stacking"
+    info "clone_stacked: target already exists and no x.ntmux3-building; skipping stacking"
   fi
 
   printf '%s' "$target_dir"

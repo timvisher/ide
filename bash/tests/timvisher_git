@@ -668,13 +668,13 @@ else
   fail "clone_stacked: returned rc=${rc}"
 fi
 
-# Test: x.stack-pending is cleaned up after successful stacking
+# Test: x.ntmux3-building is cleaned up after successful stacking
 run_test
-if [[ ! -f "${target_dir}/x.stack-pending" ]]
+if [[ ! -f "${target_dir}/x.ntmux3-building" ]]
 then
-  pass "clone_stacked: x.stack-pending cleaned up after stacking"
+  pass "clone_stacked: x.ntmux3-building cleaned up after stacking"
 else
-  fail "clone_stacked: x.stack-pending should not exist after successful stacking"
+  fail "clone_stacked: x.ntmux3-building should not exist after successful stacking"
 fi
 
 # Test: is_branch_ish accepts managed worktree local path
@@ -687,7 +687,7 @@ else
   fail "is_branch_ish should accept managed worktree local path"
 fi
 
-# Test: clone_stacked skips stacking on existing target with no x.stack-pending
+# Test: clone_stacked skips stacking on existing target with no x.ntmux3-building
 run_test
 if [[ -z $target_dir || ! -d $target_dir ]]
 then
@@ -712,7 +712,7 @@ else
   fi
 fi
 
-# Test: clone_stacked recovers via x.stack-pending
+# Test: clone_stacked recovers via x.ntmux3-building
 run_test
 if [[ -z $base_dir || ! -d $base_dir || -z $target_dir || ! -d $target_dir ]]
 then
@@ -722,17 +722,17 @@ else
   "$test_git" -C "$base_dir" -c user.email=test@test.com -c user.name=Test \
     -c core.hooksPath=/dev/null commit --allow-empty -m "recovery commit" >/dev/null 2>&1
   recovery_commit=$("$test_git" -C "$base_dir" rev-parse HEAD)
-  # Simulate partial failure: write x.stack-pending
-  printf '%s\n' "testorg/testrepo/feature/base" > "${target_dir}/x.stack-pending"
+  # Simulate partial failure: write x.ntmux3-building
+  printf '%s\n' "testorg/testrepo/feature/base" > "${target_dir}/x.ntmux3-building"
   target_dir3=$(clone_stacked "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>/dev/null) && rc=0 || rc=$?
   if (( rc == 0 ))
   then
     target_head3=$("$test_git" -C "$target_dir3" rev-parse HEAD 2>/dev/null) || true
-    if [[ $target_head3 == "$recovery_commit" && ! -f "${target_dir3}/x.stack-pending" ]]
+    if [[ $target_head3 == "$recovery_commit" && ! -f "${target_dir3}/x.ntmux3-building" ]]
     then
-      pass "clone_stacked: recovers via x.stack-pending and re-stacks"
+      pass "clone_stacked: recovers via x.ntmux3-building and re-stacks"
     else
-      fail "clone_stacked: recovery failed (target=${target_head3} expected=${recovery_commit} pending=$(test -f "${target_dir3}/x.stack-pending" && echo yes || echo no))"
+      fail "clone_stacked: recovery failed (target=${target_head3} expected=${recovery_commit} pending=$(test -f "${target_dir3}/x.ntmux3-building" && echo yes || echo no))"
     fi
   else
     fail "clone_stacked: recovery call returned rc=${rc}"
@@ -748,6 +748,71 @@ then
 else
   fail "clone_stacked: should reject mismatched org/repo"
 fi
+
+# ---------------------------------------------------------------------------
+# temp-build + move invariant tests (ide-8hi)
+#
+# A newly-created worktree must be built in a hidden temp sibling and moved
+# into the canonical path only as the final step, so an agent that knows the
+# predictable canonical path can never see/edit a half-built worktree.  We
+# prove this with a post-initial-branch-dir-creation hook that records the
+# directory the slow post-create maintenance runs in: it must be a
+# .x.ntmux3-building.* temp dir, NOT the canonical path.
+# ---------------------------------------------------------------------------
+
+# Install a hook that records $PWD where post-create maintenance runs.
+# hooks_dir resolves under XDG_CONFIG_HOME ($tmpdir) — see script's config_dir.
+build_pwd_record="$tmpdir/build_pwd.txt"
+mkdir -p "$hooks_dir/testorg/testrepo"
+cat > "$hooks_dir/testorg/testrepo/post-initial-branch-dir-creation" <<HOOK
+#!/usr/bin/env bash
+printf '%s\n' "\$PWD" > "$build_pwd_record"
+HOOK
+chmod +x "$hooks_dir/testorg/testrepo/post-initial-branch-dir-creation"
+
+# Test: post-create maintenance runs in a temp build dir, not the canonical path
+run_test
+rm -f "$build_pwd_record"
+tempcheck_dir=$(ensure_worktree "testorg/testrepo/feature/tempcheck" 2>/dev/null) && rc=0 || rc=$?
+build_pwd=$(cat "$build_pwd_record" 2>/dev/null) || true
+if (( rc == 0 )) && [[ ${build_pwd##*/} == .x.ntmux3-building.* && $build_pwd != "$tempcheck_dir" ]]
+then
+  pass "ensure_worktree: builds new worktree in temp dir (window invisible at canonical path)"
+else
+  fail "ensure_worktree temp-build: rc=$rc build_pwd='${build_pwd}' canonical='${tempcheck_dir}'"
+fi
+
+# Test: the canonical worktree is valid and on the right branch after the move
+run_test
+if [[ -d $tempcheck_dir ]] &&
+  [[ $("$test_git" -C "$tempcheck_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) == "feature/tempcheck" ]]
+then
+  pass "ensure_worktree: moved worktree is valid and on the expected branch"
+else
+  fail "ensure_worktree: canonical worktree invalid at '${tempcheck_dir}'"
+fi
+
+# Test: no x.ntmux3-building marker remains once the worktree is ready
+run_test
+if [[ ! -f "${tempcheck_dir}/x.ntmux3-building" ]]
+then
+  pass "ensure_worktree: x.ntmux3-building marker removed when worktree is ready"
+else
+  fail "ensure_worktree: x.ntmux3-building should not remain at '${tempcheck_dir}'"
+fi
+
+# Test: no leftover temp build dirs remain in the parent after a successful build
+run_test
+leftover=$(find "$(dirname "$tempcheck_dir")" -maxdepth 1 -name '.x.ntmux3-building.*' 2>/dev/null)
+if [[ -z $leftover ]]
+then
+  pass "ensure_worktree: no leftover temp build dir after successful move"
+else
+  fail "ensure_worktree: leftover temp build dir(s): ${leftover}"
+fi
+
+# Remove the test hook so it doesn't fire for unrelated worktree creations below.
+rm -f "$hooks_dir/testorg/testrepo/post-initial-branch-dir-creation"
 
 # ---------------------------------------------------------------------------
 # clone() resolution order tests
