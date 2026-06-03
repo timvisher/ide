@@ -56,6 +56,41 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
 - `-d` skips the "inside tmux" guard, so it works from within an
   existing session.
 
+## When is the worktree ready? (read this before editing)
+
+**The worktree is ready when `ntmux3 -d` completes — NOT when the
+directory appears.** Creating a worktree is a long-running operation
+(clone, checkout, maintenance/gc, and — for stacked worktrees — a
+final `git reset --hard`). To make premature use impossible, ntmux3
+builds the worktree in a **hidden temp sibling** and only moves it to
+its canonical `~/git/org/repo/branch/` path as the very last step. So:
+
+- The canonical path **does not exist** until the worktree is fully
+  ready. Do not pre-create it or poll for "directory has files."
+- When you run `ntmux3 -d` in the background, **wait for the task to
+  complete** before touching the worktree. As an agent you also get
+  two structured signals on stderr:
+  - `ntmux3_worktree_building` (a `warning`-level notice) at the
+    start — the run is long and the worktree is not ready yet.
+  - `ntmux3_worktree_ready` (an `info` instruction with the path)
+    when it is safe to use and edit.
+- While a worktree is mid-build (or mid-stack-reset), it carries an
+  `x.ntmux3-building` marker file in its root. Its presence means
+  "not ready"; it is removed once the worktree is ready.
+
+Editing a worktree before it is ready races the build, and a stacked
+worktree's `reset --hard` will silently discard those edits.
+
+<!--
+  ide-8hi: the prevention above (temp-build+move, the building marker,
+  and the building/ready instructions) is INSTRUCTION-based — it relies
+  on the agent waiting for the completion signal. If we observe agents
+  still editing worktrees before they are ready, escalate to a hard
+  guard: a PreToolUse hook on Write/Edit that refuses when the target
+  file's worktree root contains an x.ntmux3-building marker. That makes
+  premature edits impossible rather than merely discouraged.
+-->
+
 ## References
 - See references/worktree.md for directory layout, lower-level
   ntmux usage, and additional examples.
