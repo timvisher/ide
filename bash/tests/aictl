@@ -444,6 +444,62 @@ else
   fail "aictl_info empty fields: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# aictl_notice tests
+# ---------------------------------------------------------------------------
+
+# Test: aictl_notice emits level:warning (for visual weight)
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
+if [[ $result == *'"level":"warning"'* && $result == *'"code":"nc"'* ]]
+then
+  pass "aictl_notice emits level:warning"
+else
+  fail "aictl_notice level: got '${result}'"
+fi
+
+# Test: aictl_notice returns zero (non-blocking; not a guardrail)
+run_test
+rc=0
+bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" >/dev/null 2>&1 || rc=$?
+if (( rc == 0 ))
+then
+  pass "aictl_notice returns zero"
+else
+  fail "aictl_notice should return zero, got rc=$rc"
+fi
+
+# Test: aictl_notice omits retryable — a notice is not a failed action
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
+if [[ $result != *'"retryable"'* ]]
+then
+  pass "aictl_notice omits retryable field"
+else
+  fail "aictl_notice should omit retryable: got '${result}'"
+fi
+
+# Test: aictl_notice does not leak _aictl_suppress_retryable so a later
+# real aictl_warn in the same shell still emits retryable:true
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'm' 2>/dev/null; aictl__emit warning wc 'm'" 2>&1 || true)
+if [[ $result == *'"retryable":true'* ]]
+then
+  pass "aictl_notice does not leak retryable suppression"
+else
+  fail "warning after notice should keep retryable:true: got '${result}'"
+fi
+
+# Test: aictl_notice writes to stderr only
+run_test
+out=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>/dev/null)
+if [[ -z $out ]]
+then
+  pass "aictl_notice writes to stderr only (stdout empty)"
+else
+  fail "aictl_notice stdout should be empty, got '${out}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

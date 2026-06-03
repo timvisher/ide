@@ -106,10 +106,13 @@ aictl__emit() {
 
   # info (and any other unrecognized level) gets no retryable field —
   # info is informational, not a failure, so retry semantics don't apply.
+  # _aictl_suppress_retryable lets aictl_notice emit a warning-level
+  # instruction (for visual weight) without the retryable field, since a
+  # notice is informational rather than a failed-but-retryable action.
   if [[ $level == error ]]
   then
     printf ',"retryable":false' >&2
-  elif [[ $level == warning ]]
+  elif [[ $level == warning && -z ${_aictl_suppress_retryable:-} ]]
   then
     printf ',"retryable":true' >&2
     # Intentionally no "bypass" object. If bypass is legitimately needed,
@@ -173,6 +176,20 @@ aictl_error() {
 #    or: aictl_info <code> <message> [suggestion...]
 aictl_info() {
   aictl__emit info "$@"
+  return 0
+}
+
+# Non-blocking notice — emits warning-level JSON to stderr for visual
+# weight (so agents treat it as important), but returns 0 and carries no
+# retryable field.  Use this to flag a successful-but-noteworthy state at
+# a boundary, e.g. "this is a long-running op; the worktree it produces is
+# NOT ready until you see the completion instruction."  Unlike aictl_warn
+# this is NOT a guardrail: it never blocks and needs no bypass.
+#
+# Usage: aictl_notice [--code C] [--message M] [--reason R] [--doc D] [--suggestion S]...
+#    or: aictl_notice <code> <message> [suggestion...]
+aictl_notice() {
+  _aictl_suppress_retryable=1 aictl__emit warning "$@"
   return 0
 }
 
