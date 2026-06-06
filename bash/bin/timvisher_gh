@@ -46,10 +46,13 @@ usage() {
   pr ready subcommand:
     - Requires pr.md.url to exist
     - Polls CI checks until all pass, then runs 'gh pr ready'
-    - Per-repo exclude patterns in:
+    - Exclude patterns are loaded from org-level then repo-level files:
+        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/OWNER/pr/ready/exclude-checks.txt
         ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt
-      One regex pattern per line; matching check names are ignored.
-      Lines starting with '#' and blank lines are skipped.
+      Org-level patterns apply to every repo in the org; repo-level
+      patterns add to them. One regex pattern per line; matching check
+      names are ignored. Lines starting with '#' and blank lines are
+      skipped.
     - Set TIMVISHER_GH_PR_READY_POLL_INTERVAL to override the default
       10-second poll interval
 
@@ -135,16 +138,23 @@ gh_pr_ready() {
   [[ -n $pr_url ]] ||
     die 'pr_url unset. Does pr.md.url exist at top level?'
 
-  # Load per-repo exclude patterns for checks that should be ignored
-  # (e.g. mergegate, which never completes until all others pass).
+  # Load exclude patterns for checks that should be ignored (e.g.
+  # mergegate, which never completes until all others pass). Org-level
+  # patterns apply to every repo in the org; repo-level patterns add to
+  # them.
   local config_dir="${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config"
   local repo_slug_from_url=${pr_url#https://github.com/}
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
+  local owner_from_url=${repo_slug_from_url%%/*}
 
-  local exclude_file="${config_dir}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
   local -a exclude_patterns=()
-  if [[ -r $exclude_file ]]
-  then
+  local exclude_file
+  for exclude_file in \
+    "${config_dir}/orgs/${owner_from_url}/pr/ready/exclude-checks.txt" \
+    "${config_dir}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
+  do
+    [[ -r $exclude_file ]] ||
+      continue
     while IFS= read -r line
     do
       # Trim leading/trailing whitespace
@@ -153,8 +163,8 @@ gh_pr_ready() {
       # Skip blank lines and comments
       [[ -n $line && $line != '#'* ]] && exclude_patterns+=("$line")
     done < "$exclude_file"
-    info 'Loaded %d exclude pattern(s) from %s' "${#exclude_patterns[@]}" "$exclude_file"
-  fi
+    info 'Loaded exclude pattern(s) from %s' "$exclude_file"
+  done
 
   local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
   local checks_json filtered_json total pending_count fail_count pass_count
