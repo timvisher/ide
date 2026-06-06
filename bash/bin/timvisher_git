@@ -2604,6 +2604,75 @@ worktree_gc__do_archive() {
   done < <(git -C "$wt_path" ls-files --others --ignored --exclude-standard 2>/dev/null)
 }
 
+# Derive an "owner/repo" slug from a cache's origin remote, for `gh --repo`.
+# Echoes the slug on success; returns 1 if it can't be parsed.
+worktree_gc__gh_repo() {
+  local url
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  url=${url%.git}
+  case $url in
+    *github.com[:/]*) printf '%s' "${url#*github.com[:/]}" ;;
+    *)                return 1 ;;
+  esac
+}
+
+# Decide whether a worktree's branch has landed and may be reaped.
+# Echoes a short human reason on success (exit 0); echoes nothing, returns 1
+# otherwise. Checks are ordered cheap-and-authoritative first:
+#
+#   1. pr.md.url -> `gh pr view` PR state. Authoritative and time-independent
+#      (GitHub's mergedAt is permanent), so it catches SQUASH merges that the
+#      ancestor test structurally cannot, and never degrades with branch drift.
+#   2. branch tip is an ancestor of origin/<trunk>. Pure graph reachability —
+#      no replay, immune to staleness — but blind to squash merges.
+#   3. fallback: `gh pr list --head <ref> --state merged` for branches with no
+#      pr.md.url (e.g. ticket-named branches). Also conflict-free.
+#
+# Deliberately NO rebase/cherry/merge-tree squash detection: those replay the
+# branch onto trunk and fail on conflicts once enough time passes — least
+# reliable exactly on the old worktrees gc targets.
+worktree_gc__reap_reason() {
+  local wt_path=$1 trunk_cache=$2 branch_ref=$3 trunk_branch=$4 gh_repo=$5
+  local have_gh=0
+  command -v gh &>/dev/null && have_gh=1
+
+  # 1. Explicit PR URL -> authoritative PR state.
+  local url_file="${wt_path}/pr.md.url"
+  if (( have_gh )) && [[ -f $url_file ]]; then
+    local url pr_num
+    url=$(<"$url_file"); url=${url//[$'\t\r\n ']/}
+    pr_num=$(grep -oE '/pull/[0-9]+' <<<"$url" | grep -oE '[0-9]+' | head -1)
+    if [[ -n $pr_num ]]; then
+      local state
+      state=$(gh pr view "$url" --json state -q .state 2>/dev/null)
+      if [[ $state == MERGED ]]; then
+        printf 'PR #%s merged' "$pr_num"
+        return 0
+      fi
+    fi
+  fi
+
+  # 2. Branch tip already reachable from trunk (merge/rebase-landed repos).
+  if git -C "$trunk_cache" merge-base --is-ancestor "$branch_ref" "origin/${trunk_branch}" 2>/dev/null; then
+    printf 'ancestor of %s' "$trunk_branch"
+    return 0
+  fi
+
+  # 3. No URL recorded: ask GitHub whether a merged PR exists for this head.
+  if (( have_gh )) && [[ -n $gh_repo ]]; then
+    local branch_name="${branch_ref#refs/heads/}"
+    local merged_pr
+    merged_pr=$(gh pr list --repo "$gh_repo" --head "$branch_name" \
+      --state merged --json number -q '.[0].number' 2>/dev/null)
+    if [[ -n $merged_pr ]]; then
+      printf 'PR #%s merged' "$merged_pr"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 worktree_gc() {
   local dry_run=0
   local cutoff_spec="2 weeks ago"
@@ -2659,6 +2728,10 @@ worktree_gc() {
     # Fetch to ensure merge-base checks are current
     command git -C "$trunk_cache" fetch origin "$trunk_branch" --quiet 2>/dev/null || continue
 
+    # owner/repo slug for gh PR-state lookups (empty if not a GitHub remote)
+    local gh_repo
+    gh_repo=$(worktree_gc__gh_repo "$trunk_cache") || gh_repo=""
+
     local found_any=0
 
     while IFS=$'\t' read -r wt_path branch_ref; do
@@ -2682,7 +2755,8 @@ worktree_gc() {
         continue
       fi
 
-      if git -C "$trunk_cache" merge-base --is-ancestor "$branch_ref" "origin/${trunk_branch}" 2>/dev/null; then
+      local reap_reason
+      if reap_reason=$(worktree_gc__reap_reason "$wt_path" "$trunk_cache" "$branch_ref" "$trunk_branch" "$gh_repo"); then
         if (( ! found_any )); then
           info "--- %s ---" "$label"
           found_any=1
@@ -2690,7 +2764,7 @@ worktree_gc() {
 
         local last_date
         last_date=$(git -C "$wt_path" log -1 --format='%ai' 2>/dev/null | cut -d' ' -f1)
-        info "  MERGED  %s  %s" "$last_date" "$branch"
+        info "  MERGED  %s  %s  (%s)" "$last_date" "$branch" "$reap_reason"
 
         local file_count
         file_count=$(worktree_gc__count_archivable "$wt_path")
