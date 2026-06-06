@@ -2676,6 +2676,7 @@ worktree_gc__reap_reason() {
 worktree_gc() {
   local dry_run=0
   local cutoff_spec="2 weeks ago"
+  local stale_cutoff_spec=""
 
   while (( 0 < $# )); do
     case $1 in
@@ -2683,6 +2684,9 @@ worktree_gc() {
       --cutoff)     [[ -n ${2:-} ]] || die "worktree gc: --cutoff requires a value"
                     cutoff_spec=$2; shift 2 ;;
       --cutoff=*)   cutoff_spec=${1#--cutoff=}; shift ;;
+      --stale-cutoff)   [[ -n ${2:-} ]] || die "worktree gc: --stale-cutoff requires a value"
+                        stale_cutoff_spec=$2; shift 2 ;;
+      --stale-cutoff=*) stale_cutoff_spec=${1#--stale-cutoff=}; shift ;;
       -*)           die "worktree gc: unknown option '%s'" "$1" ;;
       *)            die "worktree gc: unexpected argument '%s'" "$1" ;;
     esac
@@ -2693,6 +2697,22 @@ worktree_gc() {
     die "worktree gc: invalid cutoff '%s'" "$cutoff_spec"
 
   info "Cutoff: %s (%s)" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
+
+  # Optional, opt-in stale sweep: reap worktrees with NO merge evidence
+  # (not PR-merged, not an ancestor) that are older than this longer
+  # cutoff. Safe because `git worktree remove` keeps the branch — only the
+  # working checkout is reclaimed, and the commits live on in the cache.
+  local stale_cutoff=0 stale_enabled=0
+  if [[ -n $stale_cutoff_spec ]]; then
+    stale_cutoff=$(gdate -d "$stale_cutoff_spec" +%s) ||
+      die "worktree gc: invalid --stale-cutoff '%s'" "$stale_cutoff_spec"
+    stale_enabled=1
+    info "Stale cutoff: %s (%s) — unmerged worktrees older than this are reaped (branch kept)" \
+      "$(gdate -d "@${stale_cutoff}" '+%Y-%m-%d')" "$stale_cutoff_spec"
+    if (( cutoff < stale_cutoff )); then
+      warn "  --stale-cutoff is more recent than --cutoff; stale sweep would reap unmerged worktrees newer than merged ones"
+    fi
+  fi
   if (( dry_run )); then
     info "Dry run — no changes will be made"
   fi
@@ -2707,10 +2727,12 @@ worktree_gc() {
     echo
   fi
 
-  # Parallel arrays: trunk_cache|wt_path, and archive file counts
+  # Parallel arrays: trunk_cache|wt_path, archive file counts, and the
+  # kind of removal (MERGED vs STALE) for the per-item line and summary.
   local to_remove=()
   local archive_counts=()
   local archive_labels=()
+  local remove_kinds=()
 
   local trunk_cache
   for trunk_cache in "${repo_trunks_dir}"/*/*; do
@@ -2745,7 +2767,11 @@ worktree_gc() {
         continue
       fi
       local wt_rel="${wt_path#"${live_repo_dir}/"}"
-      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/keep" ]]; then
+      # `keep` pins a worktree forever; `frozen` means the gc already made
+      # its call and is awaiting human input (see the subsumption-detection
+      # workflow) — skip both, but for different reasons.
+      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/keep" \
+         || -f "${worktree_gc__protect_dir}/${wt_rel}/frozen" ]]; then
         continue
       fi
 
@@ -2755,8 +2781,18 @@ worktree_gc() {
         continue
       fi
 
-      local reap_reason
+      # Decide whether and why to reap: confirmed-merged first, then the
+      # opt-in age-based stale sweep for worktrees with no merge evidence.
+      local reap_reason remove_kind="" detail=""
       if reap_reason=$(worktree_gc__reap_reason "$wt_path" "$trunk_cache" "$branch_ref" "$trunk_branch" "$gh_repo"); then
+        remove_kind="MERGED"
+        detail="$reap_reason"
+      elif (( stale_enabled )) && (( last_epoch < stale_cutoff )); then
+        remove_kind="STALE"
+        detail="no merge evidence; older than stale cutoff; branch kept"
+      fi
+
+      if [[ -n $remove_kind ]]; then
         if (( ! found_any )); then
           info "--- %s ---" "$label"
           found_any=1
@@ -2764,7 +2800,7 @@ worktree_gc() {
 
         local last_date
         last_date=$(git -C "$wt_path" log -1 --format='%ai' 2>/dev/null | cut -d' ' -f1)
-        info "  MERGED  %s  %s  (%s)" "$last_date" "$branch" "$reap_reason"
+        info "  %-6s  %s  %s  (%s)" "$remove_kind" "$last_date" "$branch" "$detail"
 
         local file_count
         file_count=$(worktree_gc__count_archivable "$wt_path")
@@ -2772,6 +2808,7 @@ worktree_gc() {
         to_remove+=("${trunk_cache}|${wt_path}")
         archive_counts+=("$file_count")
         archive_labels+=("$wt_rel")
+        remove_kinds+=("$remove_kind")
       fi
     done < <(git -C "$trunk_cache" worktree list --porcelain \
       | awk '/^worktree /{wt=$2} /^branch /{br=$2; print wt"\t"br}')
@@ -2786,20 +2823,30 @@ worktree_gc() {
     return 0
   fi
 
-  # Build archive summary
+  # Build archive summary and tally removal kinds.
   local total_archive_files=0
   local archive_summary=""
+  local merged_count=0 stale_count=0
   local i
   for (( i = 0; i < ${#to_remove[@]}; i++ )); do
     (( total_archive_files += archive_counts[i] )) || true
     if (( 0 < archive_counts[i] )); then
       archive_summary+=$(printf '%d\t%s\n' "${archive_counts[i]}" "${archive_labels[i]}")
     fi
+    case ${remove_kinds[i]} in
+      MERGED) (( merged_count++ )) || true ;;
+      STALE)  (( stale_count++ ))  || true ;;
+    esac
   done
 
   echo
   info "========================================"
-  info "Will remove %d worktree(s)." "${#to_remove[@]}"
+  if (( 0 < stale_count )); then
+    info "Will remove %d worktree(s): %d merged, %d stale (branch kept)." \
+      "${#to_remove[@]}" "$merged_count" "$stale_count"
+  else
+    info "Will remove %d worktree(s)." "${#to_remove[@]}"
+  fi
   echo
   if (( 0 < total_archive_files )); then
     info "Will archive %d file(s):" "$total_archive_files"
