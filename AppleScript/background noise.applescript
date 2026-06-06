@@ -1,4 +1,3 @@
-(*
 if application "Spotify" is running then
 	tell application "Spotify"
 		if player state is playing then
@@ -7,7 +6,6 @@ if application "Spotify" is running then
 		end if
 	end tell
 end if
-*)
 
 if application "VLC" is running then
 	tell application "VLC"
@@ -18,7 +16,6 @@ if application "VLC" is running then
 	end tell
 end if
 
-(*
 tell script "Output Device"
 	set currentOutputDevice to getOutputDevice() as text
 	if currentOutputDevice is not equal to "Jabra EVOLVE LINK" and currentOutputDevice is not equal to "External Headphones" then
@@ -26,7 +23,6 @@ tell script "Output Device"
 		return
 	end if
 end tell
-*)
 
 set backgroundNoiseChoices to {}
 
