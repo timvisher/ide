@@ -65,8 +65,9 @@ Usage: aishot review [--with=claude,codex,gemini]
 
 Run parallel code reviews via independent AI agents and synthesize the
 results. Each reviewer gets the same prompt (built by
-aishot review make-prompt with all diffs inlined). After all reviewers
-finish, claudeshot synthesizes the findings into a unified report.
+aishot review make-prompt; diffs are inlined, or spilled to a file when
+large — see below). After all reviewers finish, claudeshot synthesizes
+the findings into a unified report.
 
 Options:
   --with=LIST   Comma-separated list of reviewers.
@@ -79,7 +80,7 @@ Large diffs:
   diffs would push the prompt past a budget, they are written to a
   gitignored file (x.aishot.review.diff at the repo root) and the prompt
   instructs the reviewer to read it instead of inlining it. Override the
-  budget with AISHOT_MAX_PROMPT_BYTES (default 900000).
+  budget with AISHOT_MAX_PROMPT_CHARS (default 900000).
 
 ## Agent instructions
 
@@ -179,7 +180,8 @@ do_make_prompt() {
     cat
 }
 
-# Build a review prompt with all diffs inlined. Outputs to stdout.
+# Build a review prompt. Diffs are inlined, or spilled to a file and
+# referenced when they would exceed the prompt budget. Outputs to stdout.
 # Returns 1 if there is nothing to review.
 do_make_review_prompt() {
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1
@@ -437,13 +439,16 @@ PR_MD_NOTICE
     # --- Emit diffs: inline if small enough, else spill to a file ---
     #
     # Reviewer one-shot tools have a hard input ceiling (codex: ~1,048,576
-    # chars). A release-branch diff can be several MB and blow past it,
-    # failing every reviewer with input_too_large. Since the reviewers are
-    # agentic and can read files themselves, when the diffs would push the
-    # prompt over budget we write them to a gitignored file and point the
-    # reviewer at it instead of inlining.
-    local section i
-    local max_prompt_bytes=${AISHOT_MAX_PROMPT_BYTES:-900000}
+    # characters). A release-branch diff can be several MB and blow past
+    # it, failing every reviewer with input_too_large. Since the reviewers
+    # are agentic and can read files themselves, when the diffs would push
+    # the prompt over budget we write them to a gitignored file and point
+    # the reviewer at it instead of inlining.
+    #
+    # Sizes are character counts (${#var}), matching how the reviewer limit
+    # is expressed; for mostly-ASCII diffs that equals bytes.
+    local i
+    local max_prompt_chars=${AISHOT_MAX_PROMPT_CHARS:-900000}
     local diff_total=0
     for i in "${!diff_contents[@]}"
     do
@@ -454,44 +459,53 @@ PR_MD_NOTICE
     do
         sections_total=$(( sections_total + ${#section} ))
     done
-    # 8 KiB margin covers the header, preamble, and per-section framing.
+    # Estimate = diffs + non-diff sections + a margin for the header and
+    # per-section framing. SHOT_PREAMBLE/PR_MD_NOTICE (~1.2K, added by
+    # callers) aren't counted, but the headroom to the reviewer limit is
+    # ~148K so the approximation is safe.
     local est_total=$(( diff_total + sections_total + 8192 ))
 
-    if (( 0 < ${#diff_contents[@]} )) && (( max_prompt_bytes < est_total ))
-    then
-        local spill_path="${repo_root}/${spill_diff_basename}"
-        {
-            for i in "${!diff_titles[@]}"
-            do
-                # shellcheck disable=SC2016  # literal %s/backticks in format, args expand
-                printf '## %s\n```diff\n%s\n```\n\n' \
-                    "${diff_titles[i]}" "${diff_contents[i]}"
-            done
-        } > "$spill_path"
-        echo ">>> Diffs total ${diff_total} bytes (est. prompt ${est_total} > budget ${max_prompt_bytes}); spilled to ${spill_path}" >&2
-        cat <<SPILL_NOTICE
-## Diffs (large — written to a file instead of inlined)
-
-The diffs for this review are large (${diff_total} bytes), which would push
-this prompt past the reviewer input limit. They have been written to a file
-instead of being pasted here. You MUST read this file IN FULL before
-reviewing — it contains every branch/staged/unstaged diff that would
-otherwise appear inline below:
-
-  ${spill_path}
-
-(Tools that support @-file syntax can reference it as @${spill_path}.)
-Read it now, then review every change it contains with the same rigor as if
-it were inlined.
-
-SPILL_NOTICE
-    else
+    # _emit_diffs_inline: print every diff section as a fenced block.
+    _emit_diffs_inline() {
+        local i
         for i in "${!diff_titles[@]}"
         do
             # shellcheck disable=SC2016  # literal %s/backticks in format, args expand
             printf '## %s\n```diff\n%s\n```\n\n' \
                 "${diff_titles[i]}" "${diff_contents[i]}"
         done
+    }
+
+    if (( 0 < ${#diff_contents[@]} )) && (( max_prompt_chars < est_total ))
+    then
+        local spill_path="${repo_root}/${spill_diff_basename}"
+        # Guard the write: if the spill file can't be created (read-only
+        # tree, full disk, permissions), fall back to inlining so the
+        # reviewer gets the diffs rather than a pointer to a missing file.
+        if _emit_diffs_inline > "$spill_path"
+        then
+            echo ">>> Diffs total ${diff_total} chars (est. prompt ${est_total}, over budget ${max_prompt_chars}); spilled to ${spill_path}" >&2
+            cat <<SPILL_NOTICE
+## Diffs (large — written to a file instead of inlined)
+
+The diffs for this review are large (${diff_total} characters), which would
+push this prompt past the reviewer input limit. They have been written to a
+file instead of being pasted here. You MUST read this file IN FULL before
+reviewing — it contains every branch/staged/unstaged diff that would
+otherwise appear inline below:
+
+  ${spill_path}
+
+Read it now, then review every change it contains with the same rigor as if
+it were inlined.
+
+SPILL_NOTICE
+        else
+            echo ">>> WARNING: could not write spill file ${spill_path}; inlining diffs instead" >&2
+            _emit_diffs_inline
+        fi
+    else
+        _emit_diffs_inline
     fi
 
     for section in "${sections[@]}"
