@@ -2675,8 +2675,14 @@ worktree_gc__reap_reason() {
 
 worktree_gc() {
   local dry_run=0
+  # Three age tiers, cheapest/most-certain first (all overridable):
+  #   merged cookie (x.merged) -> eager reap                (4 days)
+  #   merge detection (PR-state / ancestor)                 (2 weeks)
+  #   stale sweep (no merge evidence, branch kept)          (30 days)
+  local merged_cutoff_spec="4 days ago"
   local cutoff_spec="2 weeks ago"
-  local stale_cutoff_spec=""
+  local stale_cutoff_spec="30 days ago"
+  local stale_disabled=0
 
   while (( 0 < $# )); do
     case $1 in
@@ -2684,9 +2690,13 @@ worktree_gc() {
       --cutoff)     [[ -n ${2:-} ]] || die "worktree gc: --cutoff requires a value"
                     cutoff_spec=$2; shift 2 ;;
       --cutoff=*)   cutoff_spec=${1#--cutoff=}; shift ;;
+      --merged-cutoff)   [[ -n ${2:-} ]] || die "worktree gc: --merged-cutoff requires a value"
+                         merged_cutoff_spec=$2; shift 2 ;;
+      --merged-cutoff=*) merged_cutoff_spec=${1#--merged-cutoff=}; shift ;;
       --stale-cutoff)   [[ -n ${2:-} ]] || die "worktree gc: --stale-cutoff requires a value"
                         stale_cutoff_spec=$2; shift 2 ;;
       --stale-cutoff=*) stale_cutoff_spec=${1#--stale-cutoff=}; shift ;;
+      --no-stale)   stale_disabled=1; shift ;;
       -*)           die "worktree gc: unknown option '%s'" "$1" ;;
       *)            die "worktree gc: unexpected argument '%s'" "$1" ;;
     esac
@@ -2696,14 +2706,24 @@ worktree_gc() {
   cutoff=$(gdate -d "$cutoff_spec" +%s) ||
     die "worktree gc: invalid cutoff '%s'" "$cutoff_spec"
 
-  info "Cutoff: %s (%s)" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
+  info "Cutoff: %s (%s) — merge-detection tier" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
 
-  # Optional, opt-in stale sweep: reap worktrees with NO merge evidence
-  # (not PR-merged, not an ancestor) that are older than this longer
-  # cutoff. Safe because `git worktree remove` keeps the branch — only the
-  # working checkout is reclaimed, and the commits live on in the cache.
+  # Eager tier: worktrees carrying an authoritative `x.merged` cookie
+  # (dropped by `timvisher_gh pr merge` on confirmed merge) are reaped once
+  # the cookie is older than this short cutoff — no detection needed.
+  local merged_cutoff
+  merged_cutoff=$(gdate -d "$merged_cutoff_spec" +%s) ||
+    die "worktree gc: invalid --merged-cutoff '%s'" "$merged_cutoff_spec"
+  info "Merged cookie cutoff: %s (%s) — eager reap of x.merged worktrees" \
+    "$(gdate -d "@${merged_cutoff}" '+%Y-%m-%d')" "$merged_cutoff_spec"
+
+  # Stale sweep: reap worktrees with NO merge evidence (not PR-merged, not
+  # an ancestor, no cookie) older than this longest cutoff. Safe because
+  # `git worktree remove` keeps the branch — only the working checkout is
+  # reclaimed, and the commits live on in the cache. On by default;
+  # disable with --no-stale.
   local stale_cutoff=0 stale_enabled=0
-  if [[ -n $stale_cutoff_spec ]]; then
+  if (( ! stale_disabled )); then
     stale_cutoff=$(gdate -d "$stale_cutoff_spec" +%s) ||
       die "worktree gc: invalid --stale-cutoff '%s'" "$stale_cutoff_spec"
     stale_enabled=1
@@ -2712,6 +2732,8 @@ worktree_gc() {
     if (( cutoff < stale_cutoff )); then
       warn "  --stale-cutoff is more recent than --cutoff; stale sweep would reap unmerged worktrees newer than merged ones"
     fi
+  else
+    info "Stale sweep: disabled (--no-stale)"
   fi
   if (( dry_run )); then
     info "Dry run — no changes will be made"
@@ -2775,21 +2797,35 @@ worktree_gc() {
         continue
       fi
 
-      local last_epoch
-      last_epoch=$(git -C "$wt_path" log -1 --format='%at' 2>/dev/null) || continue
-      if (( cutoff < last_epoch )); then
-        continue
-      fi
+      # Decide whether and why to reap. The `x.merged` cookie is
+      # authoritative (written only on a confirmed merge), so it short-
+      # circuits the slow detection: reap once it is older than the eager
+      # cutoff, keep it during the grace window, and never fall through to
+      # detection/stale either way.
+      local remove_kind="" detail=""
+      local cookie="${wt_path}/x.merged"
+      if [[ -f $cookie ]]; then
+        local cookie_epoch
+        cookie_epoch=$(gdate -r "$cookie" +%s 2>/dev/null) || cookie_epoch=0
+        if (( cookie_epoch < merged_cutoff )); then
+          remove_kind="MERGED"
+          detail="merged cookie"
+        fi
+      else
+        local last_epoch
+        last_epoch=$(git -C "$wt_path" log -1 --format='%at' 2>/dev/null) || continue
+        if (( cutoff < last_epoch )); then
+          continue
+        fi
 
-      # Decide whether and why to reap: confirmed-merged first, then the
-      # opt-in age-based stale sweep for worktrees with no merge evidence.
-      local reap_reason remove_kind="" detail=""
-      if reap_reason=$(worktree_gc__reap_reason "$wt_path" "$trunk_cache" "$branch_ref" "$trunk_branch" "$gh_repo"); then
-        remove_kind="MERGED"
-        detail="$reap_reason"
-      elif (( stale_enabled )) && (( last_epoch < stale_cutoff )); then
-        remove_kind="STALE"
-        detail="no merge evidence; older than stale cutoff; branch kept"
+        local reap_reason
+        if reap_reason=$(worktree_gc__reap_reason "$wt_path" "$trunk_cache" "$branch_ref" "$trunk_branch" "$gh_repo"); then
+          remove_kind="MERGED"
+          detail="$reap_reason"
+        elif (( stale_enabled )) && (( last_epoch < stale_cutoff )); then
+          remove_kind="STALE"
+          detail="no merge evidence; older than stale cutoff; branch kept"
+        fi
       fi
 
       if [[ -n $remove_kind ]]; then
