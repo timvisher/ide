@@ -42,6 +42,11 @@ usage() {
     - Repos listed in ~/.config/timvisher/ide/gh-pr-merge-comment-repos
       are merged by posting a '/merge' comment instead
     - Extra arguments are passed to 'gh pr merge'
+    - Blocks until the PR is actually merged (polls past any merge
+      queue); on confirmed merge, drops an 'x.merged' cookie at the
+      worktree top level so worktree gc can eagerly reap it
+    - Override poll/timeout with TIMVISHER_GH_PR_MERGE_POLL_INTERVAL
+      (default 10s) and TIMVISHER_GH_PR_MERGE_TIMEOUT (default 7200s)
 
   pr ready subcommand:
     - Requires pr.md.url to exist
@@ -239,6 +244,61 @@ gh_pr_edit() {
   info 'PR updated'
 }
 
+# Block until the PR is genuinely merged. Both merge paths (gh pr merge
+# and the /merge comment) can return before the merge actually lands —
+# gh pr merge may only enqueue, and the comment is processed
+# asynchronously by a bot / merge queue. Poll PR state until MERGED so
+# callers can act on a confirmed merge (e.g. drop the cookie).
+gh_pr_wait_until_merged() {
+  local pr_url=$1
+  local poll_interval=${TIMVISHER_GH_PR_MERGE_POLL_INTERVAL:-10}
+  local timeout=${TIMVISHER_GH_PR_MERGE_TIMEOUT:-7200}
+  local waited=0
+  local state
+
+  while true
+  do
+    # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
+    state=$(command gh pr view "$pr_url" --json state -q .state 2>/dev/null) || true
+
+    case $state in
+      MERGED)
+        return 0 ;;
+      CLOSED)
+        die 'PR was closed without merging: %s' "$pr_url" ;;
+    esac
+
+    if (( timeout <= waited ))
+    then
+      die 'Timed out after %ds waiting for merge to complete: %s (merge may still land; cookie not dropped)' \
+          "$waited" "$pr_url"
+    fi
+
+    info 'Waiting for merge to complete (state=%s); retrying in %ds' "${state:-unknown}" "$poll_interval"
+    sleep "$poll_interval"
+    (( waited += poll_interval )) || true
+  done
+}
+
+# Record an authoritative "this worktree was merged" marker that the gc
+# eager-reap tier keys on. Written only after a CONFIRMED merge. The x.
+# prefix keeps it gitignored; the gc reads its mtime for the 4-day window.
+gh_pr__drop_merged_cookie() {
+  local pr_url=$1 strategy=$2
+  local cookie="${toplevel}/x.merged"
+
+  if {
+    printf 'merged_at=%s\n' "$(date -u '+%FT%TZ')"
+    printf 'pr_url=%s\n'    "$pr_url"
+    printf 'strategy=%s\n'  "$strategy"
+  } > "$cookie"
+  then
+    info 'Wrote merged cookie %s' "$cookie"
+  else
+    warn 'Could not write merged cookie %s' "$cookie"
+  fi
+}
+
 gh_pr_merge() {
   display_script "$0"
 
@@ -267,7 +327,10 @@ gh_pr_merge() {
     gh pr comment "$pr_url" --body "/merge" ||
       die "Couldn't post /merge comment to '%s'" "$pr_url"
 
-    info "Requested merge via comment for %s" "$pr_url"
+    info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
+    gh_pr_wait_until_merged "$pr_url"
+    gh_pr__drop_merged_cookie "$pr_url" comment
+    info 'PR merged: %s' "$pr_url"
     return 0
   fi
 
@@ -315,6 +378,9 @@ gh_pr_merge() {
     die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
         "$pr_url" "${strategies[*]}"
 
+  info 'Merge requested via %s; waiting for it to complete' "$merged"
+  gh_pr_wait_until_merged "$pr_url"
+  gh_pr__drop_merged_cookie "$pr_url" "$merged"
   info 'PR merged via %s' "$merged"
 }
 
