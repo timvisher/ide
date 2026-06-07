@@ -25,11 +25,18 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 # expecting a continuation that never comes).
 run_shot() {
     iconv -c -f UTF-8 -t UTF-8 |
-        # codexshot is a one-shot review tool. Disable MCP servers
-        # whose stale OAuth grants would spam rmcp transport errors;
-        # add more -c overrides here as needed.
+        # codexshot is a one-shot review tool and needs no MCP servers,
+        # so clear the whole table. Per-server `enabled=false` is not
+        # enough: codex validates every server's transport at config-load
+        # time, before `enabled` is consulted. A managed/global server
+        # with an incomplete stanza — e.g. an atlassian entry missing its
+        # url when the user config that would complete it isn't present
+        # (a fresh machine, or a test sandbox with an isolated HOME) —
+        # then aborts the whole run with "invalid transport" before the
+        # shot can start. Clearing mcp_servers sidesteps that and the
+        # stale-OAuth rmcp transport spam in one move.
         codex exec \
-            -c mcp_servers.atlassian.enabled=false \
+            -c 'mcp_servers={}' \
             --sandbox read-only --json - |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }

@@ -65,13 +65,22 @@ Usage: aishot review [--with=claude,codex,gemini]
 
 Run parallel code reviews via independent AI agents and synthesize the
 results. Each reviewer gets the same prompt (built by
-aishot review make-prompt with all diffs inlined). After all reviewers
-finish, claudeshot synthesizes the findings into a unified report.
+aishot review make-prompt; diffs are inlined, or spilled to a file when
+large — see below). After all reviewers finish, claudeshot synthesizes
+the findings into a unified report.
 
 Options:
   --with=LIST   Comma-separated list of reviewers.
                 Available: claude, codex, gemini.
                 Default: claude,codex
+
+Large diffs:
+  Reviewers have a hard input ceiling (codex: ~1,048,576 chars), so a
+  big diff (e.g. a release branch) would fail every reviewer. When the
+  diffs would push the prompt past a budget, they are written to a
+  gitignored file (x.aishot.review.diff at the repo root) and the prompt
+  instructs the reviewer to read it instead of inlining it. Override the
+  budget with AISHOT_MAX_PROMPT_CHARS (default 900000).
 
 ## Agent instructions
 
@@ -171,7 +180,8 @@ do_make_prompt() {
     cat
 }
 
-# Build a review prompt with all diffs inlined. Outputs to stdout.
+# Build a review prompt. Diffs are inlined, or spilled to a file and
+# referenced when they would exceed the prompt budget. Outputs to stdout.
 # Returns 1 if there is nothing to review.
 do_make_review_prompt() {
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1
@@ -180,7 +190,10 @@ do_make_review_prompt() {
         return 1
     fi
 
-    cd "$(git rev-parse --show-toplevel)" ||
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel) ||
+        { echo "Error: Could not determine repo root." >&2; return 1; }
+    cd "$repo_root" ||
         { echo "Error: Could not cd to repo root." >&2; return 1; }
 
     # --- Collect diffs ---
@@ -192,6 +205,16 @@ do_make_review_prompt() {
     fi
 
     local sections=()
+
+    # Basename of the file diffs are spilled to when they would push the
+    # prompt past the reviewer input limit (see emission logic below).
+    local spill_diff_basename="x.aishot.review.diff"
+
+    # Diff sections are collected raw here (not yet formatted) so we can
+    # decide — once their total size is known — whether to inline them or
+    # spill them to a file and reference it. See the size check below.
+    local diff_titles=()
+    local diff_contents=()
 
     # Branch diff (upstream or remote-tracking)
     local branch_diff=
@@ -214,10 +237,8 @@ do_make_review_prompt() {
     fi
     if [[ -n $branch_diff ]]
     then
-        sections+=("## Branch diff (pushed + unpushed commits vs upstream)
-\`\`\`diff
-${branch_diff}
-\`\`\`")
+        diff_titles+=("Branch diff (pushed + unpushed commits vs upstream)")
+        diff_contents+=("$branch_diff")
     fi
 
     # Staged changes
@@ -225,10 +246,8 @@ ${branch_diff}
     staged_diff=$(git diff --cached 2>/dev/null)
     if [[ -n $staged_diff ]]
     then
-        sections+=("## Staged changes (git diff --cached)
-\`\`\`diff
-${staged_diff}
-\`\`\`")
+        diff_titles+=("Staged changes (git diff --cached)")
+        diff_contents+=("$staged_diff")
     fi
 
     # Unstaged changes
@@ -236,10 +255,8 @@ ${staged_diff}
     unstaged_diff=$(git diff 2>/dev/null)
     if [[ -n $unstaged_diff ]]
     then
-        sections+=("## Unstaged changes (git diff)
-\`\`\`diff
-${unstaged_diff}
-\`\`\`")
+        diff_titles+=("Unstaged changes (git diff)")
+        diff_contents+=("$unstaged_diff")
     fi
 
     # Helper: inline a file into a section string, respecting size/type limits.
@@ -294,6 +311,9 @@ $(cat -- "$f")
         local f
         while IFS= read -r f
         do
+            # Don't re-inline our own spilled diff file (in repos that
+            # don't gitignore x.* it would otherwise show up as untracked).
+            [[ $f == "$spill_diff_basename" ]] && continue
             _inline_file untracked_section "$f"
         done <<< "$untracked_files"
         sections+=("$untracked_section")
@@ -304,6 +324,8 @@ $(cat -- "$f")
     local candidate
     for candidate in x x.* y y.* z z.* pr.md
     do
+        # Don't re-inline our own spilled diff file from a previous run.
+        [[ $candidate == "$spill_diff_basename" ]] && continue
         [[ -f $candidate ]] && root_files+=("$candidate")
     done
     if (( 0 < ${#root_files[@]} ))
@@ -336,7 +358,7 @@ $(cat -- "$f")
         sections+=("$root_section")
     fi
 
-    if (( ${#sections[@]} < 1 ))
+    if (( ${#sections[@]} < 1 && ${#diff_contents[@]} < 1 ))
     then
         echo "Error: No uncommitted changes or unpushed commits to review." >&2
         return 1
@@ -350,8 +372,10 @@ $(cat -- "$f")
     cat <<'HEADER'
 With a skeptical eye, do a thorough review of all changes below.
 
-The diffs are provided inline — you do NOT need to run git commands to
-see them. You may read files for additional context if needed.
+The diffs are provided below — either inlined, or (when they are large)
+written to a file that this prompt points you to and instructs you to read.
+You do NOT need to run git commands to see them. You may read files for
+additional context if needed.
 
 Examine:
 - Correctness: logic errors, off-by-ones, missed edge cases
@@ -412,7 +436,78 @@ PR_MD_NOTICE
     echo "$recent_commits"
     echo
 
-    local section
+    # --- Emit diffs: inline if small enough, else spill to a file ---
+    #
+    # Reviewer one-shot tools have a hard input ceiling (codex: ~1,048,576
+    # characters). A release-branch diff can be several MB and blow past
+    # it, failing every reviewer with input_too_large. Since the reviewers
+    # are agentic and can read files themselves, when the diffs would push
+    # the prompt over budget we write them to a gitignored file and point
+    # the reviewer at it instead of inlining.
+    #
+    # Sizes are character counts (${#var}), matching how the reviewer limit
+    # is expressed; for mostly-ASCII diffs that equals bytes.
+    local i
+    local max_prompt_chars=${AISHOT_MAX_PROMPT_CHARS:-900000}
+    local diff_total=0
+    for i in "${!diff_contents[@]}"
+    do
+        diff_total=$(( diff_total + ${#diff_contents[i]} ))
+    done
+    local sections_total=0
+    for section in "${sections[@]}"
+    do
+        sections_total=$(( sections_total + ${#section} ))
+    done
+    # Estimate = diffs + non-diff sections + a margin for the header and
+    # per-section framing. SHOT_PREAMBLE/PR_MD_NOTICE (~1.2K, added by
+    # callers) aren't counted, but the headroom to the reviewer limit is
+    # ~148K so the approximation is safe.
+    local est_total=$(( diff_total + sections_total + 8192 ))
+
+    # _emit_diffs_inline: print every diff section as a fenced block.
+    _emit_diffs_inline() {
+        local i
+        for i in "${!diff_titles[@]}"
+        do
+            # shellcheck disable=SC2016  # literal %s/backticks in format, args expand
+            printf '## %s\n```diff\n%s\n```\n\n' \
+                "${diff_titles[i]}" "${diff_contents[i]}"
+        done
+    }
+
+    if (( 0 < ${#diff_contents[@]} )) && (( max_prompt_chars < est_total ))
+    then
+        local spill_path="${repo_root}/${spill_diff_basename}"
+        # Guard the write: if the spill file can't be created (read-only
+        # tree, full disk, permissions), fall back to inlining so the
+        # reviewer gets the diffs rather than a pointer to a missing file.
+        if _emit_diffs_inline > "$spill_path"
+        then
+            echo ">>> Diffs total ${diff_total} chars (est. prompt ${est_total}, over budget ${max_prompt_chars}); spilled to ${spill_path}" >&2
+            cat <<SPILL_NOTICE
+## Diffs (large — written to a file instead of inlined)
+
+The diffs for this review are large (${diff_total} characters), which would
+push this prompt past the reviewer input limit. They have been written to a
+file instead of being pasted here. You MUST read this file IN FULL before
+reviewing — it contains every branch/staged/unstaged diff that would
+otherwise appear inline below:
+
+  ${spill_path}
+
+Read it now, then review every change it contains with the same rigor as if
+it were inlined.
+
+SPILL_NOTICE
+        else
+            echo ">>> WARNING: could not write spill file ${spill_path}; inlining diffs instead" >&2
+            _emit_diffs_inline
+        fi
+    else
+        _emit_diffs_inline
+    fi
+
     for section in "${sections[@]}"
     do
         echo "$section"

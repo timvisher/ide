@@ -16,8 +16,14 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 
 # Reads prompt from stdin (caller is responsible for preamble via
 # aishot make-prompt).
+#
+# --skip-trust trusts the workspace for this session. Without it, gemini
+# refuses to run in an "untrusted" directory and silently downgrades -y
+# (YOLO) to default approval mode, which then blocks non-interactively
+# and fails the shot (exit 55). One-shot reviews run headless against the
+# current repo, so trusting the workspace for the run is the intent.
 run_shot() {
-    gemini -y -p "" -o stream-json |
+    gemini -y --skip-trust -p "" -o stream-json |
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
