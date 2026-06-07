@@ -2741,10 +2741,11 @@ worktree_gc() {
   # is a normal timvisher_git target (path, org/repo, or alias) resolved
   # through the same building blocks clone uses — no bespoke parsing.
   local -A scope_caches=()
+  local -A scope_prefixes=()   # cache -> newline-separated absolute dir prefixes
   local scoped=0
   if (( ${#scope_targets[@]} )); then
     scoped=1
-    local st resolved org repo cache
+    local st resolved org repo cache rest subpath
     for st in "${scope_targets[@]}"; do
       resolved=$(strip_live_prefix "$st")
       org=$(get_org "$resolved")  || die "worktree gc: can't resolve org from '%s'" "$st"
@@ -2753,7 +2754,23 @@ worktree_gc() {
       [[ -d $cache ]] ||
         die "worktree gc: no cached repo for '%s' (resolved %s/%s)" "$st" "$org" "$repo"
       scope_caches["$cache"]=1
-      info "Scope: %s/%s" "$org" "$repo"
+
+      # Components after org/repo scope to a sub-directory: only worktrees
+      # at or under it are considered. Strip the first two components
+      # positionally (alias-safe — org may have been expanded), then build
+      # the prefix from the canonical org/repo.
+      rest="${resolved#*/}"
+      if [[ $rest == */* ]]; then
+        subpath="${rest#*/}"
+      else
+        subpath=""
+      fi
+      if [[ -n $subpath ]]; then
+        scope_prefixes["$cache"]+="${live_repo_dir}/${org}/${repo}/${subpath}"$'\n'
+        info "Scope: %s/%s under %s" "$org" "$repo" "$subpath"
+      else
+        info "Scope: %s/%s" "$org" "$repo"
+      fi
     done
   fi
 
@@ -2808,6 +2825,23 @@ worktree_gc() {
     while IFS=$'\t' read -r wt_path branch_ref; do
       local branch="${branch_ref#refs/heads/}"
       [[ $branch == "$trunk_branch" ]] && continue
+
+      # Sub-directory scope: when the target named a path within the repo,
+      # only consider worktrees at or under it.
+      if (( scoped )); then
+        local prefixes="${scope_prefixes["$trunk_cache"]:-}"
+        if [[ -n $prefixes ]]; then
+          local in_scope=0 p
+          while IFS= read -r p; do
+            [[ -n $p ]] || continue
+            if [[ $wt_path == "$p" || $wt_path == "$p"/* ]]; then
+              in_scope=1
+              break
+            fi
+          done <<< "$prefixes"
+          (( in_scope )) || continue
+        fi
+      fi
 
       # Skip worktrees protected by dev_ci or per-worktree keep file
       local resolved_wt
