@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+
+# Tests for aishot's review-prompt diff spilling.
+#
+# `aishot review make-prompt` builds the review prompt without invoking
+# the *shot reviewer binaries, so these tests exercise the inline-vs-spill
+# logic in isolation. The spill threshold is overridable via
+# AISHOT_MAX_PROMPT_BYTES so we can force either branch deterministically.
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
+  { echo "cannot resolve script_dir" >&2; exit 1; }
+script="${script_dir}/bin/aishot"
+
+# Build a throwaway git repo with a staged + unstaged change to review.
+# No commit is made (no upstream needed), so the branch-diff section is
+# empty and the staged/unstaged diffs carry the content.
+make_repo() {
+  local dir
+  dir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+  (
+    cd "$dir" || exit 1
+    git init -q
+    git config user.email t@example.com
+    git config user.name t
+    printf 'original\n' > f.txt
+    git add f.txt
+    printf 'original\nmodified line\n' > f.txt
+  ) >/dev/null 2>&1
+  printf '%s' "$dir"
+}
+
+# ---------------------------------------------------------------------------
+# Case 1: large budget -> diffs inlined, no spill file written
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_BYTES=10000000 "$script" review make-prompt 2>/dev/null)
+if [[ $out == *'```diff'* ]] &&
+   [[ $out != *'written to a file instead of inlined'* ]] &&
+   [[ ! -f "$repo/x.aishot.review.diff" ]]
+then
+  pass "large budget inlines diffs and writes no spill file"
+else
+  fail "expected inline diff and no spill file under large budget"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 2: tiny budget -> diffs spilled to file, prompt references it
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_BYTES=10 "$script" review make-prompt 2>/dev/null)
+spill="$repo/x.aishot.review.diff"
+if [[ $out == *'written to a file instead of inlined'* ]] &&
+   [[ $out == *"$spill"* ]] &&
+   [[ -f $spill ]]
+then
+  pass "tiny budget spills diffs and references the file"
+else
+  fail "expected spill notice + file reference under tiny budget"
+fi
+
+# Case 2b: the spilled file holds the actual diff, and the prompt body
+# does NOT inline the raw hunk.
+run_test
+if [[ -f $spill ]] &&
+   grep -q 'modified line' "$spill" &&
+   [[ $out != *'+modified line'* ]]
+then
+  pass "spilled file contains the diff; prompt omits the raw hunk"
+else
+  fail "spilled file should hold the diff and prompt should omit raw hunk"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 3: a stale spill file is not re-inlined on a later run
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+echo 'STALE SPILL CONTENT MUST NOT BE INLINED' > "$repo/x.aishot.review.diff"
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_BYTES=10000000 "$script" review make-prompt 2>/dev/null)
+if [[ $out != *'STALE SPILL CONTENT MUST NOT BE INLINED'* ]]
+then
+  pass "stale spill file is not re-inlined"
+else
+  fail "stale spill file was re-inlined into the prompt"
+fi
+rm -rf "$repo"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
