@@ -2683,6 +2683,8 @@ worktree_gc() {
   local cutoff_spec="2 weeks ago"
   local stale_cutoff_spec="30 days ago"
   local stale_disabled=0
+  # Positional targets scope the scan to specific repos; empty = all.
+  local scope_targets=()
 
   while (( 0 < $# )); do
     case $1 in
@@ -2698,7 +2700,7 @@ worktree_gc() {
       --stale-cutoff=*) stale_cutoff_spec=${1#--stale-cutoff=}; shift ;;
       --no-stale)   stale_disabled=1; shift ;;
       -*)           die "worktree gc: unknown option '%s'" "$1" ;;
-      *)            die "worktree gc: unexpected argument '%s'" "$1" ;;
+      *)            scope_targets+=("$1"); shift ;;
     esac
   done
 
@@ -2735,6 +2737,26 @@ worktree_gc() {
   else
     info "Stale sweep: disabled (--no-stale)"
   fi
+  # Resolve positional targets to the set of caches to scan. Each target
+  # is a normal timvisher_git target (path, org/repo, or alias) resolved
+  # through the same building blocks clone uses — no bespoke parsing.
+  local -A scope_caches=()
+  local scoped=0
+  if (( ${#scope_targets[@]} )); then
+    scoped=1
+    local st resolved org repo cache
+    for st in "${scope_targets[@]}"; do
+      resolved=$(strip_live_prefix "$st")
+      org=$(get_org "$resolved")  || die "worktree gc: can't resolve org from '%s'" "$st"
+      repo=$(get_repo "$resolved") || die "worktree gc: can't resolve repo from '%s'" "$st"
+      cache="${repo_trunks_dir}/${org}/${repo}"
+      [[ -d $cache ]] ||
+        die "worktree gc: no cached repo for '%s' (resolved %s/%s)" "$st" "$org" "$repo"
+      scope_caches["$cache"]=1
+      info "Scope: %s/%s" "$org" "$repo"
+    done
+  fi
+
   if (( dry_run )); then
     info "Dry run — no changes will be made"
   fi
@@ -2759,6 +2781,11 @@ worktree_gc() {
   local trunk_cache
   for trunk_cache in "${repo_trunks_dir}"/*/*; do
     [[ -d $trunk_cache ]] || continue
+
+    # When scoped, skip caches the user didn't name.
+    if (( scoped )) && [[ -z ${scope_caches["$trunk_cache"]+x} ]]; then
+      continue
+    fi
 
     local label="${trunk_cache#"${repo_trunks_dir}/"}"
 
