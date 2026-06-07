@@ -37,6 +37,18 @@ then
     ln -sf "${HOME}/Library" "${repo_root}/x.home/Library"
 fi
 
+# codex keeps its config (config.toml) and login (auth.json) under
+# ~/.codex, keyed off HOME rather than the keychain. Without this
+# symlink, codexshot in the sandbox loses both: it 401s for lack of
+# auth.json, and an incomplete managed mcp_servers stanza fails to
+# validate because the user config that completes it is absent. claude
+# (keychain) and gemini (GEMINI_API_KEY/.config) already resolve via
+# the links above; .codex is the missing one.
+if [[ ! -L ${repo_root}/x.home/.codex ]]
+then
+    ln -sf "${HOME}/.codex" "${repo_root}/x.home/.codex"
+fi
+
 HOME="${repo_root}/x.home" bash "${repo_root}/bash/install.bash" >/dev/null ||
     die 'install.bash failed'
 
