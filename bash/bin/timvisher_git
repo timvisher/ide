@@ -1667,30 +1667,27 @@ derive_worktree_path() {
 }
 
 # ---------------------------------------------------------------------------
-# sync-trunk: merge upstream/<trunk> into origin/<trunk> for soft forks
+# sync-trunk: assess a soft fork's trunk against origin/<trunk>
 #
-# Finds (or creates) the trunk worktree, fetches, merges upstream, and
-# (by default) pushes.  Non-interactive: exits non-zero on merge conflicts
-# so the caller can arrange for agent-driven resolution.  On conflict,
-# prints the trunk worktree path to stdout.
+# Soft forks track origin/<trunk>; upstream changes reach trunk only via
+# feature branches -> dev, never by a direct upstream merge here.  So this
+# command does NOT merge upstream and does NOT push.  It finds (or creates)
+# the trunk worktree, fetches, and reports state so the caller can run the
+# test / pull --rebase / test cycle:
 #
-# With --no-push, skips the push and prints the trunk worktree path on
-# success so the caller can interpose work (e.g. tests) before pushing.
-# When the trunk is already up to date, prints nothing and returns 0
-# regardless of --no-push.
+#   - Unpublished commits on trunk (local ahead of origin/<trunk>): exits
+#     non-zero; the human must deal with them.  Prints nothing to stdout.
+#   - Already up to date with origin/<trunk>: prints nothing, returns 0.
+#   - Behind origin/<trunk> (rebase needed): prints the trunk worktree
+#     path to stdout, returns 0.
+#
+# Non-soft-fork repos and repos without an upstream remote are no-ops
+# (return 0, print nothing).
 # ---------------------------------------------------------------------------
 
 sync_trunk() {
-  local no_push=false
-  while (( $# ))
-  do
-    case $1 in
-      --no-push) no_push=true; shift ;;
-      --) shift; break ;;
-      -*) die "sync_trunk: unknown option '%s'" "$1" ;;
-      *) break ;;
-    esac
-  done
+  # Tolerate a leading `--` for callers that pass it; no options otherwise.
+  [[ ${1:-} == -- ]] && shift
 
   local dir=${1:-.}
   dir=$(cd "$dir" && pwd -P) || die "sync_trunk: invalid path '%s'" "$dir"
@@ -1775,35 +1772,32 @@ sync_trunk() {
       "$trunk_branch" "$current_branch" "$trunk_wt"
   fi
 
-  if git -C "$trunk_wt" merge-base --is-ancestor "upstream/${trunk_branch}" HEAD 2>/dev/null
+  # Guard: refuse to touch a trunk with unpublished commits.  Soft fork
+  # trunks advance only by others pushing to origin/<trunk>; local commits
+  # ahead of origin mean something landed here that was never published,
+  # and the human must resolve it (push, revert, or move to a branch).
+  local ahead
+  ahead=$(git -C "$trunk_wt" rev-list --count "origin/${trunk_branch}..HEAD" 2>/dev/null) || ahead=
+  if [[ -n $ahead && $ahead != 0 ]]
   then
-    info "sync_trunk: origin/%s is already up to date with upstream/%s" \
+    error "sync_trunk: '%s' has %s unpublished commit(s) ahead of origin/%s; refusing to sync" \
+      "$trunk_wt" "$ahead" "$trunk_branch"
+    return 1
+  fi
+
+  # Already current with origin/<trunk>: nothing to rebase.
+  if git -C "$trunk_wt" merge-base --is-ancestor "origin/${trunk_branch}" HEAD 2>/dev/null
+  then
+    info "sync_trunk: %s is already up to date with origin/%s" \
       "$trunk_branch" "$trunk_branch"
     return 0
   fi
 
-  info "sync_trunk: merging upstream/%s into %s" "$trunk_branch" "$trunk_branch"
-  if ! git -C "$trunk_wt" merge "upstream/${trunk_branch}" \
-    -m "Merge upstream/${trunk_branch} into ${trunk_branch}" >&2
-  then
-    warn "sync_trunk: merge conflicts in '%s'; aborting" "$trunk_wt"
-    git -C "$trunk_wt" merge --abort >&2 2>/dev/null || true
-    printf '%s' "$trunk_wt"
-    return 1
-  fi
-
-  if $no_push
-  then
-    info "sync_trunk: --no-push; deferring push to caller"
-    printf '%s' "$trunk_wt"
-    return 0
-  fi
-
-  info "sync_trunk: pushing %s to origin" "$trunk_branch"
-  git -C "$trunk_wt" push origin "$trunk_branch" >&2 ||
-    die "sync_trunk: push to origin failed for '%s'" "$trunk_wt"
-
-  info "sync_trunk: done — origin/%s updated" "$trunk_branch"
+  # Behind origin/<trunk> with no unpublished commits: a rebase is just a
+  # fast-forward.  Report the worktree path; the caller runs the
+  # test / pull --rebase / test cycle.
+  printf '%s' "$trunk_wt"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1918,8 +1912,10 @@ configured fork_user (~/.config/timvisher/ide/git_fork_user):
   Soft fork (owner == fork_user, has "soft-fork" GitHub topic)
     origin  → the fork (e.g. timvisher-dd/acp.el-plus)
     upstream → the parent (e.g. xenodium/acp.el)
-    tracks  → origin/<trunk>    (upstream changes are merged into
-              origin/<trunk> via `timvisher_git sync-trunk`, not rebased)
+    tracks  → origin/<trunk>    (upstream changes reach <trunk> only via
+              feature branches -> dev, never by a direct upstream merge on
+              trunk; `timvisher_git sync-trunk` keeps trunk current with
+              origin, it does not merge upstream)
     cookie  → x.timvisher_git.soft-fork written to worktree root
 
   Upstream override (.upstream.repo file or ~/.config/.../upstream_overrides)
@@ -1939,17 +1935,15 @@ Other subcommands
     Query metadata about the current worktree.
     Fields: .org, .repo, .branch, .absPath, .prefixPath
 
-  timvisher_git sync-trunk [--no-push] <path>
+  timvisher_git sync-trunk <path>
     For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
-    Finds or creates the trunk worktree, merges upstream/<trunk> into
-    <trunk>, and pushes to origin.  Non-interactive; exits non-zero on
-    merge conflicts and prints the trunk worktree path to stdout so the
-    caller can arrange for agent-driven resolution.
-
-    --no-push  Skip the push step.  On a successful merge, prints the
-               trunk worktree path to stdout so the caller can run tests
-               or other checks before pushing.  No-op when the trunk is
-               already up to date with upstream.
+    Finds or creates the trunk worktree, fetches, and reports its state
+    against origin/<trunk>.  Does NOT merge upstream and does NOT push;
+    upstream changes reach trunk via feature branches -> dev, not here.
+      - Unpublished commits on trunk (ahead of origin): exits non-zero.
+      - Up to date with origin/<trunk>: prints nothing, returns 0.
+      - Behind origin/<trunk>: prints the trunk worktree path to stdout
+        so the caller can run tests, pull --rebase, and re-test.
 
   timvisher_git <git-args...>
     Passes through to git (with agent safety wrappers).

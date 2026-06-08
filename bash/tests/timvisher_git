@@ -2234,6 +2234,95 @@ else
   fail "expected no auto-fork for git@ URL, got rc=${rc}"
 fi
 
+# ---------------------------------------------------------------------------
+# sync-trunk tests: soft fork trunk state assessment
+#
+# sync-trunk must NOT merge upstream and must NOT push.  It reports the
+# trunk's state against origin/<trunk> so dev_ci can run test/rebase/test:
+#   - unpublished commits ahead of origin  -> non-zero exit
+#   - up to date with origin/<trunk>        -> empty stdout, rc 0
+#   - behind origin/<trunk>                 -> prints worktree path, rc 0
+# ---------------------------------------------------------------------------
+
+# Build a soft fork: origin (the fork) + upstream (the parent), a bare
+# cache wired to both, and a trunk worktree carrying the soft-fork cookie.
+st_origin="$tmpdir/st_origin"
+"$test_git" init "$st_origin" >/dev/null 2>&1
+"$test_git" -C "$st_origin" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+st_branch=$("$test_git" -C "$st_origin" rev-parse --abbrev-ref HEAD)
+
+st_upstream="$tmpdir/st_upstream"
+"$test_git" clone "$st_origin" "$st_upstream" >/dev/null 2>&1
+
+st_cache="$tmpdir/st_cache"
+"$test_git" init --bare "$st_cache" >/dev/null 2>&1
+"$test_git" -C "$st_cache" remote add origin "$st_origin"
+"$test_git" -C "$st_cache" remote add upstream "$st_upstream"
+"$test_git" -C "$st_cache" fetch --all >/dev/null 2>&1
+"$test_git" -C "$st_cache" remote set-head origin -a >/dev/null 2>&1
+
+st_wt="$tmpdir/st_live/${st_branch}"
+mkdir -p "$tmpdir/st_live"
+"$test_git" -C "$st_cache" worktree add -b "$st_branch" "$st_wt" "origin/$st_branch" >/dev/null 2>&1
+touch "$st_wt/x.timvisher_git.soft-fork"
+
+# Test: up to date with origin/<trunk> -> empty stdout, rc 0
+run_test
+st_out=$(sync_trunk "$st_wt" 2>/dev/null) && st_rc=0 || st_rc=$?
+if (( st_rc == 0 )) && [[ -z $st_out ]]
+then
+  pass "sync_trunk: up to date with origin prints nothing, rc 0"
+else
+  fail "sync_trunk up-to-date: expected rc 0 + empty, got rc=${st_rc} out='${st_out}'"
+fi
+
+# Test: behind origin/<trunk> -> prints worktree path, rc 0.  Advance the
+# fork's origin; sync_trunk's own fetch should pick it up.
+run_test
+"$test_git" -C "$st_origin" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m advance >/dev/null 2>&1
+# sync_trunk canonicalizes the worktree path via `pwd -P`, so compare
+# against the resolved path (matters on macOS where /tmp -> /private/tmp).
+st_wt_real=$(cd "$st_wt" && pwd -P)
+st_out=$(sync_trunk "$st_wt" 2>/dev/null) && st_rc=0 || st_rc=$?
+if (( st_rc == 0 )) && [[ $st_out == "$st_wt_real" ]]
+then
+  pass "sync_trunk: behind origin prints worktree path, rc 0"
+else
+  fail "sync_trunk behind: expected rc 0 + path '${st_wt_real}', got rc=${st_rc} out='${st_out}'"
+fi
+
+# Test: unpublished commits ahead of origin -> non-zero exit.  Fresh
+# fixture so HEAD has a local commit origin never saw.
+run_test
+stb_origin="$tmpdir/stb_origin"
+"$test_git" init "$stb_origin" >/dev/null 2>&1
+"$test_git" -C "$stb_origin" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+stb_branch=$("$test_git" -C "$stb_origin" rev-parse --abbrev-ref HEAD)
+stb_upstream="$tmpdir/stb_upstream"
+"$test_git" clone "$stb_origin" "$stb_upstream" >/dev/null 2>&1
+stb_cache="$tmpdir/stb_cache"
+"$test_git" init --bare "$stb_cache" >/dev/null 2>&1
+"$test_git" -C "$stb_cache" remote add origin "$stb_origin"
+"$test_git" -C "$stb_cache" remote add upstream "$stb_upstream"
+"$test_git" -C "$stb_cache" fetch --all >/dev/null 2>&1
+"$test_git" -C "$stb_cache" remote set-head origin -a >/dev/null 2>&1
+stb_wt="$tmpdir/stb_live/${stb_branch}"
+mkdir -p "$tmpdir/stb_live"
+"$test_git" -C "$stb_cache" worktree add -b "$stb_branch" "$stb_wt" "origin/$stb_branch" >/dev/null 2>&1
+touch "$stb_wt/x.timvisher_git.soft-fork"
+"$test_git" -C "$stb_wt" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m local-unpublished >/dev/null 2>&1
+st_out=$(sync_trunk "$stb_wt" 2>/dev/null) && st_rc=0 || st_rc=$?
+if (( 0 < st_rc )) && [[ -z $st_out ]]
+then
+  pass "sync_trunk: unpublished commits ahead of origin -> non-zero, no path"
+else
+  fail "sync_trunk unpublished: expected rc>0 + empty, got rc=${st_rc} out='${st_out}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
