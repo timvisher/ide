@@ -232,6 +232,20 @@ pr_head_ref_name() {
   printf '%s' "$head_ref"
 }
 
+pr_base_ref_name() {
+  local source=$1 base_ref
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  source=$(normalize_pr_url "$source")
+  base_ref=$(gh pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null) ||
+    return 1
+
+  [[ -n $base_ref ]] || return 1
+
+  printf '%s' "$base_ref"
+}
+
 pr_number_from_url() {
   local source=$1
 
@@ -1118,15 +1132,43 @@ configure_remotes_and_tracking() {
   fi
 }
 
+# Point the current (PR head) branch's @{u} at the PR's base branch so it
+# rebases onto / diffs against what the PR merges into, rather than
+# tracking its own head branch (git's checkout DWIM default).  Best-effort:
+# warns and leaves tracking unchanged if the base ref can't be resolved.
+pr_set_base_tracking() {
+  local remote=$1 base_ref=$2
+
+  if [[ -z $base_ref ]]; then
+    warn 'Unable to resolve PR base branch; leaving tracking unchanged'
+    return 0
+  fi
+
+  if ! git show-ref --verify --quiet "refs/remotes/${remote}/${base_ref}"; then
+    warn "PR base branch '%s/%s' not found after fetch; leaving tracking unchanged" "$remote" "$base_ref"
+    return 0
+  fi
+
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+  [[ $branch != HEAD ]] || return 0
+
+  info "Setting tracking to '%s/%s' (PR base)" "$remote" "$base_ref"
+  git branch -u "${remote}/${base_ref}" "$branch" >&2 ||
+    warn 'Unable to set tracking to %s/%s' "$remote" "$base_ref"
+}
+
 configure_remotes_for_pr() {
   local source=$1
-  local base_repo_spec head_repo_spec
+  local base_repo_spec head_repo_spec base_ref
 
   base_repo_spec=$(pr_base_repo_spec "$source") ||
     die "Unable to parse PR base repo from '${source}'"
 
   head_repo_spec=$(pr_head_repo_spec "$source") ||
     die "Unable to resolve PR head repo for '${source}'; ensure gh is installed and authenticated"
+
+  base_ref=$(pr_base_ref_name "$source") || base_ref=
 
   info "Configuring PR remotes: origin=${head_repo_spec} upstream=${base_repo_spec}"
 
@@ -1138,14 +1180,18 @@ configure_remotes_for_pr() {
   git fetch origin >&2 || die "Unable to fetch from origin remote"
 
   if [[ $head_repo_spec != "$base_repo_spec" ]]; then
+    # Cross-repo PR: base branch lives on upstream (the parent repo).
     if git remote get-url upstream >/dev/null 2>&1; then
       git remote set-url upstream "https://github.com/${base_repo_spec}.git"
     else
       git remote add upstream "https://github.com/${base_repo_spec}.git"
     fi
     git fetch upstream >&2 || die "Unable to fetch from upstream remote"
+    pr_set_base_tracking upstream "$base_ref"
   else
+    # Same-repo PR: base branch lives on origin.
     safe_remove_upstream
+    pr_set_base_tracking origin "$base_ref"
   fi
 }
 
@@ -1923,10 +1969,12 @@ configured fork_user (~/.config/timvisher/ide/git_fork_user):
     upstream → the override target
     tracks  → upstream/<trunk>
 
-  PR (cross-fork)
+  PR (any)
     origin  → PR head repo
-    upstream → PR base repo
-    tracks  → determined by PR head repo's fork status
+    upstream → PR base repo  (only when head repo != base repo)
+    tracks  → the PR base branch, so @{u} is what the PR merges into:
+              upstream/<baseRefName> for cross-repo PRs,
+              origin/<baseRefName> for same-repo PRs
 
 Other subcommands
 -----------------

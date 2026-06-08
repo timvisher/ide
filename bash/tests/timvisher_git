@@ -2235,6 +2235,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# pr_set_base_tracking: a PR worktree must track the PR base branch, not
+# its own head branch.  (The bug: configure_remotes_for_pr configured
+# remotes but never called git branch -u, so @{u} fell back to the head.)
+# ---------------------------------------------------------------------------
+
+pst_src="$tmpdir/pst_src"
+"$test_git" init "$pst_src" >/dev/null 2>&1
+"$test_git" -C "$pst_src" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m base >/dev/null 2>&1
+pst_base=$("$test_git" -C "$pst_src" rev-parse --abbrev-ref HEAD)
+
+pst_wt="$tmpdir/pst_wt"
+"$test_git" clone "$pst_src" "$pst_wt" >/dev/null 2>&1
+# Simulate the PR head branch being checked out (as clone leaves it).
+"$test_git" -C "$pst_wt" checkout -b feature >/dev/null 2>&1
+
+# Test: a resolvable base ref points @{u} at origin/<base>.
+run_test
+(
+  cd "$pst_wt" || exit 1
+  pr_set_base_tracking origin "$pst_base" >/dev/null 2>&1
+)
+pst_u=$("$test_git" -C "$pst_wt" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || pst_u=
+if [[ $pst_u == "origin/${pst_base}" ]]
+then
+  pass "pr_set_base_tracking: sets @{u} to the PR base branch"
+else
+  fail "pr_set_base_tracking base: expected '@{u}'='origin/${pst_base}', got '${pst_u}'"
+fi
+
+# Test: an empty base ref is a no-op (rc 0, leaves no tracking).
+run_test
+"$test_git" -C "$pst_wt" branch --unset-upstream 2>/dev/null || true
+(
+  cd "$pst_wt" || exit 1
+  pr_set_base_tracking origin "" >/dev/null 2>&1
+) && pst_rc=0 || pst_rc=$?
+pst_u=$("$test_git" -C "$pst_wt" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || pst_u=
+if (( pst_rc == 0 )) && [[ -z $pst_u ]]
+then
+  pass "pr_set_base_tracking: empty base ref is a no-op"
+else
+  fail "pr_set_base_tracking empty: expected rc 0 + no @{u}, got rc=${pst_rc} u='${pst_u}'"
+fi
+
+# Test: a base ref with no matching remote ref is a no-op.
+run_test
+(
+  cd "$pst_wt" || exit 1
+  pr_set_base_tracking origin no-such-branch >/dev/null 2>&1
+) && pst_rc=0 || pst_rc=$?
+pst_u=$("$test_git" -C "$pst_wt" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || pst_u=
+if (( pst_rc == 0 )) && [[ -z $pst_u ]]
+then
+  pass "pr_set_base_tracking: missing base ref is a no-op"
+else
+  fail "pr_set_base_tracking missing: expected rc 0 + no @{u}, got rc=${pst_rc} u='${pst_u}'"
+fi
+
+# ---------------------------------------------------------------------------
 # sync-trunk tests: soft fork trunk state assessment
 #
 # sync-trunk must NOT merge upstream and must NOT push.  It reports the
