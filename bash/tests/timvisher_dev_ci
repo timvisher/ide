@@ -311,6 +311,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# resolve_retire_merge_ref: soft forks measure "merged" against origin,
+# regular forks against upstream.
+# ---------------------------------------------------------------------------
+
+# Use the real git (not the agent wrapper) for fixture setup.
+test_git="$(brew --prefix)/bin/git"
+
+# Load the script's functions by stripping the top-level dispatch.
+rrmr_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
+eval "$rrmr_body"
+
+# Build a bare-ish worktree fixture with the requested remote-tracking
+# refs.  We fabricate refs/remotes/* directly so we don't need real
+# remotes or network.  $1=dir, then name=target pairs:
+#   origin/main upstream/main origin/HEAD=origin/main ...
+make_ref_fixture() {
+  local dir=$1; shift
+  "$test_git" init "$dir" >/dev/null 2>&1
+  "$test_git" -C "$dir" -c user.email=t@t -c user.name=t \
+    -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+  local head_sha; head_sha=$("$test_git" -C "$dir" rev-parse HEAD)
+  local spec
+  for spec in "$@"
+  do
+    if [[ $spec == *=* ]]
+    then
+      # symbolic ref: refs/remotes/<a>/HEAD -> refs/remotes/<b>
+      "$test_git" -C "$dir" symbolic-ref "refs/remotes/${spec%%=*}" "refs/remotes/${spec#*=}"
+    else
+      "$test_git" -C "$dir" update-ref "refs/remotes/${spec}" "$head_sha"
+    fi
+  done
+}
+
+# soft fork -> origin (cookie present; upstream refs also exist but are ignored)
+run_test
+sf_wt="$tmpdir/rrmr_softfork"
+make_ref_fixture "$sf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
+touch "$sf_wt/x.timvisher_git.soft-fork"
+rrmr_out=$(resolve_retire_merge_ref "$sf_wt")
+if [[ $rrmr_out == "origin/main" ]]
+then
+  pass "resolve_retire_merge_ref: soft fork resolves to origin/<trunk>"
+else
+  fail "soft fork: expected 'origin/main', got '${rrmr_out}'"
+fi
+
+# regular fork -> upstream (no cookie)
+run_test
+rf_wt="$tmpdir/rrmr_regfork"
+make_ref_fixture "$rf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
+rrmr_out=$(resolve_retire_merge_ref "$rf_wt")
+if [[ $rrmr_out == "upstream/main" ]]
+then
+  pass "resolve_retire_merge_ref: regular fork resolves to upstream/<trunk>"
+else
+  fail "regular fork: expected 'upstream/main', got '${rrmr_out}'"
+fi
+
+# no upstream, no cookie -> origin/main fallback
+run_test
+nf_wt="$tmpdir/rrmr_nofork"
+make_ref_fixture "$nf_wt" origin/main
+rrmr_out=$(resolve_retire_merge_ref "$nf_wt")
+if [[ $rrmr_out == "origin/main" ]]
+then
+  pass "resolve_retire_merge_ref: non-fork falls back to origin/main"
+else
+  fail "non-fork: expected 'origin/main', got '${rrmr_out}'"
+fi
+
+# nothing resolvable -> empty
+run_test
+none_wt="$tmpdir/rrmr_none"
+make_ref_fixture "$none_wt"
+rrmr_out=$(resolve_retire_merge_ref "$none_wt")
+if [[ -z $rrmr_out ]]
+then
+  pass "resolve_retire_merge_ref: no refs resolves to empty"
+else
+  fail "no refs: expected empty, got '${rrmr_out}'"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

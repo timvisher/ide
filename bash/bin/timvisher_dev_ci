@@ -542,9 +542,49 @@ discover() {
     done
 }
 
+# Resolve the ref a finished branch must be an ancestor of before it is
+# retired from x.active-worktrees.
+#
+# Soft forks (x.timvisher_git.soft-fork cookie) land their features in
+# their own origin/<trunk>; upstream changes flow the other way, so a
+# fork feature is never an ancestor of upstream and must be measured
+# against origin.  Regular forks track upstream/<trunk>, so prefer that
+# and fall back to origin/main only when no upstream ref exists.
+# Prints the ref (e.g. "origin/main"); prints nothing if none resolves.
+resolve_retire_merge_ref() {
+    local wt=$1
+    local ref
+
+    if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
+    then
+        ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || true
+        if [[ -z $ref ]] && git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
+        then
+            ref=origin/main
+        fi
+        printf '%s' "$ref"
+        return 0
+    fi
+
+    ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || true
+    if [[ -z $ref ]]
+    then
+        if git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null
+        then
+            ref=upstream/main
+        elif git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
+        then
+            ref=origin/main
+        fi
+    fi
+    printf '%s' "$ref"
+}
+
 # Check each active worktree to see if its branch has been merged into
-# upstream/main.  If so, comment it out of x.active-worktrees and remove
-# it from the dependency graph so we don't waste time syncing/integrating it.
+# the ref it should land in (origin/<trunk> for soft forks, otherwise
+# upstream/<trunk>; see resolve_retire_merge_ref).  If so, comment it out
+# of x.active-worktrees and remove it from the dependency graph so we
+# don't waste time syncing/integrating it.
 retire_merged_worktrees() {
     for dev_dir in "${!dev_branches[@]}"
     do
@@ -564,29 +604,20 @@ retire_merged_worktrees() {
             # Fetch in the worktree so we have current refs.
             git -C "$wt" fetch --all --quiet 2>/dev/null || true
 
-            # Resolve the upstream default branch for this worktree's repo.
-            local upstream_ref
-            upstream_ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || true
-            if [[ -z $upstream_ref ]]
-            then
-                if git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null
-                then
-                    upstream_ref=upstream/main
-                elif git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
-                then
-                    upstream_ref=origin/main
-                fi
-            fi
+            # Resolve the ref this branch must merge into (origin for soft
+            # forks, upstream otherwise).
+            local merge_ref
+            merge_ref=$(resolve_retire_merge_ref "$wt")
 
-            if [[ -z $upstream_ref ]]
+            if [[ -z $merge_ref ]]
             then
                 remaining+=("$wt")
                 continue
             fi
 
-            if git -C "$wt" merge-base --is-ancestor HEAD "$upstream_ref" 2>/dev/null
+            if git -C "$wt" merge-base --is-ancestor HEAD "$merge_ref" 2>/dev/null
             then
-                info "retire: '%s' is fully merged into %s; commenting out" "$wt" "$upstream_ref"
+                info "retire: '%s' is fully merged into %s; commenting out" "$wt" "$merge_ref"
 
                 # Comment out the line in x.active-worktrees.
                 # The file may use ~/... or absolute paths; match either form.
