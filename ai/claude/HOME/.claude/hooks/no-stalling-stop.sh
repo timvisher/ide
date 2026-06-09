@@ -36,7 +36,7 @@ TEXT=$(tail -n 200 "$TP" 2>/dev/null \
 # Format: $'<pattern>\t<reason>'
 DODGE_REASON='NOTHING IS PRE-EXISTING. You own every change in the `@{u}...` diff. If something fails, your work caused it. Investigate and fix.'
 VIOLATIONS=(
-    # --- Ownership dodging (mirror of aishot review GOLDEN RULE) ---
+    # --- Ownership dodging (mirror of aishot git diff review GOLDEN RULE) ---
     # Each pattern is anchored on dodging context. Bare phrases like
     # "the pre-existing API contract" or "an existing issue on GitHub"
     # are legitimate review prose; anchors require proximity to a
