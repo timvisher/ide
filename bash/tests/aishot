@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
-# Tests for aishot's review-prompt diff spilling.
+# Tests for aishot's diff-prompt building: the shared inline-vs-spill
+# logic (exercised via `git diff review`) and the `git diff describe`
+# changeset-inventory prompt.
 #
-# `aishot review make-prompt` builds the review prompt without invoking
-# the *shot reviewer binaries, so these tests exercise the inline-vs-spill
-# logic in isolation. The spill threshold is overridable via
-# AISHOT_MAX_PROMPT_CHARS so we can force either branch deterministically.
+# `aishot git diff review make-prompt` and `aishot git diff describe
+# make-prompt` build their prompts without invoking the *shot binaries,
+# so these tests exercise the prompt construction in isolation. The spill
+# threshold is overridable via AISHOT_MAX_PROMPT_CHARS so we can force
+# either branch deterministically.
 
 set -uo pipefail
 
@@ -55,7 +58,7 @@ make_repo() {
 # ---------------------------------------------------------------------------
 run_test
 repo=$(make_repo)
-out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" review make-prompt 2>/dev/null)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
 if [[ $out == *'```diff'* ]] &&
    [[ $out != *'written to a file instead of inlined'* ]] &&
    [[ ! -f "$repo/x.aishot.review.diff" ]]
@@ -71,7 +74,7 @@ rm -rf "$repo"
 # ---------------------------------------------------------------------------
 run_test
 repo=$(make_repo)
-out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10 "$script" review make-prompt 2>"$repo/err.txt")
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10 "$script" git diff review make-prompt 2>"$repo/err.txt")
 spill="$repo/x.aishot.review.diff"
 if [[ $out == *'written to a file instead of inlined'* ]] &&
    [[ $out == *"$spill"* ]] &&
@@ -117,7 +120,7 @@ rm -rf "$repo"
 run_test
 repo=$(make_repo)
 echo 'STALE SPILL CONTENT MUST NOT BE INLINED' > "$repo/x.aishot.review.diff"
-out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" review make-prompt 2>/dev/null)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
 if [[ $out != *'STALE SPILL CONTENT MUST NOT BE INLINED'* ]]
 then
   pass "stale spill file is not re-inlined"
@@ -134,7 +137,7 @@ run_test
 repo=$(make_repo)
 # Put a directory where the spill file would go, so the write fails.
 mkdir "$repo/x.aishot.review.diff"
-out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10 "$script" review make-prompt 2>"$repo/err.txt")
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10 "$script" git diff review make-prompt 2>"$repo/err.txt")
 if [[ $out == *'+modified line'* ]] &&
    [[ $out != *'written to a file instead of inlined'* ]] &&
    grep -q 'could not write spill file' "$repo/err.txt"
@@ -142,6 +145,96 @@ then
   pass "unwritable spill path falls back to inlining with a warning"
 else
   fail "expected inline fallback + warning when spill write fails"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 5: `git diff describe` emits the changelog template and factual
+# framing, and does NOT carry the review checklist.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff describe make-prompt 2>/dev/null)
+if [[ $out == *'## New Features'* ]] &&
+   [[ $out == *'## Architectural Changes'* ]] &&
+   [[ $out == *'This is NOT a review.'* ]] &&
+   [[ $out != *'do a thorough review'* ]]
+then
+  pass "describe emits changelog template + factual framing, no review checklist"
+else
+  fail "expected changelog template and factual framing from describe make-prompt"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 6: describe still inlines the diff under a large budget.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff describe make-prompt 2>/dev/null)
+if [[ $out == *'+modified line'* ]] &&
+   [[ ! -f "$repo/x.aishot.describe.diff" ]]
+then
+  pass "describe inlines diffs under large budget"
+else
+  fail "expected describe to inline diffs and write no spill file under large budget"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 7: describe spills to its OWN mode-specific file (not review's).
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10 "$script" git diff describe make-prompt 2>/dev/null)
+if [[ $out == *'written to a file instead of inlined'* ]] &&
+   [[ -f "$repo/x.aishot.describe.diff" ]] &&
+   [[ ! -f "$repo/x.aishot.review.diff" ]] &&
+   grep -q 'modified line' "$repo/x.aishot.describe.diff"
+then
+  pass "describe spills to x.aishot.describe.diff under tiny budget"
+else
+  fail "expected describe to spill to its own x.aishot.describe.diff"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 8: describe omits the review-only root-working-files framing
+# (the "gitignored but MUST be reviewed" section and the pr.md deliverable
+# notice). pr.md may still appear as an untracked file — these throwaway
+# repos have no gitignore — but the review-only framing must not.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+printf 'PR DRAFT BODY\n' > "$repo/pr.md"
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff describe make-prompt 2>/dev/null)
+if [[ $out != *'Repo-root working files'* ]] &&
+   [[ $out != *'PR DESCRIPTION DRAFT'* ]]
+then
+  pass "describe omits review-only root-file framing"
+else
+  fail "describe should not emit the review-only root-working-files section"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 9: global --with= BEFORE the subcommand routes to the subcommand
+# (not the bare-prompt path). Regression guard: `aishot --with=x git diff
+# describe ...` must reach describe, not be parsed as a oneshot prompt.
+# make-prompt makes this observable without launching shots — a mis-route
+# would treat "git diff describe make-prompt" as the prompt and never emit
+# the changelog template.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 \
+  "$script" --with=claude git diff describe make-prompt 2>/dev/null)
+if [[ $out == *'## New Features'* ]] &&
+   [[ $out == *'This is NOT a review.'* ]]
+then
+  pass "leading --with= routes to git diff describe (not bare prompt)"
+else
+  fail "flag-before-subcommand mis-routed: describe template not emitted"
 fi
 rm -rf "$repo"
 

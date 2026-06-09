@@ -4,8 +4,10 @@
 #
 # Usage: aishot [--with=claude,codex,gemini] <prompt>
 #        echo "prompt" | aishot [--with=...]
-#        aishot review [--with=...]
-#        aishot review make-prompt
+#        aishot git diff review [--with=...]
+#        aishot git diff review make-prompt
+#        aishot git diff describe [--with=...]
+#        aishot git diff describe make-prompt
 #        aishot make-prompt
 #        aishot --help
 
@@ -17,8 +19,10 @@ show_help() {
     cat <<'EOF'
 Usage: aishot [--with=claude,codex,gemini] <prompt>
        echo "prompt" | aishot [--with=...]
-       aishot review [--with=...]
-       aishot review make-prompt
+       aishot git diff review [--with=...]
+       aishot git diff review make-prompt
+       aishot git diff describe [--with=...]
+       aishot git diff describe make-prompt
        aishot make-prompt
        aishot --help
 
@@ -29,10 +33,17 @@ A bare `<prompt>` (or piped stdin) is the default action. The other
 forms are subcommands.
 
 Subcommands:
-  review               Build a diff-based review prompt and run it.
-  review make-prompt   Build the review prompt and print it to stdout.
-  make-prompt          Read stdin, prepend the shot preamble, and
-                       print to stdout.
+  git diff review               Build a diff-based code-review prompt
+                                and run it across the shots.
+  git diff review make-prompt   Build the review prompt; print to stdout.
+  git diff describe             Build a factual changeset-inventory
+                                (changelog) prompt and run it across the
+                                shots, then synthesize one authoritative
+                                changelog. Describes the diff only — no
+                                review, critique, or recommendations.
+  git diff describe make-prompt Build the describe prompt; print to stdout.
+  make-prompt                   Read stdin, prepend the shot preamble, and
+                                print to stdout.
 
 Options:
   --with=LIST   Comma-separated list of shots to use.
@@ -46,7 +57,8 @@ and synthesizes the results. The command handles everything
 internally; just run it:
 
     Bash({ command: "aishot 'your prompt'", run_in_background: true })
-    Bash({ command: "aishot review", run_in_background: true })
+    Bash({ command: "aishot git diff review", run_in_background: true })
+    Bash({ command: "aishot git diff describe", run_in_background: true })
 
 For maximum coverage (all available shots):
 
@@ -61,13 +73,13 @@ EOF
 
 show_review_help() {
     cat <<'EOF'
-Usage: aishot review [--with=claude,codex,gemini]
+Usage: aishot git diff review [--with=claude,codex,gemini]
 
 Run parallel code reviews via independent AI agents and synthesize the
 results. Each reviewer gets the same prompt (built by
-aishot review make-prompt; diffs are inlined, or spilled to a file when
-large — see below). After all reviewers finish, claudeshot synthesizes
-the findings into a unified report.
+aishot git diff review make-prompt; diffs are inlined, or spilled to a
+file when large — see below). After all reviewers finish, claudeshot
+synthesizes the findings into a unified report.
 
 Options:
   --with=LIST   Comma-separated list of reviewers.
@@ -87,12 +99,52 @@ Large diffs:
 Use a subagent to run this command. The command handles everything
 internally; just run it:
 
-    Bash({ command: "aishot review", run_in_background: true })
+    Bash({ command: "aishot git diff review", run_in_background: true })
 
 GOLDEN RULE: EVERY finding from the review is YOUR responsibility.
 Nothing in the diff is "pre-existing" or "not our commit". If it is in
 the diff, it ships with your work. Investigate and fix ALL findings.
 Never dismiss a finding. Never say "not actionable" or "good to note".
+EOF
+}
+
+show_describe_help() {
+    cat <<'EOF'
+Usage: aishot git diff describe [--with=claude,codex,gemini]
+
+Build a factual changeset inventory (a changelog) of the current diff and
+run it across independent AI agents in parallel, then synthesize one
+authoritative, deduplicated changelog via claudeshot. Each agent gets the
+same prompt (built by aishot git diff describe make-prompt; diffs are
+inlined, or spilled to a file when large — see below).
+
+This DESCRIBES the diff; it does not review it. The output is the kind of
+entry you would write in a CHANGELOG — new features, architectural
+changes, behavior changes, bug fixes, refactors, dependency/build/config
+changes, and small changes. No critique, quality judgment, or
+recommendations.
+
+Scope is auto-detected, the same as `git diff review`: the branch diff
+vs upstream plus staged and unstaged changes, and new untracked files.
+
+Options:
+  --with=LIST   Comma-separated list of shots.
+                Available: claude, codex, gemini.
+                Default: claude,codex
+
+Large diffs:
+  Shots have a hard input ceiling (codex: ~1,048,576 chars). When the
+  diffs would push the prompt past a budget, they are written to a
+  gitignored file (x.aishot.describe.diff at the repo root) and the
+  prompt instructs the shot to read it instead of inlining it. Override
+  the budget with AISHOT_MAX_PROMPT_CHARS (default 900000).
+
+## Agent instructions
+
+Use a subagent to run this command. The command handles everything
+internally; just run it:
+
+    Bash({ command: "aishot git diff describe", run_in_background: true })
 EOF
 }
 
@@ -180,10 +232,25 @@ do_make_prompt() {
     cat
 }
 
-# Build a review prompt. Diffs are inlined, or spilled to a file and
-# referenced when they would exceed the prompt budget. Outputs to stdout.
-# Returns 1 if there is nothing to review.
-do_make_review_prompt() {
+# Build a diff-based prompt for the given mode (review|describe). Diffs are
+# inlined, or spilled to a file and referenced when they would exceed the
+# prompt budget. Outputs to stdout. Returns 1 if there is nothing to act on.
+#
+# Both modes share diff collection, the inline-vs-spill machinery, and the
+# untracked-files section. They differ in the instructional header, whether
+# the gitignored root working files (x./y./z./pr.md) are gathered (review
+# only — they are review context, not changelog material), and the spill
+# filename (x.aishot.<mode>.diff).
+do_make_diff_prompt() {
+    local mode=$1
+    case "$mode" in
+        review|describe) ;;
+        *)
+            echo "Error: do_make_diff_prompt: unknown mode '${mode}'." >&2
+            return 1
+            ;;
+    esac
+
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1
     then
         echo "Error: Not inside a git repository." >&2
@@ -208,7 +275,8 @@ do_make_review_prompt() {
 
     # Basename of the file diffs are spilled to when they would push the
     # prompt past the reviewer input limit (see emission logic below).
-    local spill_diff_basename="x.aishot.review.diff"
+    # Mode-specific so review and describe never clobber each other's spill.
+    local spill_diff_basename="x.aishot.${mode}.diff"
 
     # Diff sections are collected raw here (not yet formatted) so we can
     # decide — once their total size is known — whether to inline them or
@@ -319,15 +387,21 @@ $(cat -- "$f")
         sections+=("$untracked_section")
     fi
 
-    # Repo-root working files (gitignored x.*, y.*, z.*, pr.md)
+    # Repo-root working files (gitignored x.*, y.*, z.*, pr.md).
+    # Review only: these are working context a reviewer must scrutinise
+    # (and pr.md is a deliverable). A changelog inventory describes the
+    # committed/staged/unstaged diff, not gitignored scratch files.
     local root_files=()
     local candidate
-    for candidate in x x.* y y.* z z.* pr.md
-    do
-        # Don't re-inline our own spilled diff file from a previous run.
-        [[ $candidate == "$spill_diff_basename" ]] && continue
-        [[ -f $candidate ]] && root_files+=("$candidate")
-    done
+    if [[ $mode == review ]]
+    then
+        for candidate in x x.* y y.* z z.* pr.md
+        do
+            # Don't re-inline our own spilled diff file from a previous run.
+            [[ $candidate == "$spill_diff_basename" ]] && continue
+            [[ -f $candidate ]] && root_files+=("$candidate")
+        done
+    fi
     if (( 0 < ${#root_files[@]} ))
     then
         local root_section="## Repo-root working files (gitignored but MUST be reviewed)
@@ -369,7 +443,9 @@ $(cat -- "$f")
     local recent_commits
     recent_commits=$(git log --oneline -10 2>/dev/null)
 
-    cat <<'HEADER'
+    if [[ $mode == review ]]
+    then
+        cat <<'HEADER'
 With a skeptical eye, do a thorough review of all changes below.
 
 The diffs are provided below — either inlined, or (when they are large)
@@ -405,6 +481,68 @@ Organize findings by severity:
 - **Questions/Assumptions**: anything ambiguous or worth calling out
 
 HEADER
+    else
+        cat <<'HEADER'
+Produce a factual inventory of the changes below — a changelog of what
+changed in this diff.
+
+The diffs are provided below — either inlined, or (when they are large)
+written to a file that this prompt points you to and instructs you to read.
+You do NOT need to run git commands to see them. You may read files for
+additional context if needed.
+
+Describe ONLY what the diff shows. This is NOT a review. Do NOT critique,
+judge quality, flag bugs, suggest improvements, or make recommendations.
+No opinions, no "consider", no "should". Just what changed. If a change's
+purpose is genuinely unclear from the diff alone, say so plainly rather
+than guessing.
+
+IMPORTANT: Your ONLY task is to describe the changes. Do NOT run any
+project tooling, task trackers, issue trackers, or workflow tools (bd,
+beads, todo, etc.). Do NOT try to set up the project or install
+dependencies.
+
+Output the inventory using EXACTLY this template. OMIT any section that
+has no entries — do not emit empty headings. Keep the ordering below.
+
+## New Features
+
+### <one-line feature name>
+
+<prose: what it does and how it behaves, grounded in the diff; name the
+primary file(s) involved>
+
+## Architectural Changes
+
+### <one-line name of the pattern or abstraction>
+
+<prose: what structural pattern or abstraction was introduced or changed,
+and where>
+
+## Behavior Changes
+
+### <one-line: what now behaves differently for existing callers>
+
+<prose: the old semantics vs the new semantics>
+
+## Bug Fixes
+
+- <one line per fix — what was broken and what now happens (file)>
+
+## Refactors
+
+- <one line per behavior-preserving restructuring (file)>
+
+## Dependencies, Build & Config
+
+- <one line per dependency, build, or configuration change>
+
+## Small Changes
+
+- <renames, comment edits, formatting, docs — one line each>
+
+HEADER
+    fi
 
     # If pr.md is in the diff, tell the reviewer to flag it
     local has_pr_md=false
@@ -580,6 +718,64 @@ not dismissal.
 EOF
 }
 
+# Synthesis preamble for changeset inventories. Unlike review, the goal
+# here IS to merge and deduplicate into one authoritative changelog, and
+# to stay strictly factual.
+_describe_synthesis_preamble() {
+    cat <<'EOF'
+You are merging factual changeset inventories from multiple independent
+AI agents that each described the same diff. Produce ONE authoritative
+changelog.
+
+- Union all distinct changes; deduplicate entries that describe the same
+  change (do NOT list a change twice because two agents both named it).
+- A change named by multiple agents is high-confidence. A change named by
+  only one agent is still included, but drop or correct it if it looks
+  like an over-reading of the diff.
+- Resolve any disagreement by deferring to what the diff actually shows.
+- Stay strictly factual: this is a changelog, NOT a review. Do NOT
+  critique, judge quality, flag bugs as problems, or make
+  recommendations.
+
+Emit the merged result using EXACTLY this template, in this order,
+OMITTING any section with no entries:
+
+## New Features
+
+### <one-line feature name>
+
+<prose: what it does, grounded in the diff; primary file(s)>
+
+## Architectural Changes
+
+### <one-line name of the pattern or abstraction>
+
+<prose: what was introduced or changed, and where>
+
+## Behavior Changes
+
+### <one-line: what now behaves differently for existing callers>
+
+<prose: old semantics vs new semantics>
+
+## Bug Fixes
+
+- <one line per fix (file)>
+
+## Refactors
+
+- <one line per behavior-preserving restructuring (file)>
+
+## Dependencies, Build & Config
+
+- <one line per change>
+
+## Small Changes
+
+- <renames, comments, formatting, docs — one line each>
+EOF
+}
+
 # Run validated shots in parallel against prompt_file, then synthesize.
 # Requires RUN_DIR to be set (via setup_run_dir).
 #   $1 = prompt file path
@@ -678,7 +874,18 @@ _run_shots() {
     claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
 }
 
-do_review() {
+# Shared driver for the `git diff <mode>` subcommands. Parses
+# --with/--help, validates the shot list, builds the mode's prompt (with
+# SHOT_PREAMBLE prepended), and fans out via _run_shots.
+#   $1 = mode (review|describe)
+#   $2 = synthesis preamble function name
+#   $3 = label passed to _run_shots (headings/progress)
+#   $4 = help function name (for --help and unknown options)
+#   $5.. = caller args
+_do_diff_subcommand() {
+    local mode=$1 synthesis_func=$2 label=$3 help_func=$4
+    shift 4
+
     local reviewers=$DEFAULT_REVIEWERS
 
     while (( 0 < $# ))
@@ -689,12 +896,12 @@ do_review() {
                 shift
                 ;;
             --help|-h)
-                show_review_help
+                "$help_func"
                 return 0
                 ;;
             *)
                 echo "Error: Unknown option '${1}'" >&2
-                show_review_help >&2
+                "$help_func" >&2
                 return 1
                 ;;
         esac
@@ -707,23 +914,32 @@ do_review() {
 
     setup_run_dir || return 1
 
-    # Prepend SHOT_PREAMBLE so the prompt the reviewers see matches
-    # what per-shot `*shot review` sends (which goes through
-    # `aishot review make-prompt | run_shot` and gets the preamble via
-    # do_make_prompt). Without this, `aishot review` and per-shot
-    # review prompts diverge — the per-shot path tells the reviewer
-    # "read AGENTS.md first, don't run project tooling", `aishot
-    # review` does not.
-    local review_prompt
-    review_prompt=$(do_make_review_prompt) || return 1
+    # Prepend SHOT_PREAMBLE so the prompt the shots see matches what the
+    # per-shot `*shot git diff <mode>` path sends (it pipes
+    # `aishot git diff <mode> make-prompt` through do_make_prompt, which
+    # adds the preamble). Without this the two paths would diverge — the
+    # per-shot path tells the shot "read AGENTS.md first, don't run
+    # project tooling" and the aishot path would not.
+    local prompt
+    prompt=$(do_make_diff_prompt "$mode") || return 1
     {
         printf '%s' "$SHOT_PREAMBLE"
-        printf '%s' "$review_prompt"
+        printf '%s' "$prompt"
     } > "${RUN_DIR}/prompt.txt"
 
     _run_shots "${RUN_DIR}/prompt.txt" \
-        _review_synthesis_preamble review \
+        "$synthesis_func" "$label" \
         "${reviewer_list[@]}"
+}
+
+do_review() {
+    _do_diff_subcommand review _review_synthesis_preamble review \
+        show_review_help "$@"
+}
+
+do_describe() {
+    _do_diff_subcommand describe _describe_synthesis_preamble description \
+        show_describe_help "$@"
 }
 
 do_oneshot() {
@@ -802,16 +1018,74 @@ do_oneshot() {
         "${reviewer_list[@]}"
 }
 
-case "$1" in
-    review)
+# Run a `git diff <mode>` leaf: `make-prompt` builds and prints the prompt
+# (prepended with the shot preamble, matching what the shots receive);
+# anything else runs the shots via the given driver function.
+#   $1 = mode (review|describe)
+#   $2 = driver function (do_review|do_describe)
+#   $3.. = remaining args after the mode token
+_run_git_diff_mode() {
+    local mode=$1 driver=$2
+    shift 2
+    if [[ ${1:-} == make-prompt ]]
+    then
+        local content
+        content=$(do_make_diff_prompt "$mode") || return 1
+        printf '%s' "$content" | do_make_prompt
+        return
+    fi
+    "$driver" "$@"
+}
+
+# Global options may appear BEFORE the subcommand, not just after it:
+#   aishot --with=claude,codex git diff describe
+# must behave the same as
+#   aishot git diff describe --with=claude,codex
+# Collect any leading --with= here and re-inject it into whichever handler
+# runs. Without this, a flag-first invocation falls through to the bare-
+# prompt path and the subcommand (e.g. "git diff describe") is silently
+# parsed as the prompt text — exactly the mis-route this guards against.
+# The first non-option token selects the route.
+global_opts=()
+while (( 0 < $# ))
+do
+    case "$1" in
+        --with=*)
+            global_opts+=("$1")
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+case "${1:-}" in
+    git)
         shift
-        case "$1" in
-            make-prompt)
-                review_content=$(do_make_review_prompt) || exit 1
-                printf '%s' "$review_content" | do_make_prompt
+        case "${1:-}" in
+            diff)
+                shift
+                case "${1:-}" in
+                    review)
+                        shift
+                        _run_git_diff_mode review do_review "$@" "${global_opts[@]}"
+                        ;;
+                    describe)
+                        shift
+                        _run_git_diff_mode describe do_describe "$@" "${global_opts[@]}"
+                        ;;
+                    *)
+                        echo "Error: Unknown 'aishot git diff' subcommand '${1:-}'. Expected: review, describe." >&2
+                        show_help >&2
+                        exit 1
+                        ;;
+                esac
                 ;;
             *)
-                do_review "$@"
+                echo "Error: Unknown 'aishot git' subcommand '${1:-}'. Expected: diff." >&2
+                show_help >&2
+                exit 1
                 ;;
         esac
         ;;
@@ -830,7 +1104,8 @@ case "$1" in
         ;;
     *)
         # No subcommand or unknown first arg — treat all args as the
-        # prompt (do_oneshot will fall back to stdin if no args).
-        do_oneshot "$@"
+        # prompt (do_oneshot will fall back to stdin if no args). Any
+        # leading --with= is re-injected so do_oneshot's own parser sees it.
+        do_oneshot "${global_opts[@]}" "$@"
         ;;
 esac

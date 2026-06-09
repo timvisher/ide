@@ -4,7 +4,8 @@
 #
 # Usage: codexshot <prompt>
 #        echo "prompt" | codexshot
-#        codexshot review
+#        codexshot git diff review
+#        codexshot git diff describe
 
 set -o pipefail
 
@@ -41,30 +42,4 @@ run_shot() {
         jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
 }
 
-case "$1" in
-    review)
-        shift
-        if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]
-        then
-            aishot_show_review_help codexshot Codex
-            exit 0
-        fi
-        aishot review make-prompt | run_shot
-        ;;
-    --help|-h)
-        aishot_show_help codexshot Codex
-        exit 0
-        ;;
-    "")
-        # No arg — read from stdin if piped, otherwise show help
-        if [[ -t 0 ]]
-        then
-            aishot_show_help codexshot Codex >&2
-            exit 1
-        fi
-        aishot make-prompt | run_shot
-        ;;
-    *)
-        echo "$1" | aishot make-prompt | run_shot
-        ;;
-esac
+aishot_shot_main codexshot Codex run_shot "$@"
