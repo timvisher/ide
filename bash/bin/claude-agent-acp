@@ -15,4 +15,6 @@ export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-opus[1m]}"
 
 export TIMVISHER_CLAUDE=true
 
+timvisher_anthropic_connectivity_gate
+
 exec op run --no-masking -- node ~/git/timvisher-dd/claude-agent-acp/dev/dist/index.js "$@"
