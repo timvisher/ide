@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+
+# Wait for network connectivity to a host:port
+#
+# Usage: timvisher_wait_for_connectivity <host> [<port:443>] [<timeout:60>]
+#
+# Returns 0 on success, 1 on timeout
+
+# shellcheck disable=SC1090
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+usage() {
+  cat <<'EOF'
+Usage: timvisher_wait_for_connectivity [OPTIONS] <host> [<port>] [<connectivity-timeout>]
+
+Wait for network connectivity to a host:port with notifications.
+
+Options:
+  -G SECONDS                nc connection timeout in seconds (default: 1)
+                           Can be specified as -G1 or -G 1
+  --check-period SECONDS    Connection check period (default: 0.1)
+  --help                    Show this help message
+
+Arguments:
+  host                   Hostname or IP address to connect to (required)
+  port                   Port number (default: 443)
+  connectivity-timeout   Overall timeout in seconds (default: 60)
+
+Returns:
+  0 on successful connection
+  1 on timeout or error
+
+Examples:
+  timvisher_wait_for_connectivity example.com
+  timvisher_wait_for_connectivity example.com 8080
+  timvisher_wait_for_connectivity example.com 443 120
+  timvisher_wait_for_connectivity -G2 example.com 443 120
+  timvisher_wait_for_connectivity -G 2 --check-period 0.5 example.com 443 120
+EOF
+}
+
+# Parse options
+nc_timeout=1
+check_period=0.1
+
+while [[ -n $1 ]]
+do
+  case $1 in
+    --help)
+      usage
+      exit 0
+      ;;
+    -G*)
+      # Handle -G120 or -G 120 formats
+      if [[ $1 == -G ]]
+      then
+        # Separate format: -G 120
+        if [[ -z $2 ]]
+        then
+          usage
+          die 'Error: %s requires an argument' "$1"
+        fi
+        nc_timeout=$2
+        shift 2
+      else
+        # Attached format: -G120
+        nc_timeout=${1#-G}
+        shift
+      fi
+      ;;
+    --check-period)
+      if [[ -z $2 ]]
+      then
+        usage
+        die 'Error: %s requires an argument' "$1"
+      fi
+      check_period=$2
+      shift 2
+      ;;
+    -*)
+      usage
+      die 'Error: unknown option %s' "$1"
+      ;;
+    *)
+      # End of options, remaining are positional arguments
+      break
+      ;;
+  esac
+done
+
+host=$1
+port=${2:-443}
+connectivity_timeout=${3:-60}
+
+if [[ -z $host ]]
+then
+  usage
+  die 'Error: host argument is required'
+fi
+
+info 'Waiting for connectivity to "%s:%s"' "$host" "$port"
+
+notification_period=10
+last_notification=$(( notification_period * -1 ))
+SECONDS=0
+while true
+do
+  if nc -zvG"$nc_timeout" "$host" "$port" 2>/dev/null
+  then
+    info "Successfully connected to '%s:%s'" "$host" "$port"
+    exit 0
+  fi
+
+  if (( connectivity_timeout <= SECONDS ))
+  then
+    error "Failed to connect to '%s:%s' within %s seconds" "$host" "$port" "$connectivity_timeout"
+    exit 1
+  fi
+
+  if (( notification_period <= (SECONDS - last_notification) ))
+  then
+    osascript -e "display notification \"Waiting for connectivity to ${host}:${port}\" with title \"timvisher_wait_for_connectivity\"" 2>/dev/null
+    last_notification=$SECONDS
+  fi
+
+  sleep "$check_period"
+done
