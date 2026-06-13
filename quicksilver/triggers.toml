@@ -1,0 +1,94 @@
+# Quicksilver hotkey triggers (base) -- see quicksilver/split
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+h"
+web_search = "https://search.brave.com/search?q=***"
+
+[[trigger]]
+hotkey = "opt+cmd+f1"
+run = "ide:AppleScript/timvisher Terminal - make new window.applescript"
+
+[[trigger]]
+hotkey = "opt+cmd+f15"
+run = "ide:AppleScript/zoom set volume.applescript"
+
+[[trigger]]
+enabled = false
+command = "QSActivateTextModeCommand"
+note = "has set"
+
+[[trigger]]
+hotkey = "ctrl+opt+shift+cmd+pageup"
+run = "ide:AppleScript/background noise volume up.applescript"
+
+[[trigger]]
+hotkey = "ctrl+opt+shift+cmd+pagedown"
+run = "ide:AppleScript/background noise volume down.applescript"
+
+[[trigger]]
+hotkey = "cmd+return"
+enabled = false
+run = "/Users/tim.visher/Documents/create new iterm window.scpt"
+
+[[trigger]]
+hotkey = "ctrl+opt+shift+cmd+help"
+run = "ide:AppleScript/break - toggle.applescript"
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+help"
+run = "ide:AppleScript/background media - start.applescript"
+
+[[trigger]]
+hotkey = "ctrl+opt+shift+cmd+f15"
+run = "ide:AppleScript/toggle sound output.applescript"
+
+[[trigger]]
+hotkey = "cmd+f4"
+open = "/Applications/Fantastical.app"
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+home"
+run = "ide:AppleScript/background media - stop.applescript"
+
+[[trigger]]
+hotkey = "cmd+f2"
+run = "ide:AppleScript/google chrome - activate or make new window.applescript"
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+q"
+command = "QSRelaunchSelfCommand"
+note = "has set, applicationScope, applicationScopeType"
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+f15"
+run = "ide:AppleScript/background noise toggle mute.applescript"
+
+[[trigger]]
+hotkey = "cmd+f3"
+open = "/Applications/Slack.app"
+
+[[trigger]]
+hotkey = "opt+cmd+f2"
+action = "QSCLExecuteTextAction"
+note = "payload stored in directArchive (needs compiler support)"
+
+[[trigger]]
+hotkey = "cmd+escape"
+command = "QSGetGlobalSelectionCommand"
+note = "has set"
+
+[[trigger]]
+hotkey = "ctrl+opt+cmd+f1"
+run = "ide:AppleScript/ntmux3 current tab.applescript"
+
+[[trigger]]
+hotkey = "cmd+f1"
+run = "ide:AppleScript/timvisher Terminal - activate or make new window.applescript"
+
+[[trigger]]
+hotkey = "cmd+f12"
+run = "ide:AppleScript/screen share timvisher-macbook-air.applescript"
+
+[[trigger]]
+hotkey = "cmd+f5"
+open = "/Applications/zoom.us.app"

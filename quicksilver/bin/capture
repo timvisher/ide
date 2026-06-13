@@ -1,0 +1,214 @@
+#!/usr/bin/env python3.12
+"""Lower the live Quicksilver config into version-controllable TOML specs.
+
+Reads the live plists in ~/Library/Application Support/Quicksilver and writes
+TOML specs into this directory (alongside the script). Captures the four
+domains we version-control:
+
+  triggers.toml   hotkey triggers (keyCode/modifiers decoded to a hotkey string;
+                  directID paths normalised to repo-relative `repo:path` refs)
+  catalog.toml    custom catalog entries: web-search lists + file-system source
+                  *definitions* (paths only -- live scanned `children` dropped)
+  actions.toml    enabled/disabled actions (deviations from default) + ranking
+  plugins.toml    installed plugin bundles (id + version) from the PlugIns/ dir
+
+Live data is excluded by construction: Mnemonics, caches, scanned catalog
+`children`, window/UI state, and the plugin web-catalog cache are never read.
+
+This is the `capture` half of the capture/compile pair (bead ide-46d). The
+`install` half (TOML -> plist) is future work; the correctness spine is a
+round-trip test comparing parsed object trees for managed entries.
+"""
+
+import os
+import plistlib
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from qstoml import catalog_tail, emit, val
+
+QS = os.path.expanduser("~/Library/Application Support/Quicksilver")
+# specs live at the component top level (quicksilver/), scripts in quicksilver/bin/
+OUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# --- repo roots -> short refs --------------------------------------------------
+# The same logical script is referenced through several absolute roots depending
+# on which worktree wrote the trigger. Normalise to `repo:relative/path` so the
+# spec is portable and the compiler can resolve to the canonical install dir.
+REPO_ROOTS = [
+    ("ide", "/Users/tim.visher/git/timvisher/ide/main"),
+    ("ide", "/Users/tim.visher/git/ide"),
+    ("sysext", "/Users/tim.visher/.config/timvisher/ide"),
+    ("sysext", "/Users/tim.visher/git/DataDog/timvisher-ide-datadog-system-extensions/main"),
+]
+
+
+def repo_ref(path):
+    """Return (`repo:rel`, owner) for a repo-internal path, else (abs, owner)."""
+    for repo, root in REPO_ROOTS:
+        if path == root or path.startswith(root + "/"):
+            return f"{repo}:{path[len(root) + 1:]}", repo
+    return path, None  # external / machine-global (e.g. /Applications/*.app)
+
+
+# --- hotkey decoding -----------------------------------------------------------
+# Device-independent NSEventModifierFlags. function/numericpad/help/capslock are
+# implied by the key itself, so they are not emitted in the hotkey string.
+MOD_FLAGS = [("ctrl", 1 << 18), ("opt", 1 << 19), ("shift", 1 << 17), ("cmd", 1 << 20)]
+
+# US-ANSI virtual key codes. Function/navigation keys included; the rest are the
+# standard letter/number/punctuation layout.
+KEYCODES = {
+    0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x", 8: "c",
+    9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r", 16: "y", 17: "t",
+    18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9",
+    26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "o", 32: "u", 33: "[",
+    34: "i", 35: "p", 36: "return", 37: "l", 38: "j", 39: "'", 40: "k",
+    41: ";", 42: "\\", 43: ",", 44: "/", 45: "n", 46: "m", 47: ".", 48: "tab",
+    49: "space", 50: "`", 51: "delete", 53: "escape", 76: "enter",
+    96: "f5", 97: "f6", 98: "f7", 99: "f3", 100: "f8", 101: "f9", 103: "f11",
+    105: "f13", 106: "f16", 107: "f14", 109: "f10", 111: "f12", 113: "f15",
+    114: "help", 115: "home", 116: "pageup", 117: "fwddelete", 118: "f4",
+    119: "end", 120: "f2", 121: "pagedown", 122: "f1", 123: "left",
+    124: "right", 125: "down", 126: "up",
+}
+
+
+def hotkey(keycode, modifiers):
+    if keycode is None:
+        return None
+    parts = [name for name, bit in MOD_FLAGS if modifiers and (modifiers & bit)]
+    parts.append(KEYCODES.get(keycode, f"keycode-{keycode}"))
+    return "+".join(parts)
+
+
+def load(name):
+    with open(os.path.join(QS, name), "rb") as fh:
+        return plistlib.load(fh)
+
+
+def write(name, text):
+    with open(os.path.join(OUT, name), "w") as fh:
+        fh.write(text.rstrip() + "\n")
+    print(f"wrote {name}")
+
+
+# --- triggers ------------------------------------------------------------------
+def capture_triggers():
+    rows = []
+    for t in load("Triggers.plist")["triggers"]:
+        cmd = t.get("command")
+        f = {"hotkey": hotkey(t.get("keyCode"), t.get("modifiers"))}
+        if not t.get("enabled", True):
+            f["enabled"] = False
+
+        if isinstance(cmd, str):
+            # built-in QS command (relaunch, text mode, grab selection, ...)
+            f["command"] = cmd
+        elif isinstance(cmd, dict):
+            action = cmd.get("actionID")
+            direct = cmd.get("directID")
+            if action == "AppleScriptRunAction" and direct:
+                ref, owner = repo_ref(direct)
+                f["run"], f["owner"] = ref, owner
+            elif action == "FileOpenAction" and direct:
+                f["open"] = direct  # apps live in /Applications -> machine-global
+            elif action == "QSURLSearchForAction" and direct:
+                f["web_search"] = direct
+            else:
+                # archive-only payloads (e.g. shell text) or rarer actions:
+                # preserve the actionID so nothing is silently dropped.
+                f["action"] = action
+                if direct:
+                    f["direct"] = direct
+                if "directArchive" in cmd:
+                    f["note"] = "payload stored in directArchive (needs compiler support)"
+        # scoping / command-set extras are rare; flag for follow-up
+        extra = [k for k in ("set", "applicationScope", "applicationScopeType") if k in t]
+        if extra:
+            f["note"] = "has " + ", ".join(extra)
+        rows.append(("trigger", f))
+    return emit(rows, "# Quicksilver hotkey triggers -- captured by quicksilver/capture")
+
+
+# --- catalog -------------------------------------------------------------------
+def capture_catalog():
+    c = load("Catalog.plist")
+    rows = []
+    for e in c["customEntries"]:
+        src = e.get("source")
+        if src == "QSWebSearchSource":
+            queries = [{"name": q.get("name"), "url": q.get("url")}
+                       for q in e.get("queryList", [])]
+            f = {"web_search_list": e.get("name"), "queries": queries}
+            if not e.get("enabled", True):
+                f["enabled"] = False
+            rows.append(("web_search_list", f))
+        elif src == "QSFileSystemObjectSource":
+            s = e.get("settings", {})
+            f = {"name": e.get("name"), "path": s.get("path"),
+                 "parser": s.get("parser")}
+            if "folderDepth" in s:
+                f["folder_depth"] = s["folderDepth"]
+            if not e.get("enabled", True):
+                f["enabled"] = False
+            rows.append(("catalog_source", f))  # children (live scan) dropped
+
+    body = emit(rows, "# Quicksilver custom catalog entries -- captured by quicksilver/capture")
+    return body + catalog_tail(c.get("enabledPresets", {}), c.get("omittedItems", []))
+
+
+# --- actions -------------------------------------------------------------------
+def capture_actions():
+    a = load("Actions.plist")
+    act = a.get("actionActivation", {})
+    menu = a.get("actionMenuActivation", {})
+    disabled = sorted(k for k, v in act.items() if not v)
+    menu_disabled = sorted(k for k, v in menu.items() if not v)
+    ranking = list(a.get("actionRanking", []))
+
+    out = ["# Quicksilver actions: enablement + ordering -- captured by quicksilver/capture", ""]
+    out.append("# Actions disabled (all others default to enabled)")
+    out.append(f"disabled = {val(disabled)}")
+    out.append("")
+    if menu_disabled != disabled:
+        out.append(f"menu_disabled = {val(menu_disabled)}")
+        out.append("")
+    out.append("# Action precedence ordering (first = highest)")
+    out.append(f"ranking = {val(ranking)}")
+    out.append("")
+    return "\n".join(out)
+
+
+# --- plugins -------------------------------------------------------------------
+def capture_plugins():
+    plug_dir = os.path.join(QS, "PlugIns")
+    rows = []
+    for name in sorted(os.listdir(plug_dir)):
+        if not name.endswith(".qsplugin"):
+            continue
+        info = os.path.join(plug_dir, name, "Contents", "Info.plist")
+        try:
+            with open(info, "rb") as fh:
+                p = plistlib.load(fh)
+        except OSError:
+            continue
+        rows.append(("plugin", {
+            "id": p.get("CFBundleIdentifier"),
+            "name": p.get("CFBundleName"),
+            "version": p.get("CFBundleShortVersionString") or p.get("CFBundleVersion"),
+        }))
+    return emit(rows, "# Installed Quicksilver plugin bundles -- captured by quicksilver/capture")
+
+
+def main():
+    if not os.path.isdir(QS):
+        sys.exit(f"Quicksilver support dir not found: {QS}")
+    write("triggers.toml", capture_triggers())
+    write("catalog.toml", capture_catalog())
+    write("actions.toml", capture_actions())
+    write("plugins.toml", capture_plugins())
+
+
+if __name__ == "__main__":
+    main()

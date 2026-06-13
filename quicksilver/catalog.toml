@@ -1,0 +1,47 @@
+# Quicksilver custom catalog entries (base) -- see quicksilver/split
+
+[[web_search_list]]
+web_search_list = "Web Search List - Personal Shared"
+
+[[web_search_list.queries]]
+name = "Brave"
+url = "https://search.brave.com/search?q=***"
+
+[[web_search_list.queries]]
+name = "Google Contacts"
+url = "https://contacts.google.com/search/***"
+
+[[web_search_list.queries]]
+name = "duckduckgo"
+url = "https://duckduckgo.com/?q=***"
+
+[[web_search_list.queries]]
+name = "giphy"
+url = "https://giphy.com/search/***"
+
+[[web_search_list.queries]]
+name = "bookshop"
+url = "https://bookshop.org/books?keywords=***"
+
+[[web_search_list.queries]]
+name = "lucky"
+url = "https://duckduckgo.com/?q=!+***"
+
+[[catalog_source]]
+name = "Script Libraries"
+path = "~/Library/Script Libraries"
+parser = "QSDirectoryParser"
+
+[[catalog_source]]
+name = "AppleScript"
+path = "~/git/ide/AppleScript"
+parser = "QSDirectoryParser"
+folder_depth = 2
+
+[enabled_presets]
+QSPresetBashHistory = false
+QSPresetDesktop = false
+QSPresetDocWebSearches = false
+QSPresetDownloads = false
+QSPresetGoogleChromeBookmarks = false
+QSPresetGoogleChromeHistory = false

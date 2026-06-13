@@ -1,0 +1,156 @@
+#!/usr/bin/env python3.12
+"""Partition the combined captured specs into base (ide) + mixin (sysext) layers.
+
+Reads the combined TOML produced by `capture` in this directory and writes
+layered specs into the two repos:
+
+  base   -> <this dir>            (ide/quicksilver, overwrites the combined files)
+  mixin  -> ~/.config/timvisher/ide/quicksilver   (sysext, created if absent)
+
+The layer a row lands in is decided by `owner`/path/name, per the decisions on
+bead ide-m0r:
+
+  triggers        owner == "sysext" -> mixin, else base (the transitional
+                  `owner` field is dropped on output -- location is the layer)
+  web-search list name contains "Datadog" -> mixin, else base
+  catalog source  path under ~/Documents/datadog or ~/.config/timvisher/ide
+                  -> mixin, else base
+  omitted_items   per-entry, same datadog path marker
+  actions/plugins/enabled_presets -> base wholesale. A single-machine capture
+                  can't infer which action toggles are work-only, so sysext
+                  action deltas (sparse enable/disable) are authored later, not
+                  derived here.
+
+Last-wins on ID collision is the install-time rule; this splitter only routes.
+"""
+
+import os
+import sys
+import tomllib
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from qstoml import catalog_tail, emit
+
+# specs live at the component top level (quicksilver/), scripts in quicksilver/bin/
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MIXIN = os.path.expanduser("~/.config/timvisher/ide/quicksilver")
+
+
+# Catalog sources whose paths carry no datadog marker but are still work-box
+# only: Bookmarks/History track the work Chrome profile, Pictures is work-box
+# only. Routed to the mixin by name.
+SYSEXT_SOURCE_NAMES = {"Bookmarks", "History", "Pictures"}
+
+# Plugins only needed on the work box. The Google Chrome plugin backs the
+# work Chrome bookmark/history catalogs and isn't wanted on the personal box.
+SYSEXT_PLUGIN_IDS = {"se.stdin.quicksilver.GoogleChrome"}
+
+# Chrome bookmark catalogs we want on the work box, one custom entry per
+# profile. The QS UI only exposes a single (default-profile) preset, so these
+# are emitted as the `chrome_bookmarks` shorthand and the compiler expands each
+# into a QSGoogleChromeBookmarksParser source for the profile's Bookmarks file.
+# This is mixin policy: the desired set is declared here, not derived from one
+# machine's live catalog (so Lab is included even before it exists in QS).
+CHROME_BOOKMARK_PROFILES = [
+    ("Chrome Bookmarks - Commercial", "Profile 1"),
+    ("Chrome Bookmarks - Gov", "Profile 2"),
+    ("Chrome Bookmarks - Lab", "Profile 3"),
+]
+CHROME_BOOKMARKS_PARSER = "QSGoogleChromeBookmarksParser"
+
+
+def is_dd_path(path):
+    p = (path or "").lower()
+    return "datadog" in p or ".config/timvisher/ide" in p
+
+
+def source_is_mixin(s):
+    return s.get("name") in SYSEXT_SOURCE_NAMES or is_dd_path(s.get("path"))
+
+
+def read(name):
+    with open(os.path.join(BASE, name), "rb") as fh:
+        return tomllib.load(fh)
+
+
+def write(root, name, text):
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, name), "w") as fh:
+        fh.write(text.rstrip() + "\n")
+    print(f"wrote {os.path.relpath(os.path.join(root, name))}")
+
+
+# --- triggers ------------------------------------------------------------------
+def split_triggers():
+    base, mixin = [], []
+    for t in read("triggers.toml")["trigger"]:
+        dest = mixin if t.get("owner") == "sysext" else base
+        fields = {k: v for k, v in t.items() if k != "owner"}  # location is the layer
+        dest.append(("trigger", fields))
+    return base, mixin
+
+
+# --- catalog -------------------------------------------------------------------
+def catalog_text(web_lists, sources, chrome_bookmarks, presets, omitted, layer):
+    rows = [("web_search_list", w) for w in web_lists]
+    rows += [("catalog_source", s) for s in sources]
+    rows += [("chrome_bookmarks", {"name": n, "profile": p}) for n, p in chrome_bookmarks]
+    body = emit(rows, f"# Quicksilver custom catalog entries ({layer}) -- see quicksilver/split")
+    return body + catalog_tail(presets, omitted)
+
+
+def split_catalog():
+    c = read("catalog.toml")
+    base_w, mix_w = [], []
+    for w in c.get("web_search_list", []):
+        (mix_w if "Datadog" in (w.get("web_search_list") or "") else base_w).append(w)
+    base_s, mix_s = [], []
+    for s in c.get("catalog_source", []):
+        if s.get("parser") == CHROME_BOOKMARKS_PARSER:
+            continue  # superseded by the chrome_bookmarks shorthand (mixin)
+        (mix_s if source_is_mixin(s) else base_s).append(s)
+    base_o, mix_o = [], []
+    for item in c.get("catalog", {}).get("omitted_items", []):
+        (mix_o if is_dd_path(item) else base_o).append(item)
+    presets = c.get("enabled_presets", {})  # personal toggles -> base only
+    base = catalog_text(base_w, base_s, [], presets, base_o, "base")
+    mixin = catalog_text(mix_w, mix_s, CHROME_BOOKMARK_PROFILES, {}, mix_o, "mixin")
+    return base, mixin
+
+
+# --- plugins -------------------------------------------------------------------
+def split_plugins():
+    base, mixin = [], []
+    for p in read("plugins.toml")["plugin"]:
+        (mixin if p.get("id") in SYSEXT_PLUGIN_IDS else base).append(("plugin", p))
+    return base, mixin
+
+
+def main():
+    base_trig, mix_trig = split_triggers()
+    base_cat, mix_cat = split_catalog()
+    base_plug, mix_plug = split_plugins()
+
+    # base layer (ide) -- overwrites the combined capture with base-only rows
+    write(BASE, "triggers.toml",
+          emit(base_trig, "# Quicksilver hotkey triggers (base) -- see quicksilver/split"))
+    write(BASE, "catalog.toml", base_cat)
+    write(BASE, "plugins.toml",
+          emit(base_plug, "# Installed Quicksilver plugin bundles (base) -- see quicksilver/split"))
+    # actions.toml is wholesale base and already lives here -- capture wrote it
+    # into BASE, so there is nothing to move or rewrite.
+
+    # mixin layer (sysext)
+    write(MIXIN, "triggers.toml",
+          emit(mix_trig, "# Quicksilver hotkey triggers (sysext mixin) -- see quicksilver/split"))
+    write(MIXIN, "catalog.toml", mix_cat)
+    write(MIXIN, "plugins.toml",
+          emit(mix_plug, "# Installed Quicksilver plugin bundles (sysext mixin) -- see quicksilver/split"))
+
+    print(f"\nbase:  {len(base_trig)} triggers  {len(base_plug)} plugins")
+    print(f"mixin: {len(mix_trig)} triggers  {len(mix_plug)} plugins")
+    print("actions.toml stays in base (sysext action deltas authored later)")
+
+
+if __name__ == "__main__":
+    main()
