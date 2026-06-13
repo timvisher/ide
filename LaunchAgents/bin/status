@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+# Summarize launchd status (state + pid) for the LaunchAgents managed by
+# this tree. Exits non-zero if any named agent isn't loaded. For the full
+# dump, run: launchctl print gui/$(id -u)/<label>
+#
+# Usage:
+#   LaunchAgents/bin/status            # every agent in LaunchAgents/
+#   LaunchAgents/bin/status <label>... # only the named agent(s)
+
+# la_domain/la_dest come from common.bash (followed only with shellcheck -x)
+# shellcheck source=LaunchAgents/bin/common.bash disable=SC2154
+source "$(dirname "$0")/common.bash"
+
+rc=0
+while IFS= read -r label
+do
+  if out=$(launchctl print "${la_domain}/${label}" 2>/dev/null)
+  then
+    state=$(awk -F' = ' '/^\tstate = /{print $2; exit}' <<<"$out")
+    pid=$(awk -F' = ' '/^\tpid = /{print $2; exit}' <<<"$out")
+    printf '%s: %s (pid %s)\n' "$label" "${state:-unknown}" "${pid:-none}"
+  else
+    printf '%s: not loaded\n' "$label"
+    rc=1
+  fi
+done < <(la_labels "$@")
+
+exit "$rc"

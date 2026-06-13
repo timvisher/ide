@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+# Deploy and start the LaunchAgents managed by this tree: template the
+# __HOME__ token to $HOME (launchd does not expand ~ in path values),
+# copy each plist into ~/Library/LaunchAgents, and (re)load it via
+# launchctl bootout + bootstrap so the latest plist takes effect.
+# Re-running redeploys and restarts, which is how you pick up plist edits.
+#
+# Usage:
+#   LaunchAgents/bin/start                  # every plist in LaunchAgents/
+#   LaunchAgents/bin/start <plist|label>... # only the named one(s)
+#
+# TIMVISHER_LAUNCHAGENTS_DIR overrides the install destination (tests).
+
+# la_domain/la_dest/la_tree_dir come from common.bash (followed only with shellcheck -x)
+# shellcheck source=LaunchAgents/bin/common.bash disable=SC2154
+source "$(dirname "$0")/common.bash"
+
+mkdir -p "$la_dest" ||
+  die "couldn't create ‘%s’" "$la_dest"
+
+rc=0
+while IFS= read -r src
+do
+  if ! [[ -r $src ]]
+  then
+    warn "no readable plist at ‘%s’" "$src"
+    rc=1
+    continue
+  fi
+
+  label=$(basename "$src" .plist)
+  of="${la_dest}/$(basename "$src")"
+
+  info "deploying ‘%s’ to ‘%s’" "$src" "$of"
+  # $HOME contains no '|', so it is a safe sed delimiter here.
+  sed "s|__HOME__|${HOME}|g" "$src" > "$of" ||
+    {
+      warn "failed templating ‘%s’" "$src"
+      rc=1
+      continue
+    }
+
+  # bootout any running copy (ignore "not loaded") so bootstrap picks up
+  # the freshly written plist; RunAtLoad then starts it.
+  launchctl bootout "${la_domain}/${label}" 2>/dev/null
+  if launchctl bootstrap "$la_domain" "$of"
+  then
+    info "started ‘%s’" "$label"
+  else
+    warn "launchctl bootstrap failed for ‘%s’" "$label"
+    rc=1
+  fi
+done < <(la_source_plists "$@")
+
+exit "$rc"

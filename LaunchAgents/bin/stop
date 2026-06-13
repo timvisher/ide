@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+# Unload (bootout) the LaunchAgents managed by this tree. With KeepAlive
+# this is what actually stops a watcher -- a plain kill would just be
+# respawned.
+#
+# Usage:
+#   LaunchAgents/bin/stop            # every agent in LaunchAgents/
+#   LaunchAgents/bin/stop <label>... # only the named agent(s)
+
+# la_domain/la_dest come from common.bash (followed only with shellcheck -x)
+# shellcheck source=LaunchAgents/bin/common.bash disable=SC2154
+source "$(dirname "$0")/common.bash"
+
+while IFS= read -r label
+do
+  info "booting out ‘%s’" "$label"
+  # bootout exits non-zero when the label wasn't loaded; treat that as a
+  # no-op rather than a failure so `stop` is idempotent.
+  launchctl bootout "${la_domain}/${label}" 2>/dev/null ||
+    info "‘%s’ was not loaded" "$label"
+done < <(la_labels "$@")

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+# Send SIGHUP to the running agent(s). The watcher does not trap SIGHUP,
+# so it terminates and KeepAlive respawns it -- which re-globs the watch
+# list. Use this to pick up a newly added library without a full
+# stop/start. (Respawn waits out the unit's ThrottleInterval.)
+#
+# Usage:
+#   LaunchAgents/bin/hup            # every agent in LaunchAgents/
+#   LaunchAgents/bin/hup <label>... # only the named agent(s)
+
+# la_domain/la_dest come from common.bash (followed only with shellcheck -x)
+# shellcheck source=LaunchAgents/bin/common.bash disable=SC2154
+source "$(dirname "$0")/common.bash"
+
+rc=0
+while IFS= read -r label
+do
+  info "sending SIGHUP to ‘%s’" "$label"
+  launchctl kill SIGHUP "${la_domain}/${label}" ||
+    { warn "could not signal ‘%s’ (is it loaded?)" "$label"; rc=1; }
+done < <(la_labels "$@")
+
+exit "$rc"

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+# Tests for the LaunchAgents/bin lifecycle wrappers (start/stop/status/
+# hup). launchctl is mocked so the suite never touches the real launchd
+# domain: the mock records its argv to $MOCK_LOG and, for `print`,
+# reports loaded/not-loaded based on $MOCK_LOADED.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bindir="$(cd "$(dirname "$0")/../bin" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# A throwaway LaunchAgents/ tree: real wrappers + helper in bin/, plus a
+# sibling plist (with a __HOME__ token) so discovery and start's
+# templating have something to act on. dest is separate from the source
+# tree so start templates into a different file than it reads.
+tree="$tmpdir/LaunchAgents"
+dest="$tmpdir/dest"
+mkdir -p "$tree/bin"
+cp "$bindir/common.bash" "$bindir/start" "$bindir/stop" "$bindir/status" "$bindir/hup" "$tree/bin/"
+chmod +x "$tree/bin/start" "$tree/bin/stop" "$tree/bin/status" "$tree/bin/hup"
+label="com.test.agent"
+cat > "$tree/${label}.plist" <<'PLIST'
+<plist version="1.0"><dict>
+  <key>Program</key><string>__HOME__/bin/thing</string>
+</dict></plist>
+PLIST
+
+# Mock launchctl on PATH.
+mockbin="$tmpdir/mockbin"
+mkdir -p "$mockbin"
+cat > "$mockbin/launchctl" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$MOCK_LOG"
+if [[ ${1:-} == print ]]
+then
+  if [[ -n ${MOCK_LOADED:-} ]]
+  then
+    printf '\tstate = running\n\tpid = 4242\n'
+    exit 0
+  fi
+  exit 1
+fi
+exit 0
+MOCK
+chmod +x "$mockbin/launchctl"
+
+uid=$(id -u)
+domain="gui/${uid}"
+
+# Each invocation gets a fresh log.
+run() {  # run <MOCK_LOADED> <wrapper> [args...]
+  local loaded=$1; shift
+  local wrapper=$1; shift
+  : > "$tmpdir/mocklog"
+  MOCK_LOG="$tmpdir/mocklog" MOCK_LOADED="$loaded" \
+    PATH="$mockbin:$PATH" TIMVISHER_LAUNCHAGENTS_DIR="$dest" \
+    "$tree/bin/$wrapper" "$@" 2>"$tmpdir/err" || true
+  cat "$tmpdir/mocklog"
+}
+
+# --- stop issues bootout for the discovered label -----------------------
+run_test
+if run "" stop | grep -qx "bootout ${domain}/${label}"
+then pass "stop -> bootout <label> (no-arg discovery)"
+else fail "stop: $(run "" stop | tr '\n' ';')"
+fi
+
+# --- hup issues kill SIGHUP ---------------------------------------------
+run_test
+if run 1 hup | grep -qx "kill SIGHUP ${domain}/${label}"
+then pass "hup -> kill SIGHUP <label>"
+else fail "hup: $(run 1 hup | tr '\n' ';')"
+fi
+
+# --- start deploys (templates + copies) then bootout + bootstrap --------
+run_test
+log=$(run "" start)
+deployed="$dest/${label}.plist"
+if grep -qx "bootout ${domain}/${label}" <<<"$log" &&
+   grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log" &&
+   [[ -f $deployed ]] &&
+   grep -q "${HOME}/bin/thing" "$deployed" &&
+   ! grep -q "__HOME__" "$deployed"
+then pass "start -> template __HOME__, copy, bootout + bootstrap"
+else fail "start: log=[$(tr '\n' ';' <<<"$log")] deployed=[$(cat "$deployed" 2>&1)]"
+fi
+
+# --- start <label> resolves the source plist from the tree --------------
+run_test
+rm -f "$dest/${label}.plist"
+log=$(run "" start "$label")
+if [[ -f "$dest/${label}.plist" ]] &&
+   grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log"
+then pass "start <label> resolves source plist + deploys"
+else fail "start <label>: $(tr '\n' ';' <<<"$log")"
+fi
+
+# --- status summarizes state + pid when loaded --------------------------
+run_test
+out=$(MOCK_LOG="$tmpdir/mocklog" MOCK_LOADED=1 PATH="$mockbin:$PATH" \
+        TIMVISHER_LAUNCHAGENTS_DIR="$tree" "$tree/bin/status" 2>/dev/null)
+if [[ $out == "${label}: running (pid 4242)" ]]
+then pass "status (loaded) -> 'running (pid N)' summary"
+else fail "status loaded: [$out]"
+fi
+
+# --- status reports not-loaded and exits non-zero -----------------------
+run_test
+if out=$(MOCK_LOG="$tmpdir/mocklog" PATH="$mockbin:$PATH" \
+           TIMVISHER_LAUNCHAGENTS_DIR="$tree" "$tree/bin/status" 2>/dev/null)
+then
+  fail "status should exit non-zero when not loaded: [$out]"
+else
+  [[ $out == "${label}: not loaded" ]] &&
+    pass "status (unloaded) -> 'not loaded' + non-zero exit" ||
+    fail "status unloaded text: [$out]"
+fi
+
+# --- explicit label arg overrides plist discovery -----------------------
+run_test
+if run 1 hup other.label.here | grep -qx "kill SIGHUP ${domain}/other.label.here"
+then pass "explicit label arg overrides discovery"
+else fail "explicit arg: $(run 1 hup other.label.here | tr '\n' ';')"
+fi
+
+echo
+echo "ran $tests test(s), $failures failure(s)"
+(( failures == 0 ))

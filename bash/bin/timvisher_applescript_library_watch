@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+# Watch the AppleScript Script Libraries directories and recompile any
+# changed *.applescript file via timvisher_applescript_library_install.
+#
+# This closes the gap that caused the `cwp` "End of file" bug: editing a
+# library leaves the installed ~/Library/Script Libraries/*.scpt stale
+# until the installer is re-run by hand.
+#
+# `entr` reads a static file list at startup, so a newly *added* library
+# would be invisible to a long-running watcher. The `-d` flag tracks the
+# parent directories of the watched files and makes entr exit when a file
+# is added to (or removed from) one of them. On that exit this script
+# exits too, and the launchd unit's KeepAlive restarts it -- which
+# re-globs the file list. So "restart on a new file" is delegated to
+# launchd rather than a second watcher unit.
+#
+# Note: we pass entr the *files*, not the directories. entr -d already
+# watches their parent dirs for additions; passing a directory directly
+# would make entr substitute it for /_ and the installer would reject it
+# as non-.applescript. The one gap is adding the very first file to a
+# currently-empty watched dir -- that won't trigger until the next
+# restart -- which is an acceptable edge for a Script Libraries dir.
+#
+# Run directly for an interactive watch, or via the LaunchAgent
+# installed by timvisher_launchd_agent_install.
+
+# launchd hands us a minimal PATH; make sure ~/bin (the installer),
+# Homebrew (entr), and the system tools (osacompile) all resolve.
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+dirs=(
+  "${HOME}/git/ide/AppleScript/Script Libraries"
+  "${HOME}/.config/timvisher/ide/AppleScript/Script Libraries"
+)
+
+command -v entr >/dev/null ||
+  die "entr not found on PATH (%s)" "$PATH"
+command -v timvisher_applescript_library_install >/dev/null ||
+  die "timvisher_applescript_library_install not found on PATH (%s)" "$PATH"
+
+# Collect the *.applescript files across whichever watch dirs exist.
+files=()
+for d in "${dirs[@]}"
+do
+  [[ -d $d ]] ||
+    continue
+  shopt -s nullglob
+  for af in "$d"/*.applescript
+  do
+    files+=("$af")
+  done
+  shopt -u nullglob
+done
+
+if (( 0 == ${#files[@]} ))
+then
+  # Nothing to watch yet. Sleep before exiting so launchd's KeepAlive
+  # respawn is paced rather than a tight loop while the dirs are absent.
+  warn "no *.applescript files under any watch dir; sleeping before exit"
+  sleep 60
+  exit 0
+fi
+
+# entr does not fire on startup, so compile everything once up front.
+# This is what actually picks up a file that was added while we were
+# down -- the installer skips anything already up to date, so it's cheap.
+info "initial compile pass over %d file(s)" "${#files[@]}"
+timvisher_applescript_library_install "${files[@]}" ||
+  warn "initial compile pass reported failures (continuing to watch)"
+
+info "watching %d file(s) for changes" "${#files[@]}"
+
+# -d: track the parent dirs and exit when a file is added/removed there
+#     (launchd restarts us, re-globbing the list).
+# -n: non-interactive -- don't try to read the tty (there is none under
+#     launchd).
+# /_: replaced by the changed file, so we recompile just that one.
+printf '%s\n' "${files[@]}" |
+  entr -dn timvisher_applescript_library_install /_
