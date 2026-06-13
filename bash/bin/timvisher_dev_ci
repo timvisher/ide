@@ -1935,7 +1935,7 @@ cmd_run() {
     pull_xenodium_mains
 
     info "Phase 0: upgrading agent tooling"
-    if ! brew upgrade "${BREW_UPGRADE_PACKAGES[@]}" 2>&1
+    if ! brew upgrade --yes "${BREW_UPGRADE_PACKAGES[@]}" 2>&1
     then
         warn "brew upgrade had warnings (non-fatal, continuing)"
     fi
