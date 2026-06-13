@@ -764,7 +764,7 @@ case $cmd in
       then
         topic_input=$(< "$topic_file")
       else
-        list_topics
+        list_topics >&2
         exit 1
       fi
     else
@@ -789,7 +789,7 @@ case $cmd in
           --suggestion "timvisher_bd_topics set ${topic_input}"
       fi
       error "Topic '%s' does not contain .beads" "$topic_abs"
-      list_topics
+      list_topics >&2
       exit 1
     fi
 
@@ -883,7 +883,7 @@ case $cmd in
     if [[ ! -d $beads_dir ]]
     then
       error "Topic '%s' does not contain .beads" "$topic_abs"
-      list_topics
+      list_topics >&2
       exit 1
     fi
 
@@ -911,7 +911,7 @@ case $cmd in
     if [[ ! -d $beads_dir ]]
     then
       error "Topic '%s' does not contain .beads" "$topic_abs"
-      list_topics
+      list_topics >&2
       exit 1
     fi
 
@@ -973,7 +973,7 @@ case $cmd in
         if [[ ! -d $beads_dir ]]
         then
           error "Topic '%s' does not contain .beads" "$topic_abs"
-          list_topics
+          list_topics >&2
           exit 1
         fi
 
@@ -1008,7 +1008,7 @@ case $cmd in
     if [[ ! -d $beads_dir ]]
     then
       error "Topic '%s' does not contain .beads" "$topic_abs"
-      list_topics
+      list_topics >&2
       exit 1
     fi
 
