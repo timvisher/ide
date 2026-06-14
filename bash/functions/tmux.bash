@@ -213,6 +213,34 @@ function ntmux3__fail() {
     return 1
 }
 
+# Return 0 if $1 is a working tree backed by our managed trunk cache
+# (a worktree linked to a bare repo under
+# ~/.cache/timvisher_git_worktrees/repo_trunks), else 1.  This mirrors
+# timvisher_git's own classification (its repo_trunks_dir + the
+# git-common-dir prefix test in ensure_existing_repo): a managed worktree
+# is one whose git common dir lives under that cache root.  The check is
+# cheap — a couple of local `git rev-parse` calls, no network.
+function ntmux3__is_managed_worktree() {
+    local dir=$1
+    local common_dir trunks_dir
+
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+    # --git-common-dir may be relative to $dir; canonicalize from there.
+    common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P 2>/dev/null) || return 1
+
+    trunks_dir="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
+    # Canonicalize the cache root too, so a symlinked $HOME (or cache) on
+    # either side still produces an apples-to-apples prefix match.  If it
+    # doesn't exist yet, nothing can be managed, so the raw value is fine.
+    if [[ -d $trunks_dir ]]
+    then
+        trunks_dir=$(cd "$trunks_dir" && pwd -P 2>/dev/null) ||
+            trunks_dir="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
+    fi
+
+    [[ $common_dir == "${trunks_dir}/"* ]]
+}
+
 function ntmux3__handle_bd_topic() {
     local dir=$1
     local topic_rel=$2
@@ -597,6 +625,32 @@ function ntmux3() {
             ntmux3__open_nonrepo_dir "$clone_target"
             return
         fi
+    fi
+
+    # --- Existing non-managed working tree: just open a session ---
+    # If the target is already a checked-out git working tree that is NOT
+    # one of our managed worktrees, ntmux3 must do nothing to it but
+    # (re)attach a tmux session — it must not route through
+    # `timvisher_git clone`.  clone() -> ensure_worktree() calls
+    # cache_trunk() unconditionally, deriving the origin from
+    # github.com/<org>/<repo>; for a foreign repo that is already present
+    # locally (e.g. a clone of a non-GitHub remote) that fetch 404s and
+    # the clone dies.
+    #
+    # Managed worktrees (git common dir under the trunk cache) deliberately
+    # fall through to clone so they still get the full managed treatment
+    # (fetch, tracking, stacking).  Distinguishing the two is cheap: a
+    # couple of local `git rev-parse` calls, no network.
+    #
+    # Skipped when a stack base is requested (that path needs clone).  PR
+    # URLs are http:// so they never match the absolute-path test.
+    if [[ -z $stack_on_base ]] &&
+        [[ $clone_target == /* && -d $clone_target ]] &&
+        git -C "$clone_target" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+        ! ntmux3__is_managed_worktree "$clone_target"
+    then
+        ntmux3__open_nonrepo_dir "$clone_target"
+        return
     fi
 
     if [[ $clone_target == /* && -d $clone_target ]] &&

@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+
+# Tests for ntmux3's target-routing decision (bash/functions/tmux.bash).
+#
+# The key invariant (ide-awb): when the target is already a checked-out
+# git working tree that is NOT one of our managed worktrees, ntmux3 must
+# simply open/attach a tmux session for it and MUST NOT route through
+# `timvisher_git clone`.  Routing into clone would run ensure_worktree ->
+# cache_trunk, which derives the origin from github.com/<org>/<repo> and
+# fails for a foreign repo that is already present locally (and may not be
+# a GitHub repo at all).
+#
+# A *managed* worktree (its git common dir lives under the trunk cache,
+# ~/.cache/timvisher_git_worktrees/repo_trunks) must still go through
+# clone so it gets the normal managed handling.  So must org/repo
+# shorthands and stacked-worktree requests (arg2 is a branch-ish).
+#
+# Strategy: stub the two terminal routes — `ntmux` (session open) and
+# `timvisher_git` (clone) — AFTER sourcing tmux.bash (the source defines
+# its own `ntmux`, so stubbing earlier would be clobbered).  Each stub
+# appends a sentinel to a file because both routes execute in subshells,
+# so plain variable assignment would not propagate to the parent.
+
+# The stub functions below (tmux, ntmux, timvisher_git, info, …) are
+# invoked indirectly by the sourced ntmux3, which shellcheck can't see,
+# so it flags them as unreachable.  Suppress that file-wide.
+# shellcheck disable=SC2317
+
+set -uo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+tests_dir="$(cd "$(dirname "$0")" && pwd)"
+funcs_dir="$(cd "${tests_dir}/../functions" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# A fake $HOME so a worktree placed under ~/git/ is exercised too.  No
+# commits are made: `rev-parse --is-inside-work-tree` is already true for
+# a freshly `git init`-ed directory.
+fake_home="${tmpdir}/home"
+mkdir -p "${fake_home}" || { echo "FAIL: setup mkdir" >&2; exit 1; }
+
+stub_bin="${tmpdir}/bin"
+mkdir -p "${stub_bin}" || { echo "FAIL: setup mkdir bin" >&2; exit 1; }
+
+# Real git, bypassing any `git` wrapper on PATH.  The user's git wrapper
+# sources dotfiles from $HOME and aborts under the fake $HOME this test
+# uses, which would make every `git` call in ntmux3 fail and corrupt the
+# routing decision.  Symlinking the real binary into the (PATH-leading)
+# stub bin sidesteps the wrapper entirely and decouples the test from it.
+real_git=
+for g in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+  [[ -x $g ]] && { real_git=$g; break; }
+done
+[[ -n $real_git ]] || { echo "FAIL: no real git found" >&2; exit 1; }
+ln -s "${real_git}" "${stub_bin}/git" || { echo "FAIL: setup git symlink" >&2; exit 1; }
+
+# ntmux3 consults `timvisher_bd_topics resolve` for absolute targets to
+# decide whether the path is a beads-topic dir.  Stub it as a real
+# on-PATH executable that fails `resolve` — exactly what the production
+# tool does for a non-topic path — so the bd-topics branch is entered and
+# then correctly falls through to the working-tree/clone routing under
+# test.  (A function stub would not work: the code calls it via
+# `command`, which bypasses shell functions.)
+cat > "${stub_bin}/timvisher_bd_topics" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "${stub_bin}/timvisher_bd_topics" || { echo "FAIL: setup chmod" >&2; exit 1; }
+
+# A standalone clone outside ~/git, and a foreign repo that merely lives
+# under ~/git — neither is cache-backed, so both must just open.
+standalone_wt="${tmpdir}/standalone"
+foreign_under_git="${fake_home}/git/someorg/foreign/main"
+mkdir -p "${standalone_wt}" "${standalone_wt}/sub" "${foreign_under_git}" ||
+  { echo "FAIL: setup mkdir wt" >&2; exit 1; }
+"${real_git}" -C "${standalone_wt}" init -q || { echo "FAIL: git init standalone" >&2; exit 1; }
+"${real_git}" -C "${foreign_under_git}" init -q || { echo "FAIL: git init foreign" >&2; exit 1; }
+
+# A genuinely managed worktree: a linked worktree whose git common dir
+# lives under the trunk cache.  Built from a cache-backed repo so
+# `rev-parse --git-common-dir` resolves under repo_trunks_dir, which is
+# how ntmux3__is_managed_worktree classifies it.
+cache_repo="${fake_home}/.cache/timvisher_git_worktrees/repo_trunks/someorg/managed"
+managed_wt="${fake_home}/git/someorg/managed/main"
+mkdir -p "${cache_repo}" "$(dirname "${managed_wt}")" ||
+  { echo "FAIL: setup mkdir managed" >&2; exit 1; }
+"${real_git}" -C "${cache_repo}" init -q || { echo "FAIL: git init cache" >&2; exit 1; }
+"${real_git}" -C "${cache_repo}" -c user.email=t@t -c user.name=t \
+  commit -q --allow-empty -m init || { echo "FAIL: cache commit" >&2; exit 1; }
+"${real_git}" -C "${cache_repo}" worktree add --detach -q "${managed_wt}" HEAD ||
+  { echo "FAIL: worktree add" >&2; exit 1; }
+
+sentinel="${tmpdir}/route"
+
+# route <args...> — invoke ntmux3 with stubbed terminal routes and echo
+# the captured sentinel(s).  Runs in a subshell so the stubs and HOME
+# override never leak between cases.
+route() {
+  (
+    # ntmux3 is production code that assumes an interactive (non-nounset)
+    # shell — e.g. it reads $TMUX unguarded.  Disable nounset for the
+    # invocation so the test exercises real behavior, not a set -u abort.
+    set +u
+    export HOME="${fake_home}"
+    export PATH="${stub_bin}:${PATH}"
+    unset TMUX
+
+    # Stubs that survive sourcing (tmux.bash does not define these).
+    tmux() { case "${1:-}" in has-session) return 1 ;; *) return 0 ;; esac; }
+    pbpaste() { printf '' ; }
+
+    # shellcheck source=/dev/null
+    source "${funcs_dir}/tmux.bash"
+
+    # Stubs that MUST be defined after sourcing to win over tmux.bash's
+    # own definitions (notably `ntmux`).
+    info() { :; }
+    warn() { :; }
+    maybe_set_beads_topic() { :; }
+    ntmux3__session_name_from_path() { printf 'sess'; }
+    ntmux3__fail() { :; }
+    ntmux() { printf 'open\n' >>"${sentinel}"; }
+    timvisher_git() {
+      case "${1:-}" in
+        is-branch-ish) return 0 ;;
+        clone) printf 'clone\n' >>"${sentinel}"; printf '/nonexistent' ;;
+        *) return 0 ;;
+      esac
+    }
+
+    : >"${sentinel}"
+    ntmux3 "$@" >/dev/null 2>&1 || true
+    tr '\n' ',' <"${sentinel}"
+  )
+}
+
+# Asserts the route contains $want and does not contain the other route.
+assert_route() {
+  local got=$1 want=$2 other=$3 desc=$4
+  run_test
+  if [[ $got == *"${want}"* && $got != *"${other}"* ]]
+  then
+    pass "${desc} (route=${got:-<none>})"
+  else
+    fail "${desc}: want '${want}' (not '${other}'), got '${got:-<none>}'"
+  fi
+}
+
+# Standalone clone (outside ~/git) -> open, never clone.
+assert_route "$(route "${standalone_wt}")" open clone \
+  "standalone working tree opens a session"
+
+# Foreign repo that merely lives under ~/git/ -> still open (must not be
+# treated as an org/repo shorthand to (re)clone).
+assert_route "$(route "${foreign_under_git}")" open clone \
+  "foreign repo under ~/git/ opens a session"
+
+# A subdirectory of a working tree is still inside the tree -> open.
+assert_route "$(route "${standalone_wt}/sub")" open clone \
+  "subdirectory of a working tree opens a session"
+
+# A managed worktree (common dir under the trunk cache) -> clone, so it
+# still gets the normal managed handling.
+assert_route "$(route "${managed_wt}")" clone open \
+  "managed worktree routes to clone"
+
+# Bare org/repo shorthand (relative, not an existing dir) -> clone.
+assert_route "$(route someorg/somerepo)" clone open \
+  "org/repo shorthand routes to clone"
+
+# Existing working tree + branch-ish arg2 (stacked worktree) -> clone.
+assert_route "$(route "${standalone_wt}" some-branch)" clone open \
+  "stacked-worktree request routes to clone"
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+[[ $failures -eq 0 ]]
