@@ -411,6 +411,43 @@ function ntmux3__session_name_from_path() {
     return 1
 }
 
+# Resolve the tmux session name for a path using the full mechanism: try
+# ntmux3__session_name_from_path first (file/dir aliases, the ~/git/
+# prefix, and $HOME-relative names), then fall back to a canonicalized
+# ~/git/-relative name, then basename.  Both the managed-worktree path
+# and the existing-repo/open path resolve names through here so they stay
+# identical.
+#   $1 — path to look up (may be a file, so file-level aliases can win)
+#   $2 — directory to fall back on for basename (defaults to $1)
+function ntmux3__resolve_session_name() {
+    local lookup=$1
+    local fallback_dir=${2:-$1}
+
+    local name
+    name=$(ntmux3__session_name_from_path "$lookup") || true
+    if [[ -n $name ]]
+    then
+        printf '%s' "$name"
+        return 0
+    fi
+
+    local fallback_real
+    fallback_real=$(cd "$fallback_dir" && pwd -P) || true
+    if [[ -n $fallback_real ]]
+    then
+        local home_real
+        home_real=$(cd "$HOME" && pwd -P) || true
+        name=${fallback_real#${home_real}/git/}
+        if [[ $name == "$fallback_real" ]]
+        then
+            name=$(basename "$fallback_real")
+        fi
+    else
+        name=$(basename "$fallback_dir")
+    fi
+    printf '%s' "$name"
+}
+
 function ntmux3() {
     local detached=
     if [[ $1 == -d ]]
@@ -558,14 +595,12 @@ function ntmux3() {
     ntmux3__open_nonrepo_dir() {
         local dir=$1
         local session_name
-        # Use the original file path when the user passed one so that
-        # file-level aliases in ntmux3_path_aliases get a chance to win
-        # over the parent-directory match.
-        session_name=$(ntmux3__session_name_from_path "${target_file:-$dir}") || true
-        if [[ -z $session_name ]]
-        then
-            session_name=$(basename "$dir")
-        fi
+        # Resolve via the shared resolver so an existing repo is named by
+        # exactly the same mechanisms as a managed worktree.  Look up the
+        # original file path when the user passed one so that file-level
+        # aliases in ntmux3_path_aliases win over the parent-directory
+        # match; fall back on the directory for basename.
+        session_name=$(ntmux3__resolve_session_name "${target_file:-$dir}" "$dir")
         local sanitized_session_name=${session_name//./_}
 
         info 'local path: sanitized_session_name=%s base_dir=%s' \
@@ -710,27 +745,9 @@ function ntmux3() {
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
     fi
 
-    # Derive session name from the returned directory
+    # Derive session name from the returned directory (shared resolver).
     local session_name
-    session_name=$(ntmux3__session_name_from_path "$branch_dir") || true
-    if [[ -z $session_name ]]
-    then
-        # Fallback: ~/git/-relative path or basename
-        local branch_dir_real
-        branch_dir_real=$(cd "$branch_dir" && pwd -P) || true
-        if [[ -n $branch_dir_real ]]
-        then
-            local home_real
-            home_real=$(cd "$HOME" && pwd -P) || true
-            session_name=${branch_dir_real#${home_real}/git/}
-            if [[ $session_name == "$branch_dir_real" ]]
-            then
-                session_name=$(basename "$branch_dir_real")
-            fi
-        else
-            session_name=$(basename "$branch_dir")
-        fi
-    fi
+    session_name=$(ntmux3__resolve_session_name "$branch_dir")
 
     (
         {

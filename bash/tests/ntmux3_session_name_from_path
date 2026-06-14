@@ -160,6 +160,45 @@ else
   fail "nonexistent path: rc=${rc} output='${output}'"
 fi
 
+# --- ntmux3__resolve_session_name (shared resolver) ---
+#
+# The resolver is what both the managed-worktree path and the
+# existing-repo/open path call, so an existing foreign repo is named by
+# exactly the same rules as a managed worktree.  It delegates to
+# ntmux3__session_name_from_path and only adds a basename fallback when
+# that returns nothing (paths outside $HOME).
+run_resolve() {
+  (
+    HOME=$fake_home
+    XDG_CONFIG_HOME="${fake_home}/.config"
+    shopt -s extglob
+    source "${funcs_dir}/tmux.bash"
+    ntmux3__resolve_session_name "$@"
+  )
+}
+
+# Delegates to the ~/git/ prefix rule — identical to the managed path.
+run_test
+assert_eq "resolver: ~/git/ path uses session_name_from_path" \
+  "timvisher/ide/main" \
+  "$(run_resolve "${fake_home}/git/timvisher/ide/main")"
+
+# Delegates to the \$HOME-relative rule for an unaliased path under \$HOME.
+run_test
+assert_eq "resolver: \$HOME-relative path delegates" \
+  "random/elsewhere" \
+  "$(run_resolve "${fake_home}/random/elsewhere")"
+
+# A path entirely outside \$HOME has no session_name_from_path match, so
+# the resolver falls back to basename (this is the behavior the open path
+# previously had inline; now shared with the managed path).  The dir lives
+# under tmpdir but outside fake_home, so it is genuinely outside \$HOME.
+run_test
+mkdir -p "${tmpdir}/outside/elsewhere"
+assert_eq "resolver: out-of-\$HOME path falls back to basename" \
+  "elsewhere" \
+  "$(run_resolve "${tmpdir}/outside/elsewhere")"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
