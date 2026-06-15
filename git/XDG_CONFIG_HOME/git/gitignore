@@ -27,6 +27,8 @@ applied.*.*
 .DS_Store
 .claude
 .claude.json
+.codex
+.agents
 CLAUDE.md
 CLAUDE.local.md
 AGENTS.md
