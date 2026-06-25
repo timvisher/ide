@@ -24,7 +24,7 @@ usage() {
                                  Update an existing comment from <file>
     timvisher_gh comment reply <comment-url> <file>
                                  Reply to a review comment from <file>
-    timvisher_gh comment delete <file>
+    timvisher_gh comment delete [--force] <file>
                                  Delete the comment tracked by <file>.url
 
   pr subcommand:
@@ -86,7 +86,8 @@ usage() {
 
   comment delete subcommand:
     - Deletes the PR comment tracked by <file>.url
-    - Prompts for confirmation before deleting
+    - Prompts for confirmation before deleting, unless --force is given
+      (intended for batch cleanup of many tracked comments)
     - Removes <file>.url on successful deletion
 
   info subcommand:
@@ -611,6 +612,19 @@ gh_comment_reply() {
 }
 
 gh_comment_delete() {
+  local force=0
+
+  # Leading flags. --force skips the confirmation prompt (batch cleanup).
+  while (( 0 < $# ))
+  do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      --)         shift; break ;;
+      -*)         die "comment delete: unknown flag '%s'" "$1" ;;
+      *)          break ;;
+    esac
+  done
+
   local comment_file=${1-}
 
   [[ -n $comment_file ]] ||
@@ -645,11 +659,14 @@ gh_comment_delete() {
     return
   fi
 
-  read -rp "Really delete '${comment_path}'? y/N " resp
-  if [[ $resp != y ]]
+  if (( ! force ))
   then
-    info "Aborted at user's request."
-    return
+    read -rp "Really delete '${comment_path}'? y/N " resp
+    if [[ $resp != y ]]
+    then
+      info "Aborted at user's request."
+      return
+    fi
   fi
 
   local rj
