@@ -129,10 +129,48 @@ else
   target_remote='origin'
 fi
 
+# Derive OWNER/REPO from a remote URL, handling https, scp-style
+# (git@host:owner/repo), and ssh:// forms. Host-agnostic on purpose, so a
+# GitHub Enterprise host alias (a host other than github.com, used to route
+# an alternate SSH key) resolves to owner/repo just like github.com does.
+_timvisher_gh__repo_spec_from_url() {
+  local url=${1%.git}
+  case "$url" in
+    *://*) url=${url#*://}; url=${url#*/} ;;   # scheme://host/owner/repo
+    *:*)   url=${url#*:} ;;                     # user@host:owner/repo
+  esac
+  printf '%s\n' "$url"
+}
+
 # Get the OWNER/REPO spec from the remote's URL.
-repo_spec=$(git remote get-url "$target_remote" | sed -E 's#^https?://github.com/|git@github.com:##; s#\.git$##')
+repo_spec=$(_timvisher_gh__repo_spec_from_url "$(git remote get-url "$target_remote")")
 [[ -n $repo_spec ]] ||
   die "Could not determine repository spec for remote '%s'" "$target_remote"
+
+# Select the gh account for this repo's org so multi-account setups (e.g. a
+# personal account vs an enterprise-managed account) authenticate as the
+# identity that can actually see the repo — without mutating the globally-
+# active account (`gh auth switch`), which races across concurrent shells.
+# Config: timvisher_gh.config/orgs/<owner>/account holds a gh username; when
+# present, pin GH_TOKEN to that account's token for every gh call below.
+# Absent → the active account is used (the unchanged default).
+_timvisher_gh__owner=${repo_spec%%/*}
+_timvisher_gh__account_file="${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/${_timvisher_gh__owner}/account"
+if [[ -r $_timvisher_gh__account_file ]]
+then
+  _timvisher_gh__account=$(< "$_timvisher_gh__account_file")
+  _timvisher_gh__account=${_timvisher_gh__account//[[:space:]]/}
+  if [[ -n $_timvisher_gh__account ]]
+  then
+    GH_TOKEN=$(command gh auth token --hostname github.com --user "$_timvisher_gh__account" 2>/dev/null) ||
+      die "No gh token for account '%s' (org '%s'). Authenticate it: gh auth login (as %s)." \
+        "$_timvisher_gh__account" "$_timvisher_gh__owner" "$_timvisher_gh__account"
+    [[ -n $GH_TOKEN ]] ||
+      die "Empty gh token for account '%s' (org '%s'); is it authenticated?" \
+        "$_timvisher_gh__account" "$_timvisher_gh__owner"
+    export GH_TOKEN
+  fi
+fi
 
 # --- subcommand: pr ---
 

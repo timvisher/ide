@@ -890,6 +890,33 @@ else
   fail "comment delete removes .url file after deletion: .url file still exists"
 fi
 
+# --- repo_spec parsing (host-alias aware) ---
+# Pull the pure parser out of the script (it runs top-level setup on load and
+# isn't cleanly sourceable) and exercise every remote-URL form, including the
+# ddoghq.github.com host alias used to route the EMU key post-migration.
+eval "$(sed -n '/^_timvisher_gh__repo_spec_from_url()/,/^}/p' "$script")"
+
+check_spec() {
+  local url=$1 want=$2 got
+  run_test
+  got=$(_timvisher_gh__repo_spec_from_url "$url")
+  if [[ $got == "$want" ]]
+  then
+    pass "repo_spec '$url' -> '$want'"
+  else
+    fail "repo_spec '$url': want '$want', got '$got'"
+  fi
+}
+
+check_spec "https://github.com/DataDog/dd-source.git"         "DataDog/dd-source"
+check_spec "https://github.com/DataDog/dd-source"             "DataDog/dd-source"
+check_spec "git@github.com:DataDog/dd-source.git"             "DataDog/dd-source"
+check_spec "ssh://git@github.com/DataDog/dd-source.git"       "DataDog/dd-source"
+check_spec "git@ddoghq.github.com:ddoghq/dd-source.git"       "ddoghq/dd-source"
+check_spec "git@ddoghq.github.com:ddoghq/dd-source"           "ddoghq/dd-source"
+check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
+check_spec "https://github.com/ddoghq/dd-source"              "ddoghq/dd-source"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
