@@ -221,3 +221,8 @@ fi
 # Local Variables:
 # sh-basic-offset: 2
 # End:
+
+. "$HOME/.config/dogbrew/env"
+
+# Trajectory - AI coding agent observability
+export PATH="/Users/tim.visher/.trajectory/bin:$PATH"
