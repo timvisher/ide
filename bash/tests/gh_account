@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+
+# Tests for ~/.functions/gh.bash (shared gh account-selection helpers, used by
+# the gh PATH shim and timvisher_gh).
+
+failures=0
+tests=0
+
+fail() { echo "FAIL: $1" >&2; ((failures++)) || true; }
+pass() { echo "PASS: $1"; }
+run_test() { ((tests++)) || true; }
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" ||
+  { echo "cannot resolve funcs_dir" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "${funcs_dir}/gh.bash" ||
+  { echo "cannot source gh.bash" >&2; exit 1; }
+
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmpdir"' EXIT
+
+# --- repo_spec_from_url: host-agnostic parsing ---
+check_spec() {
+  local url=$1 want=$2 got
+  run_test
+  got=$(timvisher_gh__repo_spec_from_url "$url")
+  if [[ $got == "$want" ]]
+  then pass "repo_spec '$url' -> '$want'"
+  else fail "repo_spec '$url': want '$want', got '$got'"
+  fi
+}
+check_spec "https://github.com/DataDog/dd-source.git"         "DataDog/dd-source"
+check_spec "https://github.com/DataDog/dd-source"             "DataDog/dd-source"
+check_spec "git@github.com:DataDog/dd-source.git"             "DataDog/dd-source"
+check_spec "ssh://git@github.com/DataDog/dd-source.git"       "DataDog/dd-source"
+check_spec "git@ddoghq.github.com:ddoghq/dd-source.git"       "ddoghq/dd-source"
+check_spec "git@ddoghq.github.com:ddoghq/dd-source"           "ddoghq/dd-source"
+check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
+
+# --- owner_from_args: --repo/-R, = forms, api paths, miss ---
+check_owner() {
+  local want=$1; shift
+  local got rc
+  run_test
+  got=$(timvisher_gh__owner_from_args "$@") && rc=0 || rc=$?
+  if [[ ${want} == "-" ]]
+  then
+    if (( rc != 0 ))
+    then pass "owner_from_args [$*] -> (none)"
+    else fail "owner_from_args [$*]: expected none, got '$got'"
+    fi
+  else
+    if [[ $got == "$want" ]]
+    then pass "owner_from_args [$*] -> '$want'"
+    else fail "owner_from_args [$*]: want '$want', got '$got' (rc=$rc)"
+    fi
+  fi
+}
+check_owner "ddoghq"  pr view 691 --repo ddoghq/dd-source --json title
+check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
+check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
+check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
+check_owner "DataDog" pr view 1 --repo DataDog/appgate
+check_owner "-"       pr view https://github.com/ddoghq/dd-source/pull/691
+check_owner "-"       repo list
+
+# --- account_for_owner: config-driven via TIMVISHER_GH_CONFIG_DIR ---
+cfg="$tmpdir/cfg"
+mkdir -p "$cfg/orgs/ddoghq"
+printf 'tim-visher_ddog\n' > "$cfg/orgs/ddoghq/account"
+export TIMVISHER_GH_CONFIG_DIR="$cfg"
+
+run_test
+if [[ $(timvisher_gh__account_for_owner ddoghq) == "tim-visher_ddog" ]]
+then pass "account_for_owner: mapped org -> account"
+else fail "account_for_owner: mapped org should resolve"
+fi
+
+run_test
+if timvisher_gh__account_for_owner DataDog 2>/dev/null
+then fail "account_for_owner: unmapped org should return 1"
+else pass "account_for_owner: unmapped org returns 1"
+fi
+
+# --- pin_token_for_owner: mock gh mints token; unmapped is a no-op ---
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/gh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == auth && $2 == token ]]; then echo "gho_faketoken_for_emu"; exit 0; fi
+exit 1
+MOCK
+chmod +x "$tmpdir/mockbin/gh"
+
+run_test
+if ( unset GH_TOKEN
+     timvisher_gh__pin_token_for_owner ddoghq "$tmpdir/mockbin/gh" || exit 9
+     [[ ${GH_TOKEN:-} == "gho_faketoken_for_emu" ]] || exit 8 )
+then pass "pin_token_for_owner: mapped org exports GH_TOKEN"
+else fail "pin_token_for_owner: mapped org should export GH_TOKEN"
+fi
+
+run_test
+if ( unset GH_TOKEN
+     timvisher_gh__pin_token_for_owner DataDog "$tmpdir/mockbin/gh" || exit 9
+     [[ -z ${GH_TOKEN:-} ]] || exit 8 )
+then pass "pin_token_for_owner: unmapped org is a no-op (no GH_TOKEN)"
+else fail "pin_token_for_owner: unmapped org should not set GH_TOKEN"
+fi
+
+run_test
+if ( unset GH_TOKEN
+     if timvisher_gh__pin_token_for_owner ddoghq /bin/false; then exit 8; fi
+     [[ -z ${GH_TOKEN:-} ]] || exit 7 )
+then pass "pin_token_for_owner: token failure returns non-zero, no GH_TOKEN"
+else fail "pin_token_for_owner: token failure should return non-zero without setting GH_TOKEN"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))
