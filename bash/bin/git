@@ -382,28 +382,48 @@ _timvisher_git__ensure_branch_refspec() {
 
 # Scrub refspecs that would break the next fetch.
 _timvisher_git__scrub_dead_refspecs() {
-  # Prune remote-tracking refs whose remote branch was deleted.  Inject
-  # a temporary wildcard so `git remote prune` sees everything.
+  # Remove explicit (non-wildcard) refspecs whose branch no longer exists on
+  # the remote.  Such refspecs make `git fetch` fail hard ("couldn't find
+  # remote ref ..."), unlike wildcards, which silently match whatever exists.
+  # This recurs constantly: org migrations, deleted branches, and local-only
+  # worktree branches all leave explicit refspecs pointing at absent refs.
+  #
+  # The remote is the authoritative source of truth via a single `ls-remote`.
+  # We deliberately do NOT infer deadness from local tracking refs + `git
+  # remote prune` (the previous approach): prune silently no-ops when the
+  # remote is unreachable or auth is failing (e.g. mid-migration), leaving
+  # dead refspecs in place to wedge the very next fetch.
+  #
+  # Best-effort tracking-ref hygiene first (harmless if it no-ops): drop
+  # remote-tracking refs whose branch was deleted but is still wildcard-
+  # matched, so they don't linger.
   "$real_git" -c "remote.${_timvisher_git__remote}.fetch=+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*" \
     remote prune "${_timvisher_git__remote}" 2>/dev/null || true
 
-  local fetch_spec
+  # GUARD: if ls-remote fails (unreachable / auth) or returns nothing, remove
+  # nothing.  A transient must never be mistaken for "every branch deleted"
+  # and nuke the whole refspec set.
+  local remote_heads
+  remote_heads=$("$real_git" ls-remote --heads "${_timvisher_git__remote}" 2>/dev/null) || return 0
+  [[ -n "$remote_heads" ]] || return 0
+
+  # Branch refs present on the remote: the "refs/heads/<name>" column.
+  local present
+  present=$(awk '{print $2}' <<<"$remote_heads")
+
+  local fetch_spec src
   while IFS= read -r fetch_spec
   do
-    if [[ "$fetch_spec" == +* ]]
+    [[ "$fetch_spec" == +* ]] || continue
+    src="${fetch_spec#+}"
+    src="${src%%:*}"                       # left side: refs/heads/<branch>
+    if [[ "$src" != refs/heads/* ]]; then continue; fi
+    if [[ "$src" == *\** ]]; then continue; fi   # never touch wildcards
+    if ! grep -Fxq -- "$src" <<<"$present"
     then
-      local local_part="${fetch_spec%:*}"
-      local_part="${local_part#+}"
-      local upstream_part="${fetch_spec#*:}"
-      if [[ "$local_part" == *\** ]] || [[ "$upstream_part" == *\** ]]
-      then
-        continue
-      fi
-      if [[ -n "$upstream_part" ]] &&
-         ! "$real_git" rev-parse --verify "$upstream_part" >/dev/null 2>&1
-      then
-        _timvisher_git__remove_refspec "$fetch_spec"
-      fi
+      _timvisher_git__remove_refspec "$fetch_spec"
+      info "selective-fetch: dropped dead refspec '%s' (absent on %s)" \
+        "$src" "${_timvisher_git__remote}"
     fi
   done < <("$real_git" config --get-all "remote.${_timvisher_git__remote}.fetch" 2>/dev/null)
 }

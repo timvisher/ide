@@ -884,6 +884,88 @@ else
   fail "TIMVISHER_NTMUX=1 bypass: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# Selective-fetch: scrub_dead_refspecs drops dead explicit refspecs
+# ---------------------------------------------------------------------------
+
+# Build a selective-fetch repo. The origin URL parses to testorg/testrepo (so
+# selective fetch enables and the marker is found) but resolves to a local
+# bare remote via insteadOf. HOME is sandboxed so the enable marker is read
+# from our tree, not the real ~/.config.
+sf_setup() {
+  local name=$1
+  sf_home="$tmpdir/sf-$name/home"
+  sf_remote="$tmpdir/sf-$name/remote.git"
+  sf_work="$tmpdir/sf-$name/work"
+  mkdir -p "$sf_home" || true
+
+  # The wrapper sources ~/.functions/*.bash; with HOME sandboxed, point it at
+  # the real ones so the script can load.
+  ln -sf "$HOME/.functions" "$sf_home/.functions" || true
+
+  "$real_git" init --bare "$sf_remote" >/dev/null 2>&1 || true
+  "$real_git" clone "$sf_remote" "$sf_work" >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" commit --allow-empty -m init >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/keepme >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" fetch origin >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" remote set-head origin main >/dev/null 2>&1 || true
+
+  # Parse-able remote URL, rewritten to the local bare repo.
+  "$real_git" -C "$sf_work" remote set-url origin "git@github.com:testorg/testrepo.git" || true
+  "$real_git" -C "$sf_work" config --add "url.${sf_remote}.insteadOf" "git@github.com:testorg/testrepo.git" || true
+
+  # selective-fetch marker under the HOME-relative config dir.
+  mkdir -p "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo" || true
+  touch "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo/enable-selective-fetch" || true
+}
+
+# Run the wrapper's fetch with real git and a sandboxed HOME.
+sf_fetch() {
+  ( cd "$sf_work" && \
+    TIMVISHER_AGENT= CLAUDECODE= TIMVISHER_CODEX= HOME="$sf_home" \
+    PATH="$test_path_real_git" \
+    bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch" 2>&1 ) || true
+}
+
+# Test: drops a dead explicit refspec, keeps live explicit + wildcard, and the
+# fetch succeeds (no "couldn't find remote ref").
+run_test
+sf_setup scrub
+"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/keepme:refs/remotes/origin/keepme" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch:refs/remotes/origin/deadbranch" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/team/*:refs/remotes/origin/team/*" || true
+sf_out=$(sf_fetch)
+sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
+if [[ $sf_specs != *deadbranch* ]] \
+   && [[ $sf_specs == *"refs/heads/keepme:"* ]] \
+   && [[ $sf_specs == *"refs/heads/main:"* ]] \
+   && [[ $sf_specs == *"refs/heads/team/*:"* ]] \
+   && [[ $sf_out != *"couldn't find remote ref"* ]]
+then
+  pass "scrub: drops dead explicit refspec, keeps live + wildcard, fetch succeeds"
+else
+  fail "scrub: specs='${sf_specs}' out='${sf_out}'"
+fi
+
+# Test: an unreachable remote preserves all refspecs (no false-positive removal).
+run_test
+sf_setup guard
+"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch2:refs/remotes/origin/deadbranch2" || true
+# Break the remote: repoint insteadOf at a nonexistent bare repo so ls-remote fails.
+"$real_git" -C "$sf_work" config --unset-all "url.${sf_remote}.insteadOf" 2>/dev/null || true
+"$real_git" -C "$sf_work" config --add "url.${tmpdir}/sf-guard/missing.git.insteadOf" "git@github.com:testorg/testrepo.git" || true
+sf_out=$(sf_fetch)
+sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
+if [[ $sf_specs == *deadbranch2* ]]
+then
+  pass "scrub: unreachable remote preserves refspecs (no false-positive removal)"
+else
+  fail "scrub guard: deadbranch2 should survive an unreachable remote: specs='${sf_specs}' out='${sf_out}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
