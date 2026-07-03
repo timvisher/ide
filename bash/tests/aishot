@@ -499,6 +499,29 @@ else
 fi
 rm -rf "$repo" "$mockbin" "$state"
 
+# ---------------------------------------------------------------------------
+# Case 21: begin embeds a diff larger than ARG_MAX. Passing the diff to jq
+# as --arg fails with E2BIG ("Argument list too long"); --rawfile must
+# handle it. Regression guard for large cleanup branches.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+# ~2.7MB of multi-line text, comfortably over ARG_MAX (~1MB), staged so it
+# lands in the embedded diff.
+head -c 2000000 /dev/urandom | base64 > "$repo/big.txt"
+(cd "$repo" && git add big.txt) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+if (cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1 &&
+   [[ -f $rj ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 &&
+   [[ $(jq -r '.diff | length' "$rj") -gt 2000000 ]]
+then
+  pass "begin embeds a >ARG_MAX diff via --rawfile (no E2BIG)"
+else
+  fail "begin failed on a large diff (ARG_MAX regression)"
+fi
+rm -rf "$repo"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

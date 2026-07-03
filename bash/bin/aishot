@@ -1305,12 +1305,19 @@ _review_begin_iteration() {
     local dir="${path%/*}"
     mkdir -p "$dir" || { echo "Error: could not create '${dir}'." >&2; return 1; }
 
-    local base head branch now diff
+    local base head branch now
     base=$(git merge-base '@{u}' HEAD 2>/dev/null) || base=""
     head=$(git rev-parse HEAD 2>/dev/null) || head=""
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
     now=$(_review_iso)
-    diff=$(_review_current_diff)
+
+    # The diff can be many MB. Write it to a file and hand it to jq via
+    # --rawfile; passing it as --arg would blow ARG_MAX (E2BIG).
+    local difffile tmp=""
+    difffile=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
+    cleanup_begin() { rm -f "$difffile" "$tmp"; }
+    trap cleanup_begin RETURN
+    _review_current_diff > "$difffile"
 
     local lineage iterations created findings
     if [[ -f $path ]] && (( ! fresh_flag )) && [[ $(jq -r '.base_sha' "$path") == "$base" ]]
@@ -1335,23 +1342,22 @@ _review_begin_iteration() {
         findings='[]'
     fi
 
-    local tmp
     tmp=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
     jq -n --argjson ver "$REVIEW_SCHEMA_VERSION" --arg lineage "$lineage" \
        --argjson iterations "$iterations" --arg branch "$branch" \
        --arg base "$base" --arg head "$head" --arg created "$created" \
-       --arg now "$now" --arg diff "$diff" --argjson findings "$findings" \
+       --arg now "$now" --rawfile diff "$difffile" --argjson findings "$findings" \
        '{schema_version:$ver, lineage:$lineage, iterations:$iterations,
          branch:$branch, base_sha:$base, head_sha:$head, created:$created,
          updated:$now, diff:$diff, findings:$findings}' > "$tmp" ||
-        { rm -f "$tmp"; echo "Error: could not build envelope." >&2; return 1; }
+        { echo "Error: could not build envelope." >&2; return 1; }
     if ! _review_validate_file "$tmp"
     then
-        rm -f "$tmp"
         echo "Error: refusing to write — envelope failed validation (above)." >&2
         return 1
     fi
-    mv "$tmp" "$path" || { rm -f "$tmp"; echo "Error: could not write '${path}'." >&2; return 1; }
+    mv "$tmp" "$path" || { echo "Error: could not write '${path}'." >&2; return 1; }
+    tmp=""
     echo ">>> review iteration ${iterations} (lineage ${lineage})" >&2
 }
 
