@@ -19,5 +19,6 @@ set end of encouragements to "Do not rule over imaginary kingdoms of endlessly p
 set end of encouragements to "Life's bounty is in its flow. Later is too late."
 set end of encouragements to "Give all your fucks to the living"
 set end of encouragements to "Good instincts are earned by making mistakes" -- Clyde in Love and Monsters
+set end of encouragements to "We all fail Mom school sometimes" -- Bluey
 
 say some item of encouragements
