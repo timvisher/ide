@@ -4,6 +4,8 @@ on runCommandInteractively(theCommand)
 		set initial input of c to theCommand & "
 "
 		new window with configuration c
+		
+		activate
 	end tell
 end runCommandInteractively
 
@@ -11,6 +13,7 @@ runCommandInteractively("echo ohai && sleep 5 && exit")
 
 on makeNewWindow()
 	tell application "Ghostty"
+		activate
 		new window
 	end tell
 end makeNewWindow
@@ -22,6 +25,8 @@ on activateOrMakeNewWindow()
 		tell me to makeNewWindow()
 		return
 	end if
+	
+	activate
 	
 	tell application "System Events"
 		set visible of application process "Ghostty" to true
