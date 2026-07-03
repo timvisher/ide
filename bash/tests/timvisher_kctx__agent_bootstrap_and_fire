@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_kctx__agent_bootstrap_and_fire. launchctl and the
+# kctx_cache_job payload are both mocked on PATH (recording to
+# $MOCK_LOG / $FIRE_LOG) so the suite never touches the real launchd
+# domain or ~/.cache, and TIMVISHER_LAUNCHAGENTS_DIR redirects the deploy
+# into a temp dir. The script reads the real committed source plist from
+# the tree, which is a harmless read.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bindir="$(cd "$(dirname "$0")/../bin" && pwd)"
+label='com.twonegatives.kctx-cache'
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+dest="$tmpdir/dest"
+
+# Mock launchctl and the fire payload on PATH: record their calls, succeed.
+mockbin="$tmpdir/mockbin"
+mkdir -p "$mockbin"
+cat > "$mockbin/launchctl" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "$MOCK_LOG"
+exit 0
+MOCK
+cat > "$mockbin/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job" <<'FIRE'
+#!/usr/bin/env bash
+echo "fired" >> "$FIRE_LOG"
+exit 0
+FIRE
+chmod +x "$mockbin/launchctl" \
+  "$mockbin/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job"
+
+uid=$(id -u)
+domain="gui/${uid}"
+
+run() {
+  : > "$tmpdir/mocklog"
+  : > "$tmpdir/firelog"
+  MOCK_LOG="$tmpdir/mocklog" FIRE_LOG="$tmpdir/firelog" \
+    PATH="$mockbin:$PATH" TIMVISHER_LAUNCHAGENTS_DIR="$dest" \
+    "$bindir/timvisher_kctx__agent_bootstrap_and_fire" 2>"$tmpdir/err" || true
+  cat "$tmpdir/mocklog"
+}
+
+# --- bootstrap: deploys (templates __HOME__) then bootstraps ------------
+run_test
+log=$(run)
+deployed="$dest/${label}.plist"
+if grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log" &&
+   [[ -f $deployed ]] &&
+   grep -q "${HOME}/bin/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job" "$deployed" &&
+   ! grep -q "__HOME__" "$deployed"
+then pass "bootstrap -> template __HOME__, deploy, bootstrap"
+else fail "bootstrap: log=[$(tr '\n' ';' <<<"$log")] deployed=[$(cat "$deployed" 2>&1)] err=[$(cat "$tmpdir/err")]"
+fi
+
+# --- fire: runs the cache payload ---------------------------------------
+run_test
+if grep -qx "fired" "$tmpdir/firelog"
+then pass "fire -> runs kctx_cache_job"
+else fail "fire: firelog=[$(cat "$tmpdir/firelog" 2>&1)]"
+fi
+
+# --- load-only: never boots out (no restart churn on reruns) ------------
+run_test
+if grep -q "bootout" <<<"$log"
+then fail "must not bootout (would restart the agent): [$(tr '\n' ';' <<<"$log")]"
+else pass "never boots out (load-only)"
+fi
+
+# --- idempotent: a second run still bootstraps + fires, never boots out -
+run_test
+log2=$(run)
+if grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log2" &&
+   grep -qx "fired" "$tmpdir/firelog" &&
+   ! grep -q "bootout" <<<"$log2"
+then pass "idempotent (rerun -> bootstrap + fire, no bootout)"
+else fail "rerun: log=[$(tr '\n' ';' <<<"$log2")] firelog=[$(cat "$tmpdir/firelog" 2>&1)]"
+fi
+
+echo
+echo "ran $tests test(s), $failures failure(s)"
+(( failures == 0 ))

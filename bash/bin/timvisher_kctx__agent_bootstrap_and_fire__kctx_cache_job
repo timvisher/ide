@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+# Private leaf job (note the ‘__’) that caches the current kube context
+# and namespace into ~/.cache/timvisher_k* so the prompt
+# (current_kube_context in bashrc) can read them without shelling out to
+# kubectx/kubens on every render.
+#
+# Not called by humans -- use kctx/kns. Runs two ways, both writing the
+# same two files:
+#   - periodically (and once at load via RunAtLoad), as the program the
+#     com.twonegatives.kctx-cache LaunchAgent executes on its timer
+#   - immediately, as the ‘fire’ step of
+#     timvisher_kctx__agent_bootstrap_and_fire
+#
+# launchd hands us a minimal PATH, so resolve kubectx/kubens ourselves.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+mkdir -p ~/.cache
+kubectx -c 2>/dev/null > ~/.cache/timvisher_kctx || true
+kubens -c 2>/dev/null > ~/.cache/timvisher_kns || true

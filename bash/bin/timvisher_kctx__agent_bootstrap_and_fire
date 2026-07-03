@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# Private orchestrator (note the ‘__’) for the com.twonegatives.kctx-cache
+# LaunchAgent. Two steps:
+#
+#   bootstrap - deploy the plist to ~/Library/LaunchAgents and load it,
+#               idempotently and LOAD-ONLY (never boot it out first).
+#   fire      - run the kctx_cache_job now so the cache is fresh
+#               immediately rather than up to StartInterval seconds later.
+#
+# Called from every place that needs the cache both maintained and
+# current-right-now:
+#   - bashrc, at interactive-shell start (self-heals the agent per shell)
+#   - the kctx wrapper, right after a kubectx switch
+#   - the kns wrapper, right after a kubens switch
+#
+# Load-only matters: launchctl bootstrap on an already-loaded agent fails
+# harmlessly and leaves the running job (and its StartInterval timer)
+# untouched, so calling this on every shell and every switch never churns
+# the agent. Use LaunchAgents/bin/start to force a redeploy+reload after
+# editing the plist.
+#
+# TIMVISHER_LAUNCHAGENTS_DIR overrides the install destination (tests).
+
+source "${HOME}/.functions/logging.bash" ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+command -v launchctl >/dev/null ||
+  die "launchctl not found"
+
+label='com.twonegatives.kctx-cache'
+
+# The plist lives at repo-root/LaunchAgents/<label>.plist; this script is
+# repo-root/bash/bin/<self> (reached via the ~/bin symlink). pwd -P
+# resolves that symlink so ../../LaunchAgents lands in the real tree.
+bindir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) ||
+  die "couldn't resolve this script's directory"
+src="${bindir}/../../LaunchAgents/${label}.plist"
+
+[[ -r $src ]] ||
+  die "no readable source plist at ‘%s’" "$src"
+
+dest_dir="${TIMVISHER_LAUNCHAGENTS_DIR:-${HOME}/Library/LaunchAgents}"
+dest="${dest_dir}/${label}.plist"
+domain="gui/$(id -u)"
+
+mkdir -p "$dest_dir" ||
+  die "couldn't create ‘%s’" "$dest_dir"
+
+# bootstrap: $HOME contains no '|', so it is a safe sed delimiter here.
+sed "s|__HOME__|${HOME}|g" "$src" > "$dest" ||
+  die "failed templating ‘%s’ to ‘%s’" "$src" "$dest"
+
+# Load if not already loaded; a no-op (harmless failure) if it is.
+launchctl bootstrap "$domain" "$dest" 2>/dev/null || true
+
+# fire: refresh the cache now (resolved via PATH so tests can mock it).
+timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job

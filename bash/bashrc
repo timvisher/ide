@@ -116,22 +116,6 @@ current_kube_context() {
   printf 'kctx=‘%s’ kns=‘%s’' "$timvisher_kctx" "$timvisher_kns"
 }
 
-timvisher_kctx_cache() {
-  kubectx -c 2>/dev/null > ~/.cache/timvisher_kctx || true
-  kubens -c 2>/dev/null > ~/.cache/timvisher_kns || true
-}
-
-if [[ -t 0 ]] && [[ -z $timvisher_kctx_sync ]]
-then
-  coproc timvisher_kctx_sync {
-    while :
-    do
-      timvisher_kctx_cache
-      sleep 30
-    done
-  }
-fi
-
 export DEFAULT_PS1='\n\D{%FT%T%z}\n\u@\H\n$(current_kube_context)\nAWS_PROFILE=‘${AWS_PROFILE}’ AWS_REGION=‘${AWS_REGION}’\n\w\n\$ '
 export PS1="$DEFAULT_PS1"
 
@@ -226,3 +210,8 @@ fi
 
 # Trajectory - AI coding agent observability
 export PATH="/Users/tim.visher/.trajectory/bin:$PATH"
+
+if [[ -t 0 ]]
+then
+  timvisher_kctx__agent_bootstrap_and_fire
+fi

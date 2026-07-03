@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Refresh the cached kube context/namespace (~/.cache/timvisher_k*) that
+  the shell prompt reads. Replaces a per-interactive-shell coproc that
+  looped forever: one such loop per open pane was needless process load,
+  and the state it caches is global to the user, not per-shell.
+
+  __HOME__ is a placeholder substituted with the real home directory by
+  the deployer (LaunchAgents/bin/start or timvisher_kctx_agent_ensure);
+  launchd does not expand ~ inside ProgramArguments paths.
+
+  StartInterval (not KeepAlive) is deliberate: this is a one-shot that
+  writes two files and exits, so there is no long-lived process at all.
+  launchd fires it every 30s; RunAtLoad populates the cache immediately
+  on load so a fresh login is not blank until the first interval.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.twonegatives.kctx-cache</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>30</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job.log</string>
+</dict>
+</plist>
