@@ -15,6 +15,14 @@ set -o pipefail
 
 DEFAULT_REVIEWERS="claude,codex"
 
+# Review-artifact vocabulary. The record-finding writer and the validate
+# checker share these so the enums can never drift apart.
+REVIEW_SCHEMA_VERSION=1
+REVIEW_LEVELS="high medium low"
+REVIEW_CATEGORIES="correctness security performance reliability maintainability style testing docs"
+REVIEW_STATUSES="open addressed wontfix"
+REVIEW_REVIEWERS="claude codex gemini human"
+
 show_help() {
     cat <<'EOF'
 Usage: aishot [--with=claude,codex,gemini] <prompt>
@@ -75,16 +83,33 @@ show_review_help() {
     cat <<'EOF'
 Usage: aishot git diff review [--with=claude,codex,gemini]
 
-Run parallel code reviews via independent AI agents and synthesize the
-results. Each reviewer gets the same prompt (built by
-aishot git diff review make-prompt; diffs are inlined, or spilled to a
-file when large — see below). After all reviewers finish, claudeshot
-synthesizes the findings into a unified report.
+Run parallel code reviews via independent AI agents, then synthesize the
+results into the structured review artifact. Each reviewer gets the same
+prompt (built by aishot git diff review make-prompt; diffs are inlined, or
+spilled to a file when large — see below). After all reviewers finish, a
+synthesis step records every distinct finding into .aishot/review.json via
+record-finding and the artifact is rendered to .aishot/review.md.
+
+The review is ITERATIVE: each run advances the artifact. On the same base
+it bumps the iteration and carries prior findings forward for re-judgement;
+when the base moves (or with --fresh) it archives the prior review to
+.aishot/review.bak.<ts>.json and starts a fresh series. Read the result
+with `aishot git diff review print` (never trust a stale copy).
+
+Options:
+  --fresh   Start a new review series (archive any prior artifact).
 
 Options:
   --with=LIST   Comma-separated list of reviewers.
                 Available: claude, codex, gemini.
                 Default: claude,codex
+
+Review-artifact subcommands (operate on .aishot/review.json):
+  record-finding   Record or update one finding (deterministic, atomic,
+                   validated writer — the ONLY correct way to modify the
+                   artifact; never hand-edit the JSON). See its --help.
+  validate         Check .aishot/review.json (schema, enums, invariants).
+  print [--format=md|json]   Render the artifact. Default: md.
 
 Large diffs:
   Reviewers have a hard input ceiling (codex: ~1,048,576 chars), so a
@@ -438,6 +463,32 @@ $(cat -- "$f")
         return 1
     fi
 
+    # Prior findings (review only): inline the carried-forward findings as
+    # compact JSON so this iteration judges whether each is addressed by the
+    # current diff instead of re-deriving from scratch. .aishot/ is
+    # gitignored, so this is the only place review.json feeds the prompt.
+    if [[ $mode == review ]] && command -v jq >/dev/null
+    then
+        local review_json="${repo_root}/.aishot/review.json"
+        if [[ -f $review_json ]] &&
+           (( 0 < $(jq '.findings | length' "$review_json" 2>/dev/null || echo 0) ))
+        then
+            local prior_json prior_section
+            prior_json=$(jq -c '{iteration:.iterations, findings:[.findings[] | {id,file,line,level,category,title,description,status}]}' "$review_json")
+            prior_section="## Prior review findings (this review has run before)
+
+The findings below were recorded in earlier iterations of this review, as
+compact JSON. For EACH one, judge from the CURRENT diff whether it is now
+addressed, still open, or indeterminate — carry the same finding \`id\`
+forward; do not re-derive it from scratch.
+
+\`\`\`json
+${prior_json}
+\`\`\`"
+            sections+=("$prior_section")
+        fi
+    fi
+
     # --- Build prompt ---
 
     local recent_commits
@@ -672,52 +723,6 @@ Note which agent(s) contributed to each point.
 EOF
 }
 
-# Synthesis preamble for code review reports. Stronger framing because
-# review findings must not be dismissed or deduplicated.
-_review_synthesis_preamble() {
-    cat <<'EOF'
-You are reviewing code review reports from multiple independent AI
-reviewers. Each reviewer examined the same diff independently.
-
-Synthesize their findings into a single unified report:
-
-1. **High confidence** — issues flagged by multiple reviewers (these
-   are very likely real)
-2. **Worth investigating** — issues flagged by only one reviewer (may
-   be real, may be false positive)
-3. **Disagreements** — where reviewers contradict each other (give
-   your assessment)
-4. **Missing tests** — union of all test gaps identified
-5. **Questions** — union of all questions raised
-
-IMPORTANT: Do NOT dismiss any finding. Every finding from every
-reviewer is actionable. Do not say any finding is 'pre-existing',
-'not our code', or 'good to note but not actionable'. ALL findings
-are actionable.
-
-For each finding, note which reviewer(s) flagged it.
-
-After your report, append the following section VERBATIM (heading and
-all) as the final section of your output. This is so the rule is the
-freshest context for the agent reading your report — do not paraphrase
-or summarize it:
-
----
-
-## GOLDEN RULE
-
-EVERY finding from this review is YOUR responsibility. Nothing in the
-diff is "pre-existing" or "not our commit". If it is in the diff, it
-ships with your work. Investigate and fix ALL findings. Never dismiss
-a finding. Never say "not actionable" or "good to note". For findings
-you cannot fix immediately, file a beads issue with investigation
-notes and reference the bd id in your reply — that is investigation,
-not dismissal.
-
----
-EOF
-}
-
 # Synthesis preamble for changeset inventories. Unlike review, the goal
 # here IS to merge and deduplicate into one authoritative changelog, and
 # to stay strictly factual.
@@ -874,17 +879,136 @@ _run_shots() {
     claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
 }
 
+# Synthesis preamble for the iterative review: the synthesis agent records
+# findings into .aishot/review.json via record-finding rather than writing
+# a prose report (the deterministic renderer produces the human report).
+_review_record_synthesis_preamble() {
+    cat <<'EOF'
+You are the SYNTHESIS step of an iterative code review. Below are
+independent reports from multiple AI reviewers examining the same diff.
+
+Your ONLY job is to record this review's findings into the structured
+review artifact using the record-finding tool. Do NOT write a prose
+report — a deterministic renderer produces the human-readable report from
+the artifact you populate.
+
+STEP 1 — Learn the tool and read prior state. Run:
+    aishot git diff review record-finding --help
+    aishot git diff review print --format=json
+The JSON lists findings carried over from earlier iterations, each with an
+"id" and "status".
+
+STEP 2 — Record NEW findings. Merge and deduplicate across the reports
+below (ONE finding per distinct issue, even when several reviewers raised
+it). For each distinct issue NOT already in the prior JSON, run:
+    aishot git diff review record-finding \
+      --title "<one line>" --description "<detail>" \
+      --level high|medium|low \
+      --category correctness|security|performance|reliability|maintainability|style|testing|docs \
+      --flagged-by <csv of reviewers that raised it: e.g. claude,codex> \
+      [--file <path>] [--line <n>]
+
+STEP 3 — Judge PRIOR findings. For each finding in the prior JSON, decide
+from the current reports whether the current diff resolves it. If clearly
+addressed, run:
+    aishot git diff review record-finding --id <that-id> --status addressed --flagged-by <reviewer>
+Leave still-open prior findings untouched.
+
+RULES:
+- NEVER hand-edit .aishot/review.json — only use record-finding.
+- Do NOT run other project tooling (bd, beads, todo, tests, builds) or set
+  up the project.
+- Record EVERY distinct finding; do not drop, dismiss, or deprioritize any.
+- When done, print one line: "recorded N findings".
+
+Reviewer reports follow.
+EOF
+}
+
+# Review-specific runner (decision B): reuses the parallel fan-out, but the
+# synthesis ALWAYS runs (even for a single reviewer, which the generic
+# _run_shots would skip) and its job is to populate .aishot/review.json via
+# record-finding. output.txt captures the synthesis agent's transcript; the
+# human artifact is the rendered review.md.
+_run_review_shots() {
+    local prompt_file=$1 preamble_func=$2 label=$3
+    shift 3
+
+    local pids=() names=() exit_codes=()
+    local r
+    for r in "$@"
+    do
+        echo ">>> Starting ${r} ${label}..." >&2
+        "${r}shot" < "$prompt_file" > "${RUN_DIR}/${r}.out" 2>"${RUN_DIR}/${r}.err" &
+        pids+=($!)
+        names+=("$r")
+    done
+
+    local i
+    for i in "${!pids[@]}"
+    do
+        local ec=0
+        wait "${pids[$i]}" || ec=$?
+        exit_codes[i]=$ec
+    done
+
+    {
+        echo "mode: review"
+        echo "shots: ${names[*]}"
+        for i in "${!names[@]}"
+        do
+            echo "${names[$i]}: exit=${exit_codes[$i]}"
+        done
+    } > "${RUN_DIR}/meta.txt"
+
+    local successful=0
+    for i in "${!names[@]}"
+    do
+        if (( exit_codes[i] != 0 ))
+        then
+            echo ">>> WARNING: ${names[$i]} review failed (exit ${exit_codes[$i]}, output may be partial)." >&2
+        else
+            (( successful++ ))
+        fi
+    done
+
+    if (( successful < 1 ))
+    then
+        echo "Error: All reviewers failed." >&2
+        return 1
+    fi
+
+    {
+        "$preamble_func"
+        echo
+        for i in "${!names[@]}"
+        do
+            if (( exit_codes[i] == 0 ))
+            then
+                echo "## ${names[$i]} review"
+                echo
+                cat "${RUN_DIR}/${names[$i]}.out"
+                echo
+            fi
+        done
+    } > "${RUN_DIR}/synthesis_prompt.txt"
+
+    echo ">>> Synthesizing ${successful} review(s) into findings via record-finding..." >&2
+    claudeshot < "${RUN_DIR}/synthesis_prompt.txt" | tee "${RUN_DIR}/output.txt"
+}
+
 # Shared driver for the `git diff <mode>` subcommands. Parses
 # --with/--help, validates the shot list, builds the mode's prompt (with
-# SHOT_PREAMBLE prepended), and fans out via _run_shots.
+# SHOT_PREAMBLE prepended), and fans out via the given runner.
 #   $1 = mode (review|describe)
 #   $2 = synthesis preamble function name
-#   $3 = label passed to _run_shots (headings/progress)
+#   $3 = label passed to the runner (headings/progress)
 #   $4 = help function name (for --help and unknown options)
-#   $5.. = caller args
+#   $5 = runner function (_run_shots | _run_review_shots)
+#   $6.. = caller args
 _do_diff_subcommand() {
-    local mode=$1 synthesis_func=$2 label=$3 help_func=$4
-    shift 4
+    local mode=$1 synthesis_func=$2 label=$3 help_func=$4 runner=$5
+    shift 5
 
     local reviewers=$DEFAULT_REVIEWERS
 
@@ -927,19 +1051,42 @@ _do_diff_subcommand() {
         printf '%s' "$prompt"
     } > "${RUN_DIR}/prompt.txt"
 
-    _run_shots "${RUN_DIR}/prompt.txt" \
+    "$runner" "${RUN_DIR}/prompt.txt" \
         "$synthesis_func" "$label" \
         "${reviewer_list[@]}"
 }
 
 do_review() {
-    _do_diff_subcommand review _review_synthesis_preamble review \
-        show_review_help "$@"
+    # Separate --fresh (a review-artifact control) from the args
+    # _do_diff_subcommand understands (--with/--help).
+    local passthru=() fresh=()
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --fresh) fresh=(--fresh); shift ;;
+            --help|-h) show_review_help; return 0 ;;
+            *) passthru+=("$1"); shift ;;
+        esac
+    done
+
+    _review_begin_iteration "${fresh[@]}" || return 1
+
+    _do_diff_subcommand review _review_record_synthesis_preamble review \
+        show_review_help _run_review_shots "${passthru[@]}"
+    local rc=$?
+
+    # Render the human-facing artifact from the (now populated) review.json.
+    local path
+    if path=$(_review_json_path 2>/dev/null) && [[ -f $path ]]
+    then
+        do_review_print --format=md > "${path%/*}/review.md" 2>/dev/null || true
+    fi
+    return "$rc"
 }
 
 do_describe() {
     _do_diff_subcommand describe _describe_synthesis_preamble description \
-        show_describe_help "$@"
+        show_describe_help _run_shots "$@"
 }
 
 do_oneshot() {
@@ -1037,6 +1184,462 @@ _run_git_diff_mode() {
     "$driver" "$@"
 }
 
+# ===========================================================================
+# Review artifact: .aishot/review.json (source of truth), rendered to
+# .aishot/review.md. Agents never hand-write JSON — they call
+# `record-finding`; `validate` is the deterministic backstop against
+# improper edits; `print` renders. All three are deterministic (no LLM).
+# ===========================================================================
+
+_review_need_jq() {
+    command -v jq >/dev/null ||
+        { echo "Error: jq is required for review commands but was not found." >&2; return 1; }
+}
+
+# Path to the current repo's review artifact.
+_review_json_path() {
+    local root
+    root=$(git rev-parse --show-toplevel) ||
+        { echo "Error: not inside a git repository." >&2; return 1; }
+    printf '%s/.aishot/review.json' "$root"
+}
+
+_review_uuid() {
+    if command -v uuidgen >/dev/null
+    then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        cat /proc/sys/kernel/random/uuid 2>/dev/null
+    fi
+}
+
+_review_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# True when $1 is one space-separated word in the whitelist $2.
+_review_in_set() {
+    local needle=$1 set=$2 w
+    for w in $set
+    do
+        [[ $w == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+# jq program (read on stdin as $prog) that emits one error string per line
+# for a review doc passed as the file argument; empty output means valid.
+_review_validate_file() {
+    local f=$1
+    if [[ ! -f $f ]]
+    then
+        echo "no review file at '${f}'" >&2
+        return 1
+    fi
+    if ! jq -e . "$f" >/dev/null 2>&1
+    then
+        echo "'${f}' is not valid JSON" >&2
+        return 1
+    fi
+    local errs
+    errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" '
+      def envkeys: ["schema_version","lineage","iterations","branch","base_sha","head_sha","created","updated","diff","findings"];
+      def fkeys: ["id","file","line","level","category","title","description","status","first_seen_iteration","last_seen_iteration","flagged_by"];
+      def levels: ["high","medium","low"];
+      def cats: ["correctness","security","performance","reliability","maintainability","style","testing","docs"];
+      def stats: ["open","addressed","wontfix"];
+      def revs: ["claude","codex","gemini","human"];
+      def isint: (type=="number") and (. == floor);
+      [
+        (envkeys[] as $k | select((has($k))|not) | "missing envelope key: \($k)"),
+        (keys_unsorted[] as $k | select((envkeys|index($k))==null) | "unknown envelope key: \($k)"),
+        (if (.schema_version)==$ver then empty else "schema_version must be \($ver)" end),
+        (if ((.iterations|isint) and (.iterations>=1)) then empty else "iterations must be a positive integer" end),
+        (if (.diff|type)=="string" then empty else "diff must be a string" end),
+        (if (.findings|type)=="array" then empty else "findings must be an array" end),
+        ((.findings // []) | to_entries[] | .key as $i | .value as $f |
+          (fkeys[] as $k | select(($f|has($k))|not) | "finding[\($i)] missing key: \($k)"),
+          (($f|keys_unsorted[]) as $k | select((fkeys|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
+          (if (levels|index($f.level)) != null then empty else "finding[\($i)] invalid level: \($f.level)" end),
+          (if (cats|index($f.category)) != null then empty else "finding[\($i)] invalid category: \($f.category)" end),
+          (if (stats|index($f.status)) != null then empty else "finding[\($i)] invalid status: \($f.status)" end),
+          (if (($f.line)==null or ($f.line|isint)) then empty else "finding[\($i)] line must be int or null" end),
+          (if (($f.title|type)=="string" and ($f.title|length)>0) then empty else "finding[\($i)] title required" end),
+          (if (($f.description|type)=="string" and ($f.description|length)>0) then empty else "finding[\($i)] description required" end),
+          (if (($f.first_seen_iteration|isint) and ($f.last_seen_iteration|isint) and ($f.first_seen_iteration<=$f.last_seen_iteration)) then empty else "finding[\($i)] iteration bounds invalid" end),
+          (if (($f.flagged_by|type)=="array" and ($f.flagged_by|length)>=1 and (all($f.flagged_by[]; . as $r | (revs|index($r))!=null))) then empty else "finding[\($i)] flagged_by must be a non-empty array of known reviewers" end)
+        ),
+        ((.findings // []) | (map(.id)) as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
+      ] | .[]
+    ' "$f")
+    if [[ -n $errs ]]
+    then
+        printf '%s\n' "$errs" >&2
+        return 1
+    fi
+    return 0
+}
+
+# The review-scope diff embedded in the artifact: branch-vs-upstream
+# (when an upstream exists) plus staged and unstaged changes. Repo-wide
+# regardless of cwd.
+_review_current_diff() {
+    if git rev-parse --verify '@{u}' >/dev/null 2>&1
+    then
+        git diff '@{u}...HEAD'
+    fi
+    git diff --cached
+    git diff
+}
+
+# Initialize or advance .aishot/review.json for a review run (the driver
+# owns this; agents only record findings). Same base + prior review ->
+# bump iterations and carry findings forward for re-judgement. Base moved
+# (or --fresh, or no prior) -> archive any prior to review.bak.<ts>.json
+# and start a new series (new lineage, iterations=1, empty findings).
+_review_begin_iteration() {
+    _review_need_jq || return 1
+    local fresh_flag=0
+    [[ ${1:-} == --fresh ]] && fresh_flag=1
+
+    local path
+    path=$(_review_json_path) || return 1
+    local dir="${path%/*}"
+    mkdir -p "$dir" || { echo "Error: could not create '${dir}'." >&2; return 1; }
+
+    local base head branch now diff
+    base=$(git merge-base '@{u}' HEAD 2>/dev/null) || base=""
+    head=$(git rev-parse HEAD 2>/dev/null) || head=""
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+    now=$(_review_iso)
+    diff=$(_review_current_diff)
+
+    local lineage iterations created findings
+    if [[ -f $path ]] && (( ! fresh_flag )) && [[ $(jq -r '.base_sha' "$path") == "$base" ]]
+    then
+        # Same base: continue the series.
+        lineage=$(jq -r '.lineage' "$path")
+        iterations=$(( $(jq -r '.iterations' "$path") + 1 ))
+        created=$(jq -r '.created' "$path")
+        findings=$(jq -c '.findings' "$path")
+    else
+        # New series: fresh, first run, or the base moved. Archive any prior.
+        if [[ -f $path ]]
+        then
+            local ts
+            ts=$(date +%Y%m%dT%H%M%S)
+            cp "$path" "${dir}/review.bak.${ts}.json" ||
+                { echo "Error: could not archive prior review." >&2; return 1; }
+        fi
+        lineage=$(_review_uuid)
+        iterations=1
+        created=$now
+        findings='[]'
+    fi
+
+    local tmp
+    tmp=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
+    jq -n --argjson ver "$REVIEW_SCHEMA_VERSION" --arg lineage "$lineage" \
+       --argjson iterations "$iterations" --arg branch "$branch" \
+       --arg base "$base" --arg head "$head" --arg created "$created" \
+       --arg now "$now" --arg diff "$diff" --argjson findings "$findings" \
+       '{schema_version:$ver, lineage:$lineage, iterations:$iterations,
+         branch:$branch, base_sha:$base, head_sha:$head, created:$created,
+         updated:$now, diff:$diff, findings:$findings}' > "$tmp" ||
+        { rm -f "$tmp"; echo "Error: could not build envelope." >&2; return 1; }
+    if ! _review_validate_file "$tmp"
+    then
+        rm -f "$tmp"
+        echo "Error: refusing to write — envelope failed validation (above)." >&2
+        return 1
+    fi
+    mv "$tmp" "$path" || { rm -f "$tmp"; echo "Error: could not write '${path}'." >&2; return 1; }
+    echo ">>> review iteration ${iterations} (lineage ${lineage})" >&2
+}
+
+do_review_begin() {
+    local fresh=()
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --fresh) fresh=(--fresh); shift ;;
+            --help|-h)
+                echo "Usage: aishot git diff review begin [--fresh]"
+                echo "Initialize or advance .aishot/review.json for a review iteration."
+                echo "The review run does this automatically; --fresh starts a new series."
+                return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
+        esac
+    done
+    _review_begin_iteration "${fresh[@]}"
+}
+
+show_review_record_finding_help() {
+    cat <<'EOF'
+Usage: aishot git diff review record-finding --title T --description D \
+         --level high|medium|low --category CAT --flagged-by claude,codex \
+         [--file PATH] [--line N] [--status open|addressed|wontfix] [--id UUID]
+
+Record (or update) one code-review finding in .aishot/review.json. This is
+the ONLY correct way to modify the review artifact — do NOT hand-edit the
+JSON. Each call is deterministic, atomic, and self-validating: it rejects
+bad enums, missing required fields, or an unknown --id, and never leaves a
+malformed file behind.
+
+Omit --id to MINT a new finding (a UUID is assigned; first_seen_iteration
+and last_seen_iteration are set to the current iteration). Pass --id to
+UPDATE an existing finding — e.g. mark it addressed:
+  aishot git diff review record-finding --id <uuid> --status addressed --flagged-by claude
+
+Fields:
+  --title        (required) one-line summary.
+  --description  (required) the finding detail.
+  --level        (required) severity: high | medium | low.
+  --category     (required) correctness | security | performance |
+                 reliability | maintainability | style | testing | docs.
+  --flagged-by   (required) csv of reviewers that raised it:
+                 claude | codex | gemini | human. On update, unioned in.
+  --file         (optional) path the finding is about.
+  --line         (optional) integer line number.
+  --status       (optional) open | addressed | wontfix. Default: open.
+  --id           (optional) UUID of an existing finding to update.
+EOF
+}
+
+# Build a validated JSON array of reviewers from a csv, or fail.
+_review_flagged_json() {
+    local csv=$1
+    local -a arr
+    IFS=',' read -ra arr <<< "$csv"
+    (( 0 < ${#arr[@]} )) ||
+        { echo "Error: --flagged-by is empty." >&2; return 1; }
+    local r
+    for r in "${arr[@]}"
+    do
+        _review_in_set "$r" "$REVIEW_REVIEWERS" ||
+            { echo "Error: unknown reviewer in --flagged-by: '${r}'." >&2; return 1; }
+    done
+    printf '%s\n' "${arr[@]}" | jq -R . | jq -s .
+}
+
+do_review_record_finding() {
+    _review_need_jq || return 1
+
+    local title="" description="" file="" line="" level="" category="" \
+          flagged_by="" status="" id=""
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --title) title=$2; shift 2 ;;
+            --description) description=$2; shift 2 ;;
+            --file) file=$2; shift 2 ;;
+            --line) line=$2; shift 2 ;;
+            --level) level=$2; shift 2 ;;
+            --category) category=$2; shift 2 ;;
+            --flagged-by) flagged_by=$2; shift 2 ;;
+            --status) status=$2; shift 2 ;;
+            --id) id=$2; shift 2 ;;
+            --help|-h) show_review_record_finding_help; return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; show_review_record_finding_help >&2; return 1 ;;
+        esac
+    done
+
+    # Minting a new finding requires the full descriptor; updating an
+    # existing one (--id) touches only the fields actually passed.
+    if [[ -z $id ]]
+    then
+        [[ -n $title ]] || { echo "Error: --title is required." >&2; return 1; }
+        [[ -n $description ]] || { echo "Error: --description is required." >&2; return 1; }
+        [[ -n $flagged_by ]] || { echo "Error: --flagged-by is required." >&2; return 1; }
+        [[ -n $level ]] || { echo "Error: --level is required for a new finding." >&2; return 1; }
+        [[ -n $category ]] || { echo "Error: --category is required for a new finding." >&2; return 1; }
+    fi
+    [[ -z $level ]] || _review_in_set "$level" "$REVIEW_LEVELS" ||
+        { echo "Error: invalid --level '${level}' (want: ${REVIEW_LEVELS})." >&2; return 1; }
+    [[ -z $category ]] || _review_in_set "$category" "$REVIEW_CATEGORIES" ||
+        { echo "Error: invalid --category '${category}' (want: ${REVIEW_CATEGORIES})." >&2; return 1; }
+    [[ -z $status ]] || _review_in_set "$status" "$REVIEW_STATUSES" ||
+        { echo "Error: invalid --status '${status}' (want: ${REVIEW_STATUSES})." >&2; return 1; }
+    if [[ -n $line && ! $line =~ ^[0-9]+$ ]]
+    then
+        echo "Error: --line must be a non-negative integer." >&2
+        return 1
+    fi
+
+    local flagged_json="[]" line_json
+    if [[ -n $flagged_by ]]
+    then flagged_json=$(_review_flagged_json "$flagged_by") || return 1
+    fi
+    if [[ -n $line ]]
+    then line_json=$line
+    else line_json=null
+    fi
+
+    local path
+    path=$(_review_json_path) || return 1
+    local dir="${path%/*}"
+    mkdir -p "$dir" || { echo "Error: could not create '${dir}'." >&2; return 1; }
+
+    # Serialize concurrent writers with an atomic mkdir lock.
+    local lock="${dir}/.review.lock" tmp="" held=0
+    cleanup() { (( held )) && rmdir "$lock" 2>/dev/null; [[ -n $tmp ]] && rm -f "$tmp"; }
+    trap cleanup RETURN
+    local waited=0
+    until mkdir "$lock" 2>/dev/null
+    do
+        (( waited++ ))
+        if (( 50 < waited ))
+        then echo "Error: could not acquire review lock '${lock}'." >&2; return 1
+        fi
+        sleep 0.1
+    done
+    held=1
+
+    # Seed a minimal envelope if none exists yet (the run driver normally
+    # seeds a richer one with the diff embedded; this keeps the tool usable
+    # standalone). Best-effort git metadata: a fresh repo may lack HEAD/@{u}.
+    if [[ ! -f $path ]]
+    then
+        local branch head base now
+        branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+        head=$(git rev-parse HEAD 2>/dev/null) || head=""
+        base=$(git merge-base '@{u}' HEAD 2>/dev/null) || base=""
+        now=$(_review_iso)
+        jq -n --argjson ver "$REVIEW_SCHEMA_VERSION" --arg lineage "$(_review_uuid)" \
+           --arg branch "$branch" --arg base "$base" --arg head "$head" --arg now "$now" \
+           '{schema_version:$ver, lineage:$lineage, iterations:1, branch:$branch,
+             base_sha:$base, head_sha:$head, created:$now, updated:$now, diff:"", findings:[]}' \
+           > "$path" || { echo "Error: could not seed '${path}'." >&2; return 1; }
+    fi
+
+    local iter now
+    iter=$(jq -r '.iterations' "$path")
+    now=$(_review_iso)
+    tmp=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
+
+    if [[ -n $id ]]
+    then
+        # Update: fail if the id is unknown; apply provided fields, union
+        # flagged_by, bump last_seen_iteration.
+        if [[ $(jq --arg id "$id" '[.findings[]|select(.id==$id)]|length' "$path") -eq 0 ]]
+        then echo "Error: no finding with --id '${id}'." >&2; return 1
+        fi
+        jq --arg id "$id" --arg now "$now" --argjson iter "$iter" \
+           --arg title "$title" --arg description "$description" \
+           --arg file "$file" --argjson line "$line_json" \
+           --arg level "$level" --arg category "$category" --arg status "$status" \
+           --argjson flagged "$flagged_json" '
+          .updated=$now
+          | .findings |= map(
+              if .id==$id then
+                  (if $title!="" then .title=$title else . end)
+                | (if $description!="" then .description=$description else . end)
+                | (if $status!="" then .status=$status else . end)
+                | (if $file!="" then .file=$file else . end)
+                | (if $line!=null then .line=$line else . end)
+                | (if $level!="" then .level=$level else . end)
+                | (if $category!="" then .category=$category else . end)
+                | .flagged_by=((.flagged_by + $flagged)|unique)
+                | .last_seen_iteration=$iter
+              else . end)
+        ' "$path" > "$tmp" || { echo "Error: jq update failed." >&2; return 1; }
+    else
+        jq --arg id "$(_review_uuid)" --arg now "$now" --argjson iter "$iter" \
+           --arg title "$title" --arg description "$description" \
+           --arg file "$file" --argjson line "$line_json" \
+           --arg level "$level" --arg category "$category" --arg status "${status:-open}" \
+           --argjson flagged "$flagged_json" '
+          .updated=$now
+          | .findings += [{
+              id:$id, file:$file, line:$line, level:$level, category:$category,
+              title:$title, description:$description, status:$status,
+              first_seen_iteration:$iter, last_seen_iteration:$iter, flagged_by:$flagged
+            }]
+        ' "$path" > "$tmp" || { echo "Error: jq insert failed." >&2; return 1; }
+    fi
+
+    # Never leave a malformed file behind: validate the candidate, then
+    # atomically replace.
+    if ! _review_validate_file "$tmp"
+    then
+        echo "Error: refusing to write — the resulting review.json failed validation (above)." >&2
+        return 1
+    fi
+    mv "$tmp" "$path" || { echo "Error: could not write '${path}'." >&2; return 1; }
+    tmp=""
+    echo ">>> recorded finding in ${path}" >&2
+}
+
+do_review_validate() {
+    _review_need_jq || return 1
+    local path=""
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --file) path=$2; shift 2 ;;
+            --help|-h)
+                echo "Usage: aishot git diff review validate [--file PATH]"
+                echo "Validate .aishot/review.json (schema, enums, types, invariants)."
+                return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
+        esac
+    done
+    [[ -n $path ]] || path=$(_review_json_path) || return 1
+    if _review_validate_file "$path"
+    then
+        echo "ok: ${path} is valid"
+        return 0
+    fi
+    return 1
+}
+
+do_review_print() {
+    _review_need_jq || return 1
+    local format=md path
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --format=*) format=${1#--format=}; shift ;;
+            --help|-h)
+                echo "Usage: aishot git diff review print [--format=md|markdown|json]"
+                echo "Render .aishot/review.json. Default: md."
+                return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
+        esac
+    done
+    path=$(_review_json_path) || return 1
+    [[ -f $path ]] || { echo "Error: no review at '${path}'." >&2; return 1; }
+
+    case "$format" in
+        json)
+            jq . "$path"
+            ;;
+        md|markdown)
+            jq -r '
+              def levels: ["high","medium","low"];
+              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s)",
+              "",
+              "\(.branch // "?") · base \((.base_sha // "")[0:12]) · head \((.head_sha // "")[0:12]) · updated \(.updated // "?")",
+              "",
+              ( levels[] as $lv |
+                ([.findings[] | select(.level==$lv)]) as $fs |
+                if ($fs|length) > 0 then
+                  "## \($lv|ascii_upcase)",
+                  "",
+                  ( $fs[] |
+                    "- **\(.title)** [\(.category)] (\(.status)) — \(.file // "—")\(if .line then ":\(.line)" else "" end) — flagged by \(.flagged_by|join(", "))",
+                    "  \(.description)",
+                    ""
+                  )
+                else empty end
+              )
+            ' "$path"
+            ;;
+        *)
+            echo "Error: unknown --format '${format}' (want: md, markdown, json)." >&2
+            return 1
+            ;;
+    esac
+}
+
 # Global options may appear BEFORE the subcommand, not just after it:
 #   aishot --with=claude,codex git diff describe
 # must behave the same as
@@ -1069,7 +1672,27 @@ case "${1:-}" in
                 case "${1:-}" in
                     review)
                         shift
-                        _run_git_diff_mode review do_review "$@" "${global_opts[@]}"
+                        case "${1:-}" in
+                            begin)
+                                shift
+                                do_review_begin "$@"
+                                ;;
+                            record-finding)
+                                shift
+                                do_review_record_finding "$@"
+                                ;;
+                            validate)
+                                shift
+                                do_review_validate "$@"
+                                ;;
+                            print)
+                                shift
+                                do_review_print "$@"
+                                ;;
+                            *)
+                                _run_git_diff_mode review do_review "$@" "${global_opts[@]}"
+                                ;;
+                        esac
                         ;;
                     describe)
                         shift

@@ -238,6 +238,267 @@ else
 fi
 rm -rf "$repo"
 
+# ---------------------------------------------------------------------------
+# Case 10: record-finding mints a valid finding; validate passes; print
+# renders it grouped by level.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(
+  cd "$repo" &&
+  "$script" git diff review record-finding \
+    --title "SQL injection" --description "user input concatenated into query" \
+    --file db/q.go --line 42 --level high --category security \
+    --flagged-by claude,codex
+) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+if [[ -f $rj ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 &&
+   [[ $(jq -r '.findings[0].level' "$rj") == high ]] &&
+   [[ $(jq -r '.findings[0].category' "$rj") == security ]] &&
+   [[ $(jq -r '.findings[0].status' "$rj") == open ]] &&
+   [[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj") == claude,codex ]] &&
+   [[ $(jq -r '.findings[0].id|length' "$rj") -eq 36 ]] &&
+   [[ $(cd "$repo" && "$script" git diff review print 2>/dev/null) == *'## HIGH'*'SQL injection'* ]]
+then
+  pass "record-finding mints a valid finding; validate + print work"
+else
+  fail "record-finding mint/validate/print failed"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 11: bad enum is rejected with a non-zero exit and writes nothing.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+if ! (cd "$repo" && "$script" git diff review record-finding \
+        --title T --description D --level CRITICAL --category security \
+        --flagged-by claude) >/dev/null 2>&1 &&
+   [[ ! -f "$repo/.aishot/review.json" ]]
+then
+  pass "invalid --level is rejected and writes no artifact"
+else
+  fail "invalid --level should exit non-zero and write nothing"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 12: --id updates only the passed fields (status + flagged_by union),
+# preserving the rest, and bumps nothing else improperly.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(
+  cd "$repo" &&
+  "$script" git diff review record-finding --title "leak" --description "fd leak" \
+    --level medium --category reliability --flagged-by claude
+) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+fid=$(jq -r '.findings[0].id' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" \
+   --status addressed --flagged-by gemini) >/dev/null 2>&1
+if [[ $(jq -r '.findings[0].status' "$rj") == addressed ]] &&
+   [[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj") == claude,gemini ]] &&
+   [[ $(jq -r '.findings[0].title' "$rj") == leak ]] &&
+   [[ $(jq -r '.findings[0].level' "$rj") == medium ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "--id update touches only passed fields, preserves the rest"
+else
+  fail "--id update mishandled field preservation"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 13: validate catches a hand-corrupted artifact (bad enum) non-zero.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+jq '.findings[0].category="nonsense"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+if ! (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "validate rejects a hand-corrupted enum"
+else
+  fail "validate should reject an invalid category"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 14: print --format=json emits valid JSON of the artifact.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category testing --flagged-by codex) >/dev/null 2>&1
+if (cd "$repo" && "$script" git diff review print --format=json 2>/dev/null) | jq -e '.findings|length==1' >/dev/null
+then
+  pass "print --format=json emits valid artifact JSON"
+else
+  fail "print --format=json did not emit valid JSON"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 15: begin initializes the envelope at iteration 1 with the diff
+# embedded and an empty findings array.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+if [[ -f $rj ]] &&
+   [[ $(jq -r '.iterations' "$rj") -eq 1 ]] &&
+   [[ $(jq -r '.findings|length' "$rj") -eq 0 ]] &&
+   [[ -n $(jq -r '.diff' "$rj") ]] &&
+   [[ $(jq -r '.lineage|length' "$rj") -eq 36 ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "begin initializes envelope (iter 1, diff embedded, empty findings)"
+else
+  fail "begin did not initialize a valid iteration-1 envelope"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 16: begin on the same base bumps iterations and carries findings,
+# keeping the same lineage.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+l1=$(jq -r '.lineage' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --flagged-by claude) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+if [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+   [[ $(jq -r '.findings|length' "$rj") -eq 1 ]] &&
+   [[ $(jq -r '.lineage' "$rj") == "$l1" ]]
+then
+  pass "begin (same base) bumps iterations, carries findings, keeps lineage"
+else
+  fail "begin same-base bump/carry/lineage incorrect"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 17: a moved base (simulated by rewriting the stored base_sha)
+# archives the prior review and resets to a fresh series.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+l1=$(jq -r '.lineage' "$rj")
+jq '.base_sha="deadbeefdeadbeefdeadbeef"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+if [[ $(jq -r '.iterations' "$rj") -eq 1 ]] &&
+   [[ $(jq -r '.findings|length' "$rj") -eq 0 ]] &&
+   [[ $(jq -r '.lineage' "$rj") != "$l1" ]] &&
+   [[ $(ls "$repo"/.aishot/review.bak.*.json 2>/dev/null | wc -l) -eq 1 ]]
+then
+  pass "moved base archives prior and resets to a fresh series"
+else
+  fail "base-move archive/reset incorrect"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 18: begin --fresh archives the prior and starts a new lineage.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+l1=$(jq -r '.lineage' "$rj")
+(cd "$repo" && "$script" git diff review begin --fresh) >/dev/null 2>&1
+if [[ $(jq -r '.iterations' "$rj") -eq 1 ]] &&
+   [[ $(jq -r '.lineage' "$rj") != "$l1" ]] &&
+   [[ $(ls "$repo"/.aishot/review.bak.*.json 2>/dev/null | wc -l) -eq 1 ]]
+then
+  pass "begin --fresh archives prior and starts a new lineage"
+else
+  fail "begin --fresh did not archive + reset lineage"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 19: a review with prior findings inlines them (compact JSON) into
+# the prompt so the iteration can judge them; a first-run review does not.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+# First run: no prior findings -> no prior-findings section.
+out_first=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
+# Record a finding, then re-build the prompt: it must now be inlined.
+(cd "$repo" && "$script" git diff review record-finding \
+   --title "unchecked error" --description "err ignored" --level medium \
+   --category correctness --flagged-by claude) >/dev/null 2>&1
+out_second=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
+if [[ $out_first != *'Prior review findings'* ]] &&
+   [[ $out_second == *'Prior review findings'* ]] &&
+   [[ $out_second == *'unchecked error'* ]]
+then
+  pass "prior findings are inlined on later iterations, absent on the first"
+else
+  fail "prior-findings inlining incorrect (first has none, later has them)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 20: a full review run records findings via record-finding (synthesis
+# path) and renders review.md — with the shot binaries mocked so no real
+# LLM is invoked. The mocked claudeshot plays both roles: as a reviewer it
+# emits a report; as the synthesis step (detected by the preamble marker)
+# it calls record-finding. Validates the plumbing, not LLM behavior.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+mockbin=$(mktemp -d)
+state=$(mktemp -d)
+cat > "$mockbin/codexshot" <<'M'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "codex: possible nil deref at foo.go:10"
+M
+cat > "$mockbin/claudeshot" <<M
+#!/usr/bin/env bash
+input=\$(cat)
+if [[ \$input == *"SYNTHESIS step"* ]]
+then
+  "$script" git diff review record-finding --title "nil deref" \
+    --description "possible nil deref" --level high --category correctness \
+    --flagged-by claude,codex --file foo.go --line 10 >/dev/null 2>&1
+  echo "recorded 1 findings"
+else
+  echo "claude: nil deref risk at foo.go:10"
+fi
+M
+chmod +x "$mockbin/codexshot" "$mockbin/claudeshot"
+(
+  cd "$repo" &&
+  PATH="$mockbin:$PATH" XDG_STATE_HOME="$state" AISHOT_MAX_PROMPT_CHARS=10000000 \
+    "$script" git diff review
+) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+if [[ $(jq '.findings|length' "$rj" 2>/dev/null) -eq 1 ]] &&
+   [[ $(jq -r '.findings[0].title' "$rj") == "nil deref" ]] &&
+   [[ -f "$repo/.aishot/review.md" ]] &&
+   grep -q 'nil deref' "$repo/.aishot/review.md" &&
+   grep -q 'mode: review' "$state"/aishot/runs/*/meta.txt
+then
+  pass "full review run records findings via synthesis + renders review.md"
+else
+  fail "review run did not populate review.json/review.md via record-finding"
+fi
+rm -rf "$repo" "$mockbin" "$state"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
