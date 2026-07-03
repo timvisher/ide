@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
-kubens "$@"
+kubectx "$@"
 timvisher_kctx__agent_bootstrap_and_fire
