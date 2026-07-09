@@ -10,6 +10,13 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/gh.bash ||
+  {
+    echo "Unable to source gh functions" >&2
+    exit 1
+  }
+
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
@@ -175,7 +182,18 @@ get_org() {
     die "get_org: Unable to extract org from '${source}'"
   fi
 
-  printf '%s' "${org_aliases[${org}]:-${org}}"
+  if [[ -z ${org_aliases[$org]:-} ]]
+  then
+    printf '%s' "$org"
+    return 0
+  fi
+
+  local repo resolved
+  repo=$(get_repo "$source") ||
+    die "get_org: unable to derive repo from '${source}' to resolve alias '${org}'"
+  resolved=$(timvisher_gh__owner_for_repo "$org" "$repo" "${org_aliases[$org]}") ||
+    die "get_org: could not resolve org for '${org}/${repo}' — not found in any candidate org (${org_aliases[$org]}), or GitHub unreachable / wrong gh account. To force a re-probe: rm ~/.cache/timvisher_gh/repo_owner/${org}/${repo}"
+  printf '%s' "$resolved"
 }
 
 get_repo() {
@@ -218,13 +236,23 @@ normalize_pr_url() {
   printf '%s' "$source"
 }
 
+pr_owner_from_url() {
+  local source
+  source=$(normalize_pr_url "$1")
+  [[ $source =~ ^https://github.com/([^/]+)/[^/]+/pull/[0-9]+$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
 pr_head_ref_name() {
   local source=$1 head_ref
 
   command -v gh >/dev/null 2>&1 || return 1
 
   source=$(normalize_pr_url "$source")
-  head_ref=$(gh pr view "$source" --json headRefName --jq .headRefName 2>/dev/null) ||
+  head_ref=$(
+    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
+    gh pr view "$source" --json headRefName --jq .headRefName 2>/dev/null
+  ) ||
     return 1
 
   [[ -n $head_ref ]] || return 1
@@ -238,7 +266,10 @@ pr_base_ref_name() {
   command -v gh >/dev/null 2>&1 || return 1
 
   source=$(normalize_pr_url "$source")
-  base_ref=$(gh pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null) ||
+  base_ref=$(
+    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
+    gh pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null
+  ) ||
     return 1
 
   [[ -n $base_ref ]] || return 1
@@ -278,8 +309,11 @@ pr_head_repo_spec() {
   command -v gh >/dev/null 2>&1 || return 1
 
   source=$(normalize_pr_url "$source")
-  head_repo_spec=$(gh pr view "$source" --json headRepository,headRepositoryOwner \
-    --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null) ||
+  head_repo_spec=$(
+    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
+    gh pr view "$source" --json headRepository,headRepositoryOwner \
+      --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null
+  ) ||
     return 1
 
   # GitHub returns null for headRepository.name when the fork has been
@@ -1466,9 +1500,13 @@ ensure_worktree() {
         # the local branch has diverged from the remote PR tip.
         info "PR branch ‘%s’ already checked out; skipping gh pr checkout" "$current_branch"
       else
-        local pr_url
+        local pr_url pr_owner
         pr_url=$(normalize_pr_url "$source")
-        gh pr checkout "$pr_url" >&2 ||
+        pr_owner=$(pr_owner_from_url "$source") || pr_owner=
+        (
+          [[ -n $pr_owner ]] && timvisher_gh__pin_token_for_owner "$pr_owner" >/dev/null 2>&1
+          gh pr checkout "$pr_url" >&2
+        ) ||
           {
             error "Failed to checkout PR source ‘${source}’"
             errors=1
@@ -2686,7 +2724,10 @@ worktree_gc__reap_reason() {
     pr_num=$(grep -oE '/pull/[0-9]+' <<<"$url" | grep -oE '[0-9]+' | head -1)
     if [[ -n $pr_num ]]; then
       local state
-      state=$(gh pr view "$url" --json state -q .state 2>/dev/null)
+      state=$(
+        local o; o=$(pr_owner_from_url "$url") && timvisher_gh__pin_token_for_owner "$o" >/dev/null 2>&1
+        gh pr view "$url" --json state -q .state 2>/dev/null
+      )
       if [[ $state == MERGED ]]; then
         printf 'PR #%s merged' "$pr_num"
         return 0
@@ -2704,8 +2745,11 @@ worktree_gc__reap_reason() {
   if (( have_gh )) && [[ -n $gh_repo ]]; then
     local branch_name="${branch_ref#refs/heads/}"
     local merged_pr
-    merged_pr=$(gh pr list --repo "$gh_repo" --head "$branch_name" \
-      --state merged --json number -q '.[0].number' 2>/dev/null)
+    merged_pr=$(
+      timvisher_gh__pin_token_for_owner "${gh_repo%%/*}" >/dev/null 2>&1
+      gh pr list --repo "$gh_repo" --head "$branch_name" \
+        --state merged --json number -q '.[0].number' 2>/dev/null
+    )
     if [[ -n $merged_pr ]]; then
       printf 'PR #%s merged' "$merged_pr"
       return 0

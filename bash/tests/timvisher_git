@@ -399,6 +399,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# get_org alias resolution (dynamic org router)
+# ---------------------------------------------------------------------------
+# An alias whose value is a preferred-first candidate list is resolved to the
+# org that actually hosts the repo by the gh-layer resolver. Here we drive that
+# via a pre-populated cache so the resolution is exercised without a network
+# probe. org_aliases is repopulated from the config file by the later
+# source_timvisher_git call, so setting it here is local to these tests.
+org_aliases[dd]="ddoghq,DataDog"
+export TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache"
+mkdir -p "$tmpdir/ghcache/repo_owner/dd"
+printf 'DataDog' > "$tmpdir/ghcache/repo_owner/dd/appgate"
+printf 'ddoghq'  > "$tmpdir/ghcache/repo_owner/dd/dd-source"
+
+run_test
+result=$(get_org "dd/appgate/some/branch")
+if [[ $result == "DataDog" ]]
+then
+  pass "get_org resolves alias dd/appgate -> DataDog (cached)"
+else
+  fail "get_org alias dd/appgate: expected 'DataDog', got '${result}'"
+fi
+
+run_test
+result=$(get_org "dd/dd-source/feature")
+if [[ $result == "ddoghq" ]]
+then
+  pass "get_org resolves alias dd/dd-source -> ddoghq (cached)"
+else
+  fail "get_org alias dd/dd-source: expected 'ddoghq', got '${result}'"
+fi
+
+# A non-alias org passes through untouched — no resolution, no probe.
+run_test
+result=$(get_org "DataDog/appgate/x")
+if [[ $result == "DataDog" ]]
+then
+  pass "get_org passes canonical org through untouched"
+else
+  fail "get_org canonical passthrough: expected 'DataDog', got '${result}'"
+fi
+
+# An unresolvable alias (cache miss, no candidate hosts it) dies loudly rather
+# than falling back to a wrong org. With an empty gh config dir the resolver
+# has no account to pin and the mock gh 404s every /repos probe.
+# Called in a subshell, as every real caller does ($(get_org ...)), so the
+# die's exit is contained.
+run_test
+if ( TIMVISHER_GH_CONFIG_DIR="$tmpdir/gh-noaccounts" \
+     get_org "dd/ghost-repo/x" ) >/dev/null 2>&1
+then
+  fail "get_org should die when an alias can't be resolved"
+else
+  pass "get_org dies when an alias can't be resolved"
+fi
+
+# ---------------------------------------------------------------------------
 # normalize_pr_url tests
 # ---------------------------------------------------------------------------
 
@@ -430,6 +486,29 @@ then
   pass "normalize_pr_url passes through non-PR URL"
 else
   fail "normalize_pr_url non-PR: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# pr_owner_from_url tests (drives per-owner gh account pinning)
+# ---------------------------------------------------------------------------
+
+# Test: extracts owner from a PR URL (with trailing path)
+run_test
+result=$(pr_owner_from_url "https://github.com/ddoghq/dd-source/pull/14789/files")
+if [[ $result == "ddoghq" ]]
+then
+  pass "pr_owner_from_url extracts owner from PR URL"
+else
+  fail "pr_owner_from_url: expected 'ddoghq', got '${result}'"
+fi
+
+# Test: returns non-zero for a non-PR URL
+run_test
+if pr_owner_from_url "DataDog/appgate" >/dev/null 2>&1
+then
+  fail "pr_owner_from_url should return non-zero for a non-PR source"
+else
+  pass "pr_owner_from_url returns non-zero for a non-PR source"
 fi
 
 # ---------------------------------------------------------------------------

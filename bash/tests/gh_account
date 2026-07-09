@@ -115,6 +115,97 @@ then pass "pin_token_for_owner: token failure returns non-zero, no GH_TOKEN"
 else fail "pin_token_for_owner: token failure should return non-zero without setting GH_TOKEN"
 fi
 
+# --- owner_for_repo: preferred-first probe, first 200 wins, cache, die-signal ---
+# Mock gh: mints a per-account token and reports which /repos/<org>/<repo>
+# exist, scoped by the pinned token (mirrors disjoint-org accounts — the
+# ddoghq token can't see DataDog and vice versa).
+mkdir -p "$cfg/orgs/DataDog"
+printf 'timvisher-dd\n' > "$cfg/orgs/DataDog/account"
+
+mkdir -p "$tmpdir/mockbin2"
+cat > "$tmpdir/mockbin2/gh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == auth && $2 == token ]]; then
+  # Echo a token naming the account so the api handler can scope visibility.
+  for ((i=1;i<=$#;i++)); do
+    [[ ${!i} == --user ]] && { j=$((i+1)); echo "tok:${!j}"; exit 0; }
+  done
+  echo "tok:active"; exit 0
+fi
+if [[ $1 == api && $2 == /repos/* ]]; then
+  spec=${2#/repos/}
+  # ddoghq account (tok:tim-visher_ddog) sees: ddoghq/dd-source, ddoghq/both
+  # DataDog account (tok:timvisher-dd)  sees: DataDog/appgate, DataDog/both, DataDog/dd-source
+  case "${GH_TOKEN:-}:${spec}" in
+    tok:tim-visher_ddog:ddoghq/dd-source) exit 0 ;;
+    tok:tim-visher_ddog:ddoghq/both)      exit 0 ;;
+    tok:timvisher-dd:DataDog/appgate)     exit 0 ;;
+    tok:timvisher-dd:DataDog/both)        exit 0 ;;
+    tok:timvisher-dd:DataDog/dd-source)   exit 0 ;;
+    *) exit 1 ;;
+  esac
+fi
+exit 1
+MOCK
+chmod +x "$tmpdir/mockbin2/gh"
+mgh="$tmpdir/mockbin2/gh"
+
+export TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache"
+
+owner_is() { # want alias repo candidates
+  local want=$1 alias=$2 repo=$3 cands=$4 got rc
+  run_test
+  got=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
+        timvisher_gh__owner_for_repo "$alias" "$repo" "$cands" "$mgh") && rc=0 || rc=$?
+  if [[ $rc -eq 0 && $got == "$want" ]]
+  then pass "owner_for_repo $alias/$repo [$cands] -> $want"
+  else fail "owner_for_repo $alias/$repo [$cands]: want '$want', got '$got' (rc=$rc)"
+  fi
+}
+
+# appgate only in DataDog: ddoghq probed first (404), falls back to DataDog.
+owner_is DataDog dd appgate   "ddoghq,DataDog"
+# dd-source in both: ddoghq wins because it is preferred-first, even though
+# DataDog/dd-source also exists.
+owner_is ddoghq  dd dd-source "ddoghq,DataDog"
+# a repo in both, sanity: ddoghq preferred.
+owner_is ddoghq  dd both      "ddoghq,DataDog"
+
+# all candidates 404 -> non-zero, no output (caller turns this into a die).
+run_test
+if out=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
+         timvisher_gh__owner_for_repo dd ghost "ddoghq,DataDog" "$mgh" 2>/dev/null)
+then fail "owner_for_repo: absent repo should return non-zero (got '$out')"
+else
+  if [[ -z ${out:-} ]]
+  then pass "owner_for_repo: absent repo returns non-zero with no output"
+  else fail "owner_for_repo: absent repo printed '$out'"
+  fi
+fi
+
+# cache hit never probes: seed the cache, then point at a gh that always fails.
+run_test
+mkdir -p "$tmpdir/ghcache/repo_owner/dd"
+printf 'DataDog' > "$tmpdir/ghcache/repo_owner/dd/cached-repo"
+if [[ $(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
+        timvisher_gh__owner_for_repo dd cached-repo "ddoghq,DataDog" /bin/false) == "DataDog" ]]
+then pass "owner_for_repo: cache hit returns without probing"
+else fail "owner_for_repo: cache hit should return cached owner without probing"
+fi
+
+# a successful probe caches the answer: a second call with a gh that always
+# fails must still resolve, proving it came from the cache rather than a probe.
+run_test
+rm -rf "$tmpdir/ghcache"
+first=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
+  timvisher_gh__owner_for_repo dd dd-source "ddoghq,DataDog" "$mgh")
+second=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
+  timvisher_gh__owner_for_repo dd dd-source "ddoghq,DataDog" /bin/false)
+if [[ $first == "ddoghq" && $second == "ddoghq" ]]
+then pass "owner_for_repo: successful probe caches the answer"
+else fail "owner_for_repo: probe should cache (first='$first' second='$second')"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 (( failures == 0 ))
