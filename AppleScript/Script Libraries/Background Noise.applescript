@@ -62,7 +62,7 @@ on volumeDown()
 	
 	if application "Spotify" is running then
 		tell application "Spotify"
-			set sound volume to 10
+			set sound volume to 2
 		end tell
 	end if
 	
@@ -81,6 +81,8 @@ on volumeDown()
 	
 	set volume output volume targetOutputVolume
 end volumeDown
+
+-- volumeDown()
 
 on getCurrentBackgroundNoise()
 	
