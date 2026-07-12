@@ -191,7 +191,7 @@ def main(argv=None):
 
     name = f"{adjectives[adj_i]}{sep}{nouns[noun_i]}"
     if args.prefix:
-        prefix = re.sub(r"[^A-Za-z0-9]+", lambda _m: sep, args.prefix).strip(sep)
+        prefix = re.sub(r"\W+", lambda _m: sep, args.prefix).strip(sep)
         if prefix:
             name = f"{prefix}{sep}{name}"
     print(name)
