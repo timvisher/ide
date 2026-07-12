@@ -59,6 +59,21 @@ def permute(block):
     return y
 
 
+def _feistel_inv(y):
+    left = (y >> HALF_BITS) & HALF_MASK
+    right = y & HALF_MASK
+    for r in reversed(range(FEISTEL_ROUNDS)):
+        left, right = right ^ _round_f(r, left), left
+    return (left << HALF_BITS) | right
+
+
+def permute_inv(index):
+    x = _feistel_inv(index)
+    while x >= DOMAIN:
+        x = _feistel_inv(x)
+    return x
+
+
 def _load_wordlist(path, expected):
     words = []
     with open(path, encoding="ascii") as f:
@@ -154,6 +169,29 @@ def next_counter(sdir):
         os.close(lock_fd)
 
 
+def decode_name(name, sep, adjectives, nouns):
+    parts = name.split(sep)
+    if len(parts) < 2:
+        die(f"cannot parse {name!r}: expected <adjective>{sep}<noun>")
+    adj, noun = parts[-2], parts[-1]
+    adj_map = {w: i for i, w in enumerate(adjectives)}
+    noun_map = {w: i for i, w in enumerate(nouns)}
+    if adj not in adj_map:
+        die(f"unknown adjective {adj!r}")
+    if noun not in noun_map:
+        die(f"unknown noun {noun!r}")
+    block = permute_inv(adj_map[adj] * NOUN_COUNT + noun_map[noun])
+    machine_id = block >> COUNTER_BITS
+    counter = block & (COUNTER_CAP - 1)
+    if machine_id > MACHINE_MASK:
+        die(f"{name!r} is a valid word pair but not a name mkname would generate")
+    fields = f"machine_id={machine_id} counter={counter} adjective={adj} noun={noun}"
+    prefix = sep.join(parts[:-2])
+    if prefix:
+        fields += f" prefix={prefix!r}"
+    print(fields)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="timvisher_mkname",
@@ -173,12 +211,22 @@ def main(argv=None):
         default=None,
         help="assign/override this machine's slot (0..%d); persisted" % MACHINE_MASK,
     )
+    parser.add_argument(
+        "--decode",
+        metavar="NAME",
+        help="reverse a generated name to its machine id and counter",
+    )
     args = parser.parse_args(argv)
     sep = args.separator
     if len(sep) != 1:
         die("--separator must be a single character")
 
     adjectives, nouns = load_wordlists()
+
+    if args.decode is not None:
+        decode_name(args.decode, sep, adjectives, nouns)
+        return
+
     sdir = state_dir()
     os.makedirs(sdir, exist_ok=True)
 
