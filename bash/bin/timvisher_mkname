@@ -169,11 +169,11 @@ def next_counter(sdir):
         os.close(lock_fd)
 
 
-def decode_name(name, sep, adjectives, nouns):
-    parts = name.split(sep)
-    if len(parts) < 2:
-        die(f"cannot parse {name!r}: expected <adjective>{sep}<noun>")
-    adj, noun = parts[-2], parts[-1]
+def decode_name(name, adjectives, nouns):
+    matches = list(re.finditer(r"[a-z]+", name))
+    if len(matches) < 2:
+        die(f"cannot parse {name!r}: expected an adjective and a noun")
+    adj, noun = matches[-2].group(), matches[-1].group()
     adj_map = {w: i for i, w in enumerate(adjectives)}
     noun_map = {w: i for i, w in enumerate(nouns)}
     if adj not in adj_map:
@@ -186,7 +186,7 @@ def decode_name(name, sep, adjectives, nouns):
     if machine_id > MACHINE_MASK:
         die(f"{name!r} is a valid word pair but not a name mkname would generate")
     fields = f"machine_id={machine_id} counter={counter} adjective={adj} noun={noun}"
-    prefix = sep.join(parts[:-2])
+    prefix = re.sub(r"^\W+|\W+$", "", name[: matches[-2].start()])
     if prefix:
         fields += f" prefix={prefix!r}"
     print(fields)
@@ -203,7 +203,7 @@ def main(argv=None):
     parser.add_argument(
         "--separator",
         default="-",
-        help="separator between adjective and noun (default: -)",
+        help="single word-boundary character between words (default: -)",
     )
     parser.add_argument(
         "--machine-id",
@@ -218,13 +218,16 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     sep = args.separator
-    if len(sep) != 1:
-        die("--separator must be a single character")
+    if not re.fullmatch(r"\W", sep):
+        die(
+            "--separator must be a single word-boundary character "
+            "(punctuation or space), not a letter, digit, or underscore"
+        )
 
     adjectives, nouns = load_wordlists()
 
     if args.decode is not None:
-        decode_name(args.decode, sep, adjectives, nouns)
+        decode_name(args.decode, adjectives, nouns)
         return
 
     sdir = state_dir()
