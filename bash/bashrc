@@ -202,6 +202,16 @@ then
   export PATH=~/.config/timvisher/ide/bash/bin:$PATH
 fi
 
+##########################################################################
+### Touch ID for sudo (self-completing)
+##########################################################################
+
+# Called on every interactive shell. ALL the gating (macOS, Touch ID present, a
+# tty, whether it still needs doing) lives in the command, which is a cheap
+# silent no-op once configured. Keeps install.bash unattended — the one sudo
+# prompt happens here, on the first attended shell of a fresh Mac.
+enable-touchid-sudo
+
 # Local Variables:
 # sh-basic-offset: 2
 # End:

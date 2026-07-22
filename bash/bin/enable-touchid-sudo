@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+
+# Enable Touch ID for sudo (including inside tmux/screen) by writing
+# /etc/pam.d/sudo_local, which /etc/pam.d/sudo already `include`s and which
+# SURVIVES macOS updates (unlike editing /etc/pam.d/sudo directly).
+#
+# This is safe to run on EVERY interactive shell (~/.bashrc calls it), so a
+# fresh machine self-completes the first time it's used at a real terminal while
+# install.bash stays fully unattended. Accordingly it:
+#   - is cheap + silent when already configured (the common per-shell case),
+#   - no-ops off-macOS and on Macs without a Touch ID sensor,
+#   - is ATTENDED-ONLY: the parts that need a password (the sudo write) or the
+#     network (the one-time `brew install pam-reattach`) run only when stdin is
+#     a terminal. Unattended contexts (install.bash piped, CI) skip and a later
+#     interactive shell finishes the job.
+#
+# pam_reattach (from Homebrew) is required for Touch ID inside tmux. If it can't
+# be obtained yet, this SKIPS rather than writing a tmux-broken config, and
+# retries on a later shell. `brew install` needs no sudo; only the sudo_local
+# write does -- and that first sudo authenticates with your PASSWORD, since
+# Touch ID isn't active yet.
+
+# macOS only. $OSTYPE is a bash builtin, so non-mac shells pay nothing.
+if [[ $OSTYPE != darwin* ]]
+then
+    exit 0
+fi
+
+# Locate pam_reattach (Apple Silicon: /opt/homebrew, Intel: /usr/local).
+reattach=""
+for prefix in /opt/homebrew /usr/local
+do
+    if [[ -f $prefix/lib/pam/pam_reattach.so ]]
+    then
+        reattach="$prefix/lib/pam/pam_reattach.so"
+        break
+    fi
+done
+
+# The functional (non-comment) lines sudo_local should contain, given what's
+# installed right now.
+want_lines() {
+    if [[ -n $reattach ]]
+    then
+        printf 'auth       optional       %s\n' "$reattach"
+    fi
+    printf 'auth       sufficient     pam_tid.so\n'
+}
+
+# FAST PATH: already configured (with pam_reattach present) -> nothing to do.
+# Silent, and cheap (no sudo, no ioreg) -- this is what runs on every shell.
+have_lines=$(grep -Ev '^[[:space:]]*(#|$)' /etc/pam.d/sudo_local 2>/dev/null)
+if [[ -n $reattach && $have_lines == "$(want_lines)" ]]
+then
+    exit 0
+fi
+
+# --- below here we intend to (re)configure --------------------------------
+
+# Touch ID hardware + PAM module actually present?
+if ! ioreg -c AppleBiometricSensor 2>/dev/null | grep -qi AppleBiometricSensor
+then
+    exit 0
+fi
+
+if [[ ! -e /usr/lib/pam/pam_tid.so.2 && ! -e /usr/lib/pam/pam_tid.so ]]
+then
+    exit 0
+fi
+
+# Attended only: the brew install and the sudo write need a human at a terminal.
+# Unattended -> skip silently; a later interactive shell completes it.
+if [[ ! -t 0 ]]
+then
+    exit 0
+fi
+
+# pam_reattach is required (tmux support). Obtain it via Homebrew, or SKIP (do
+# not write a degraded, tmux-broken config) and retry on a later shell.
+if [[ -z $reattach ]]
+then
+    if ! command -v brew >/dev/null 2>&1
+    then
+        echo "enable-touchid-sudo: Homebrew needed for pam-reattach; skipping (retries once brew is present)." >&2
+        exit 0
+    fi
+    echo "enable-touchid-sudo: installing pam-reattach (one-time; Touch ID inside tmux)"
+    if ! brew install pam-reattach
+    then
+        echo "enable-touchid-sudo: 'brew install pam-reattach' failed; will retry next shell." >&2
+        exit 0
+    fi
+    reattach="$(brew --prefix)/lib/pam/pam_reattach.so"
+    if [[ ! -f $reattach ]]
+    then
+        echo "enable-touchid-sudo: pam_reattach.so missing after install; will retry next shell." >&2
+        exit 0
+    fi
+fi
+
+# Write /etc/pam.d/sudo_local. Needs root -> one password prompt. Compose to a
+# temp file first; register the cleanup trap BEFORE creating the temp file.
+tmp=""
+cleanup() {
+    if [[ -n $tmp ]]
+    then
+        rm -f -- "$tmp"
+    fi
+}
+trap cleanup EXIT
+
+tmp=$(mktemp) || exit 0
+
+{
+    echo "# Managed by ~/git/ide/bash/bin/enable-touchid-sudo — Touch ID for sudo."
+    echo "# In sudo_local so it survives macOS updates (/etc/pam.d/sudo includes it)."
+    want_lines
+} > "$tmp"
+
+echo "enable-touchid-sudo: enabling Touch ID for sudo (one-time; sudo will ask for your password)"
+if sudo cp -- "$tmp" /etc/pam.d/sudo_local && sudo chmod 444 /etc/pam.d/sudo_local
+then
+    echo "enable-touchid-sudo: done — Touch ID now works for sudo in new shells (including tmux)."
+else
+    echo "enable-touchid-sudo: could not write /etc/pam.d/sudo_local; will retry next shell." >&2
+    exit 0
+fi
