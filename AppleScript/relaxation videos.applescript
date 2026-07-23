@@ -75,8 +75,6 @@ on error errStr number errorNumber
 	error errStr number errorNumber
 end try
 
-tell application "VLC" to next
-
 tell script "timvisher utilities" to doShellScript({"open", "-a", "VLC", "-n"})
 
 tell application "System Events"
