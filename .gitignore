@@ -7,5 +7,6 @@ pr.md
 __pycache__/
 *.pyc
 emacs/emacs.d/agent/
+emacs/emacs.d/projectile-frecency.eld
 !AGENTS.md
 !CLAUDE.md
