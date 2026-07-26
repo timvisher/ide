@@ -744,10 +744,10 @@ over the code-block language minibuffer prompt."
         clojure-mode-extra-font-locking coffee-mode csv-mode
         dockerfile-mode eat edit-indirect expand-region fixme-mode go-mode
         htmlize ido-ubiquitous ido-vertical-mode inheritenv jq-mode
-        langtool mediawiki org-contrib orgit outline-indent ox-slack
-        paredit php-mode polymode projectile protobuf-mode sed-mode smex
-        swift-mode terraform-mode typescript-mode vterm websocket xclip
-        yaml-mode))
+        langtool markdown-mode mediawiki org-contrib orgit outline-indent
+        ox-slack paredit php-mode polymode projectile protobuf-mode
+        sed-mode smex swift-mode terraform-mode typescript-mode vterm
+        websocket xclip yaml-mode))
  '(package-vc-selected-packages
    '((claude-code :url "https://github.com/stevemolitor/claude-code.el")
      (monet :url "https://github.com/stevemolitor/monet")))
