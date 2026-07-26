@@ -216,11 +216,6 @@ enable-touchid-sudo
 # sh-basic-offset: 2
 # End:
 
-. "$HOME/.config/dogbrew/env"
-
-# Trajectory - AI coding agent observability
-export PATH="/Users/tim.visher/.trajectory/bin:$PATH"
-
 if [[ -t 0 ]]
 then
   timvisher_kctx__agent_bootstrap_and_fire

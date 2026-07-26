@@ -26,5 +26,3 @@ if [[ -r ~/.config/timvisher/ide/bash/bash_profile ]]
 then
   source ~/.config/timvisher/ide/bash/bash_profile
 fi
-
-. "$HOME/.config/dogbrew/env"
