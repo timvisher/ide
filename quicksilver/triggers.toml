@@ -44,7 +44,7 @@ run = "ide:AppleScript/toggle sound output.applescript"
 
 [[trigger]]
 hotkey = "cmd+f4"
-open = "/Applications/Fantastical.app"
+run = "ide:AppleScript/calendar - cold start.applescript"
 
 [[trigger]]
 hotkey = "ctrl+opt+cmd+home"
