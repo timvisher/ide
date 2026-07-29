@@ -85,6 +85,8 @@ usage() {
   comment edit subcommand:
     - Requires <file>.url to exist
     - Updates the existing comment with contents of <file>
+    - Handles both top-level PR/issue comments (#issuecomment-<ID>)
+      and inline review-thread replies (#discussion_r<ID>)
 
   comment reply subcommand:
     - Replies to a PR review comment (inline discussion thread)
@@ -566,13 +568,16 @@ gh_comment_edit() {
   [[ -n $comment_url ]] ||
     die "'%s.url' is empty" "$comment_file"
 
-  # Extract owner/repo and comment ID from the URL.
-  # Format: https://github.com/OWNER/REPO/pull/N#issuecomment-ID
-  local o n comment_id
-  IFS=/ read -r _ _ _ o n _ <<<"$comment_url"
-  comment_id=${comment_url##*issuecomment-}
-
-  local comment_path="/repos/${o}/${n}/issues/comments/${comment_id}"
+  local comment_path
+  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
+  then
+    comment_path="/repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}"
+  elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
+  then
+    comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
+  else
+    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
+  fi
 
   gh api \
      --method PATCH \
