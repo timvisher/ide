@@ -99,6 +99,8 @@ usage() {
     - Prompts for confirmation before deleting, unless --force is given
       (intended for batch cleanup of many tracked comments)
     - Removes <file>.url on successful deletion
+    - Handles both top-level PR/issue comments (#issuecomment-<ID>)
+      and inline review-thread replies (#discussion_r<ID>)
 
   info subcommand:
     - Queries metadata about the current repository via GitHub API
@@ -667,13 +669,16 @@ gh_comment_delete() {
 
   info 'Found comment URL: %s' "$comment_url"
 
-  # Extract owner/repo and comment ID from the URL.
-  # Format: https://github.com/OWNER/REPO/pull/N#issuecomment-ID
-  local o n comment_id
-  IFS=/ read -r _ _ _ o n _ <<<"$comment_url"
-  comment_id=${comment_url##*issuecomment-}
-
-  local comment_path="/repos/${o}/${n}/issues/comments/${comment_id}"
+  local comment_path
+  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
+  then
+    comment_path="/repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}"
+  elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
+  then
+    comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
+  else
+    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
+  fi
 
   if ! gh api --method HEAD "${comment_path}" 2>/dev/null
   then
