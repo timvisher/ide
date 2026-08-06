@@ -5,7 +5,8 @@
 ;; Author: Arne Brasseur <arne@arnebrasseur.net>
 ;; Keywords: lisp clojure edn parser
 ;; Package-Requires: ((emacs "25"))
-;; Version: 1.1.1
+;; Package-Version: 1.1.1
+;; Package-Revision: v1.1.1-0-g6af22372e0fe
 
 ;; This file is not part of GNU Emacs.
 

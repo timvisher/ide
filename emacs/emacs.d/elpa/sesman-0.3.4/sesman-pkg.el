@@ -1,12 +1,8 @@
-(define-package "sesman" "0.3.4" "Generic Session Manager"
+;; -*- no-byte-compile: t; lexical-binding: nil -*-
+(define-package "sesman" "0.3.4"
+  "Generic Session Manager."
   '((emacs "25"))
-  :commit "3df33018f1c42f09db21cebe39a25b389fe35f02" :keywords
-  '("process")
-  :authors
-  '(("Vitalie Spinu"))
-  :maintainer
-  '("Vitalie Spinu")
-  :url "https://github.com/vspinu/sesman")
-;; Local Variables:
-;; no-byte-compile: t
-;; End:
+  :url "https://github.com/vspinu/sesman"
+  :commit "3df33018f1c42f09db21cebe39a25b389fe35f02"
+  :revdesc "3df33018f1c4"
+  :keywords '("process"))

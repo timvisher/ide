@@ -6,7 +6,8 @@
 ;; URL: http://www.github.com/clojure-emacs/parseedn
 ;; Keywords: lisp clojure edn parser
 ;; Package-Requires: ((emacs "26") (parseclj "1.1.1") (map "2"))
-;; Version: 1.2.1
+;; Package-Version: 1.2.1
+;; Package-Revision: v1.2.1-0-g3407e4530a36
 
 ;; This file is not part of GNU Emacs.
 

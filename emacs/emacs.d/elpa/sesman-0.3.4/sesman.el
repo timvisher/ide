@@ -4,7 +4,8 @@
 ;; Author: Vitalie Spinu
 ;; URL: https://github.com/vspinu/sesman
 ;; Keywords: process
-;; Version: 0.3.3-DEV
+;; Package-Version: 0.3.4
+;; Package-Revision: 3df33018f1c4
 ;; Package-Requires: ((emacs "25"))
 ;; Keywords: processes, tools, vc
 ;;
