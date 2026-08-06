@@ -742,12 +742,12 @@ over the code-block language minibuffer prompt."
  '(package-selected-packages
    '(ag agent-shell bats-mode bazel better-defaults browse-kill-ring cider
         clojure-mode-extra-font-locking coffee-mode csv-mode
-        dockerfile-mode eat edit-indirect expand-region fixme-mode go-mode
-        htmlize ido-ubiquitous ido-vertical-mode inheritenv jq-mode
-        langtool markdown-mode mediawiki org-contrib orgit outline-indent
-        ox-slack paredit php-mode polymode projectile protobuf-mode
-        sed-mode smex swift-mode terraform-mode typescript-mode vterm
-        websocket xclip yaml-mode))
+        dockerfile-mode eat edit-indirect expand-region fixme-mode forge
+        go-mode htmlize ido-ubiquitous ido-vertical-mode inheritenv
+        jq-mode langtool magit markdown-mode mediawiki org-contrib
+        outline-indent ox-slack paredit php-mode polymode projectile
+        protobuf-mode sed-mode smex swift-mode terraform-mode
+        typescript-mode vterm websocket xclip yaml-mode))
  '(package-vc-selected-packages
    '((claude-code :url "https://github.com/stevemolitor/claude-code.el")
      (monet :url "https://github.com/stevemolitor/monet")))
