@@ -20,7 +20,7 @@ DEFAULT_REVIEWERS="claude,codex"
 REVIEW_SCHEMA_VERSION=1
 REVIEW_LEVELS="high medium low"
 REVIEW_CATEGORIES="correctness security performance reliability maintainability style testing docs"
-REVIEW_STATUSES="open addressed wontfix"
+REVIEW_STATUSES="open addressed wontfix refuted"
 REVIEW_REVIEWERS="claude codex gemini human"
 
 show_help() {
@@ -474,13 +474,18 @@ $(cat -- "$f")
            (( 0 < $(jq '.findings | length' "$review_json" 2>/dev/null || echo 0) ))
         then
             local prior_json prior_section
-            prior_json=$(jq -c '{iteration:.iterations, findings:[.findings[] | {id,file,line,level,category,title,description,status}]}' "$review_json")
+            prior_json=$(jq -c '{iteration:.iterations, findings:[.findings[] | {id,file,line,level,category,p0,title,description,status,refutation}]}' "$review_json")
             prior_section="## Prior review findings (this review has run before)
 
 The findings below were recorded in earlier iterations of this review, as
 compact JSON. For EACH one, judge from the CURRENT diff whether it is now
 addressed, still open, or indeterminate — carry the same finding \`id\`
 forward; do not re-derive it from scratch.
+
+Findings with \"status\":\"refuted\" were judged NOT to be real defects (see
+their \"refutation\"). Do NOT raise them again unless the current diff makes
+the refutation wrong. Findings with \"status\":\"addressed\" are fixed; only
+re-open one if the current diff shows it regressed.
 
 \`\`\`json
 ${prior_json}
@@ -526,9 +531,21 @@ the diff — there is no such thing as "not our commit" or "pre-existing".
 The person reading your review is responsible for everything in the diff
 and will act on every finding you report.
 
-Organize findings by severity:
-- **Findings**: file:line, severity (high/medium/low), description
-- **Missing Tests**: what test coverage gaps exist?
+For EVERY finding, classify it as P0 or non-P0 — this is the most important
+part of your output:
+- **P0** (must-fix): the change will produce a wrong result, data loss, a
+  crash, a security hole, a resource leak, or silently-incorrect behavior
+  for a real caller. A concrete defect someone will actually hit.
+- **non-P0**: everything else — style, naming, formatting, whitespace,
+  structure/refactor preferences, comments, docs, and missing tests. Report
+  these too (they are useful), but they are advisory, not blocking.
+Be conservative: default to non-P0 when unsure. A preference, a "consider",
+a "would be cleaner", or a coverage gap is NOT P0. Only real, demonstrable
+defects are P0.
+
+Organize findings by severity, and mark each [P0] or [non-P0]:
+- **Findings**: [P0|non-P0] file:line, severity (high/medium/low), description
+- **Missing Tests**: what test coverage gaps exist? (these are non-P0)
 - **Questions/Assumptions**: anything ambiguous or worth calling out
 
 HEADER
@@ -900,25 +917,43 @@ The JSON lists findings carried over from earlier iterations, each with an
 
 STEP 2 — Record NEW findings. Merge and deduplicate across the reports
 below (ONE finding per distinct issue, even when several reviewers raised
-it). For each distinct issue NOT already in the prior JSON, run:
+it). Do NOT re-record any issue already present in the prior JSON (match by
+substance, not exact wording) — those are handled in STEP 3. For each
+distinct issue NOT already in the prior JSON, run:
     aishot git diff review record-finding \
       --title "<one line>" --description "<detail>" \
       --level high|medium|low \
       --category correctness|security|performance|reliability|maintainability|style|testing|docs \
+      --p0 true|false \
       --flagged-by <csv of reviewers that raised it: e.g. claude,codex> \
       [--file <path>] [--line <n>]
 
+--p0 is REQUIRED and is the most important field. Set it from the reviewers'
+[P0]/[non-P0] classification: --p0 true ONLY for a concrete defect a real
+caller will hit (wrong result, data loss, crash, security hole, resource
+leak, silently-incorrect behavior). Everything else — style, naming,
+formatting, refactor preferences, docs, and missing tests — is --p0 false.
+When reviewers disagree or you are unsure, record it as --p0 false. Record
+non-P0 findings too (they are useful), just never mark them P0.
+
 STEP 3 — Judge PRIOR findings. For each finding in the prior JSON, decide
-from the current reports whether the current diff resolves it. If clearly
-addressed, run:
-    aishot git diff review record-finding --id <that-id> --status addressed --flagged-by <reviewer>
-Leave still-open prior findings untouched.
+from the current reports and diff:
+- Clearly fixed by the current diff:
+    aishot git diff review record-finding --id <id> --status addressed --flagged-by <reviewer>
+- A P0 that is actually NOT a real defect (reviewers were wrong, or it is
+  intended/safe): refute it so it stops recurring:
+    aishot git diff review record-finding --id <id> --status refuted \
+      --rationale "<why it is not a real defect>" --flagged-by <reviewer>
+- Otherwise leave it untouched (still open).
+Never re-open a finding already marked addressed or refuted unless the
+current diff clearly shows the issue is (again) present.
 
 RULES:
 - NEVER hand-edit .aishot/review.json — only use record-finding.
 - Do NOT run other project tooling (bd, beads, todo, tests, builds) or set
   up the project.
-- Record EVERY distinct finding; do not drop, dismiss, or deprioritize any.
+- Record every distinct NEW finding (P0 and non-P0), each with a correct
+  --p0. Only P0 findings are must-fix; non-P0 are advisory.
 - When done, print one line: "recorded N findings".
 
 Reviewer reports follow.
@@ -1243,9 +1278,10 @@ _review_validate_file() {
     errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" '
       def envkeys: ["schema_version","lineage","iterations","branch","base_sha","head_sha","created","updated","diff","findings"];
       def fkeys: ["id","file","line","level","category","title","description","status","first_seen_iteration","last_seen_iteration","flagged_by"];
+      def okeys: ["p0","refutation"];
       def levels: ["high","medium","low"];
       def cats: ["correctness","security","performance","reliability","maintainability","style","testing","docs"];
-      def stats: ["open","addressed","wontfix"];
+      def stats: ["open","addressed","wontfix","refuted"];
       def revs: ["claude","codex","gemini","human"];
       def isint: (type=="number") and (. == floor);
       [
@@ -1257,10 +1293,12 @@ _review_validate_file() {
         (if (.findings|type)=="array" then empty else "findings must be an array" end),
         ((.findings // []) | to_entries[] | .key as $i | .value as $f |
           (fkeys[] as $k | select(($f|has($k))|not) | "finding[\($i)] missing key: \($k)"),
-          (($f|keys_unsorted[]) as $k | select((fkeys|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
+          (($f|keys_unsorted[]) as $k | select(((fkeys+okeys)|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
           (if (levels|index($f.level)) != null then empty else "finding[\($i)] invalid level: \($f.level)" end),
           (if (cats|index($f.category)) != null then empty else "finding[\($i)] invalid category: \($f.category)" end),
           (if (stats|index($f.status)) != null then empty else "finding[\($i)] invalid status: \($f.status)" end),
+          (if (($f|has("p0"))|not) or (($f.p0|type)=="boolean") then empty else "finding[\($i)] p0 must be boolean" end),
+          (if (($f|has("refutation"))|not) or (($f.refutation|type)=="string") then empty else "finding[\($i)] refutation must be a string" end),
           (if (($f.line)==null or ($f.line|isint)) then empty else "finding[\($i)] line must be int or null" end),
           (if (($f.title|type)=="string" and ($f.title|length)>0) then empty else "finding[\($i)] title required" end),
           (if (($f.description|type)=="string" and ($f.description|length)>0) then empty else "finding[\($i)] description required" end),
@@ -1382,7 +1420,8 @@ show_review_record_finding_help() {
     cat <<'EOF'
 Usage: aishot git diff review record-finding --title T --description D \
          --level high|medium|low --category CAT --flagged-by claude,codex \
-         [--file PATH] [--line N] [--status open|addressed|wontfix] [--id UUID]
+         [--p0 true|false] [--file PATH] [--line N] \
+         [--status open|addressed|wontfix|refuted] [--rationale TEXT] [--id UUID]
 
 Record (or update) one code-review finding in .aishot/review.json. This is
 the ONLY correct way to modify the review artifact — do NOT hand-edit the
@@ -1405,7 +1444,13 @@ Fields:
                  claude | codex | gemini | human. On update, unioned in.
   --file         (optional) path the finding is about.
   --line         (optional) integer line number.
-  --status       (optional) open | addressed | wontfix. Default: open.
+  --status       (optional) open | addressed | wontfix | refuted. Default: open.
+  --p0           (optional) true | false. true = a must-fix correctness/
+                 security/reliability defect that gates completion. Default:
+                 false (nit / non-blocking). Only P0 findings must be
+                 addressed or refuted; non-P0 findings are advisory.
+  --rationale    (optional) with --status refuted, why the P0 is not a real
+                 defect. Recorded and carried forward so it is not re-raised.
   --id           (optional) UUID of an existing finding to update.
 EOF
 }
@@ -1430,7 +1475,7 @@ do_review_record_finding() {
     _review_need_jq || return 1
 
     local title="" description="" file="" line="" level="" category="" \
-          flagged_by="" status="" id=""
+          flagged_by="" status="" id="" p0="" rationale=""
     while (( 0 < $# ))
     do
         case "$1" in
@@ -1442,6 +1487,8 @@ do_review_record_finding() {
             --category) category=$2; shift 2 ;;
             --flagged-by) flagged_by=$2; shift 2 ;;
             --status) status=$2; shift 2 ;;
+            --p0) p0=$2; shift 2 ;;
+            --rationale) rationale=$2; shift 2 ;;
             --id) id=$2; shift 2 ;;
             --help|-h) show_review_record_finding_help; return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; show_review_record_finding_help >&2; return 1 ;;
@@ -1464,6 +1511,8 @@ do_review_record_finding() {
         { echo "Error: invalid --category '${category}' (want: ${REVIEW_CATEGORIES})." >&2; return 1; }
     [[ -z $status ]] || _review_in_set "$status" "$REVIEW_STATUSES" ||
         { echo "Error: invalid --status '${status}' (want: ${REVIEW_STATUSES})." >&2; return 1; }
+    [[ -z $p0 || $p0 == true || $p0 == false ]] ||
+        { echo "Error: --p0 must be true or false." >&2; return 1; }
     if [[ -n $line && ! $line =~ ^[0-9]+$ ]]
     then
         echo "Error: --line must be a non-negative integer." >&2
@@ -1532,6 +1581,7 @@ do_review_record_finding() {
            --arg title "$title" --arg description "$description" \
            --arg file "$file" --argjson line "$line_json" \
            --arg level "$level" --arg category "$category" --arg status "$status" \
+           --arg p0 "$p0" --arg rationale "$rationale" \
            --argjson flagged "$flagged_json" '
           .updated=$now
           | .findings |= map(
@@ -1543,6 +1593,8 @@ do_review_record_finding() {
                 | (if $line!=null then .line=$line else . end)
                 | (if $level!="" then .level=$level else . end)
                 | (if $category!="" then .category=$category else . end)
+                | (if $p0!="" then .p0=($p0=="true") else . end)
+                | (if $rationale!="" then .refutation=$rationale else . end)
                 | .flagged_by=((.flagged_by + $flagged)|unique)
                 | .last_seen_iteration=$iter
               else . end)
@@ -1552,11 +1604,13 @@ do_review_record_finding() {
            --arg title "$title" --arg description "$description" \
            --arg file "$file" --argjson line "$line_json" \
            --arg level "$level" --arg category "$category" --arg status "${status:-open}" \
+           --argjson p0 "${p0:-false}" --arg refutation "$rationale" \
            --argjson flagged "$flagged_json" '
           .updated=$now
           | .findings += [{
               id:$id, file:$file, line:$line, level:$level, category:$category,
-              title:$title, description:$description, status:$status,
+              title:$title, description:$description, status:$status, p0:$p0,
+              refutation:$refutation,
               first_seen_iteration:$iter, last_seen_iteration:$iter, flagged_by:$flagged
             }]
         ' "$path" > "$tmp" || { echo "Error: jq insert failed." >&2; return 1; }
@@ -1621,7 +1675,8 @@ do_review_print() {
         md|markdown)
             jq -r '
               def levels: ["high","medium","low"];
-              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s)",
+              ([.findings[] | select(.status=="open" and (.p0==true))] | length) as $openp0 |
+              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s) · \($openp0) open P0",
               "",
               "\(.branch // "?") · base \((.base_sha // "")[0:12]) · head \((.head_sha // "")[0:12]) · updated \(.updated // "?")",
               "",
@@ -1631,8 +1686,9 @@ do_review_print() {
                   "## \($lv|ascii_upcase)",
                   "",
                   ( $fs[] |
-                    "- **\(.title)** [\(.category)] (\(.status)) — \(.file // "—")\(if .line then ":\(.line)" else "" end) — flagged by \(.flagged_by|join(", "))",
+                    "- \(if .p0==true then "⛔P0 " else "" end)**\(.title)** [\(.category)] (\(.status)) — \(.file // "—")\(if .line then ":\(.line)" else "" end) — flagged by \(.flagged_by|join(", "))",
                     "  \(.description)",
+                    (if (.refutation // "")!="" then "  refuted: \(.refutation)" else empty end),
                     ""
                   )
                 else empty end
@@ -1644,6 +1700,29 @@ do_review_print() {
             return 1
             ;;
     esac
+}
+
+# Machine-readable convergence signal for the review loop. Prints one line:
+#   iteration=N total=N open=N open_p0=N addressed=N refuted=N
+# The loop is DONE when open_p0=0. Non-P0 findings may remain open.
+do_review_status() {
+    _review_need_jq || return 1
+    local path
+    path=$(_review_json_path) || return 1
+    if [[ ! -f $path ]]
+    then
+        echo "iteration=0 total=0 open=0 open_p0=0 addressed=0 refuted=0"
+        return 0
+    fi
+    jq -r '
+      (.findings) as $f
+      | "iteration=\(.iterations)"
+        + " total=\($f|length)"
+        + " open=\([$f[]|select(.status=="open")]|length)"
+        + " open_p0=\([$f[]|select(.status=="open" and (.p0==true))]|length)"
+        + " addressed=\([$f[]|select(.status=="addressed")]|length)"
+        + " refuted=\([$f[]|select(.status=="refuted")]|length)"
+    ' "$path"
 }
 
 # Global options may appear BEFORE the subcommand, not just after it:
@@ -1694,6 +1773,10 @@ case "${1:-}" in
                             print)
                                 shift
                                 do_review_print "$@"
+                                ;;
+                            status)
+                                shift
+                                do_review_status "$@"
                                 ;;
                             *)
                                 _run_git_diff_mode review do_review "$@" "${global_opts[@]}"

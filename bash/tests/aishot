@@ -522,6 +522,72 @@ else
 fi
 rm -rf "$repo"
 
+# ---------------------------------------------------------------------------
+# Case 22: --p0 is recorded, defaults to false, and status reports the open
+# P0 count as the loop's convergence gate.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title "nil deref" \
+   --description "crash on empty" --level high --category correctness \
+   --p0 true --flagged-by claude) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review record-finding --title "rename x" \
+   --description "clarity" --level low --category style --flagged-by codex) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+if [[ $(jq -r '.findings[]|select(.title=="nil deref").p0' "$rj") == true ]] &&
+   [[ $(jq -r '.findings[]|select(.title=="rename x").p0' "$rj") == false ]] &&
+   [[ $st == *"open_p0=1"* ]] && [[ $st == *"total=2"* ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "--p0 recorded (defaults false); status reports open_p0 gate"
+else
+  fail "--p0 / status gate mishandled (status: $st)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 23: refuting a P0 clears it from the open_p0 gate and records the
+# rationale; validate still passes.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title "maybe race" \
+   --description "possible" --level medium --category reliability --p0 true \
+   --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+fid=$(jq -r '.findings[0].id' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" \
+   --status refuted --rationale "guarded by mutex" --flagged-by claude) >/dev/null 2>&1
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+if [[ $(jq -r '.findings[0].status' "$rj") == refuted ]] &&
+   [[ $(jq -r '.findings[0].refutation' "$rj") == "guarded by mutex" ]] &&
+   [[ $st == *"open_p0=0"* ]] && [[ $st == *"refuted=1"* ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "refuted P0 clears the gate and records rationale"
+else
+  fail "refuted status/rationale mishandled (status: $st)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 24: validate rejects a non-boolean p0.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+jq '.findings[0].p0="yes"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+if ! (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "validate rejects a non-boolean p0"
+else
+  fail "validate should reject p0 that is not boolean"
+fi
+rm -rf "$repo"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

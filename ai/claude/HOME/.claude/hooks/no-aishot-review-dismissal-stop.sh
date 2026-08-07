@@ -46,6 +46,16 @@ RECENT_REVIEW=$(tail -n 200 "$TP" 2>/dev/null \
 [ -z "$RECENT_REVIEW" ] && exit 0
 (( 0 < RECENT_REVIEW )) || exit 0
 
+# P0 model: only P0 findings are must-fix (address or refute). Non-P0
+# findings are advisory and may be left open. So this net fires ONLY when
+# the review artifact for the current worktree still has OPEN P0 findings.
+# If none (or no artifact reachable from cwd), the agent is free to move on.
+REVIEW_JSON="${PWD}/.aishot/review.json"
+[ -r "$REVIEW_JSON" ] || exit 0
+OPEN_P0=$(jq -r '[.findings[]?|select(.status=="open" and (.p0==true))]|length' "$REVIEW_JSON" 2>/dev/null)
+[ -z "$OPEN_P0" ] && OPEN_P0=0
+(( 0 < OPEN_P0 )) || exit 0
+
 # Most recent assistant text content.
 TEXT=$(tail -n 200 "$TP" 2>/dev/null \
   | jq -rs 'map(select(.type=="assistant")) | .[-1] // {} | (.message.content // []) | .[]? | select(.type=="text") | .text // ""' \
@@ -86,7 +96,7 @@ REGEX=$(IFS='|'; echo "${PATTERNS[*]}")
 
 if printf '%s' "$TEXT" | grep -iEq "$REGEX"
 then
-    REASON='STOP HOOK VIOLATION: aishot git diff review GOLDEN RULE. EVERY finding in the synthesized report is YOUR responsibility — including findings about commits/files you did not touch in this session. Re-read the rule via `aishot git diff review --help`. Address each finding directly: fix it, or file it as a beads issue with investigation notes (and reference the bd id in your reply). Do not dismiss with phrases like "not actionable", "out of scope", "pre-existing", "unrelated to this session", "good to note", or "won'\''t fix" — that is exactly the language the rule forbids.'
+    REASON='STOP HOOK VIOLATION: this review still has OPEN P0 findings, which are must-fix. Every OPEN P0 in .aishot/review.json is YOUR responsibility — including P0s about commits/files you did not touch in this session. Each open P0 must be either FIXED (then `record-finding --id <id> --status addressed`) or REFUTED with a rationale (`record-finding --id <id> --status refuted --rationale "<why it is not a real defect>"`). Non-P0 findings are advisory and may be left open — but do not dismiss an open P0 with phrases like "not actionable", "out of scope", "pre-existing", "unrelated to this session", "good to note", or "won'\''t fix". Run `aishot git diff review status` to see the open P0 count.'
     jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
 fi
 
