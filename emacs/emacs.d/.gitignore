@@ -14,3 +14,4 @@ var/
 !/transient/levels.el
 /projects
 /eshell/
+/forge-database.sqlite*
