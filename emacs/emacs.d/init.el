@@ -773,6 +773,40 @@ over the code-block language minibuffer prompt."
  '(match ((t (:inherit secondary-selection)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; forge / ghub authentication via the gh CLI
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(require 'auth-source)
+(require 'cl-lib)
+(require 'subr-x)
+
+(defun ide-forge--gh-token (account)
+  (let ((token (string-trim
+                (shell-command-to-string
+                 (format "gh auth token --hostname github.com --user %s"
+                         (shell-quote-argument account))))))
+    (and (not (string-empty-p token)) token)))
+
+(cl-defun ide-forge--gh-auth-search (&rest _ &key host user &allow-other-keys)
+  (when (and (stringp host)
+             (member host '("api.github.com" "github.com"))
+             (stringp user)
+             (string-match "\\`\\(.+\\)\\^[^^]+\\'" user))
+    (let ((account (match-string 1 user)))
+      (list (list :host host
+                  :user user
+                  :secret (apply-partially #'ide-forge--gh-token account))))))
+
+(defun ide-forge--gh-auth-parser (entry)
+  (when (eq entry 'gh-forge)
+    (auth-source-backend :source "gh-forge"
+                         :type 'gh-forge
+                         :search-function #'ide-forge--gh-auth-search)))
+
+(add-hook 'auth-source-backend-parser-functions #'ide-forge--gh-auth-parser)
+(add-to-list 'auth-sources 'gh-forge)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Load AI tooling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

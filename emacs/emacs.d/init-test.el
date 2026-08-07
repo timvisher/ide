@@ -271,5 +271,59 @@ In dired with marked files, should @ all marked files as newline-separated list.
       (setq kill-ring saved-kill-ring)
       (delete-directory test-dir t))))
 
+;;; Tests for the forge/ghub gh-CLI auth-source backend
+
+(require 'cl-lib)
+
+(ert-deftest test-ide-forge--gh-token-trims-output ()
+  "`ide-forge--gh-token' returns the gh token with surrounding whitespace removed."
+  (cl-letf (((symbol-function 'shell-command-to-string)
+             (lambda (&rest _) "gho_abc123\n")))
+    (should (equal (ide-forge--gh-token "timvisher-dd") "gho_abc123"))))
+
+(ert-deftest test-ide-forge--gh-token-empty-is-nil ()
+  "`ide-forge--gh-token' returns nil when gh emits no token."
+  (cl-letf (((symbol-function 'shell-command-to-string)
+             (lambda (&rest _) "\n")))
+    (should-not (ide-forge--gh-token "timvisher-dd"))))
+
+(ert-deftest test-ide-forge--gh-auth-search-returns-account-token ()
+  "The search returns a function secret that mints a token for the account.
+
+The account is the part of the ghub USER key before the ^PACKAGE suffix."
+  (cl-letf (((symbol-function 'ide-forge--gh-token)
+             (lambda (account) (format "TOKEN:%s" account))))
+    (let* ((result (car (ide-forge--gh-auth-search
+                         :host "api.github.com" :user "timvisher-dd^forge")))
+           (secret (plist-get result :secret)))
+      (should (equal (plist-get result :user) "timvisher-dd^forge"))
+      (should (functionp secret))
+      (should (equal (funcall secret) "TOKEN:timvisher-dd")))))
+
+(ert-deftest test-ide-forge--gh-auth-search-matches-both-hosts ()
+  "Both api.github.com and github.com are matched; account is extracted."
+  (cl-letf (((symbol-function 'ide-forge--gh-token) #'identity))
+    (dolist (host '("api.github.com" "github.com"))
+      (should (equal (funcall (plist-get
+                               (car (ide-forge--gh-auth-search
+                                     :host host :user "tim-visher_ddog^ghub"))
+                               :secret))
+                     "tim-visher_ddog")))))
+
+(ert-deftest test-ide-forge--gh-auth-search-ignores-other-hosts ()
+  "Non-GitHub hosts fall through so other auth-source backends handle them."
+  (should-not (ide-forge--gh-auth-search :host "gitlab.com" :user "x^forge")))
+
+(ert-deftest test-ide-forge--gh-auth-search-requires-package-suffix ()
+  "A USER without a ^PACKAGE suffix is not handled by this backend."
+  (should-not (ide-forge--gh-auth-search :host "api.github.com" :user "plainuser")))
+
+(ert-deftest test-ide-forge--gh-auth-backend-registered ()
+  "The backend parser and source are registered with auth-source."
+  (should (memq #'ide-forge--gh-auth-parser auth-source-backend-parser-functions))
+  (should (memq 'gh-forge auth-sources))
+  (should (ide-forge--gh-auth-parser 'gh-forge))
+  (should-not (ide-forge--gh-auth-parser 'not-our-source)))
+
 (provide 'init-test)
 ;;; init-test.el ends here
