@@ -67,6 +67,8 @@ then
     ln -v -sf ~/git/ide/bash/bin ~/bin || { echo "# Couldn't link ~/bin"; exit 1; }
 fi
 
+~/git/ide/git/bin/install
+
 # Enable Touch ID for sudo now if we're at a terminal on a capable Mac. The
 # command self-gates (macOS, sensor, tty, already-configured) and always exits
 # 0, so this is a silent no-op when unattended or not applicable. bashrc calls

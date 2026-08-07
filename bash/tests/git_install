@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+
+# Tests for git/bin/install
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/../.." && pwd)/git/bin/install"
+
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Fake repo whose git/bin/install is the script under test.
+repo="$tmpdir/repo"
+mkdir -p "$repo/git/bin" "$repo/git/XDG_CONFIG_HOME/git/wrapper"
+cp "$script" "$repo/git/bin/install"
+chmod +x "$repo/git/bin/install"
+printf '[core]\n' > "$repo/git/XDG_CONFIG_HOME/git/config"
+printf 'ignored\n'  > "$repo/git/XDG_CONFIG_HOME/git/gitignore"
+printf 'x\n'        > "$repo/git/XDG_CONFIG_HOME/git/wrapper/should-not-link"
+
+src_real=$(cd "$repo/git/XDG_CONFIG_HOME/git" && pwd -P)
+
+xdg="$tmpdir/xdg"
+
+run_install() {
+  XDG_CONFIG_HOME="$xdg" "$repo/git/bin/install" 2>&1
+}
+
+# Fresh install links regular files, skips subdirs
+run_test
+out=$(run_install); rc=$?
+if [[ $rc == 0 ]] &&
+   [[ $(readlink "$xdg/git/config" 2>/dev/null) == "$src_real/config" ]] &&
+   [[ $(readlink "$xdg/git/gitignore" 2>/dev/null) == "$src_real/gitignore" ]] &&
+   [[ ! -e "$xdg/git/wrapper" ]]
+then
+  pass "fresh install links files, skips subdirs"
+else
+  fail "fresh install: rc=$rc out='$out'"
+fi
+
+# Idempotent: second run is a no-op success, leaves links intact
+run_test
+before=$(readlink "$xdg/git/config")
+out=$(run_install); rc=$?
+if [[ $rc == 0 ]] && [[ $(readlink "$xdg/git/config") == "$before" ]]
+then
+  pass "second run idempotent"
+else
+  fail "idempotent: rc=$rc out='$out'"
+fi
+
+# Foreign non-symlink is not clobbered; reports failure
+rm -f "$xdg/git/gitignore"
+printf 'hand-written\n' > "$xdg/git/gitignore"
+run_test
+out=$(run_install); rc=$?
+if [[ $rc == 1 ]] &&
+   [[ ! -L "$xdg/git/gitignore" ]] &&
+   [[ $(cat "$xdg/git/gitignore") == "hand-written" ]] &&
+   [[ $out == *SKIP* ]]
+then
+  pass "foreign non-symlink is preserved and skipped"
+else
+  fail "foreign file: rc=$rc out='$out'"
+fi
+rm -f "$xdg/git/gitignore"
+
+# Dangling symlink is replaced
+ln -s "$tmpdir/nonexistent" "$xdg/git/gitignore"
+run_test
+out=$(run_install); rc=$?
+if [[ $(readlink "$xdg/git/gitignore") == "$src_real/gitignore" ]]
+then
+  pass "dangling symlink replaced"
+else
+  fail "dangling: rc=$rc out='$out' link='$(readlink "$xdg/git/gitignore")'"
+fi
+
+# Delegates to the system-extension installer when present
+ext="$xdg/timvisher/ide/git/bin/install"
+mkdir -p "$(dirname "$ext")"
+cat > "$ext" <<EXT
+#!/usr/bin/env bash
+touch "$tmpdir/ext-ran"
+EXT
+chmod +x "$ext"
+run_test
+out=$(run_install); rc=$?
+if [[ -e "$tmpdir/ext-ran" ]]
+then
+  pass "delegates to system-extension installer"
+else
+  fail "delegation: rc=$rc out='$out'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

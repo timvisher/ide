@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+# Symlink this repo's global git config files into $XDG_CONFIG_HOME/git,
+# then run the system-extension git installer if it exists.
+#
+# Usage: git/bin/install
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+src="${here%/bin}/XDG_CONFIG_HOME/git"
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+dest="${config_home}/git"
+
+canon() {
+  python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+link_one() {
+  local target=$1 link=$2
+
+  if [[ -L $link ]]
+  then
+    if [[ $(canon "$link") == "$(canon "$target")" ]]
+    then
+      return 0
+    fi
+    if [[ ! -e $link ]]
+    then
+      rm -- "$link"
+      ln -s "$target" "$link"
+      printf 'git/install: replaced dangling %s -> %s\n' "$link" "$target"
+      return 0
+    fi
+    printf 'git/install: SKIP %s -> %s (already points to %s)\n' \
+      "$link" "$target" "$(readlink "$link")" >&2
+    return 1
+  fi
+
+  if [[ -e $link ]]
+  then
+    printf 'git/install: SKIP %s exists and is not a symlink\n' "$link" >&2
+    return 1
+  fi
+
+  ln -s "$target" "$link"
+  printf 'git/install: linked %s -> %s\n' "$link" "$target"
+}
+
+rc=0
+
+mkdir -p "$dest"
+
+for f in "$src"/*
+do
+  [[ -f $f ]] || continue
+  link_one "$f" "${dest}/$(basename "$f")" || rc=1
+done
+
+ext_install="${config_home}/timvisher/ide/git/bin/install"
+if [[ -x $ext_install ]]
+then
+  printf 'git/install: running system-extension installer %s\n' "$ext_install"
+  "$ext_install" || rc=1
+fi
+
+exit "$rc"
