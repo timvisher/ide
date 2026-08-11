@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+
+# Tests for bd-org-sync
+# Uses --stdin to test the formatter without a live beads database.
+
+set -euo pipefail
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
+bd_org_sync="$bin_dir/bd-org-sync"
+
+# -- Fixtures ---------------------------------------------------------------
+
+open_task='[{
+  "id": "test-001",
+  "title": "Fix the thing",
+  "status": "open",
+  "priority": 1,
+  "issue_type": "task",
+  "owner": "user@example.com",
+  "created_at": "2026-01-15T10:30:00Z",
+  "updated_at": "2026-01-15T10:30:00Z"
+}]'
+
+in_progress_feature='[{
+  "id": "test-002",
+  "title": "Add new widget",
+  "description": "A multi-line\ndescription here.",
+  "status": "in_progress",
+  "priority": 2,
+  "issue_type": "feature",
+  "assignee": "Alice",
+  "created_at": "2026-02-01T08:00:00Z",
+  "updated_at": "2026-02-02T09:00:00Z"
+}]'
+
+closed_done='[{
+  "id": "test-003",
+  "title": "Old bug",
+  "status": "closed",
+  "priority": 3,
+  "issue_type": "bug",
+  "close_reason": "Completed",
+  "created_at": "2025-12-01T00:00:00Z",
+  "updated_at": "2025-12-02T00:00:00Z",
+  "closed_at": "2025-12-02T00:00:00Z"
+}]'
+
+closed_cancelled='[{
+  "id": "test-004",
+  "title": "Cancelled work",
+  "status": "closed",
+  "priority": 2,
+  "issue_type": "task",
+  "close_reason": "Cancelled",
+  "created_at": "2025-11-01T00:00:00Z",
+  "updated_at": "2025-11-01T00:00:00Z",
+  "closed_at": "2025-11-01T00:00:00Z"
+}]'
+
+blocked_bead='[{
+  "id": "test-005",
+  "title": "Blocked item",
+  "status": "blocked",
+  "priority": 0,
+  "issue_type": "task",
+  "created_at": "2026-03-01T00:00:00Z",
+  "updated_at": "2026-03-01T00:00:00Z"
+}]'
+
+labeled_bead='[{
+  "id": "test-006",
+  "title": "Labeled item",
+  "status": "open",
+  "priority": 2,
+  "issue_type": "task",
+  "labels": ["status:in_progress", "tech-debt"],
+  "created_at": "2026-03-01T00:00:00Z",
+  "updated_at": "2026-03-01T00:00:00Z"
+}]'
+
+event_bead='[{
+  "id": "test-007.1",
+  "title": "State change: status -> in_progress",
+  "status": "closed",
+  "priority": 4,
+  "issue_type": "event",
+  "parent": "test-007",
+  "created_at": "2026-03-01T00:00:00Z",
+  "updated_at": "2026-03-01T00:00:00Z"
+}]'
+
+epic_with_children='[
+  {"id":"epic-1","title":"Big epic","status":"in_progress","priority":1,"issue_type":"epic","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"child-1","title":"Epic subtask","status":"open","priority":2,"issue_type":"task","parent":"epic-1","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"},
+  {"id":"child-2","title":"Epic subbug","status":"open","priority":1,"issue_type":"bug","parent":"epic-1","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z"}
+]'
+
+mixed_types='[
+  {"id":"b1","title":"A bug","status":"open","priority":2,"issue_type":"bug","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"f1","title":"A feature","status":"open","priority":2,"issue_type":"feature","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"t1","title":"A task","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"c1","title":"A chore","status":"open","priority":2,"issue_type":"chore","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+]'
+
+parent_child='[
+  {"id":"p1","title":"Parent task","status":"in_progress","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"c1","title":"Child task","status":"open","priority":2,"issue_type":"task","parent":"p1","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}
+]'
+
+# -- Tests ------------------------------------------------------------------
+
+# Test 1: script is executable
+run_test
+if [[ -x $bd_org_sync ]]
+then
+  pass "bd-org-sync is executable"
+else
+  fail "bd-org-sync is not executable"
+fi
+
+# Test 2: --help works
+run_test
+help_output=$("$bd_org_sync" --help 2>&1)
+if [[ $help_output == *"Usage"* ]]
+then
+  pass "--help shows usage"
+else
+  fail "--help does not show usage: $help_output"
+fi
+
+# Test 3: open task renders with TODO keyword and [#B] priority
+run_test
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
+if [[ $output == *'** TODO [#B] Fix the thing'* ]]
+then
+  pass "open task renders as ** TODO [#B]"
+else
+  fail "open task heading wrong: $(echo "$output" | grep 'Fix the thing')"
+fi
+
+# Test 4: in_progress renders with IN_PROGRESS keyword, no priority cookie
+run_test
+output=$(echo "$in_progress_feature" | "$bd_org_sync" --stdin)
+if [[ $output == *'** IN_PROGRESS Add new widget'* ]]
+then
+  pass "in_progress renders as IN_PROGRESS (no priority cookie for P2)"
+else
+  fail "in_progress heading wrong: $(echo "$output" | grep 'Add new widget')"
+fi
+
+# Test 5: description appears indented in body
+run_test
+output=$(echo "$in_progress_feature" | "$bd_org_sync" --stdin)
+if [[ $output == *'    A multi-line'* && $output == *'    description here.'* ]]
+then
+  pass "description renders indented at depth 2"
+else
+  fail "description not rendered correctly"
+fi
+
+# Test 6: closed bead with "Completed" renders as DONE
+run_test
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
+if [[ $output == *'** DONE [#C] Old bug'* ]]
+then
+  pass "closed/Completed renders as DONE [#C]"
+else
+  fail "closed/Completed heading wrong: $(echo "$output" | grep 'Old bug')"
+fi
+
+# Test 7: closed bead with "Cancelled" renders as CANCELLED
+run_test
+output=$(echo "$closed_cancelled" | "$bd_org_sync" --stdin)
+if [[ $output == *'** CANCELLED Cancelled work'* ]]
+then
+  pass "closed/Cancelled renders as CANCELLED"
+else
+  fail "closed/Cancelled heading wrong: $(echo "$output" | grep 'Cancelled work')"
+fi
+
+# Test 8: blocked status adds :blocked: tag
+run_test
+output=$(echo "$blocked_bead" | "$bd_org_sync" --stdin)
+if [[ $output == *':blocked:'* ]]
+then
+  pass "blocked bead has :blocked: tag"
+else
+  fail "blocked bead missing :blocked: tag"
+fi
+
+# Test 9: blocked bead uses TODO keyword (not a separate keyword)
+run_test
+output=$(echo "$blocked_bead" | "$bd_org_sync" --stdin)
+if [[ $output == *'** TODO [#A] Blocked item'* ]]
+then
+  pass "blocked bead uses TODO keyword with [#A]"
+else
+  fail "blocked bead keyword wrong: $(echo "$output" | grep 'Blocked item')"
+fi
+
+# Test 10: labels become org tags with sanitized names
+run_test
+output=$(echo "$labeled_bead" | "$bd_org_sync" --stdin)
+if [[ $output == *':status_in_progress:'* && $output == *':tech_debt:'* ]]
+then
+  pass "labels render as sanitized org tags"
+else
+  fail "labels not rendered correctly: $(echo "$output" | grep 'Labeled item')"
+fi
+
+# Test 11: issue_type appears as first tag
+run_test
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
+if [[ $output == *':task:'* ]]
+then
+  pass "issue_type appears as org tag"
+else
+  fail "issue_type not in tags: $(echo "$output" | grep 'Fix the thing')"
+fi
+
+# Test 12: properties drawer contains BEAD_ID
+run_test
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
+if [[ $output == *':BEAD_ID: test-001'* ]]
+then
+  pass "properties drawer contains BEAD_ID"
+else
+  fail "BEAD_ID missing from properties"
+fi
+
+# Test 13: timestamps render in org format
+run_test
+output=$(echo "$open_task" | "$bd_org_sync" --stdin)
+if [[ $output == *':CREATED: [2026-01-15'* ]]
+then
+  pass "timestamps render in org inactive format"
+else
+  fail "timestamp format wrong"
+fi
+
+# Test 14: event beads are filtered out
+run_test
+output=$(echo "$event_bead" | "$bd_org_sync" --stdin)
+if [[ $output != *'State change'* ]]
+then
+  pass "event beads are filtered out"
+else
+  fail "event bead was not filtered"
+fi
+
+# Test 15: file header includes #+TITLE
+run_test
+output=$(echo '[]' | "$bd_org_sync" --stdin)
+if [[ $output == *'#+TITLE:'* ]]
+then
+  pass "output includes #+TITLE header"
+else
+  fail "missing #+TITLE header"
+fi
+
+# Test 16: CLOSED timestamp appears for closed beads
+run_test
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
+if [[ $output == *':CLOSED: [2025-12-02'* ]]
+then
+  pass "CLOSED timestamp present for closed bead"
+else
+  fail "CLOSED timestamp missing"
+fi
+
+# Test 17: CLOSE_REASON in properties
+run_test
+output=$(echo "$closed_done" | "$bd_org_sync" --stdin)
+if [[ $output == *':CLOSE_REASON: Completed'* ]]
+then
+  pass "CLOSE_REASON in properties drawer"
+else
+  fail "CLOSE_REASON missing from properties"
+fi
+
+# Test 18: sorting - in_progress before open before closed within a section
+run_test
+mixed='[
+  {"id":"a","title":"Zzz open","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},
+  {"id":"b","title":"Aaa closed","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":"2026-01-01T00:00:00Z"},
+  {"id":"c","title":"Mmm active","status":"in_progress","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+]'
+output=$(echo "$mixed" | "$bd_org_sync" --stdin)
+headings=$(echo "$output" | grep '^\*\* ' || true)
+first=$(echo "$headings" | head -1)
+last=$(echo "$headings" | tail -1)
+if [[ $first == *'Mmm active'* && $last == *'Aaa closed'* ]]
+then
+  pass "sort order: in_progress > open > closed"
+else
+  fail "sort order wrong: first='$first' last='$last'"
+fi
+
+# Test 19: no employer-specific references
+run_test
+employer_patterns_file="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/guard_patterns"
+found_leak=false
+if [[ -r $employer_patterns_file ]]
+then
+  patterns=$(paste -sd '|' "$employer_patterns_file")
+  if grep -qiE "$patterns" "$bd_org_sync"
+  then
+    found_leak=true
+  fi
+fi
+if [[ $found_leak == false ]]
+then
+  pass "no employer-specific references"
+else
+  fail "found employer-specific reference in bd-org-sync"
+fi
+
+# Test 20: bugs go in Bugs section, features/tasks in Stories
+run_test
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
+# Bugs section should appear before Stories
+bugs_line=$(echo "$output" | grep -n '^\* Bugs$' | head -1 | cut -d: -f1)
+stories_line=$(echo "$output" | grep -n '^\* Stories$' | head -1 | cut -d: -f1)
+chores_line=$(echo "$output" | grep -n '^\* Chores$' | head -1 | cut -d: -f1)
+if [[ -n $bugs_line && -n $stories_line && -n $chores_line ]] &&
+   (( bugs_line < stories_line )) && (( stories_line < chores_line ))
+then
+  pass "section ordering: Bugs < Stories < Chores"
+else
+  fail "section ordering wrong: Bugs=$bugs_line Stories=$stories_line Chores=$chores_line"
+fi
+
+# Test 21: bug bead appears under Bugs section
+run_test
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
+# Extract content between "* Bugs" and the next "* " section
+bugs_section=$(echo "$output" | sed -n '/^\* Bugs$/,/^\* [A-Z]/p' | head -n -1)
+if [[ $bugs_section == *'A bug'* ]]
+then
+  pass "bug appears in Bugs section"
+else
+  fail "bug not in Bugs section"
+fi
+
+# Test 22: feature and task appear under Stories section
+run_test
+output=$(echo "$mixed_types" | "$bd_org_sync" --stdin)
+stories_section=$(echo "$output" | sed -n '/^\* Stories$/,/^\* [A-Z]/p' | head -n -1)
+if [[ $stories_section == *'A feature'* && $stories_section == *'A task'* ]]
+then
+  pass "feature and task appear in Stories section"
+else
+  fail "feature/task not in Stories section"
+fi
+
+# Test 23: epic and children nest correctly
+run_test
+output=$(echo "$epic_with_children" | "$bd_org_sync" --stdin)
+if [[ $output == *'* Epics'* ]] &&
+   [[ $output == *'** IN_PROGRESS [#B] Big epic'* ]] &&
+   [[ $output == *'*** TODO Epic subtask'* ]] &&
+   [[ $output == *'*** TODO [#B] Epic subbug'* ]]
+then
+  pass "epic with children nests at correct depths"
+else
+  fail "epic nesting wrong: $(echo "$output" | grep '^\*')"
+fi
+
+# Test 24: children of non-epic parents nest under parent
+run_test
+output=$(echo "$parent_child" | "$bd_org_sync" --stdin)
+if [[ $output == *'** IN_PROGRESS Parent task'* ]] &&
+   [[ $output == *'*** TODO Child task'* ]]
+then
+  pass "parent-child task nesting works"
+else
+  fail "parent-child nesting wrong: $(echo "$output" | grep '^\*')"
+fi
+
+# Test 25: children go into parent's section, not their own type's section
+run_test
+output=$(echo "$epic_with_children" | "$bd_org_sync" --stdin)
+# The bug child should be under Epics, not a separate Bugs section
+if [[ $output != *'* Bugs'* ]]
+then
+  pass "child bug stays in parent's Epics section (no Bugs section)"
+else
+  fail "child bug created a separate Bugs section"
+fi
+
+# Test 26: empty input produces only header
+run_test
+output=$(echo '[]' | "$bd_org_sync" --stdin)
+line_count=$(echo "$output" | grep -c '^\*' || true)
+if [[ $line_count == 0 ]]
+then
+  pass "empty input produces no section headings"
+else
+  fail "empty input produced $line_count section headings"
+fi
+
+# -- Summary ----------------------------------------------------------------
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
