@@ -76,7 +76,13 @@ SELF_DIR=$(dirname "$SELF")
 REPO_HOOKS_DIR="${SELF_DIR}/timvisher_dev_ci.config/hooks"
 REPO_HOOKS_EXT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/timvisher_dev_ci/hooks"
 
-BREW_UPGRADE_PACKAGES=(codex codex-acp claude-code gemini-cli beads)
+BREW_UPGRADE_PACKAGES=(
+  codex
+  codex-acp
+  claude-code
+  gemini-cli
+  beads
+)
 
 # Single source of truth for hook names recognised by `hooks ls` and
 # the "run all" form of `hooks run`. Order matters: `hooks run` (no
@@ -2059,6 +2065,12 @@ cmd_run() {
     if ! brew upgrade --yes "${BREW_UPGRADE_PACKAGES[@]}" 2>&1
     then
         warn "brew upgrade had warnings (non-fatal, continuing)"
+    fi
+
+    if [[ -x ~/.config/timvisher/ide/timvisher_dev_ci/hooks/run ]]
+    then
+      ~/.config/timvisher/ide/timvisher_dev_ci/hooks/run ||
+        die "System Extensions 'run' hook failed to run"
     fi
 
     # Sweep any legacy `_git/...` / `.git/...` worktrees across all
