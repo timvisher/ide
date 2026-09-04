@@ -395,6 +395,77 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# autocommit_build_artifacts: worktrees whose ONLY dirt is BUILD.bazel get
+# auto-committed; genuine work is left for preflight_check_clean.
+# ---------------------------------------------------------------------------
+
+# Init a repo with a committed BUILD.bazel and a committed source file.
+# Hooks disabled so the fixture never reaches out to buildifier/AppGate.
+make_bazel_fixture() {
+  local dir=$1
+  "$test_git" init "$dir" >/dev/null 2>&1
+  "$test_git" -C "$dir" config core.hooksPath /dev/null
+  "$test_git" -C "$dir" config user.email t@t
+  "$test_git" -C "$dir" config user.name t
+  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
+  printf 'package foo\n' > "$dir/foo.go"
+  mkdir -p "$dir/sub"
+  printf 'package sub\n' > "$dir/sub/keep.go"
+  "$test_git" -C "$dir" add -A
+  "$test_git" -C "$dir" commit -q -m init
+}
+
+# only BUILD.bazel dirty -> auto-committed, tree clean
+run_test
+ab_wt="$tmpdir/autocommit_only_build"
+make_bazel_fixture "$ab_wt"
+printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_wt/BUILD.bazel"
+all_worktrees=()
+all_worktrees["$ab_wt"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -z $("$test_git" -C "$ab_wt" status --porcelain) ]] &&
+   [[ $("$test_git" -C "$ab_wt" log -1 --format=%s) == chore\(bazel\)* ]]
+then
+  pass "autocommit_build_artifacts: commits BUILD.bazel-only dirt"
+else
+  fail "autocommit only-build: status='$("$test_git" -C "$ab_wt" status --porcelain)' subj='$("$test_git" -C "$ab_wt" log -1 --format=%s)'"
+fi
+
+# untracked BUILD.bazel in an already-tracked package -> auto-committed
+run_test
+ab_new="$tmpdir/autocommit_untracked_build"
+make_bazel_fixture "$ab_new"
+printf 'srcs = ["keep.go"]\n' > "$ab_new/sub/BUILD.bazel"
+all_worktrees=()
+all_worktrees["$ab_new"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -z $("$test_git" -C "$ab_new" status --porcelain) ]] &&
+   "$test_git" -C "$ab_new" ls-files --error-unmatch sub/BUILD.bazel >/dev/null 2>&1
+then
+  pass "autocommit_build_artifacts: commits untracked BUILD.bazel"
+else
+  fail "autocommit untracked: status='$("$test_git" -C "$ab_new" status --porcelain)'"
+fi
+
+# BUILD.bazel + real source dirty -> nothing committed, left for preflight
+run_test
+ab_mixed="$tmpdir/autocommit_mixed"
+make_bazel_fixture "$ab_mixed"
+ab_head_before=$("$test_git" -C "$ab_mixed" rev-parse HEAD)
+printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_mixed/BUILD.bazel"
+printf 'package foo // edited\n' > "$ab_mixed/foo.go"
+all_worktrees=()
+all_worktrees["$ab_mixed"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -n $("$test_git" -C "$ab_mixed" status --porcelain) ]] &&
+   [[ $("$test_git" -C "$ab_mixed" rev-parse HEAD) == "$ab_head_before" ]]
+then
+  pass "autocommit_build_artifacts: leaves mixed dirt for preflight"
+else
+  fail "autocommit mixed: HEAD moved or tree clean unexpectedly"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

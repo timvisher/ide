@@ -1371,6 +1371,71 @@ test_trunk() {
 # Verify all feature worktrees have clean working trees.
 # Fails fast before any sync/integrate work if any worktree has
 # uncommitted changes or untracked files.
+# Emit the Co-authored-by trailer required by the git shim for the active
+# agent, matching bin/git's own detection.  Empty when not under an agent
+# (interactive runs need no trailer).
+agent_coauthor_trailer() {
+    if [[ -n ${TIMVISHER_CODEX:-} ]]
+    then
+        printf 'Co-authored-by: Codex <codex@openai.com>'
+    elif [[ -n ${TIMVISHER_CLAUDE:-} || -n ${CLAUDECODE:-} ]]
+    then
+        printf 'Co-authored-by: Claude <noreply@anthropic.com>'
+    elif [[ -n ${TIMVISHER_GEMINI:-} ]]
+    then
+        printf 'Co-authored-by: Gemini <noreply@google.com>'
+    fi
+}
+
+# BUILD.bazel is a checked-in build artifact that Gazelle/buildifier
+# regenerate deterministically, so feature branches routinely leave it
+# dirty after a build.  Rather than dying in preflight, auto-commit any
+# worktree whose ONLY dirty paths are BUILD.bazel files, leaving genuine
+# uncommitted work for preflight_check_clean to catch.
+autocommit_build_artifacts() {
+    local -a trailer_args=()
+    local trailer
+    trailer=$(agent_coauthor_trailer)
+    [[ -n $trailer ]] && trailer_args=(-m "$trailer")
+
+    for wt in "${!all_worktrees[@]}"
+    do
+        local status
+        status=$(git -C "$wt" status --porcelain 2>/dev/null) || continue
+        [[ -n $status ]] || continue
+
+        local only_build=1
+        local build_paths=()
+        while IFS= read -r line
+        do
+            [[ -n $line ]] || continue
+            local path=${line:3}
+            [[ $path == *' -> '* ]] && path=${path#* -> }
+            if [[ $path == 'BUILD.bazel' || $path == *'/BUILD.bazel' ]]
+            then
+                build_paths+=("$path")
+            else
+                only_build=0
+                break
+            fi
+        done <<< "$status"
+
+        [[ $only_build -eq 1 && ${#build_paths[@]} -ne 0 ]] || continue
+
+        info "autocommit: committing %d regenerated BUILD.bazel file(s) in '%s'" \
+            "${#build_paths[@]}" "$wt"
+        if git -C "$wt" add -- "${build_paths[@]}" &&
+           git -C "$wt" commit -q \
+             -m 'chore(bazel): auto-commit regenerated BUILD.bazel' \
+             "${trailer_args[@]}"
+        then
+            info "autocommit: committed BUILD.bazel in '%s'" "$wt"
+        else
+            warn "autocommit: failed to commit BUILD.bazel in '%s'; leaving for preflight" "$wt"
+        fi
+    done
+}
+
 preflight_check_clean() {
     local dirty=()
 
@@ -2091,6 +2156,7 @@ cmd_run() {
     info "Phase 0.5: syncing soft fork trunk branches"
     sync_soft_fork_trunks
 
+    autocommit_build_artifacts
     preflight_check_clean
     clean_status_files
 
