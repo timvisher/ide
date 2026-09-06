@@ -899,7 +899,10 @@ the secret references cannot be resolved."
 
   (setq agent-shell-google-authentication
         (agent-shell-google-make-authentication
-         :api-key (getenv "GEMINI_API_KEY"))))
+         :api-key (getenv "GEMINI_API_KEY")))
+
+  (load (expand-file-name "timvisher-agent-shell-alert" user-emacs-directory) nil t)
+  (add-hook 'agent-shell-mode-hook #'timvisher-agent-shell-alert-subscribe))
 
 ;; (use-package agent-shell-mcp-oauth
 ;;   :load-path "~/git/timvisher-dd/agent-shell-mcp-oauth/main"
