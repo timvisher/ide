@@ -60,7 +60,7 @@ source ~/.functions/aictl.bash ||
 # cmd_run so lightweight subcommands (--help, hooks, run-tests, status,
 # clean, worktrees) don't pay the network cost.
 pull_xenodium_mains() {
-    parallel git -C '{}' pull ::: ~/git/xenodium/*/main >&2 ||
+    parallel -Jdefault_profile git -C '{}' pull ::: ~/git/xenodium/*/main >&2 ||
         die "Couldn't pull xenodium mains"
 }
 
