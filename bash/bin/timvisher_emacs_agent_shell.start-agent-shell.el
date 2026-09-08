@@ -20,7 +20,12 @@
 _**DO NOT UNDER ANY CIRCUMSTANCES EDIT ANYTHING. YOUR GOAL IS PURE INVESTIGATION AND REPORTING.**_"))
 
 (setq timvisher--shell-buffer
-      (funcall (intern (getenv "timvisher_agent_start_fn"))))
+      (let ((started (funcall (intern (getenv "timvisher_agent_start_fn")))))
+        (or (and (bufferp started) started)
+            (and (consp started) (map-elt started :buffer))
+            (car (agent-shell-buffers))
+            (error "Could not resolve the started agent shell buffer from %S"
+                   started))))
 
 (agent-shell-insert
  :text timvisher--codex-prompt
