@@ -71,6 +71,7 @@ pull_xenodium_mains() {
 DEV_CI_REGISTRY=${TIMVISHER_DEV_CI_REGISTRY:-${HOME}/.config/timvisher/ide/timvisher_dev_ci/branches}
 STATUS_FILENAME=x.dev-ci.status
 POLL_INTERVAL_SECONDS=5
+HEARTBEAT_INTERVAL_SECONDS=${TIMVISHER_DEV_CI_HEARTBEAT_SECONDS:-30}
 SELF=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
 SELF_DIR=$(dirname "$SELF")
 REPO_HOOKS_DIR="${SELF_DIR}/timvisher_dev_ci.config/hooks"
@@ -99,6 +100,31 @@ KNOWN_HOOKS=(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_heartbeat_start=0
+_heartbeat_last=0
+
+heartbeat_start() {
+    _heartbeat_start=$(date +%s)
+    _heartbeat_last=$_heartbeat_start
+}
+
+heartbeat_due() {
+    local now
+    now=$(date +%s)
+
+    (( now - _heartbeat_last < HEARTBEAT_INTERVAL_SECONDS )) && return 1
+
+    _heartbeat_last=$now
+}
+
+heartbeat_elapsed() {
+    local now
+    now=$(date +%s)
+    local elapsed=$(( now - _heartbeat_start ))
+
+    printf '%d:%02d' "$(( elapsed / 60 ))" "$(( elapsed % 60 ))"
+}
 
 # Push the current branch to its push remote with --force-with-lease.
 # Resolves the push remote via pushRemote > remote.pushDefault > tracking
@@ -1504,6 +1530,8 @@ declare -A wt_results
 wait_for_worktrees() {
     local pending=("${!all_worktrees[@]}")
 
+    heartbeat_start
+
     while [[ ${#pending[@]} -ne 0 ]]
     do
         local still_pending=()
@@ -1532,6 +1560,16 @@ wait_for_worktrees() {
 
         if [[ ${#pending[@]} -ne 0 ]]
         then
+            if heartbeat_due
+            then
+                info "waiting %s on %d of %d worktree(s)" \
+                    "$(heartbeat_elapsed)" "${#pending[@]}" "${#all_worktrees[@]}"
+                for wt in "${pending[@]}"
+                do
+                    info "  in progress: '%s'" "$wt"
+                done
+            fi
+
             sleep "$POLL_INTERVAL_SECONDS"
         fi
     done
@@ -1544,9 +1582,14 @@ declare -A dev_launched
 launch_integrate_phase() {
     local all_done=
 
+    heartbeat_start
+
     while [[ -z $all_done ]]
     do
         all_done=true
+
+        local in_progress=()
+        local waiting=()
 
         for dev in "${!dev_branches[@]}"
         do
@@ -1570,6 +1613,9 @@ launch_integrate_phase() {
                         error "[fail] '%s'" "$dev"
                         dev_results["$dev"]="fail"
                         ;;
+                    *)
+                        in_progress+=("$dev")
+                        ;;
                 esac
                 continue
             fi
@@ -1579,6 +1625,7 @@ launch_integrate_phase() {
             local dd_str=${dev_branch_deps[$dev]}
             local all_deps_pass=true
             local any_dep_fail=
+            local pending_dep=
 
             # Check feature worktree deps.
             if [[ -n $deps_str ]]
@@ -1594,6 +1641,7 @@ launch_integrate_phase() {
                             ;;
                         *)
                             all_deps_pass=
+                            pending_dep=$dep
                             break
                             ;;
                     esac
@@ -1614,6 +1662,7 @@ launch_integrate_phase() {
                             ;;
                         *)
                             all_deps_pass=
+                            pending_dep=$dep
                             break
                             ;;
                     esac
@@ -1629,6 +1678,7 @@ launch_integrate_phase() {
 
             if [[ -z $all_deps_pass ]]
             then
+                waiting+=("${dev}"$'\t'"${pending_dep}")
                 continue
             fi
 
@@ -1655,6 +1705,21 @@ launch_integrate_phase() {
 
         if [[ -z $all_done ]]
         then
+            if heartbeat_due
+            then
+                info "waiting %s on %d integrating, %d blocked of %d dev branch(es)" \
+                    "$(heartbeat_elapsed)" "${#in_progress[@]}" "${#waiting[@]}" \
+                    "${#dev_branches[@]}"
+                for dev in "${in_progress[@]}"
+                do
+                    info "  integrating: '%s'" "$dev"
+                done
+                for entry in "${waiting[@]}"
+                do
+                    info "  blocked: '%s' on '%s'" "${entry%%$'\t'*}" "${entry#*$'\t'}"
+                done
+            fi
+
             sleep "$POLL_INTERVAL_SECONDS"
         fi
     done
@@ -2120,6 +2185,10 @@ ENVIRONMENT
     TIMVISHER_GIT_HOME            Worktree root (default: ~/git)
     TIMVISHER_DEV_CI_REGISTRY     Path to dev branch registry file
                                   (default: ~/.config/timvisher/ide/timvisher_dev_ci/branches)
+    TIMVISHER_DEV_CI_HEARTBEAT_SECONDS
+                                  Seconds between progress heartbeats
+                                  while waiting on sync/integration
+                                  (default: 30)
 EOF
 }
 
