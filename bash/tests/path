@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+# Tests for path.bash (timvisher_path_prepend)
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+source "$funcs_dir/path.bash"
+
+check() {
+  local description=$1
+  local expected=$2
+  local actual=$3
+
+  run_test
+  if [[ $actual == "$expected" ]]
+  then
+    pass "$description"
+  else
+    fail "$description: expected '${expected}', got '${actual}'"
+  fi
+}
+
+check 'prepends to a populated PATH' \
+      '/a:/b:/c' \
+      "$(PATH=/b:/c; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'moves an existing entry to the front' \
+      '/c:/a:/b' \
+      "$(PATH=/a:/b:/c; timvisher_path_prepend /c; printf '%s' "$PATH")"
+
+check 'removes every duplicate of the entry' \
+      '/a:/b:/c' \
+      "$(PATH=/a:/b:/a:/c:/a; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'is idempotent' \
+      '/a:/b:/c' \
+      "$(PATH=/a:/b:/c; timvisher_path_prepend /a; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'leaves no stray separator when PATH is empty' \
+      '/a' \
+      "$(PATH=; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'does not match on a prefix of an entry' \
+      '/a:/ab:/b' \
+      "$(PATH=/ab:/b; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'preserves entries containing spaces' \
+      '/a:/with space:/b' \
+      "$(PATH='/with space:/b'; timvisher_path_prepend /a; printf '%s' "$PATH")"
+
+check 'operates on a named variable other than PATH' \
+      '/m:/usr/share/man' \
+      "$(MANPATH=/usr/share/man; timvisher_path_prepend /m MANPATH; printf '%s' "$MANPATH")"
+
+check 'exports the variable it sets' \
+      '/a:/b' \
+      "$(PATH=/b; timvisher_path_prepend /a; "$BASH" -c 'printf "%s" "$PATH"')"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

@@ -195,6 +195,11 @@ then
   shopt -u nullglob
 fi
 
+if [[ -r ~/.config/timvisher/ide/bash/path ]]
+then
+  source ~/.config/timvisher/ide/bash/path
+fi
+
 export PATH=~/bin:~/.local/bin:$PATH
 
 if [[ -d ~/.config/timvisher/ide/bash/bin ]]
