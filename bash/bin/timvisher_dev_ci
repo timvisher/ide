@@ -715,6 +715,37 @@ send_to_admin() {
     tmux send-keys -t="${session_name}":admin "$cmd" C-m
 }
 
+agent_session_contract() {
+    local status_file=$1
+
+    cat <<CONTRACT_EOF
+Session contract -- read this before you start.
+
+You are running as a one-shot, non-interactive agent session. When you
+stop making tool calls, the session ends and the process exits. There
+is no later turn, no notification delivery, and no chance to report
+back.
+
+Consequences:
+
+- Every background job and subagent you spawn is killed when the
+  session exits. Backgrounding a long task and then ending your turn
+  loses the task entirely.
+- Run the test hooks in the FOREGROUND and wait for them to exit. Do
+  not background them, do not delegate them to a subagent, and do not
+  poll for them with sleep loops. Tests routinely take 5-15 minutes;
+  a foreground command that takes that long is expected and fine.
+  Raise the tool timeout rather than backgrounding.
+- Do not end your turn until you have written '${status_file}'. An
+  unwritten status file is recorded as a failure by the orchestrator,
+  which discards the work you did even when the merge and the tests
+  were clean.
+- Never write 'pass' before the tests have actually exited zero.
+  Reporting intent ("tests are still running, I'll report when they
+  finish") is not a result.
+CONTRACT_EOF
+}
+
 # ---------------------------------------------------------------------------
 # Worker: __sync  (runs inside :admin pane)
 #
@@ -769,6 +800,8 @@ ${hook_list}"
     }
 
     cat > "$prompt_file" <<PROMPT_EOF
+$(agent_session_contract "$status_file")
+
 You are in a feature worktree at ${worktree_path}.
 This worktree contains features we are actively developing.
 
@@ -1012,6 +1045,8 @@ baseline, that counts as passing."
     }
 
     cat > "$prompt_file" <<PROMPT_EOF
+$(agent_session_contract "$status_file")
+
 You are in a dev integration worktree at ${dev_path}.
 It has been reset to the upstream tracking branch (@{u}).
 
