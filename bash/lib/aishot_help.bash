@@ -97,7 +97,7 @@ EOF
 
 # Full CLI dispatch shared by the per-shot wrappers. Keeps the command
 # surface (git diff review / git diff describe, --help, stdin, plain
-# prompt) identical across claudeshot/codexshot/geminishot.
+# prompt) identical across claudeshot/codexshot.
 #   $1 = command name for help text (e.g. "claudeshot")
 #   $2 = display name (e.g. "Claude")
 #   $3 = name of the caller's run_shot function (reads the prompt on

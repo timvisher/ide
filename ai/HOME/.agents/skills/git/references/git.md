@@ -72,7 +72,6 @@ Ask the user to run it instead.
 - Never use interactive git commands (`git add -p`, `git rebase -i`, etc.) - they require user interaction.
 - Codex: always append `Co-authored-by: Codex <codex@openai.com>` unless already present.
 - Claude Code: rely on Claude Code attribution settings (enabled by default); the git wrapper validates a `Co-authored-by` trailer matching `<noreply@anthropic.com>` is present.
-- Gemini: always append a `Co-authored-by` trailer matching `<noreply@google.com>` to commit messages unless already present.
 
 ## What Not to Commit
 

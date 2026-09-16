@@ -1036,9 +1036,6 @@ then
     elif [[ -n $TIMVISHER_CLAUDE || -n $CLAUDECODE ]]
     then
       required_trailer='<noreply@anthropic.com>'
-    elif [[ -n $TIMVISHER_GEMINI ]]
-    then
-      required_trailer='<noreply@google.com>'
     fi
 
     if [[ -n $required_trailer ]] &&

@@ -42,8 +42,8 @@ fi
 # symlink, codexshot in the sandbox loses both: it 401s for lack of
 # auth.json, and an incomplete managed mcp_servers stanza fails to
 # validate because the user config that completes it is absent. claude
-# (keychain) and gemini (GEMINI_API_KEY/.config) already resolve via
-# the links above; .codex is the missing one.
+# (keychain) already resolves via the links above; .codex is the
+# missing one.
 if [[ ! -L ${repo_root}/x.home/.codex ]]
 then
     ln -sf "${HOME}/.codex" "${repo_root}/x.home/.codex"

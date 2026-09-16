@@ -825,11 +825,7 @@ the secret references cannot be resolved."
   (let ((op-env-vars `(("OPENAI_API_KEY" . ,(or (getenv "OPENAI_API_KEY")
                                                 "op://Private/OpenAI API Secret Key/credential"))
                        ("ANTHROPIC_API_KEY" . ,(or (getenv "ANTHROPIC_API_KEY")
-                                                   "op://Private/Anthropic API Key/credential"))
-                       ("GEMINI_API_KEY" . ,(or (getenv "GEMINI_API_KEY")
-                                                "op://Private/Gemini API Key/credential"))
-                       ("VERTEXAI_PROJECT" . ,(or (getenv "VERTEXAI_PROJECT")
-                                                  "op://Private/Gemini API Key/Project number")))))
+                                                   "op://Private/Anthropic API Key/credential")))))
 
     ;; First, set all the op:// references in the environment
     (dolist (var-pair op-env-vars)
@@ -896,10 +892,6 @@ the secret references cannot be resolved."
 
   (setq agent-shell-openai-authentication
         (agent-shell-openai-make-authentication :api-key (getenv "OPENAI_API_KEY")))
-
-  (setq agent-shell-google-authentication
-        (agent-shell-google-make-authentication
-         :api-key (getenv "GEMINI_API_KEY")))
 
   (load (expand-file-name "timvisher-agent-shell-alert" user-emacs-directory) nil t)
   (add-hook 'agent-shell-mode-hook #'timvisher-agent-shell-alert-subscribe))

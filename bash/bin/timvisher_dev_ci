@@ -81,7 +81,6 @@ BREW_UPGRADE_PACKAGES=(
   codex
   codex-acp
   claude-code
-  gemini-cli
   beads
 )
 
@@ -1442,9 +1441,6 @@ agent_coauthor_trailer() {
     elif [[ -n ${TIMVISHER_CLAUDE:-} || -n ${CLAUDECODE:-} ]]
     then
         printf 'Co-authored-by: Claude <noreply@anthropic.com>'
-    elif [[ -n ${TIMVISHER_GEMINI:-} ]]
-    then
-        printf 'Co-authored-by: Gemini <noreply@google.com>'
     fi
 }
 

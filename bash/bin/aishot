@@ -2,7 +2,7 @@
 
 # Orchestrate multiple AI one-shot commands and synthesize results.
 #
-# Usage: aishot [--with=claude,codex,gemini] <prompt>
+# Usage: aishot [--with=claude,codex] <prompt>
 #        echo "prompt" | aishot [--with=...]
 #        aishot git diff review [--with=...]
 #        aishot git diff review make-prompt
@@ -25,7 +25,7 @@ REVIEW_REVIEWERS="claude codex gemini human"
 
 show_help() {
     cat <<'EOF'
-Usage: aishot [--with=claude,codex,gemini] <prompt>
+Usage: aishot [--with=claude,codex] <prompt>
        echo "prompt" | aishot [--with=...]
        aishot git diff review [--with=...]
        aishot git diff review make-prompt
@@ -55,7 +55,7 @@ Subcommands:
 
 Options:
   --with=LIST   Comma-separated list of shots to use.
-                Available: claude, codex, gemini.
+                Available: claude, codex.
                 Default: claude,codex
 
 ## Agent instructions
@@ -70,7 +70,7 @@ internally; just run it:
 
 For maximum coverage (all available shots):
 
-    Bash({ command: "aishot --with=claude,codex,gemini 'your prompt'", run_in_background: true })
+    Bash({ command: "aishot --with=claude,codex 'your prompt'", run_in_background: true })
 
 GOLDEN RULE: EVERY finding from a review is YOUR responsibility.
 Nothing in the diff is "pre-existing" or "not our commit". If it is in
@@ -81,7 +81,7 @@ EOF
 
 show_review_help() {
     cat <<'EOF'
-Usage: aishot git diff review [--with=claude,codex,gemini]
+Usage: aishot git diff review [--with=claude,codex]
 
 Run parallel code reviews via independent AI agents, then synthesize the
 results into the structured review artifact. Each reviewer gets the same
@@ -101,7 +101,7 @@ Options:
 
 Options:
   --with=LIST   Comma-separated list of reviewers.
-                Available: claude, codex, gemini.
+                Available: claude, codex.
                 Default: claude,codex
 
 Review-artifact subcommands (operate on .aishot/review.json):
@@ -135,7 +135,7 @@ EOF
 
 show_describe_help() {
     cat <<'EOF'
-Usage: aishot git diff describe [--with=claude,codex,gemini]
+Usage: aishot git diff describe [--with=claude,codex]
 
 Build a factual changeset inventory (a changelog) of the current diff and
 run it across independent AI agents in parallel, then synthesize one
@@ -154,7 +154,7 @@ vs upstream plus staged and unstaged changes, and new untracked files.
 
 Options:
   --with=LIST   Comma-separated list of shots.
-                Available: claude, codex, gemini.
+                Available: claude, codex.
                 Default: claude,codex
 
 Large diffs:
@@ -176,9 +176,9 @@ EOF
 validate_reviewer() {
     local name=$1
     case "$name" in
-        claude|codex|gemini) return 0 ;;
+        claude|codex) return 0 ;;
         *)
-            echo "Error: Unknown reviewer '${name}'. Available: claude, codex, gemini" >&2
+            echo "Error: Unknown reviewer '${name}'. Available: claude, codex" >&2
             return 1
             ;;
     esac
