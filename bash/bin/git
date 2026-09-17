@@ -921,6 +921,185 @@ then
   esac
 fi
 
+# ---------------------------------------------------------------------------
+# Guard allow-list
+#
+# Some tools we build shell out to git as internal plumbing. Under an agent
+# those invocations inherit $TIMVISHER_AGENT and get policed as though the
+# agent had typed them. The allow-list names the (guard, ancestor process)
+# pairs that are exempt.
+#
+# git is the authority. Entries are data, never sourced, and a caller cannot
+# assert its own exemption — being the named ancestor process is the only
+# credential, which is why there is no env-var form of this.
+#
+# Core ships no entries. Datadog-specific tools live in the system-extensions
+# repo and contribute through ~/.config/timvisher/ide/git/guard_allow.
+#
+# Format, one entry per line, `#` comments and blank lines ignored:
+#
+#   <guard-code> <ancestor-basename> [subcommand=<name>]
+#
+# guard-code is the aictl code the guard would die with. subcommand, when
+# present, narrows the entry to that git subcommand.
+# ---------------------------------------------------------------------------
+
+guard_allow__files=(
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/git/guard_allow"
+)
+
+# Ancestors that can never be allow-listed. These are the interpreters and
+# agent harnesses every agent command already runs under, so allowing one
+# would exempt everything and turn the allow-list into the sudo flag it
+# exists to prevent.
+guard_allow__never=(
+  bash sh zsh dash ksh fish
+  python python3 perl ruby node deno
+  env xargs make git
+  claude codex aishot claudeshot codexshot
+)
+
+guard_allow__entries=()
+guard_allow__entries_loaded=false
+
+guard_allow__load() {
+  if [[ $guard_allow__entries_loaded == true ]]
+  then
+    return 0
+  fi
+  guard_allow__entries_loaded=true
+
+  local file line code ancestor field never
+  for file in "${guard_allow__files[@]}"
+  do
+    if ! [[ -r $file ]]
+    then
+      continue
+    fi
+    while IFS= read -r line || [[ -n $line ]]
+    do
+      line=${line%%#*}
+      # shellcheck disable=SC2206
+      local -a fields=($line)
+      if (( ${#fields[@]} < 2 ))
+      then
+        continue
+      fi
+      code=${fields[0]}
+      ancestor=${fields[1]}
+
+      for never in "${guard_allow__never[@]}"
+      do
+        if [[ $ancestor == "$never" ]]
+        then
+          guard_allow__warn "refusing allow-list entry '${code} ${ancestor}' in ${file}: '${ancestor}' is never allow-listable"
+          continue 2
+        fi
+      done
+
+      local subcommand=""
+      for field in "${fields[@]:2}"
+      do
+        case "$field" in
+          subcommand=*) subcommand=${field#subcommand=} ;;
+          *)
+            guard_allow__warn "ignoring unknown field '${field}' in ${file}"
+            ;;
+        esac
+      done
+
+      guard_allow__entries+=("${code} ${ancestor} ${subcommand}")
+    done < "$file"
+  done
+}
+
+# Warnings honor the same stderr suppression as the invocation log: parents
+# that merge our stderr into git's stdout (dolt, bd, emacs) break on any
+# noise we add.
+guard_allow__warn() {
+  case "$_timvisher_git__parent_cmd" in
+    dolt|bd|emacs|Emacs|emacsclient) ;;
+    *) printf 'WARNING: %s\n' "$1" >&2 ;;
+  esac
+}
+
+guard_allow__ancestors=""
+guard_allow__ancestors_loaded=false
+
+# Basenames of every process from $PPID up to depth 20, as a space-delimited
+# string. One `ps -axww` — per-hop `ps -p` would fork per ancestor (3–10ms
+# each on macOS); a single call is ~10–30ms regardless of depth. `-ww`
+# disables column-width truncation so long command lines don't mask a real
+# ancestor. Only argv positions 0 and 1 count — position 0 for native
+# binaries (`/opt/homebrew/bin/bd …`) and position 1 for shebang scripts
+# (macOS `ps` renders these as `interpreter /path/to/script …`). Restricting
+# to those two positions rejects a name appearing as a regular argument
+# further along someone else's command line.
+guard_allow__load_ancestors() {
+  if [[ $guard_allow__ancestors_loaded == true ]]
+  then
+    return 0
+  fi
+  guard_allow__ancestors_loaded=true
+
+  local -A parent_of args_of
+  local pid ppid cmd
+  while read -r pid ppid cmd
+  do
+    parent_of[$pid]=$ppid
+    args_of[$pid]=$cmd
+  done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
+
+  # Depth 20 caps pathological cycles from pid reuse; login→tmux→bash→bd→git
+  # is 5 deep, so it is ample.
+  local depth=0 j
+  pid=$PPID
+  while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
+  do
+    local -a toks=()
+    read -ra toks <<< "${args_of[$pid]:-}"
+    for (( j=0; j<${#toks[@]} && j<2; j++ ))
+    do
+      guard_allow__ancestors+=" ${toks[$j]##*/}"
+    done
+    pid=${parent_of[$pid]:-}
+    (( depth++ ))
+  done
+  guard_allow__ancestors+=" "
+}
+
+guard_allow__has_ancestor() {
+  guard_allow__load_ancestors
+  [[ $guard_allow__ancestors == *" $1 "* ]]
+}
+
+# True when an allow-list entry exempts $1 (guard code) for the current
+# subcommand and ancestor chain.
+guard_allow__permits() {
+  local code=$1
+  local entry entry_code entry_ancestor entry_subcommand
+
+  guard_allow__load
+
+  for entry in "${guard_allow__entries[@]}"
+  do
+    read -r entry_code entry_ancestor entry_subcommand <<< "$entry"
+    if [[ $entry_code != "$code" ]]
+    then
+      continue
+    fi
+    if [[ -n $entry_subcommand && $entry_subcommand != "$subcommand" ]]
+    then
+      continue
+    fi
+    if guard_allow__has_ancestor "$entry_ancestor"
+    then
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [[ -n $TIMVISHER_AGENT ]]
 then
   subcommand=""
@@ -1050,7 +1229,8 @@ then
     fi
   fi
 
-  if [[ $subcommand == diff || $subcommand == log || $subcommand == rev-list ]]
+  if { [[ $subcommand == diff || $subcommand == log || $subcommand == rev-list ]]; } &&
+       ! guard_allow__permits git_range_no_upstream_ref
   then
     range_guard__upstream_re='@\{u(pstream)?\}'
     range_guard__head_or_empty='^(HEAD)?$'
@@ -1227,46 +1407,9 @@ then
 
     if [[ $add_guard__has_force == true ]]
     then
-      # Narrow allow-path: cfctl shells out `git add -f` from its post-init
-      # lockfile fixup (domains/cloud-networks/apps/cfctl/internal/fixups/
-      # fixups.go gitAdd). That's a structured, intentional operation we've
-      # built — not an agent typing -f because it didn't read .gitignore.
-      # If a cfctl process is in the ancestor chain, pass -f through.
-      #
-      # Mirrors the bd-dolt push allow-path below: ancestor walk via a
-      # single `ps -axww` call. Only argv positions 0 and 1 count
-      # (binary or shebang interpreter+script), to reject false positives
-      # from `cfctl` appearing as a regular argument further along.
-      add_guard__is_cfctl_ancestor() {
-        local -A parent_of args_of
-        local pid ppid cmd
-        while read -r pid ppid cmd
-        do
-          parent_of[$pid]=$ppid
-          args_of[$pid]=$cmd
-        done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
-
-        local depth=0
-        pid=$PPID
-        while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
-        do
-          local -a toks=()
-          read -ra toks <<< "${args_of[$pid]:-}"
-          local j
-          for (( j=0; j<${#toks[@]} && j<2; j++ ))
-          do
-            if [[ ${toks[$j]##*/} == cfctl ]]
-            then
-              return 0
-            fi
-          done
-          pid=${parent_of[$pid]:-}
-          (( depth++ ))
-        done
-        return 1
-      }
-
-      if ! add_guard__is_cfctl_ancestor
+      # Tool-internal `git add -f` is allow-listed by ancestor process
+      # (see the guard allow-list above); nothing is exempt by default.
+      if ! guard_allow__permits git_add_force_blocked
       then
         aictl_die \
           --code "git_add_force_blocked" \
@@ -1409,44 +1552,10 @@ then
       done
 
       # --- Ancestor gate ---
-      # One `ps -axww` — per-hop `ps -p` would fork per ancestor (3–10ms
-      # each on macOS); single call is ~10–30ms regardless of depth. `-ww`
-      # disables column-width truncation so long command lines don't mask
-      # a real `bd` token.
-      local -A parent_of args_of
-      local pid ppid cmd
-      while read -r pid ppid cmd
-      do
-        parent_of[$pid]=$ppid
-        args_of[$pid]=$cmd
-      done < <(ps -o pid=,ppid=,args= -axww 2>/dev/null)
-
-      # Walk from $PPID up to depth 20 (login→tmux→bash→bd→git is 5 deep;
-      # 20 is ample and caps pathological cycles from pid reuse).
-      local depth=0
-      pid=$PPID
-      while (( depth < 20 )) && [[ -n ${pid:-} && $pid != 0 && $pid != 1 ]]
-      do
-        # Only argv positions 0 and 1 count — position 0 for native binaries
-        # (real bd: `/opt/homebrew/bin/bd …`) and position 1 for shebang
-        # scripts (macOS `ps` renders these as `interpreter /path/to/script …`,
-        # putting the script path at argv[1]). Restricting to these two
-        # positions rejects false positives from `bd` appearing as a regular
-        # argument further along the command line.
-        local -a toks=()
-        read -ra toks <<< "${args_of[$pid]:-}"
-        local j
-        for (( j=0; j<${#toks[@]} && j<2; j++ ))
-        do
-          if [[ ${toks[$j]##*/} == bd ]]
-          then
-            return 0
-          fi
-        done
-        pid=${parent_of[$pid]:-}
-        (( depth++ ))
-      done
-      return 1
+      # bd stays in code rather than the allow-list: the refspec predicate
+      # above is not expressible as data, and beads is core, not an
+      # extension concern.
+      guard_allow__has_ancestor bd
     }
 
     if ! push_guard__is_bd_dolt "$@"

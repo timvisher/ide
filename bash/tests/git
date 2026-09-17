@@ -966,6 +966,158 @@ else
   fail "scrub guard: deadbranch2 should survive an unreachable remote: specs='${sf_specs}' out='${sf_out}'"
 fi
 
+# ---------------------------------------------------------------------------
+# Guard allow-list composition
+# ---------------------------------------------------------------------------
+# Tools we build shell out to git as internal plumbing and inherit
+# $TIMVISHER_AGENT. System extensions contribute (guard, ancestor) pairs
+# through $XDG_CONFIG_HOME/timvisher/ide/git/guard_allow; core ships none.
+
+allow_config="$tmpdir/allow-config"
+mkdir -p "$allow_config/timvisher/ide/git"
+allow_file="$allow_config/timvisher/ide/git/guard_allow"
+
+# Fake tool: runs its args as a subprocess (no exec) so it sits in the
+# ancestor chain when the wrapper runs underneath.
+mkdir -p "$tmpdir/faketool-bin"
+for faketool in faketool othertool
+do
+  cat > "$tmpdir/faketool-bin/$faketool" <<'FAKE_TOOL'
+#!/usr/bin/env bash
+"$@"
+FAKE_TOOL
+  chmod +x "$tmpdir/faketool-bin/$faketool"
+done
+
+run_wrapper_under_tool() {
+  local tool=$1
+  shift
+  TIMVISHER_AGENT=true \
+  XDG_CONFIG_HOME="$allow_config" \
+  PATH="$test_path" \
+  "$tmpdir/faketool-bin/$tool" bash -c \
+    "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+# Test: no allow-list file means nothing is exempt
+run_test
+rm -f "$allow_file"
+result=$(run_wrapper_under_tool faketool "diff origin/main..." || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: absent file exempts nothing"
+else
+  fail "absent allow-list should block: got '${result}'"
+fi
+
+# Test: an entry exempts its guard for its ancestor
+run_test
+printf 'git_range_no_upstream_ref faketool subcommand=diff\n' > "$allow_file"
+result=$(run_wrapper_under_tool faketool "diff origin/main..." || true)
+if [[ $result == *"real-git diff origin/main..."* ]] &&
+     [[ $result != *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: entry exempts its guard under its ancestor"
+else
+  fail "allow-list entry should permit: got '${result}'"
+fi
+
+# Test: the entry does not exempt a different ancestor
+run_test
+result=$(run_wrapper_under_tool othertool "diff origin/main..." || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: entry does not exempt a different ancestor"
+else
+  fail "othertool should still block: got '${result}'"
+fi
+
+# Test: subcommand= narrows the entry
+run_test
+result=$(run_wrapper_under_tool faketool "log origin/main..HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: subcommand= narrows the entry to that subcommand"
+else
+  fail "log should block under a diff-scoped entry: got '${result}'"
+fi
+
+# Test: an entry does not leak across guards
+run_test
+result=$(run_wrapper_under_tool faketool "add -f ignored.txt" || true)
+if [[ $result == *'"code":"git_add_force_blocked"'* ]]
+then
+  pass "allow-list: a range entry does not exempt the add -f guard"
+else
+  fail "add -f should block under a range-only entry: got '${result}'"
+fi
+
+# Test: the add -f guard is allow-listable, and core hardcodes no tool
+run_test
+printf 'git_add_force_blocked faketool\n' > "$allow_file"
+result=$(run_wrapper_under_tool faketool "add -f ignored.txt" || true)
+if [[ $result == *"real-git add -f ignored.txt"* ]]
+then
+  pass "allow-list: add -f exempt by entry"
+else
+  fail "add -f entry should permit: got '${result}'"
+fi
+
+run_test
+result=$(run_wrapper_under_tool cfctl "add -f ignored.txt" 2>/dev/null || true)
+if [[ $result != *"real-git add"* ]]
+then
+  pass "allow-list: core hardcodes no cfctl exemption"
+else
+  fail "core should not exempt cfctl without an entry: got '${result}'"
+fi
+
+# Test: interpreters and agent harnesses are never allow-listable —
+# allowing one would exempt every agent command.
+for never in bash python3 git claude
+do
+  run_test
+  printf 'git_range_no_upstream_ref %s\n' "$never" > "$allow_file"
+  result=$(run_wrapper_under_tool faketool "diff origin/main..." || true)
+  if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]] &&
+       [[ $result == *"never allow-listable"* ]]
+  then
+    pass "allow-list: '${never}' is refused as an ancestor"
+  else
+    fail "'${never}' must not be allow-listable: got '${result}'"
+  fi
+done
+
+# Test: comments, blanks, and malformed lines are skipped, not fatal
+run_test
+cat > "$allow_file" <<'ALLOW'
+# a comment
+
+garbage-with-one-field
+git_range_no_upstream_ref faketool subcommand=diff
+ALLOW
+result=$(run_wrapper_under_tool faketool "diff origin/main..." || true)
+if [[ $result == *"real-git diff origin/main..."* ]]
+then
+  pass "allow-list: comments, blanks, and short lines are skipped"
+else
+  fail "malformed lines should not break parsing: got '${result}'"
+fi
+
+# Test: spoof — the ancestor name as a later argv token does not count
+run_test
+printf 'git_range_no_upstream_ref faketool subcommand=diff\n' > "$allow_file"
+result=$(TIMVISHER_AGENT=true XDG_CONFIG_HOME="$allow_config" PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; : faketool; '$script' diff origin/main..." 2>&1 || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: spoofed ancestor name in argv does not satisfy the gate"
+else
+  fail "argv spoof should not pass the ancestor gate: got '${result}'"
+fi
+
+rm -f "$allow_file"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
