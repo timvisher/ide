@@ -1104,6 +1104,83 @@ else
   fail "malformed lines should not break parsing: got '${result}'"
 fi
 
+# Test: rev= pins the revision operand's shape
+run_test
+printf 'git_range_no_upstream_ref faketool subcommand=diff rev=?*...\n' > "$allow_file"
+allow_rev_ok=true
+for allowed in "diff --name-only origin/main..." "diff origin/main... -- some/path"
+do
+  result=$(run_wrapper_under_tool faketool "$allowed" || true)
+  if [[ $result != *"real-git diff"* ]]
+  then
+    allow_rev_ok=false
+    fail "rev=?*... should permit 'git ${allowed}': got '${result}'"
+  fi
+done
+if [[ $allow_rev_ok == true ]]
+then
+  pass "allow-list: rev= permits the pinned open three-dot form"
+fi
+
+# Test: rev= rejects every other range shape for the same tool
+for denied in "diff origin/main..HEAD" "diff origin/main...HEAD" "diff origin/main HEAD"
+do
+  run_test
+  result=$(run_wrapper_under_tool faketool "$denied" || true)
+  if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+  then
+    pass "allow-list: rev= blocks 'git ${denied}'"
+  else
+    fail "rev= should block 'git ${denied}': got '${result}'"
+  fi
+done
+
+# rev= pins the form, not the ref: the tools resolve their base at
+# runtime, so any ref in the open three-dot form is permitted.
+run_test
+result=$(run_wrapper_under_tool faketool "diff some-other-base..." || true)
+if [[ $result == *"real-git diff some-other-base..."* ]]
+then
+  pass "allow-list: rev= pins the form, not the ref name"
+else
+  fail "rev= should permit any ref in the pinned form: got '${result}'"
+fi
+
+# Test: rev= requires exactly one revision operand
+run_test
+result=$(run_wrapper_under_tool faketool "diff origin/main... HEAD" || true)
+if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+then
+  pass "allow-list: rev= requires exactly one revision operand"
+else
+  fail "second operand should defeat rev=: got '${result}'"
+fi
+
+# Test: paths= pins the path operands exactly
+run_test
+printf 'git_add_force_blocked faketool paths=.terraform.lock.hcl\n' > "$allow_file"
+result=$(run_wrapper_under_tool faketool "add -f -- .terraform.lock.hcl" || true)
+if [[ $result == *"real-git add -f -- .terraform.lock.hcl"* ]]
+then
+  pass "allow-list: paths= permits the pinned path"
+else
+  fail "paths= should permit its literal: got '${result}'"
+fi
+
+for denied in "add -f -- secrets.env" "add -f .terraform.lock.hcl" \
+              "add -f -- .terraform.lock.hcl secrets.env" \
+              "add -f .terraform.lock.hcl -- .terraform.lock.hcl"
+do
+  run_test
+  result=$(run_wrapper_under_tool faketool "$denied" || true)
+  if [[ $result == *'"code":"git_add_force_blocked"'* ]]
+  then
+    pass "allow-list: paths= blocks 'git ${denied}'"
+  else
+    fail "paths= should block 'git ${denied}': got '${result}'"
+  fi
+done
+
 # Test: spoof — the ancestor name as a later argv token does not count
 run_test
 printf 'git_range_no_upstream_ref faketool subcommand=diff\n' > "$allow_file"

@@ -938,10 +938,22 @@ fi
 #
 # Format, one entry per line, `#` comments and blank lines ignored:
 #
-#   <guard-code> <ancestor-basename> [subcommand=<name>]
+#   <guard-code> <ancestor-basename> [subcommand=<name>] [rev=<glob>]
+#                                    [paths=<literal>]
 #
-# guard-code is the aictl code the guard would die with. subcommand, when
-# present, narrows the entry to that git subcommand.
+# guard-code is the aictl code the guard would die with. The remaining
+# fields are constraints, and every one present must hold.
+#
+#   subcommand=<name>  the git subcommand must be <name>
+#   rev=<glob>         there must be exactly one revision operand, and it
+#                      must match <glob>
+#   paths=<literal>    there must be no revision operands, at least one
+#                      path operand, and every path operand must equal
+#                      <literal> exactly
+#
+# Being the right ancestor is a credential, not a blank cheque: an entry
+# should pin the command shape the tool actually emits, so that a tool
+# running under an agent is exempt for its own plumbing and nothing else.
 # ---------------------------------------------------------------------------
 
 guard_allow__files=(
@@ -997,18 +1009,20 @@ guard_allow__load() {
         fi
       done
 
-      local subcommand=""
+      local entry_subcommand="" entry_rev="" entry_paths=""
       for field in "${fields[@]:2}"
       do
         case "$field" in
-          subcommand=*) subcommand=${field#subcommand=} ;;
+          subcommand=*) entry_subcommand=${field#subcommand=} ;;
+          rev=*) entry_rev=${field#rev=} ;;
+          paths=*) entry_paths=${field#paths=} ;;
           *)
             guard_allow__warn "ignoring unknown field '${field}' in ${file}"
             ;;
         esac
       done
 
-      guard_allow__entries+=("${code} ${ancestor} ${subcommand}")
+      guard_allow__entries+=("${code}|${ancestor}|${entry_subcommand}|${entry_rev}|${entry_paths}")
     done < "$file"
   done
 }
@@ -1073,25 +1087,128 @@ guard_allow__has_ancestor() {
   [[ $guard_allow__ancestors == *" $1 "* ]]
 }
 
+# --- Operand split ---
+#
+# Revision operands are the positionals after the subcommand and before
+# `--`; path operands are everything after `--`. The range guard and the
+# allow-list both read this, so an entry can never be matched against a
+# different parse than the guard it exempts.
+#
+# A small set of common value-taking flags is handled; uncurated ones in
+# space-separated form (e.g. `--author Tim`) get their value counted as an
+# operand. That direction is safe: it makes a guard fire, and makes an
+# allow-list entry fail to match.
+git_operands=()
+git_paths=()
+
+git_operands__parse() {
+  git_operands=()
+  git_paths=()
+
+  local x
+  local past_subcommand=false
+  local past_double_dash=false
+  local skip_next=false
+
+  for x in "$@"
+  do
+    if [[ $skip_next == true ]]
+    then
+      skip_next=false
+      continue
+    fi
+    if [[ $past_double_dash == true ]]
+    then
+      git_paths+=("$x")
+      continue
+    fi
+    if [[ $past_subcommand == false ]]
+    then
+      case "$x" in
+        -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
+          skip_next=true
+          ;;
+      esac
+      if [[ $x == "$subcommand" ]]
+      then
+        past_subcommand=true
+      fi
+      continue
+    fi
+    if [[ $x == -- ]]
+    then
+      past_double_dash=true
+      continue
+    fi
+    case "$x" in
+      # Attached `--flag=value` form is safe — a single token starting with
+      # `-`, so the `-*` catch below handles it. -S/-G are pickaxe flags
+      # (git log -S some_func HEAD); -O is --orderfile.
+      -n|-L|-S|-G|-O|--max-count|--skip|--since|--after|--until|--before|\
+      --author|--committer|--grep|--format|--pretty|--date|--encoding)
+        skip_next=true
+        continue
+        ;;
+      -*)
+        continue
+        ;;
+    esac
+    git_operands+=("$x")
+  done
+}
+
 # True when an allow-list entry exempts $1 (guard code) for the current
-# subcommand and ancestor chain.
+# subcommand, operands, and ancestor chain.
 guard_allow__permits() {
   local code=$1
-  local entry entry_code entry_ancestor entry_subcommand
+  local entry entry_code entry_ancestor entry_subcommand entry_rev entry_paths
+  local path
 
   guard_allow__load
 
   for entry in "${guard_allow__entries[@]}"
   do
-    read -r entry_code entry_ancestor entry_subcommand <<< "$entry"
+    IFS='|' read -r entry_code entry_ancestor entry_subcommand entry_rev entry_paths <<< "$entry"
+
     if [[ $entry_code != "$code" ]]
     then
       continue
     fi
+
     if [[ -n $entry_subcommand && $entry_subcommand != "$subcommand" ]]
     then
       continue
     fi
+
+    if [[ -n $entry_rev ]]
+    then
+      if (( ${#git_operands[@]} != 1 ))
+      then
+        continue
+      fi
+      # Intentional glob match — the entry supplies the pattern.
+      # shellcheck disable=SC2053
+      if [[ ${git_operands[0]} != $entry_rev ]]
+      then
+        continue
+      fi
+    fi
+
+    if [[ -n $entry_paths ]]
+    then
+      if (( 0 < ${#git_operands[@]} )) || (( ${#git_paths[@]} == 0 ))
+      then
+        continue
+      fi
+      for path in "${git_paths[@]}"
+      do
+        if [[ $path != "$entry_paths" ]]
+        then
+          continue 2
+        fi
+      done
+    fi
+
     if guard_allow__has_ancestor "$entry_ancestor"
     then
       return 0
@@ -1145,6 +1262,8 @@ then
 
     subcommand=$x
   done
+
+  git_operands__parse "$@"
 
   if [[ $subcommand == commit ]]
   then
@@ -1306,65 +1425,9 @@ then
     #
     # Only runs when no single-arg `..` range was already caught, so we
     # don't double-warn on `diff A..B C` (already handled above).
-    #
-    # Collects positional (non-flag) args after the subcommand, up to `--`.
-    # A small set of common value-taking flags is handled; uncurated ones
-    # in space-separated form (e.g., `--author Tim`) may cause a false
-    # positive. Agents can bypass by switching to `--flag=value`.
     if [[ $range_guard__single_arg_range_seen == false ]]
     then
-      range_guard__positionals=()
-      range_guard__past_subcommand=false
-      range_guard__past_double_dash=false
-      range_guard__skip_next=false
-      for x in "$@"
-      do
-        if [[ $range_guard__skip_next == true ]]
-        then
-          range_guard__skip_next=false
-          continue
-        fi
-        if [[ $range_guard__past_double_dash == true ]]
-        then
-          continue
-        fi
-        if [[ $range_guard__past_subcommand == false ]]
-        then
-          case "$x" in
-            -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--config-env)
-              range_guard__skip_next=true
-              ;;
-          esac
-          if [[ $x == "$subcommand" ]]
-          then
-            range_guard__past_subcommand=true
-          fi
-          continue
-        fi
-        if [[ $x == -- ]]
-        then
-          range_guard__past_double_dash=true
-          continue
-        fi
-        case "$x" in
-          # Common value-taking flags in space-separated form. Attached
-          # `--flag=value` form is safe — it's a single token starting
-          # with `-`, so the `-*` catch below handles it.
-          #
-          # -S/-G are pickaxe flags (git log -S some_func HEAD). -O is
-          # --orderfile. Missing one here means its value gets counted as
-          # a positional and the guard fires a false positive.
-          -n|-L|-S|-G|-O|--max-count|--skip|--since|--after|--until|--before|\
-          --author|--committer|--grep|--format|--pretty|--date|--encoding)
-            range_guard__skip_next=true
-            continue
-            ;;
-          -*)
-            continue
-            ;;
-        esac
-        range_guard__positionals+=("$x")
-      done
+      range_guard__positionals=("${git_operands[@]}")
 
       if (( 2 <= ${#range_guard__positionals[@]} ))
       then
