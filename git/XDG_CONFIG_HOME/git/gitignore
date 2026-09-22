@@ -39,5 +39,6 @@ AGENTS.local.md
 .beads/
 beads.org
 .cfctl/
+.ddbzl/
 .aishot/
 .agent-shell/
