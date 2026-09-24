@@ -21,13 +21,6 @@ shopt -s histverify
 shopt -s extglob
 shopt -s globstar
 
-timvisher_nofile_soft=$(ulimit -Sn)
-if [[ $timvisher_nofile_soft != unlimited ]] && (( timvisher_nofile_soft < 1024 ))
-then
-  ulimit -Sn 1024
-fi
-unset timvisher_nofile_soft
-
 # Ignore some controlling instructions
 # HISTIGNORE is a colon-delimited list of patterns which should be excluded.
 # The '&' is a special pattern which suppresses duplicate entries.
