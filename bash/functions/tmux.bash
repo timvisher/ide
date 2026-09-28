@@ -51,6 +51,13 @@ function new_tmux_session {
             return 1
         fi
 
+        local nofile_soft
+        nofile_soft=$(ulimit -Sn)
+        if [[ $nofile_soft != unlimited ]] && (( nofile_soft < 1024 ))
+        then
+            ulimit -Sn 1024
+        fi
+
         # tmux -vvvv new-session -d -s "$session_name" -n editor "$default_command" # for debugging
         tmux new-session -d -s "$session_name" -n editor "$default_command"
         if [[ Darwin = $(uname) ]]
