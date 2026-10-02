@@ -109,16 +109,13 @@ then
   exit 0
 fi
 
-printf '%-10s %-38s %6s %8s %8s %10s %8s %9s\n' \
-  DAY WORKTREE N P50_MS P95_MS APPLY_MAX TRIVIAL RESTARTS
-printf '%s\n' "$report" | jq -r '.[] |
-  [ .day, (.worktree | split("/") | .[-2:] | join("/")), .n, .p50_ms, .p95_ms, .apply_max, .trivial, .restarts ]
-  | @tsv' |
-  awk -F'\t' '{
-    w=$2
-    if (38 < length(w)) w="..." substr(w, length(w)-34)
-    printf "%-10s %-38s %6s %8s %8s %10s %8s %9s\n", $1,w,$3,$4,$5,$6,$7,$8
-  }'
+{
+  printf 'DAY\tWORKTREE\tN\tP50_MS\tP95_MS\tAPPLY_MAX\tTRIVIAL\tRESTARTS\n'
+  printf '%s\n' "$report" | jq -r '.[] |
+    [ .day, (.worktree | split("/") | .[-2:] | join("/")), .n, .p50_ms, .p95_ms, .apply_max, .trivial, .restarts ]
+    | @tsv' |
+    awk -F'\t' -v OFS='\t' '{ if (38 < length($2)) $2 = "..." substr($2, length($2) - 34); print }'
+} | column -t -s $'\t'
 
 # Daemon-side series, which trace2 cannot see.
 samples="${state_dir}/fsmonitor-samples.jsonl"

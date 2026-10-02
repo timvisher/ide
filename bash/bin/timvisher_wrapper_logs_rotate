@@ -11,6 +11,20 @@
 # how much time passed. Generations are gzipped because these are highly
 # repetitive JSONL and compress ~10x.
 #
+# Why not an off-the-shelf rotator: logrotate is not installed and would
+# be a new dependency. newsyslog(8) ships with macOS but is built for
+# root plus syslogd -- /etc/newsyslog.d is root-owned, and driving it as
+# a user needs -r, which its own man page calls debugging-only; tried
+# that and it failed to chown the rotated file and left a temp file
+# behind. If logrotate ever gets installed, prefer it: `size`, `rotate`
+# and `compress` express all of this declaratively.
+#
+# Rename rather than copy-truncate. Every writer here is a short-lived
+# git process that opens with O_APPEND, writes one line and exits, so
+# nothing holds the path across a rotation. Rename's worst case is a
+# line landing in the previous generation; copy-truncate's worst case is
+# losing whatever was written between the copy and the truncate.
+#
 # Readers must treat <name>.jsonl plus <name>.jsonl.N.gz (ascending N =
 # older) as one logical stream.
 
@@ -56,14 +70,11 @@ rotate_one() {
     [[ -f ${f}.${i}.gz ]] && mv -f "${f}.${i}.gz" "${f}.$((i + 1)).gz"
   done
 
-  # Copy-truncate rather than mv: writers hold this path open with
-  # O_APPEND and would keep writing to a renamed inode.
-  if ! cp "$f" "${f}.1"
+  if ! mv -f "$f" "${f}.1"
   then
-    warn 'rotate: could not copy ‘%s’' "$f"
+    warn 'rotate: could not rename ‘%s’' "$f"
     return 1
   fi
-  : > "$f"
 
   gzip -f "${f}.1" ||
     {
