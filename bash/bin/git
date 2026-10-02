@@ -1930,9 +1930,33 @@ _timvisher_git__maybe_register_maintenance() {
   fi
 }
 
+# Reinstall git's maintenance scheduler if it has gone missing. Checked
+# separately from registration because it is a global condition, not a
+# per-trunk one, so a per-trunk sentinel would never notice. One builtin
+# file test when the scheduler is present, which is the normal case.
+_timvisher_git__maybe_ensure_maintenance_scheduler() {
+  (( _timvisher_git__depth == 0 )) || return 0
+  [[ -f "${HOME}/Library/LaunchAgents/org.git-scm.git.daily.plist" ]] && return 0
+  [[ $PWD == "${HOME}"/git/* ]] || return 0
+
+  local rest=${PWD#"${HOME}"/git/}
+  local org=${rest%%/*}
+  [[ -n $org && $org != "$rest" ]] || return 0
+
+  rest=${rest#*/}
+  local repo=${rest%%/*}
+  [[ -n $repo ]] || return 0
+
+  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  [[ -d $trunk ]] || return 0
+
+  timvisher_git ensure-maintenance-scheduler "$trunk" >/dev/null 2>&1 || true
+}
+
 _timvisher_git__phase guards
 _timvisher_git__maybe_reconcile_repo_config
 _timvisher_git__maybe_register_maintenance
+_timvisher_git__maybe_ensure_maintenance_scheduler
 _timvisher_git__phase reconcile
 
 upstream_guard__pre "$@"

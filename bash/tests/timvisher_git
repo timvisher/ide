@@ -349,6 +349,86 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# maintenance scheduler ensure tests
+# ---------------------------------------------------------------------------
+
+# Stub git so these never touch real launchd.
+ms_home="$tmpdir/sched_home"
+mkdir -p "$ms_home/Library/LaunchAgents" "$ms_home/.config/git" \
+  "$ms_home/cache" "$ms_home/trunk" "$ms_home/stub"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$MS_LOG"\nexit ${MS_RC:-0}\n' \
+  > "$ms_home/stub/git"
+chmod +x "$ms_home/stub/git"
+
+ms_run() {
+  HOME="$ms_home" MS_LOG="$ms_home/invocations" MS_RC="${1:-0}" \
+    PATH="$ms_home/stub:$PATH" \
+    new_cache_root="$ms_home/cache" \
+    XDG_CONFIG_HOME="$ms_home/.config" \
+    ensure_maintenance_scheduler "$ms_home/trunk"
+}
+ms_stamp="$ms_home/cache/.timvisher_maintenance_scheduler_attempted"
+
+# Present scheduler must be a silent no-op -- this is the normal path and
+# runs on every git invocation.
+run_test
+: > "$ms_home/Library/LaunchAgents/org.git-scm.git.daily.plist"
+: > "$ms_home/invocations"
+ms_run >/dev/null 2>&1
+if [[ ! -s $ms_home/invocations ]]
+then
+  pass "ensure_maintenance_scheduler does nothing when the scheduler is present"
+else
+  fail "ensure_maintenance_scheduler ran git with a scheduler present: $(cat "$ms_home/invocations")"
+fi
+
+# Missing scheduler must install via launchctl, and must not write the
+# registration into the tracked global config.
+run_test
+rm -f "$ms_home/Library/LaunchAgents/org.git-scm.git.daily.plist" "$ms_stamp"
+: > "$ms_home/invocations"
+ms_run >/dev/null 2>&1
+ms_got=$(cat "$ms_home/invocations" 2>/dev/null)
+if [[ $ms_got == *"maintenance start"* && $ms_got == *"--scheduler=launchctl"* &&
+      $ms_got == *"--config-file ${ms_home}/.config/git/config_machine"* ]]
+then
+  pass "ensure_maintenance_scheduler installs via launchctl with --config-file"
+else
+  fail "ensure_maintenance_scheduler invocation wrong: '${ms_got}'"
+fi
+
+run_test
+if [[ ! -f $ms_stamp ]]
+then
+  pass "ensure_maintenance_scheduler clears its attempt stamp on success"
+else
+  fail "attempt stamp should be gone after a successful install"
+fi
+
+# A failing install must leave the stamp so it does not fork on every
+# subsequent git call.
+run_test
+rm -f "$ms_stamp"
+: > "$ms_home/invocations"
+ms_run 1 >/dev/null 2>&1
+if [[ -f $ms_stamp ]]
+then
+  pass "ensure_maintenance_scheduler keeps its stamp after a failed install"
+else
+  fail "attempt stamp should persist after a failed install"
+fi
+
+run_test
+: > "$ms_home/invocations"
+ms_run 1 >/dev/null 2>&1
+if [[ ! -s $ms_home/invocations ]]
+then
+  pass "ensure_maintenance_scheduler does not retry while the stamp exists"
+else
+  fail "ensure_maintenance_scheduler retried despite the stamp"
+fi
+
+# ---------------------------------------------------------------------------
 # bare-poisoning source repair tests
 # ---------------------------------------------------------------------------
 

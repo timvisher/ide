@@ -3283,6 +3283,45 @@ maintenance_trunk_for() {
   printf '%s' "${repo_trunks_dir}/${org}/${repo}"
 }
 
+# Install git's own maintenance scheduler if it has gone missing.
+#
+# `git maintenance start --scheduler=launchctl` writes three launchd
+# plists that run `git for-each-repo --config=maintenance.repo --
+# maintenance run --schedule=...`. Using git's mechanism rather than a
+# repo-managed agent: it is native, `git maintenance stop` uninstalls it
+# cleanly, and it is three fewer things to maintain.
+#
+# --config-file keeps the registration out of the tracked global config,
+# which is a symlink into a git repo.
+#
+# An attempt stamp stops a failing install from forking on every git
+# call. Delete it to retry.
+ensure_maintenance_scheduler() {
+  local trunk=${1:-}
+  local plist="${HOME}/Library/LaunchAgents/org.git-scm.git.daily.plist"
+  local stamp="${new_cache_root}/.timvisher_maintenance_scheduler_attempted"
+
+  [[ -f $plist ]] && return 0
+  [[ -f $stamp ]] && return 0
+  [[ -n $trunk && -d $trunk ]] || return 0
+
+  local machine_config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config_machine"
+
+  : > "$stamp"
+
+  warn 'ensure_maintenance_scheduler: git maintenance scheduler missing; installing via launchctl'
+  if command git -C "$trunk" maintenance start \
+    --scheduler=launchctl --config-file "$machine_config" >&2
+  then
+    info 'ensure_maintenance_scheduler: installed'
+    rm -f "$stamp"
+    return 0
+  fi
+
+  warn 'ensure_maintenance_scheduler: install failed; delete ‘%s’ to retry' "$stamp"
+  return 1
+}
+
 # Keep the git maintenance registry correct by using it, rather than by
 # hand-editing a list that silently rots.
 #
@@ -3411,6 +3450,7 @@ case $1 in
   rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
   reconcile-repo-config) reconcile_repo_config "${@:2}" ;;
   reconcile-maintenance) reconcile_maintenance_repos "${@:2}" ;;
+  ensure-maintenance-scheduler) ensure_maintenance_scheduler "${@:2}" ;;
   status)
     case ${2:-} in
       --all-published) status__all_published ;;
