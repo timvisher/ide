@@ -92,8 +92,13 @@ rotate_one() {
       return 1
     fi
     : > "$f"
-  elif ! mv -f "$f" "${f}.1"
+  elif mv -f "$f" "${f}.1"
   then
+    # Recreate immediately. Writers would make it on next append anyway,
+    # but a reader between rotation and the next git call would otherwise
+    # see the path missing rather than empty.
+    : > "$f"
+  else
     warn 'rotate: could not rename ‘%s’' "$f"
     return 1
   fi
