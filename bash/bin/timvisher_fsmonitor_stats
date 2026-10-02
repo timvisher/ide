@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+
+# Roll the git wrapper's JSONL logs up into an answer about fsmonitor
+# health, per worktree per day.
+#
+# The raw streams are multi-GB and span rotated generations, so the
+# question "is fsmonitor degrading" is not greppable by hand. The
+# columns here are the ones that answer it:
+#
+#   statuses        index-refreshing commands seen
+#   p50/p95 ms      git-internal wall time (trace2 t_abs)
+#   apply_max       largest path count the daemon reported in one query
+#                   -- this is the churn signal: a pull that rewrites
+#                   50k files shows up here
+#   trivial         daemon answered uselessly and git fell back to a
+#                   full scan. THE degradation signal: in June the
+#                   daemon stayed up but stopped being useful
+#   restarts        distinct daemon tokens, i.e. daemon came back new
+#                   and invalidated its cached state
+#
+# A rising trivial rate is the tripwire worth watching.
+#
+# Usage: timvisher_fsmonitor_stats [--since <days>] [--json]
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+command -v jq >/dev/null 2>&1 || die 'jq is required'
+
+since_days=7
+as_json=false
+while (( 0 < $# ))
+do
+  case $1 in
+    --since) since_days=${2:?--since needs a day count}; shift 2 ;;
+    --json)  as_json=true; shift ;;
+    -h|--help)
+      sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) die 'unknown argument ‘%s’' "$1" ;;
+  esac
+done
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
+cutoff=$(( $(date +%s) - since_days * 86400 ))
+# trace2.eventBrief strips per-event timestamps, so the day comes from the
+# sid instead -- every event carries it, and it starts YYYYMMDDTHHMMSS.
+cutoff_day=$(date -d "@${cutoff}" +%Y%m%d)
+
+# Read the live file plus rotated generations as one stream.
+stream_trace2() {
+  local f="${state_dir}/trace2.jsonl"
+  [[ -f $f ]] && cat "$f"
+  shopt -s nullglob
+  local gz
+  for gz in "${f}".*.gz
+  do
+    gzip -dc "$gz" 2>/dev/null
+  done
+  shopt -u nullglob
+}
+
+# trace2 is one stream of per-process events keyed by sid. Join each
+# sid's def_repo worktree to its fsmonitor data and exit timing, then
+# bucket by day. Done in one jq pass so the multi-GB stream is read once.
+report=$(stream_trace2 | jq -rs --arg cutoff_day "$cutoff_day" '
+  # group all events by session id
+  group_by(.sid)
+  | map({
+      sid:      .[0].sid,
+      worktree: (map(select(.event=="def_repo") | .worktree) | first // "unknown"),
+      argv:     (map(select(.event=="start") | .argv) | first // []),
+      t_abs:    (map(select(.event=="exit") | .t_abs) | first // 0),
+      ymd:      (.[0].sid | .[0:8]),
+      applies:  (map(select(.event=="data" and .key=="apply_count") | (.value|tonumber)) ),
+      trivial:  (map(select(.event=="data" and .key=="response/trivial")) | length),
+      tokens:   (map(select(.event=="data" and .key=="response/token") | .value) )
+    })
+  # only commands that refresh the index are meaningful here
+  | map(select(.argv | any(. == "status" or . == "diff" or . == "commit")))
+  | map(select(.ymd >= $cutoff_day))
+  | group_by([.worktree, .ymd])
+  | map({
+      worktree: .[0].worktree,
+      day:      (.[0].ymd | .[0:4] + "-" + .[4:6] + "-" + .[6:8]),
+      n:        length,
+      p50_ms:   ((map(.t_abs) | sort | .[(length/2)|floor]) * 1000 | round),
+      p95_ms:   ((map(.t_abs) | sort | .[((length*0.95)|floor)] ) * 1000 | round),
+      apply_max:(map(.applies[]?) | max // 0),
+      trivial:  (map(.trivial) | add),
+      restarts: ((map(.tokens[]?) | unique | length) - 1 | if . < 0 then 0 else . end)
+    })
+  | sort_by(.day, .worktree)
+' 2>/dev/null) || die 'could not parse trace2 stream'
+
+if [[ -z $report || $report == "null" ]]
+then
+  info 'no fsmonitor-relevant trace2 data in the last %s day(s)' "$since_days"
+  exit 0
+fi
+
+if [[ $as_json == true ]]
+then
+  printf '%s\n' "$report" | jq .
+  exit 0
+fi
+
+printf '%-10s %-38s %6s %8s %8s %10s %8s %9s\n' \
+  DAY WORKTREE N P50_MS P95_MS APPLY_MAX TRIVIAL RESTARTS
+printf '%s\n' "$report" | jq -r '.[] |
+  [ .day, (.worktree | split("/") | .[-2:] | join("/")), .n, .p50_ms, .p95_ms, .apply_max, .trivial, .restarts ]
+  | @tsv' |
+  awk -F'\t' '{
+    w=$2
+    if (38 < length(w)) w="..." substr(w, length(w)-34)
+    printf "%-10s %-38s %6s %8s %8s %10s %8s %9s\n", $1,w,$3,$4,$5,$6,$7,$8
+  }'
+
+# Daemon-side series, which trace2 cannot see.
+samples="${state_dir}/fsmonitor-samples.jsonl"
+if [[ -f $samples ]]
+then
+  printf '\n%s\n' 'daemon resource series:'
+  jq -rs --argjson cutoff "$cutoff" '
+    map(select(.ts >= $cutoff))
+    | if length == 0 then empty else
+      {
+        samples:     length,
+        daemons_max: (map(.daemons) | max),
+        daemons_avg: ((map(.daemons) | add) / length * 10 | round / 10),
+        rss_max_mb:  ((map(.total_rss_kb) | max) / 1024 | round),
+        fds_max:     (map(.total_fds) | max),
+        free_mb_min: (map(.free_mb) | min)
+      } end
+    | to_entries | map("  \(.key): \(.value)") | .[]
+  ' "$samples" 2>/dev/null
+fi
