@@ -352,31 +352,67 @@ else
   fail "expected log line in ${log_file}; file exists=$([[ -f $log_file ]] && echo y || echo n)"
 fi
 
-# Test: jq-missing warning is also suppressed under a dolt/bd parent
-# (otherwise a host missing jq would still leak stderr into CombinedOutput).
-# Strip jq's locations from PATH; keep /bin so bash/ps are resolvable. Use
-# /bin/bash with an absolute path so the env-var-prefix on bash doesn't try
-# to resolve 'bash' through the restricted nojq_path.
+# Test: logging does not depend on jq. Strip jq's locations from PATH; keep
+# /bin so bash/ps are resolvable. Use /bin/bash with an absolute path so the
+# env-var-prefix on bash doesn't try to resolve 'bash' through nojq_path.
 run_test
 nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
-stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$nojq_path" \
-  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" 2>&1 >/dev/null)
-if [[ $stderr == *"jq not found"* ]]
+log_state="$tmpdir/xdg-state-nojq"
+rm -rf "$log_state"
+TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" \
+  PATH="$nojq_path" \
+  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" >/dev/null 2>&1
+log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+if [[ -f $log_file ]] && grep -q '"argv":\["status"\]' "$log_file"
 then
-  fail "expected jq-missing warning suppressed under parent=dolt, got '${stderr}'"
+  pass "log file is written without jq on PATH"
 else
-  pass "jq-missing warning suppressed under parent=dolt"
+  fail "expected log line in ${log_file} without jq; file exists=$([[ -f $log_file ]] && echo y || echo n)"
 fi
 
-# Sanity: jq-missing warning IS printed under normal parent (baseline).
+# Test: no stderr leak under a dolt/bd parent even with jq absent.
 run_test
-stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=bash PATH="$nojq_path" \
+stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$nojq_path" \
   /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" 2>&1 >/dev/null)
-if [[ $stderr == *"jq not found"* ]]
+if [[ $stderr == *'"argv":'* ]]
 then
-  pass "jq-missing warning printed under normal parent"
+  fail "expected no agent log on stderr when parent=dolt without jq, got '${stderr}'"
 else
-  fail "expected jq-missing warning under normal parent, got '${stderr}'"
+  pass "no stderr log leak under parent=dolt without jq"
+fi
+
+# Test: completion record carries rc, total_us and per-phase timings.
+run_test
+log_state="$tmpdir/xdg-state-timing"
+rm -rf "$log_state"
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+  PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" >/dev/null 2>&1
+log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+if [[ -f $log_file ]] &&
+  grep -q '"rec":"done"' "$log_file" &&
+  grep -q '"rc":0' "$log_file" &&
+  grep -qE '"total_us":[0-9]+' "$log_file" &&
+  grep -qE '"phases_us":\{[^}]*"git":[0-9]+' "$log_file"
+then
+  pass "completion record carries rc, total_us and phase timings"
+else
+  fail "expected timing fields in ${log_file}, got '$(cat "$log_file" 2>/dev/null)'"
+fi
+
+# Test: argv JSON escaping survives quotes and backslashes.
+run_test
+log_state="$tmpdir/xdg-state-escape"
+rm -rf "$log_state"
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+  PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status 'a\"b\\c'" >/dev/null 2>&1
+log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+if [[ -f $log_file ]] && grep -qF '["status","a\"b\\c"]' "$log_file"
+then
+  pass "argv JSON escaping handles quotes and backslashes"
+else
+  fail "expected escaped argv in ${log_file}, got '$(cat "$log_file" 2>/dev/null)'"
 fi
 
 # ---------------------------------------------------------------------------
