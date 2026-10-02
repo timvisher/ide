@@ -3125,12 +3125,70 @@ worktree_gc() {
 # Main entry point dispatch
 # ---------------------------------------------------------------------------
 
+# Converge every cached trunk onto its repo-config hook. Creation-time
+# hooks only ever fire once, so a worktree made before a hook existed --
+# or while the hook was unreachable under a stale org -- stays stale
+# forever. Run this on a schedule instead of hand-applying fixes.
+#
+# Only `repo-config` is reconciled. post-initial-branch-dir-creation does
+# one-time expensive work (gc, commit-graph write, index rewrite) and must
+# not be re-run on a timer.
+reconcile_repo_config() {
+  local trunk org repo candidate hook
+  local applied=0 failed=0 skipped=0
+
+  for trunk in "${repo_trunks_dir}"/*/*
+  do
+    [[ -d $trunk ]] || continue
+
+    repo=${trunk##*/}
+    org=${trunk%/*}
+    org=${org##*/}
+
+    hook=""
+    while IFS= read -r candidate
+    do
+      if [[ -x ${hooks_dir}/${candidate}/${repo}/repo-config ]]
+      then
+        hook=${hooks_dir}/${candidate}/${repo}/repo-config
+        if [[ $candidate != "$org" ]]
+        then
+          warn 'reconcile-repo-config: %s/%s has no hooks; using alias org %s' \
+            "$org" "$repo" "$candidate"
+        fi
+        break
+      fi
+    done < <(hook_org_candidates "$org")
+
+    if [[ -z $hook ]]
+    then
+      (( skipped++ ))
+      continue
+    fi
+
+    if ( cd "$trunk" && "$hook" ) >&2
+    then
+      info 'reconcile-repo-config: applied %s/%s' "$org" "$repo"
+      (( applied++ ))
+    else
+      warn 'reconcile-repo-config: %s/%s failed' "$org" "$repo"
+      (( failed++ ))
+    fi
+  done
+
+  info 'reconcile-repo-config: applied %s, skipped %s, failed %s' \
+    "$applied" "$skipped" "$failed"
+
+  (( failed == 0 ))
+}
+
 case $1 in
   clone)        clone "${@:2}" ;;
   fork)         fork "${@:2}" ;;
   info)         info__cmd "${@:2}" ;;
   is-branch-ish) is_branch_ish "${@:2}" ;;
   rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
+  reconcile-repo-config) reconcile_repo_config "${@:2}" ;;
   status)
     case ${2:-} in
       --all-published) status__all_published ;;

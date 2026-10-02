@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Converge every cached trunk onto its repo-config hook.
+
+  timvisher_git's creation-time hooks fire exactly once per worktree, so
+  any repo whose hook arrived later -- or whose hook was unreachable
+  because its hosting org flipped and the hooks were keyed to the old one
+  -- stays stale indefinitely. dd-source lost feature.manyFiles,
+  core.untrackedcache, core.commitgraph and fetch.writeCommitGraph that
+  way for ~3 months, which cost ~6s on every `git status`.
+
+  A timer rather than a one-time fix: the hook is idempotent, so
+  re-applying it is free, and convergence does not depend on anyone
+  remembering to re-run anything after a worktree is created.
+
+  __HOME__ is substituted with the real home directory by the deployer
+  (LaunchAgents/bin/start); launchd does not expand ~ in path values.
+
+  StartInterval (not KeepAlive) because this is a one-shot that exits.
+  Hourly is far more often than trunks appear; the run is a stat per
+  trunk plus four `git config` writes for the few repos that have hooks.
+  RunAtLoad converges at login rather than waiting out the first hour.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.timvisher.git-repo-config-reconcile</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_git</string>
+		<string>reconcile-repo-config</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>timvisher_logging_log_level</key>
+		<string>WARN</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>3600</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_git_repo_config_reconcile.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_git_repo_config_reconcile.log</string>
+</dict>
+</plist>
