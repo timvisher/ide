@@ -261,6 +261,86 @@ export PATH="$tmpdir/mockbin:$PATH"
 source_timvisher_git
 
 # ---------------------------------------------------------------------------
+# bare-poisoning source repair tests
+# ---------------------------------------------------------------------------
+
+# A cache with extensions.worktreeConfig on AND core.bare still in the
+# shared config is malformed per git: every linked worktree inherits
+# bare=true, so even raw `git worktree add` yields an unusable worktree.
+bp_dir="$tmpdir/bare_poison"
+mkdir -p "$bp_dir"
+bp_make_malformed() {
+  local d=$1
+  rm -rf "$d"
+  mkdir -p "$d"
+  command git init -q --bare "$d/trunk.git"
+  command git init -q "$d/seed"
+  (
+    cd "$d/seed" &&
+      echo x > a &&
+      command git add a &&
+      command git -c user.email=a@b -c user.name=a commit -qm i &&
+      command git push -q "$d/trunk.git" HEAD:refs/heads/main
+  ) >/dev/null 2>&1
+  command git -C "$d/trunk.git" symbolic-ref HEAD refs/heads/main
+  command git -C "$d/trunk.git" config extensions.worktreeConfig true
+}
+
+run_test
+bp_make_malformed "$bp_dir/m1"
+command git -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt" main >/dev/null 2>&1
+poisoned_before=$(command git -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
+repair_bare_poisoning_source "$bp_dir/m1/trunk.git" >/dev/null 2>&1
+shared_after=$(command git -C "$bp_dir/m1/trunk.git" config --file "$bp_dir/m1/trunk.git/config" --get core.bare 2>/dev/null) || shared_after=""
+still_bare=$(command git -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
+poisoned_after=$(command git -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
+if [[ $poisoned_before == true && -z $shared_after && $still_bare == true && $poisoned_after == false ]]
+then
+  pass "repair_bare_poisoning_source migrates core.bare and heals worktrees"
+else
+  fail "repair expected poisoned->healed with cache still bare, got before=${poisoned_before} shared=${shared_after} bare=${still_bare} after=${poisoned_after}"
+fi
+
+# The whole point: raw `git worktree add` must work afterwards, with no
+# per-worktree healing involved.
+run_test
+command git -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt2" -b second main >/dev/null 2>&1
+raw_bare=$(command git -C "$bp_dir/m1/wt2" rev-parse --is-bare-repository 2>/dev/null)
+if [[ $raw_bare == false ]]
+then
+  pass "raw git worktree add yields a usable worktree after source repair"
+else
+  fail "raw worktree add after repair: expected is-bare false, got '${raw_bare}'"
+fi
+
+# Idempotent: a second pass must not re-migrate or disturb anything.
+run_test
+repair_bare_poisoning_source "$bp_dir/m1/trunk.git" >/dev/null 2>&1
+rc=$?
+still_bare2=$(command git -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
+if (( rc == 0 )) && [[ $still_bare2 == true ]]
+then
+  pass "repair_bare_poisoning_source is idempotent"
+else
+  fail "second repair pass: rc=${rc} still_bare=${still_bare2}"
+fi
+
+# Inert when the extension is off -- the overwhelmingly common case, and
+# the one where touching core.bare would be actively wrong.
+run_test
+rm -rf "$bp_dir/healthy"
+mkdir -p "$bp_dir/healthy"
+command git init -q --bare "$bp_dir/healthy/trunk.git"
+repair_bare_poisoning_source "$bp_dir/healthy/trunk.git" >/dev/null 2>&1
+healthy_shared=$(command git -C "$bp_dir/healthy/trunk.git" config --file "$bp_dir/healthy/trunk.git/config" --get core.bare 2>/dev/null)
+if [[ $healthy_shared == true ]]
+then
+  pass "repair_bare_poisoning_source leaves a healthy cache untouched"
+else
+  fail "healthy cache core.bare should stay in shared config, got '${healthy_shared}'"
+fi
+
+# ---------------------------------------------------------------------------
 # hook org-alias fallthrough tests
 # ---------------------------------------------------------------------------
 

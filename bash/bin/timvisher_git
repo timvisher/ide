@@ -800,8 +800,64 @@ migrate_cache_to_bare_if_needed() {
 # migration left in this state self-heal on next access.  No-op when
 # the extension is off — `git config --worktree` would fail there and
 # we have no evidence of poisoning in that case.
+# Repair the cause of bare-poisoned worktrees, not just the symptom.
+#
+# git requires that enabling `extensions.worktreeConfig` move `core.bare`
+# out of the common config. A cache with the extension on AND
+# `core.bare = true` still shared is malformed: every linked worktree
+# inherits `bare = true` and git refuses to see a working tree, so raw
+# `git worktree add` produces a broken worktree even though
+# ensure_worktrees_not_poisoned_by_bare would later patch it.
+#
+# Do the documented migration instead -- move `core.bare` into the bare
+# repo's own config.worktree and drop it from the shared config. The
+# cache still reports bare, new worktrees come out usable without any
+# per-worktree override, and already-poisoned worktrees recover.
+#
+# `git sparse-checkout init` is the usual way a cache ends up here: it
+# enables the extension silently and leaves it enabled after
+# `sparse-checkout disable`.
+repair_bare_poisoning_source() {
+  local cache_dir=$1
+
+  local worktree_config bare
+  worktree_config=$(command git -C "$cache_dir" config --type=bool --get extensions.worktreeConfig 2>/dev/null) || worktree_config=""
+  [[ $worktree_config == true ]] || return 0
+
+  # Read from the shared config specifically: --get would also find a
+  # per-worktree value and hide the malformed shared one.
+  bare=$(command git -C "$cache_dir" config --type=bool --file "${cache_dir}/config" --get core.bare 2>/dev/null) || bare=""
+  [[ $bare == true ]] || return 0
+
+  warn 'repair_bare_poisoning_source: ‘%s’ has extensions.worktreeConfig with core.bare in the shared config; migrating core.bare to config.worktree' \
+    "$cache_dir"
+
+  if ! command git -C "$cache_dir" config --worktree core.bare true
+  then
+    warn 'repair_bare_poisoning_source: could not set per-worktree core.bare in ‘%s’; leaving shared config alone' "$cache_dir"
+    return 1
+  fi
+
+  command git -C "$cache_dir" config --file "${cache_dir}/config" --unset core.bare ||
+    {
+      warn 'repair_bare_poisoning_source: could not unset shared core.bare in ‘%s’' "$cache_dir"
+      return 1
+    }
+
+  if [[ $(command git -C "$cache_dir" rev-parse --is-bare-repository 2>/dev/null) != true ]]
+  then
+    warn 'repair_bare_poisoning_source: ‘%s’ no longer reports bare after migration; restoring shared core.bare' "$cache_dir"
+    command git -C "$cache_dir" config --file "${cache_dir}/config" core.bare true
+    return 1
+  fi
+
+  info 'repair_bare_poisoning_source: migrated core.bare for ‘%s’' "$cache_dir"
+}
+
 ensure_worktrees_not_poisoned_by_bare() {
   local cache_dir=$1
+
+  repair_bare_poisoning_source "$cache_dir" || true
 
   local worktree_config
   # --type=bool normalizes git's truthy variants (true/yes/on/1) to
