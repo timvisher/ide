@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 
+# Stop every fsmonitor daemon. They have no idle timeout, so without
+# this they persist indefinitely -- one per worktree anyone ran git in,
+# at ~8 MB each, long after the work is over. Bazel bounds its servers
+# with max_idle_secs=36000; this is the same day-boundary bound.
+#
+# Stop gracefully rather than signalling: `fsmonitor--daemon stop`
+# removes the IPC socket, where SIGTERM leaves a stale one behind. Find
+# them by socket, since a daemon's argv does not say which worktree it
+# watches. Done before the tmux teardown so it still runs if that hangs.
+timvisher_fsmonitor_stop_all || true
+
 cleanup_emacs --no-dry-run &&
   if pgrep tmux >/dev/null
   then

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+# Stop every running fsmonitor daemon.
+#
+# The builtin daemon has no idle timeout, so daemons accumulate -- one
+# per worktree any git command touched -- and stay until the worktree is
+# removed. This is the day-boundary bound, called from
+# timvisher_cleanup_shell_procs at workstation-down.
+#
+# A daemon's argv does not identify the worktree it watches, so find them
+# by their IPC socket under the trunk caches and resolve each back to its
+# worktree. Stopping gracefully removes the socket; SIGTERM would leave a
+# stale one behind.
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+trunks="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
+[[ -d $trunks ]] || exit 0
+
+stopped=0
+
+shopt -s nullglob
+for socket in "${trunks}"/*/*/fsmonitor--daemon.ipc "${trunks}"/*/*/worktrees/*/fsmonitor--daemon.ipc
+do
+  gitdir=${socket%/fsmonitor--daemon.ipc}
+
+  if [[ -f ${gitdir}/gitdir ]]
+  then
+    read -r worktree < "${gitdir}/gitdir" || continue
+    worktree=${worktree%/.git}
+  else
+    worktree=$gitdir
+  fi
+
+  [[ -n $worktree && -d $worktree ]] || continue
+
+  if command git -C "$worktree" fsmonitor--daemon stop >/dev/null 2>&1
+  then
+    info 'fsmonitor_stop_all: stopped daemon for ‘%s’' "$worktree"
+    (( stopped++ ))
+  fi
+done
+shopt -u nullglob
+
+# Anything left is watching a worktree whose socket we could not resolve.
+remaining=$(pgrep -f 'fsmonitor--daemon run' 2>/dev/null | grep -c . || true)
+if (( 0 < remaining ))
+then
+  warn 'fsmonitor_stop_all: %s daemon(s) still running after stopping %s by socket' \
+    "$remaining" "$stopped"
+  pkill -TERM -f 'fsmonitor--daemon run' 2>/dev/null || true
+fi
+
+exit 0
