@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Size-rotate the git wrapper's JSONL logs.
+
+  trace2.jsonl grows ~500 MB/day under normal use and log.jsonl is
+  already in the hundreds of MB, so without this a week of retention is
+  several GB and the logs stop being usable for the thing they exist for.
+
+  A timer is right here because it only reads sizes and rotates files --
+  unlike config reconciliation, which reacts to actions. Half-hourly is
+  well inside the time it takes to add 256 MB, so the cap is never
+  overshot by much.
+
+  __HOME__ is substituted with the real home directory by the deployer
+  (LaunchAgents/bin/start); launchd does not expand ~ in path values.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.timvisher.git-wrapper-logs-rotate</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_wrapper_logs_rotate</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>1800</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_wrapper_logs_rotate.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_wrapper_logs_rotate.log</string>
+</dict>
+</plist>

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+
+# Size-based rotation for the git wrapper's JSONL logs.
+#
+# trace2.jsonl grows at roughly 500 MB/day under normal use, and
+# log.jsonl is already in the hundreds of MB, so a week of retention is
+# multiple GB without this. Rotation is what makes "look at the last
+# week" answerable at all.
+#
+# Size-based rather than time-based: volume tracks how much git ran, not
+# how much time passed. Generations are gzipped because these are highly
+# repetitive JSONL and compress ~10x.
+#
+# Readers must treat <name>.jsonl plus <name>.jsonl.N.gz (ascending N =
+# older) as one logical stream.
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+shopt -s extglob
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
+max_bytes=${TIMVISHER_WRAPPER_LOG_MAX_BYTES:-$((256 * 1024 * 1024))}
+keep=${TIMVISHER_WRAPPER_LOG_KEEP:-7}
+
+rotate_one() {
+  local f=$1 size i gz
+
+  [[ -f $f ]] || return 0
+
+  size=$(stat -c %s "$f" 2>/dev/null) || return 0
+  if (( size < max_bytes ))
+  then
+    return 0
+  fi
+
+  # Drop everything at or past the keep limit, not just generation
+  # $keep: lowering the limit would otherwise orphan higher generations
+  # forever. Then shift the survivors up one.
+  local gen
+  shopt -s nullglob
+  for gz in "${f}".*.gz
+  do
+    gen=${gz%.gz}
+    gen=${gen##*.}
+    [[ $gen == +([0-9]) ]] || continue
+    (( keep <= gen )) && rm -f "$gz"
+  done
+  shopt -u nullglob
+
+  for (( i = keep - 1; 1 <= i; i-- ))
+  do
+    [[ -f ${f}.${i}.gz ]] && mv -f "${f}.${i}.gz" "${f}.$((i + 1)).gz"
+  done
+
+  # Copy-truncate rather than mv: writers hold this path open with
+  # O_APPEND and would keep writing to a renamed inode.
+  if ! cp "$f" "${f}.1"
+  then
+    warn 'rotate: could not copy ‘%s’' "$f"
+    return 1
+  fi
+  : > "$f"
+
+  gzip -f "${f}.1" ||
+    {
+      warn 'rotate: could not gzip ‘%s.1’' "$f"
+      return 1
+    }
+
+  info 'rotate: %s at %s bytes -> %s.1.gz' "$f" "$size" "$f"
+}
+
+rc=0
+for name in log trace2 fsmonitor-samples
+do
+  rotate_one "${state_dir}/${name}.jsonl" || rc=1
+done
+
+exit $rc
