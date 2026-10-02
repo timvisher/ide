@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Sample fsmonitor daemon resource use into a JSONL series.
+
+  trace2 covers the git client side (query latency, paths returned,
+  trivial fallbacks) but records nothing about the daemons themselves --
+  how many are running, what they hold, whether one died. Without this
+  series there is no way to answer "is fsmonitor hurting the machine"
+  after the fact.
+
+  Five minutes: daemon count changes on the scale of opening a worktree,
+  and a week at this cadence is ~2k samples, which is nothing next to
+  the logs it sits beside.
+
+  __HOME__ is substituted with the real home directory by the deployer
+  (LaunchAgents/bin/start); launchd does not expand ~ in path values.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.timvisher.fsmonitor-sample</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_fsmonitor_sample</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>300</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_fsmonitor_sample.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_fsmonitor_sample.log</string>
+</dict>
+</plist>

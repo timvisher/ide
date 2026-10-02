@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# Sample fsmonitor daemon resource use into a JSONL series.
+#
+# trace2 instruments the git *client* -- how long a query took, how many
+# paths came back, whether the daemon answered trivially. It says nothing
+# about the daemons themselves: how many exist, what they hold, whether
+# one died. That is the gap this fills, and it is the half that matters
+# for "is this hurting the machine".
+#
+# Sampling on a timer is appropriate here in a way that reconciling
+# config on a timer was not: this only observes.
+
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
+out="${state_dir}/fsmonitor-samples.jsonl"
+[[ -d $state_dir ]] || mkdir -p "$state_dir" || exit 1
+
+mapfile -t pids < <(pgrep -f 'fsmonitor--daemon run' 2>/dev/null)
+
+total_rss=0
+total_fds=0
+total_cpu=0
+daemons_json=""
+sep=""
+
+for p in "${pids[@]}"
+do
+  [[ -n $p ]] || continue
+
+  read -r rss cpu_raw etime_raw < <(ps -o rss=,time=,etime= -p "$p" 2>/dev/null)
+  [[ -n $rss ]] || continue
+
+  fds=$(lsof -p "$p" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+
+  # ps time= is [[dd-]hh:]mm:ss
+  cpu=$(awk -F: -v t="$cpu_raw" 'BEGIN{n=split(t,a,":"); if(n==3) print a[1]*3600+a[2]*60+a[3]; else if(n==2) print a[1]*60+a[2]; else print 0}')
+
+  total_rss=$((total_rss + rss))
+  total_fds=$((total_fds + fds))
+  total_cpu=$(awk -v a="$total_cpu" -v b="$cpu" 'BEGIN{print a+b}')
+
+  daemons_json="${daemons_json}${sep}{\"pid\":${p},\"rss_kb\":${rss},\"fds\":${fds},\"cpu_s\":${cpu},\"etime\":\"${etime_raw}\"}"
+  sep=","
+done
+
+# System-level context, so a daemon count can be read against whatever
+# else is competing for the same resources.
+sys_fds=$(lsof 2>/dev/null | wc -l | tr -d ' ')
+page_size=$(vm_stat | awk '/page size of/{print $8}')
+free_pages=$(vm_stat | awk '/Pages free/{gsub(/\./,"",$3); print $3}')
+inactive_pages=$(vm_stat | awk '/Pages inactive/{gsub(/\./,"",$3); print $3}')
+free_mb=$(awk -v f="$free_pages" -v i="$inactive_pages" -v p="$page_size" 'BEGIN{printf "%d", (f+i)*p/1048576}')
+bazel_rss=$(pgrep -f 'A-server.jar' 2>/dev/null | while read -r b; do ps -o rss= -p "$b" 2>/dev/null; done | awk '{s+=$1} END{printf "%d", s+0}')
+
+printf '{"ts":%s,"daemons":%s,"total_rss_kb":%s,"total_fds":%s,"total_cpu_s":%s,"sys_open_files":%s,"free_mb":%s,"bazel_rss_kb":%s,"detail":[%s]}\n' \
+  "$EPOCHREALTIME" \
+  "${#pids[@]}" \
+  "$total_rss" \
+  "$total_fds" \
+  "$total_cpu" \
+  "${sys_fds:-0}" \
+  "${free_mb:-0}" \
+  "${bazel_rss:-0}" \
+  "$daemons_json" >> "$out"
