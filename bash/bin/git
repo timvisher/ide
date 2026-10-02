@@ -1864,6 +1864,48 @@ Logged to: %s%s" \
   fi
 }
 
+# Converge this repo onto its repo-config hook the first time git is used
+# in it, and again whenever the hook outgrows the sentinel. Creation-time
+# hooks fire once, so without this a worktree that predates a hook stays
+# stale forever.
+#
+# Steady state is two builtin file tests and one builtin read -- no forks,
+# no git calls -- so this costs nothing on the overwhelming majority of
+# invocations where the sentinel is already current.
+#
+# Depth-gated: wrapper-internal and nested git calls skip it, so a single
+# user-facing command triggers at most one reconcile.
+_timvisher_git__maybe_reconcile_repo_config() {
+  (( _timvisher_git__depth == 0 )) || return 0
+  [[ $PWD == "${HOME}"/git/* ]] || return 0
+
+  local rest=${PWD#"${HOME}"/git/}
+  local org=${rest%%/*}
+  [[ -n $org && $org != "$rest" ]] || return 0
+
+  rest=${rest#*/}
+  local repo=${rest%%/*}
+  [[ -n $repo ]] || return 0
+
+  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local sentinel="${trunk}/.timvisher_repo_config_applied"
+  [[ -d $trunk ]] || return 0
+
+  if [[ -f $sentinel ]]
+  then
+    local applied_hook=""
+    read -r applied_hook < "$sentinel" 2>/dev/null || return 0
+    [[ -n $applied_hook ]] || return 0
+    [[ $applied_hook -nt $sentinel ]] || return 0
+  fi
+
+  timvisher_git reconcile-repo-config "${org}/${repo}" >/dev/null 2>&1 || true
+}
+
+_timvisher_git__phase guards
+_timvisher_git__maybe_reconcile_repo_config
+_timvisher_git__phase reconcile
+
 upstream_guard__pre "$@"
 _timvisher_git__phase guard_pre
 

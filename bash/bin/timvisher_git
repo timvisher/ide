@@ -3125,16 +3125,44 @@ worktree_gc() {
 # Main entry point dispatch
 # ---------------------------------------------------------------------------
 
-# Converge every cached trunk onto its repo-config hook. Creation-time
-# hooks only ever fire once, so a worktree made before a hook existed --
-# or while the hook was unreachable under a stale org -- stays stale
-# forever. Run this on a schedule instead of hand-applying fixes.
+# Resolve a repo's repo-config hook across candidate orgs. Prints the
+# hook path, or nothing if no candidate org has one.
+repo_config_hook_for() {
+  local org=$1 repo=$2 candidate
+
+  while IFS= read -r candidate
+  do
+    if [[ -x ${hooks_dir}/${candidate}/${repo}/repo-config ]]
+    then
+      if [[ $candidate != "$org" ]]
+      then
+        warn 'repo-config: %s/%s has no hooks; using alias org %s' \
+          "$org" "$repo" "$candidate"
+      fi
+      printf '%s\n' "${hooks_dir}/${candidate}/${repo}/repo-config"
+      return 0
+    fi
+  done < <(hook_org_candidates "$org")
+
+  return 1
+}
+
+# Converge cached trunks onto their repo-config hook. Creation-time hooks
+# only ever fire once, so a worktree made before a hook existed -- or
+# while the hook was unreachable under a stale org -- stays stale forever.
+#
+# Writes a sentinel naming the hook it applied, so the git wrapper can
+# detect drift with two builtin file tests and no forks, and re-trigger
+# only when the hook is newer than the sentinel.
 #
 # Only `repo-config` is reconciled. post-initial-branch-dir-creation does
 # one-time expensive work (gc, commit-graph write, index rewrite) and must
-# not be re-run on a timer.
+# never be re-run.
+#
+# Usage: reconcile_repo_config [<org>/<repo>]
 reconcile_repo_config() {
-  local trunk org repo candidate hook
+  local only=${1:-}
+  local trunk org repo hook
   local applied=0 failed=0 skipped=0
 
   for trunk in "${repo_trunks_dir}"/*/*
@@ -3145,29 +3173,20 @@ reconcile_repo_config() {
     org=${trunk%/*}
     org=${org##*/}
 
-    hook=""
-    while IFS= read -r candidate
-    do
-      if [[ -x ${hooks_dir}/${candidate}/${repo}/repo-config ]]
-      then
-        hook=${hooks_dir}/${candidate}/${repo}/repo-config
-        if [[ $candidate != "$org" ]]
-        then
-          warn 'reconcile-repo-config: %s/%s has no hooks; using alias org %s' \
-            "$org" "$repo" "$candidate"
-        fi
-        break
-      fi
-    done < <(hook_org_candidates "$org")
-
-    if [[ -z $hook ]]
+    if [[ -n $only && ${org}/${repo} != "$only" ]]
     then
-      (( skipped++ ))
       continue
     fi
 
+    hook=$(repo_config_hook_for "$org" "$repo") ||
+      {
+        (( skipped++ ))
+        continue
+      }
+
     if ( cd "$trunk" && "$hook" ) >&2
     then
+      printf '%s\n' "$hook" > "${trunk}/.timvisher_repo_config_applied"
       info 'reconcile-repo-config: applied %s/%s' "$org" "$repo"
       (( applied++ ))
     else

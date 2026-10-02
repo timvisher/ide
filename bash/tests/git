@@ -1232,6 +1232,51 @@ fi
 rm -f "$allow_file"
 
 echo ""
+
+# ---------------------------------------------------------------------------
+# repo-config reconcile trigger
+# ---------------------------------------------------------------------------
+
+# The fake HOME needs .functions reachable: the wrapper sources it before
+# anything else, and this suite runs under set -e, so a failed source
+# aborts the whole run rather than just the test.
+rc_home="$tmpdir/reconcile_home"
+mkdir -p "$rc_home/git/myorg/myrepo"
+ln -s ~/.functions "$rc_home/.functions"
+
+# No trunk cache for this repo: nothing to converge, and the check must
+# stay fork-free rather than shelling out to find that out.
+run_test
+rc_out=$(cd "$rc_home/git/myorg/myrepo" &&
+  HOME="$rc_home" TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1 >/dev/null) || true
+if [[ $rc_out != *reconcile-repo-config* ]]
+then
+  pass "wrapper skips reconcile when the repo has no trunk cache"
+else
+  fail "wrapper should not reconcile without a trunk, got '${rc_out}'"
+fi
+
+# Sentinel newer than the hook it names means converged: leave it alone.
+run_test
+rc_trunk="$rc_home/.cache/timvisher_git_worktrees/repo_trunks/myorg/myrepo"
+mkdir -p "$rc_trunk"
+rc_hook="$rc_home/hook"
+: > "$rc_hook"
+printf '%s\n' "$rc_hook" > "$rc_trunk/.timvisher_repo_config_applied"
+touch "$rc_trunk/.timvisher_repo_config_applied"
+rc_before=$(stat -c %Y "$rc_trunk/.timvisher_repo_config_applied")
+(cd "$rc_home/git/myorg/myrepo" &&
+  HOME="$rc_home" TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status") >/dev/null 2>&1 || true
+rc_after=$(stat -c %Y "$rc_trunk/.timvisher_repo_config_applied")
+if [[ $rc_before == "$rc_after" ]]
+then
+  pass "wrapper leaves a current sentinel alone (no reconcile churn)"
+else
+  fail "wrapper rewrote a current sentinel (${rc_before} -> ${rc_after})"
+fi
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))
