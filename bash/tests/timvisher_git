@@ -261,6 +261,66 @@ export PATH="$tmpdir/mockbin:$PATH"
 source_timvisher_git
 
 # ---------------------------------------------------------------------------
+# maintenance registry reconcile tests
+# ---------------------------------------------------------------------------
+
+mr_home="$tmpdir/maint_home"
+mkdir -p "$mr_home/.config/git"
+mr_config="$mr_home/.config/git/config_machine"
+mr_live="$tmpdir/maint_live_trunk"
+mr_live2="$tmpdir/maint_live_trunk2"
+mkdir -p "$mr_live" "$mr_live2"
+
+# Dead entries must go, live ones must stay, and ~ in a stored path has
+# to expand before the existence check -- the real registry stored
+# tilde-prefixed paths.
+run_test
+: > "$mr_config"
+command git config --file "$mr_config" --add maintenance.repo '~/definitely-not-a-real-dir-xyz'
+command git config --file "$mr_config" --add maintenance.repo "$mr_live"
+XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos >/dev/null 2>&1
+mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+if [[ $mr_after == "${mr_live} " ]]
+then
+  pass "reconcile_maintenance_repos prunes missing entries and keeps live ones"
+else
+  fail "maintenance prune: expected only '${mr_live}', got '${mr_after}'"
+fi
+
+run_test
+XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos "$mr_live2" >/dev/null 2>&1
+mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+if [[ $mr_after == "${mr_live} ${mr_live2} " ]]
+then
+  pass "reconcile_maintenance_repos registers a new trunk"
+else
+  fail "maintenance register: expected both trunks, got '${mr_after}'"
+fi
+
+# Re-registering must not duplicate.
+run_test
+XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos "$mr_live2" >/dev/null 2>&1
+mr_count=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | grep -cxF "$mr_live2")
+if [[ $mr_count == 1 ]]
+then
+  pass "reconcile_maintenance_repos does not duplicate an existing trunk"
+else
+  fail "maintenance re-register: expected 1 entry for the trunk, got ${mr_count}"
+fi
+
+# Nothing to do must mean no rewrite at all.
+run_test
+mr_before_mtime=$(stat -c %Y "$mr_config")
+XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos "$mr_live2" >/dev/null 2>&1
+mr_after_mtime=$(stat -c %Y "$mr_config")
+if [[ $mr_before_mtime == "$mr_after_mtime" ]]
+then
+  pass "reconcile_maintenance_repos leaves the file alone when converged"
+else
+  fail "maintenance reconcile rewrote a converged file"
+fi
+
+# ---------------------------------------------------------------------------
 # bare-poisoning source repair tests
 # ---------------------------------------------------------------------------
 

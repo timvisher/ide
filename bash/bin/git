@@ -1902,8 +1902,37 @@ _timvisher_git__maybe_reconcile_repo_config() {
   timvisher_git reconcile-repo-config "${org}/${repo}" >/dev/null 2>&1 || true
 }
 
+# Register this repo's trunk for git maintenance the first time git runs
+# in it, and prune registry entries whose paths have gone.
+#
+# Separate sentinel from repo-config because this applies to every trunk,
+# not just the ones with a repo-config hook. Steady state is one builtin
+# file test.
+_timvisher_git__maybe_register_maintenance() {
+  (( _timvisher_git__depth == 0 )) || return 0
+  [[ $PWD == "${HOME}"/git/* ]] || return 0
+
+  local rest=${PWD#"${HOME}"/git/}
+  local org=${rest%%/*}
+  [[ -n $org && $org != "$rest" ]] || return 0
+
+  rest=${rest#*/}
+  local repo=${rest%%/*}
+  [[ -n $repo ]] || return 0
+
+  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  [[ -d $trunk ]] || return 0
+  [[ -f ${trunk}/.timvisher_maintenance_registered ]] && return 0
+
+  if timvisher_git reconcile-maintenance "$trunk" >/dev/null 2>&1
+  then
+    : > "${trunk}/.timvisher_maintenance_registered"
+  fi
+}
+
 _timvisher_git__phase guards
 _timvisher_git__maybe_reconcile_repo_config
+_timvisher_git__maybe_register_maintenance
 _timvisher_git__phase reconcile
 
 upstream_guard__pre "$@"
