@@ -320,6 +320,34 @@ else
   fail "maintenance reconcile rewrote a converged file"
 fi
 
+# `git maintenance register` and `start` write maintenance.repo to
+# --global, which is a symlink into a git repo here. Entries that land
+# there must be drained out, normalised to the trunk that owns the object
+# store, and existence-checked like any other.
+run_test
+mr_global="$mr_home/.config/git/config"
+mr_trunks="$tmpdir/mr_trunks"
+mkdir -p "$mr_trunks/myorg/live"
+mkdir -p "$mr_home/git/myorg/live/some/branch"
+: > "$mr_config"
+: > "$mr_global"
+command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/live/some/branch"
+command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/gone/a/branch"
+(
+  XDG_CONFIG_HOME="$mr_home/.config" \
+  TIMVISHER_GIT_HOME="$mr_home/git" \
+  repo_trunks_dir="$mr_trunks" \
+    reconcile_maintenance_repos
+) >/dev/null 2>&1
+mr_global_left=$(command git config --file "$mr_global" --get-all maintenance.repo 2>/dev/null | wc -l | tr -d ' ')
+mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+if [[ $mr_global_left == 0 && $mr_after == "${mr_trunks}/myorg/live " ]]
+then
+  pass "reconcile_maintenance_repos drains the tracked global config and normalises to trunks"
+else
+  fail "maintenance drain: global_left=${mr_global_left} machine='${mr_after}' (wanted 0 and '${mr_trunks}/myorg/live ')"
+fi
+
 # ---------------------------------------------------------------------------
 # bare-poisoning source repair tests
 # ---------------------------------------------------------------------------

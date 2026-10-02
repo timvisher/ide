@@ -3257,6 +3257,32 @@ reconcile_repo_config() {
   (( failed == 0 ))
 }
 
+# Normalise a maintenance target to the trunk that owns its object
+# store. Maintenance works on the object store, so registering a worktree
+# registers the same store again under a different name.
+maintenance_trunk_for() {
+  local path=$1
+
+  local rest=${path#"${TIMVISHER_GIT_HOME:-${HOME}/git}/"}
+  if [[ $rest == "$path" ]]
+  then
+    printf '%s' "$path"
+    return 0
+  fi
+
+  local org=${rest%%/*}
+  rest=${rest#*/}
+  local repo=${rest%%/*}
+
+  if [[ -z $org || -z $repo ]]
+  then
+    printf '%s' "$path"
+    return 0
+  fi
+
+  printf '%s' "${repo_trunks_dir}/${org}/${repo}"
+}
+
 # Keep the git maintenance registry correct by using it, rather than by
 # hand-editing a list that silently rots.
 #
@@ -3282,10 +3308,43 @@ reconcile_maintenance_repos() {
   local machine_dir=${machine_config%/*}
   [[ -d $machine_dir ]] || mkdir -p "$machine_dir" || return 1
 
-  local -a keep=()
-  local entry expanded pruned=0
+  local -a keep=() candidates=()
+  local entry expanded pruned=0 drained=0
 
   while IFS= read -r entry
+  do
+    [[ -n $entry ]] || continue
+    candidates+=("$entry")
+  done < <(command git config --file "$machine_config" --get-all maintenance.repo 2>/dev/null)
+
+  # Drain anything that landed in the TRACKED global config. `git
+  # maintenance register` and `start` both write maintenance.repo to
+  # --global, which here is a symlink into a git repo -- that is how 8
+  # worktree paths ended up version-controlled in the first place. Move
+  # them to the machine file and normalise worktree paths to their trunk,
+  # so running `git maintenance start` again self-corrects instead of
+  # dirtying the repo and re-registering a worktree.
+  local global_config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
+  if [[ -f $global_config ]]
+  then
+    while IFS= read -r entry
+    do
+      [[ -n $entry ]] || continue
+      (( drained++ ))
+      expanded=${entry/#\~/$HOME}
+      candidates+=("$(maintenance_trunk_for "$expanded")")
+    done < <(command git config --file "$global_config" --get-all maintenance.repo 2>/dev/null)
+
+    if (( 0 < drained ))
+    then
+      warn 'reconcile_maintenance_repos: draining %s maintenance.repo entr%s out of the tracked global config into ‘%s’' \
+        "$drained" "$([[ $drained == 1 ]] && echo y || echo ies)" "$machine_config"
+      command git config --file "$global_config" --unset-all maintenance.repo 2>/dev/null ||
+        warn 'reconcile_maintenance_repos: could not clear maintenance.repo from ‘%s’' "$global_config"
+    fi
+  fi
+
+  for entry in "${candidates[@]}"
   do
     [[ -n $entry ]] || continue
     expanded=${entry/#\~/$HOME}
@@ -3296,9 +3355,23 @@ reconcile_maintenance_repos() {
       info 'reconcile_maintenance_repos: pruning missing ‘%s’' "$entry"
       (( pruned++ ))
     fi
-  done < <(command git config --file "$machine_config" --get-all maintenance.repo 2>/dev/null)
+  done
 
-  local added=0 k present
+  local -a deduped=()
+  local seen=$'\n'
+  local k
+  for k in "${keep[@]}"
+  do
+    [[ -n $k ]] || continue
+    if [[ $seen != *$'\n'"${k}"$'\n'* ]]
+    then
+      deduped+=("$k")
+      seen="${seen}${k}"$'\n'
+    fi
+  done
+  keep=("${deduped[@]}")
+
+  local added=0 present
   if [[ -n $register && -d $register ]]
   then
     present=false
@@ -3314,7 +3387,7 @@ reconcile_maintenance_repos() {
     fi
   fi
 
-  if (( pruned == 0 && added == 0 ))
+  if (( pruned == 0 && added == 0 && drained == 0 ))
   then
     return 0
   fi
