@@ -564,6 +564,40 @@ upstream_override_for_repo() {
   printf '%s' "$override"
 }
 
+# Candidate orgs for a repo's hooks: the resolved org first, then every
+# other org sharing an alias group with it. A repo whose hosting org flips
+# (dd-source: DataDog -> ddoghq) would otherwise silently stop running its
+# hooks, because an absent hook path is indistinguishable from "no hooks".
+hook_org_candidates() {
+  local org=$1 alias_key candidate seen
+  local -a group out
+
+  out=("$org")
+  seen=$'\n'"${org}"$'\n'
+
+  for alias_key in "${!org_aliases[@]}"
+  do
+    IFS=',' read -r -a group <<< "${org_aliases[$alias_key]}"
+
+    if [[ $'\n'"${org_aliases[$alias_key]//,/$'\n'}"$'\n' != *$'\n'"${org}"$'\n'* ]]
+    then
+      continue
+    fi
+
+    for candidate in "${group[@]}"
+    do
+      [[ -n $candidate ]] || continue
+      if [[ $seen != *$'\n'"${candidate}"$'\n'* ]]
+      then
+        out+=("$candidate")
+        seen="${seen}${candidate}"$'\n'
+      fi
+    done
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
 maybe_execute_hook() {
   local org=$1 repo=$2 hook=$3
 
@@ -571,11 +605,21 @@ maybe_execute_hook() {
   [[ -n $repo ]] || die 'repo is unset'
   [[ -n $hook ]] || die 'hook is inset'
 
-  local full_hook=${hooks_dir}/${org}/${repo}/${hook}
+  local candidate full_hook
+  while IFS= read -r candidate
+  do
+    full_hook=${hooks_dir}/${candidate}/${repo}/${hook}
 
-  if [[ -x $full_hook ]]; then
-    "$full_hook" >&2
-  fi
+    if [[ -x $full_hook ]]
+    then
+      if [[ $candidate != "$org" ]]
+      then
+        warn "hooks: ${org}/${repo}/${hook} absent; running alias org ${candidate}/${repo}/${hook}"
+      fi
+      "$full_hook" >&2
+      return 0
+    fi
+  done < <(hook_org_candidates "$org")
 }
 
 # Die if a `/`-separated path or shorthand contains `.git` or `_git`
