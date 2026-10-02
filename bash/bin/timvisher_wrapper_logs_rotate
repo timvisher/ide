@@ -19,11 +19,24 @@
 # behind. If logrotate ever gets installed, prefer it: `size`, `rotate`
 # and `compress` express all of this declaratively.
 #
-# Rename rather than copy-truncate. Every writer here is a short-lived
-# git process that opens with O_APPEND, writes one line and exits, so
-# nothing holds the path across a rotation. Rename's worst case is a
-# line landing in the previous generation; copy-truncate's worst case is
-# losing whatever was written between the copy and the truncate.
+# Two rotation modes, because the two kinds of log have opposite
+# correct answers:
+#
+#   rename    for the wrapper's *.jsonl. Every writer is a short-lived
+#             git process that opens with O_APPEND, writes a line and
+#             exits, so nothing holds the path across a rotation.
+#             Rename's worst case is a line landing in the previous
+#             generation; truncating would risk losing whatever was
+#             written between the copy and the truncate.
+#
+#   truncate  for launchd agent logs. launchd holds StandardOutPath /
+#             StandardErrorPath open for the life of a long-running job
+#             -- verified: com.timvisher.gitwatch.bd-topics holds two
+#             descriptors on its log -- so a rename leaves the job
+#             writing into the rotated file and the live path empty
+#             forever. Truncating in place keeps that descriptor valid.
+#             launchd has no log rotation of its own; this is the
+#             documented workaround.
 #
 # Readers must treat <name>.jsonl plus <name>.jsonl.N.gz (ascending N =
 # older) as one logical stream.
@@ -40,8 +53,9 @@ state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
 max_bytes=${TIMVISHER_WRAPPER_LOG_MAX_BYTES:-$((256 * 1024 * 1024))}
 keep=${TIMVISHER_WRAPPER_LOG_KEEP:-7}
 
+# mode: rename | truncate
 rotate_one() {
-  local f=$1 size i gz
+  local f=$1 mode=$2 size i gz
 
   [[ -f $f ]] || return 0
 
@@ -70,7 +84,15 @@ rotate_one() {
     [[ -f ${f}.${i}.gz ]] && mv -f "${f}.${i}.gz" "${f}.$((i + 1)).gz"
   done
 
-  if ! mv -f "$f" "${f}.1"
+  if [[ $mode == truncate ]]
+  then
+    if ! cp "$f" "${f}.1"
+    then
+      warn 'rotate: could not copy ‘%s’' "$f"
+      return 1
+    fi
+    : > "$f"
+  elif ! mv -f "$f" "${f}.1"
   then
     warn 'rotate: could not rename ‘%s’' "$f"
     return 1
@@ -86,9 +108,20 @@ rotate_one() {
 }
 
 rc=0
+
 for name in log trace2 fsmonitor-samples
 do
-  rotate_one "${state_dir}/${name}.jsonl" || rc=1
+  rotate_one "${state_dir}/${name}.jsonl" rename || rc=1
 done
+
+# launchd agent logs. Smaller cap: these are sparse by design, so
+# reaching even a few MB means something is logging on every run.
+agent_log_max=${TIMVISHER_AGENT_LOG_MAX_BYTES:-$((8 * 1024 * 1024))}
+shopt -s nullglob
+for f in "${HOME}/Library/Logs/"timvisher_*.log "${HOME}/Library/Logs/"gitwatch-*.log
+do
+  max_bytes=$agent_log_max rotate_one "$f" truncate || rc=1
+done
+shopt -u nullglob
 
 exit $rc
