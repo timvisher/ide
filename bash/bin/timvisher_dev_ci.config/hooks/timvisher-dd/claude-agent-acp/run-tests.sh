@@ -2,6 +2,8 @@
 
 cd "$(git rev-parse --show-toplevel)" || exit
 
+export CLAUDE_CODE_EXECUTABLE=/usr/bin/false
+
 echo "--- install ---"
 npm ci || exit
 
