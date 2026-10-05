@@ -19,7 +19,10 @@ usage() {
   timvisher_gh - GitHub workflow commands
 
   Usage:
+    timvisher_gh [-C <path>] <subcommand> [args...]
+
     timvisher_gh info <field>    Query repository metadata
+    timvisher_gh info --json     Query the whole context blob
     timvisher_gh pr              Create a PR from pr.md (or open existing)
     timvisher_gh pr edit         Edit an existing PR from pr.md
     timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
@@ -109,15 +112,37 @@ usage() {
                                 (the repo itself if not a fork)
         .forkNetwork.mainOwner  Owner of the fork network root
         .me                     Authenticated GitHub username
+    - --json emits every field at once, merged with
+      'timvisher_git info --json':
+        {"timvisher_git": {org, repo, branch, branchPath, absPath,
+                           prefixPath},
+         "timvisher_gh":  {me, forkNetwork: {mainRepo, mainOwner}}}
+    - A git context is required.  Extra positional arguments are an
+      error; use -C to point at another worktree.
+    - .me is context-sensitive by design: the gh account is pinned per
+      repository owner, so it varies by repo.  Cache it per context,
+      never process-wide.
 
   Both pr/issue create subcommands:
     - Store the resulting URL in <file>.url
     - Open the URL in the browser on subsequent runs
 
   Options:
+    -C <path>           Resolve context from <path> instead of the
+                        current directory.  Must come BEFORE the
+                        subcommand.
     -h, --help, help    Show this help
 USAGE
 }
+
+chdir=
+while [[ ${1-} == -C ]]
+do
+  (( 2 <= $# )) ||
+    die 'Option -C requires a <path> argument'
+  chdir=$2
+  shift 2
+done
 
 if [[ $# -eq 0 ]]
 then
@@ -132,7 +157,7 @@ case $1 in
     ;;
 esac
 
-toplevel=$(command git rev-parse --show-toplevel) ||
+toplevel=$(command git -C "${chdir:-.}" rev-parse --show-toplevel) ||
   die 'Not in a git repository'
 
 cd "$toplevel" ||
@@ -817,6 +842,10 @@ gh_info() {
   [[ -n $field ]] ||
     die 'info requires a <field> argument'
 
+  (( $# <= 1 )) ||
+    die "info: unexpected argument '%s'; use 'timvisher_gh -C <path> info %s' to query another worktree" \
+      "$2" "$field"
+
   case $field in
     .forkNetwork.mainRepo)
       local repo_json
@@ -843,6 +872,24 @@ gh_info() {
     .me)
       command gh api user --jq .login ||
         die 'Unable to query authenticated user'
+      ;;
+    --json)
+      local git_blob main_repo me
+      git_blob=$(timvisher_git info --json) ||
+        die 'Unable to query timvisher_git context for %s' "$toplevel"
+      main_repo=$(gh_info .forkNetwork.mainRepo) ||
+        exit $?
+      me=$(gh_info .me) ||
+        exit $?
+
+      jq -n \
+        --argjson git "$git_blob" \
+        --arg me "$me" \
+        --arg mainRepo "$main_repo" \
+        '$git + {timvisher_gh: {me: $me,
+                                forkNetwork: {mainRepo: $mainRepo,
+                                              mainOwner: ($mainRepo | split("/")[0])}}}' ||
+        die 'Unable to render JSON'
       ;;
     *)
       die "Unknown info field: '%s'" "$field"

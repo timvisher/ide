@@ -89,6 +89,12 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == user ]]
+then
+  echo "testuser"
+elif [[ $1 == api && $2 == repos/* ]]
+then
+  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
@@ -140,6 +146,20 @@ fi
 MOCK
 chmod +x "$tmpdir/mockbin/osascript"
 
+cat > "$tmpdir/mockbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == info && $2 == --json ]]
+then
+  cat <<'JSON'
+{"timvisher_git":{"org":"testuser","repo":"testrepo","branch":"main","branchPath":"main","absPath":"/fake/testuser/testrepo/main","prefixPath":"testuser/testrepo/main"}}
+JSON
+  exit 0
+fi
+echo "(mock timvisher_git) unhandled: $*" >&2
+exit 2
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_git"
+
 test_path="$tmpdir/mockbin:$PATH"
 
 # --- dispatch tests ---
@@ -184,6 +204,82 @@ then
   pass "unknown subcommand prints usage"
 else
   fail "unknown subcommand prints usage: got '${result}'"
+fi
+
+# --- info tests ---
+
+# Test: info --json merges the timvisher_git blob with the gh fields
+run_test
+export MOCK_LOG="$tmpdir/log_info_json"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.org' <<<"$result") == "testuser" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "main" ]] &&
+   [[ $(jq -r '.timvisher_gh.me' <<<"$result") == "testuser" ]] &&
+   [[ $(jq -r '.timvisher_gh.forkNetwork.mainRepo' <<<"$result") == "upstreamorg/testrepo" ]] &&
+   [[ $(jq -r '.timvisher_gh.forkNetwork.mainOwner' <<<"$result") == "upstreamorg" ]]
+then
+  pass "info --json emits .timvisher_git and .timvisher_gh"
+else
+  fail "info --json: rc=${rc} got '${result}'"
+fi
+
+# Test: -C resolves context from the path, not the cwd
+run_test
+export MOCK_LOG="$tmpdir/log_info_c"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/repo' info .me" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "testuser" ]]
+then
+  pass "-C <path> info .me resolves from the path"
+else
+  fail "-C info .me: rc=${rc} got '${result}'"
+fi
+
+# Test: -C must come before the subcommand to be recognised
+run_test
+export MOCK_LOG="$tmpdir/log_info_c_after"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info -C '$tmpdir/repo'" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Not in a git repository"* ]]
+then
+  pass "post-subcommand -C is not treated as a context flag"
+else
+  fail "post-subcommand -C: rc=${rc} got '${result}'"
+fi
+
+# Test: -C without a path errors
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"requires a <path> argument"* ]]
+then
+  pass "-C with no path errors"
+else
+  fail "-C no path: rc=${rc} got '${result}'"
+fi
+
+# Test: an extra positional arg errors rather than silently answering
+# for the current directory
+run_test
+export MOCK_LOG="$tmpdir/log_info_extra"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info .me '$tmpdir/repo'" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unexpected argument"* ]]
+then
+  pass "info rejects an extra positional arg"
+else
+  fail "info extra positional: rc=${rc} got '${result}'"
+fi
+
+# Test: no git context is an error, not an elided blob
+run_test
+result=$(cd "$nonrepo_dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Not in a git repository"* ]]
+then
+  pass "info --json with no git context errors"
+else
+  fail "info --json no context: rc=${rc} got '${result}'"
 fi
 
 # --- pr tests ---
@@ -671,6 +767,12 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == user ]]
+then
+  echo "testuser"
+elif [[ $1 == api && $2 == repos/* ]]
+then
+  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'

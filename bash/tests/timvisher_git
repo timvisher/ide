@@ -1526,6 +1526,59 @@ else
   fail "info .prefixPath: expected '${expected_prefix}', got '${result}'"
 fi
 
+# Test: info .branchPath returns the branch-parts component
+run_test
+result=$(cd "$info_worktree" && info__cmd .branchPath)
+if [[ $result == "$info_branch" ]]
+then
+  pass "info .branchPath returns branch parts"
+else
+  fail "info .branchPath: expected '${info_branch}', got '${result}'"
+fi
+
+# Test: info .branchPath is empty for a worktree directly at <org>/<repo>
+run_test
+flat_worktree="${live_dir}/flatorg/flatrepo"
+mkdir -p "$flat_worktree"
+(
+  cd "$flat_worktree" || exit 1
+  TIMVISHER_AGENT= git init -q
+  TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q
+)
+result=$(cd "$flat_worktree" && info__cmd .branchPath)
+if [[ -z $result ]]
+then
+  pass "info .branchPath is empty with no branch parts"
+else
+  fail "info .branchPath flat: expected empty, got '${result}'"
+fi
+
+# Test: info --json emits every field under .timvisher_git
+run_test
+result=$(cd "$info_worktree" && info__cmd --json)
+if [[ $(jq -r '.timvisher_git.org' <<<"$result") == "$info_org" ]] &&
+   [[ $(jq -r '.timvisher_git.repo' <<<"$result") == "$info_repo" ]] &&
+   [[ $(jq -r '.timvisher_git.branch' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.absPath' <<<"$result") == "$info_worktree_real" ]] &&
+   [[ $(jq -r '.timvisher_git.prefixPath' <<<"$result") == "$expected_prefix" ]]
+then
+  pass "info --json emits the full .timvisher_git blob"
+else
+  fail "info --json: got '${result}'"
+fi
+
+# Test: an extra positional arg errors rather than silently answering
+# for the current directory
+run_test
+result=$(cd "$info_worktree" && info__cmd .org "$flat_worktree" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unexpected argument"* ]]
+then
+  pass "info rejects an extra positional arg"
+else
+  fail "info extra positional: expected failure, got rc=${rc} '${result}'"
+fi
+
 # Test: info with no field prints usage and fails
 run_test
 result=$(cd "$info_worktree" && info__cmd 2>&1) && rc=0 || rc=$?
@@ -1643,6 +1696,81 @@ then
   pass "no args prints timvisher_git usage and exits non-zero"
 else
   fail "no args: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# pre-subcommand -C tests
+# ---------------------------------------------------------------------------
+
+# Test: -C resolves context for timvisher_git's own subcommands
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" info .org 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "$info_org" ]]
+then
+  pass "-C <path> info .org answers for the path, not the cwd"
+else
+  fail "-C info .org: rc=${rc} got '${result}'"
+fi
+
+# Test: -C and the cwd agree
+run_test
+from_cwd=$(cd "$info_worktree" && "$script" info --json 2>/dev/null)
+from_flag=$(cd "$tmpdir" && "$script" -C "$info_worktree" info --json 2>/dev/null)
+if [[ -n $from_cwd && $from_cwd == "$from_flag" ]]
+then
+  pass "-C <path> info --json matches the same query run from inside <path>"
+else
+  fail "-C cwd-independence: cwd='${from_cwd}' flag='${from_flag}'"
+fi
+
+# Test: -C is re-emitted when passing through to git
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" rev-parse --show-toplevel 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "$info_worktree_real" ]]
+then
+  pass "-C <path> is re-emitted on git passthrough"
+else
+  fail "-C passthrough: rc=${rc} got '${result}'"
+fi
+
+# Test: post-subcommand -C is left alone for git to interpret
+run_test
+result=$(cd "$info_worktree" && "$script" log -C -1 --format=%s 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result != *"unable to enter"* ]]
+then
+  pass "post-subcommand -C keeps git's meaning (log -C)"
+else
+  fail "log -C: rc=${rc} got '${result}'"
+fi
+
+# Test: -C without a path errors
+run_test
+result=$("$script" -C 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"requires a <path> argument"* ]]
+then
+  pass "-C with no path errors"
+else
+  fail "-C no path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C with an unusable path errors
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" info .org 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C with a non-existent path errors"
+else
+  fail "-C bad path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C still allows --help
+run_test
+result=$("$script" -C "$info_worktree" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-C <path> --help still prints usage"
+else
+  fail "-C --help: rc=${rc} got '${result}'"
 fi
 
 # ---------------------------------------------------------------------------

@@ -2246,16 +2246,40 @@ clone_usage() {
 info__usage() {
   cat <<'EOF'
 Usage: timvisher_git info <field>
+       timvisher_git info --json
 
-Query metadata about the current worktree.
+Query metadata about the current worktree.  Use 'timvisher_git -C
+<path> info …' to query a worktree other than the current directory.
 
 Fields:
   .org           Organisation component of the worktree path
   .repo          Repository name from the worktree path
   .branch        Current branch name (git symbolic-ref)
+  .branchPath    Branch-parts component of the worktree path (empty
+                 when the worktree sits directly at <org>/<repo>)
   .absPath       Absolute path to the worktree root
   .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
+
+--json emits every field at once under a .timvisher_git key.
 EOF
+}
+
+info__branch_path() {
+  local prefix_path=$1
+
+  local after_org=${prefix_path#*/}
+  if [[ $after_org == "$prefix_path" ]]
+  then
+    return 0
+  fi
+
+  local after_repo=${after_org#*/}
+  if [[ $after_repo == "$after_org" ]]
+  then
+    return 0
+  fi
+
+  printf '%s' "$after_repo"
 }
 
 info__cmd() {
@@ -2266,6 +2290,10 @@ info__cmd() {
     info__usage >&2
     return 1
   fi
+
+  (( $# <= 1 )) ||
+    die "info: unexpected argument '%s'; use 'timvisher_git -C <path> info %s' to query another worktree" \
+        "$2" "$field"
 
   local toplevel
   toplevel=$(git rev-parse --show-toplevel 2>/dev/null) ||
@@ -2297,11 +2325,36 @@ info__cmd() {
         die "info .branch: HEAD is detached"
       printf '%s\n' "$branch"
       ;;
+    .branchPath)
+      info__branch_path "$prefix_path"
+      printf '\n'
+      ;;
     .absPath)
       printf '%s\n' "$toplevel"
       ;;
     .prefixPath)
       printf '%s\n' "$prefix_path"
+      ;;
+    --json)
+      local org repo branch
+      org=$(get_org "$prefix_path") ||
+        die "info --json: unable to determine org for '%s'" "$prefix_path"
+      repo=$(get_repo "$prefix_path") ||
+        die "info --json: unable to determine repo for '%s'" "$prefix_path"
+      branch=$(git symbolic-ref --short HEAD 2>/dev/null) ||
+        die "info --json: HEAD is detached"
+
+      jq -n \
+        --arg org "$org" \
+        --arg repo "$repo" \
+        --arg branch "$branch" \
+        --arg branchPath "$(info__branch_path "$prefix_path")" \
+        --arg absPath "$toplevel" \
+        --arg prefixPath "$prefix_path" \
+        '{timvisher_git: {org: $org, repo: $repo, branch: $branch,
+                          branchPath: $branchPath, absPath: $absPath,
+                          prefixPath: $prefixPath}}' ||
+        die "info --json: unable to render JSON"
       ;;
     *)
       die "info: unknown field '%s'" "$field"
@@ -3545,6 +3598,27 @@ reconcile_maintenance_repos() {
   done
 }
 
+chdir=
+chdir_args=()
+while [[ ${1-} == -C ]]
+do
+  (( 2 <= $# )) ||
+    die "Option -C requires a <path> argument"
+  chdir=$(cd "$2" && pwd -P) ||
+    die "Option -C: unable to enter '%s'" "$2"
+  chdir_args=(-C "$chdir")
+  shift 2
+done
+
+in_chdir() {
+  if [[ -n $chdir ]]
+  then
+    cd "$chdir" ||
+      die "Option -C: unable to enter '%s'" "$chdir"
+  fi
+  "$@"
+}
+
 case $1 in
   -h|--help|help)
     usage
@@ -3554,27 +3628,27 @@ case $1 in
     usage
     exit 1
     ;;
-  clone)        clone "${@:2}" ;;
-  fork)         fork "${@:2}" ;;
-  info)         info__cmd "${@:2}" ;;
-  is-branch-ish) is_branch_ish "${@:2}" ;;
-  rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
-  reconcile-repo-config) reconcile_repo_config "${@:2}" ;;
-  reconcile-maintenance) reconcile_maintenance_repos "${@:2}" ;;
-  ensure-maintenance-scheduler) ensure_maintenance_scheduler "${@:2}" ;;
+  clone)        in_chdir clone "${@:2}" ;;
+  fork)         in_chdir fork "${@:2}" ;;
+  info)         in_chdir info__cmd "${@:2}" ;;
+  is-branch-ish) in_chdir is_branch_ish "${@:2}" ;;
+  rewrite-trunk-subpath) in_chdir maybe_rewrite_trunk_subpath "${@:2}" ;;
+  reconcile-repo-config) in_chdir reconcile_repo_config "${@:2}" ;;
+  reconcile-maintenance) in_chdir reconcile_maintenance_repos "${@:2}" ;;
+  ensure-maintenance-scheduler) in_chdir ensure_maintenance_scheduler "${@:2}" ;;
   status)
     case ${2:-} in
-      --all-published) status__all_published ;;
-      *)               git "$@" ;;
+      --all-published) in_chdir status__all_published ;;
+      *)               git "${chdir_args[@]}" "$@" ;;
     esac
     ;;
-  sync-trunk)   sync_trunk "${@:2}" ;;
+  sync-trunk)   in_chdir sync_trunk "${@:2}" ;;
   worktree)
     case ${2:-} in
-      gc)          worktree_gc "${@:3}" ;;
-      sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
-      *)           git "$@" ;;
+      gc)          in_chdir worktree_gc "${@:3}" ;;
+      sweep-bogus) in_chdir sweep_bogus_worktrees_in_all_caches ;;
+      *)           git "${chdir_args[@]}" "$@" ;;
     esac
     ;;
-  *)            git "$@" ;;
+  *)            git "${chdir_args[@]}" "$@" ;;
 esac
