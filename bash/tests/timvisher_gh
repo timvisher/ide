@@ -164,6 +164,18 @@ else
   fail "--help prints usage: got '${result}'"
 fi
 
+# Test: --help works outside a git repository
+run_test
+nonrepo_dir="$tmpdir/not-a-repo"
+mkdir -p "$nonrepo_dir"
+result=$(cd "$nonrepo_dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' --help" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]] && [[ $result != *"Not in a git repository"* ]]
+then
+  pass "--help works outside a git repository"
+else
+  fail "--help outside repo: rc=${rc} got '${result}'"
+fi
+
 # Test: unknown subcommand prints usage and exits nonzero
 run_test
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' bogus" 2>&1 || true)

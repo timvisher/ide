@@ -1573,6 +1573,79 @@ fi
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
 
 # ---------------------------------------------------------------------------
+# top-level usage tests (invoke the script, not the sourced functions)
+# ---------------------------------------------------------------------------
+
+# Test: --help prints timvisher_git's own usage, not git's
+run_test
+result=$("$script" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"timvisher_git <subcommand>"* ]] &&
+   [[ $result != "usage: git "* ]]
+then
+  pass "--help prints timvisher_git usage, not git's"
+else
+  fail "--help: rc=${rc} got '${result}'"
+fi
+
+# Test: -h and help are aliases
+run_test
+for help_flag in -h help
+do
+  result=$("$script" "$help_flag" 2>&1) && rc=0 || rc=$?
+  if (( rc != 0 )) || [[ $result != *"timvisher_git <subcommand>"* ]]
+  then
+    fail "'${help_flag}' alias: rc=${rc} got '${result}'"
+    break
+  fi
+done
+[[ $result == *"timvisher_git <subcommand>"* ]] &&
+  pass "-h and help aliases print timvisher_git usage"
+
+# Test: --help works outside a git repository
+run_test
+help_nonrepo="$tmpdir/help_outside_repo"
+mkdir -p "$help_nonrepo"
+result=$(cd "$help_nonrepo" && "$script" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "--help works outside a git repository"
+else
+  fail "--help outside repo: rc=${rc} got '${result}'"
+fi
+
+# Test: usage covers every subcommand in the dispatch table
+run_test
+dispatch_subcommands=$(
+  sed -n '/^case \$1 in$/,/^esac$/p' "$script" |
+    grep -oE "^  [a-z][a-z-]*\)" |
+    tr -d ' )'
+)
+usage_text=$("$script" --help 2>&1)
+missing_subcommands=()
+while IFS= read -r sub
+do
+  [[ -n $sub ]] || continue
+  [[ $usage_text == *"$sub"* ]] || missing_subcommands+=("$sub")
+done <<<"$dispatch_subcommands"
+if (( ${#missing_subcommands[@]} == 0 )) && [[ -n $dispatch_subcommands ]]
+then
+  pass "usage covers every subcommand in the dispatch table"
+else
+  fail "usage missing subcommands: ${missing_subcommands[*]:-(none parsed)}"
+fi
+
+# Test: no args prints usage and exits non-zero
+run_test
+result=$("$script" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "no args prints timvisher_git usage and exits non-zero"
+else
+  fail "no args: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
 # migrate_cache_to_bare_if_needed tests
 # ---------------------------------------------------------------------------
 
