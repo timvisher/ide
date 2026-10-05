@@ -357,6 +357,36 @@ else
   fail "passes 'gh repo view': got '${result}'"
 fi
 
+# Test: 'gh repo set-default' passes through when agent
+run_test
+result=$(run_agent repo set-default someorg/otherrepo)
+if [[ $result == *"real-gh repo set-default someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
+then
+  pass "passes 'gh repo set-default' when agent"
+else
+  fail "passes 'gh repo set-default': got '${result}'"
+fi
+
+# Test: 'gh repo delete' is still blocked
+run_test
+result=$(run_agent repo delete someorg/otherrepo)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh repo delete'"
+else
+  fail "blocks 'gh repo delete': got '${result}'"
+fi
+
+# Test: 'gh repo archive' is still blocked
+run_test
+result=$(run_agent repo archive someorg/otherrepo)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "blocks 'gh repo archive'"
+else
+  fail "blocks 'gh repo archive': got '${result}'"
+fi
+
 # Test: 'gh auth status' passes through when agent
 run_test
 result=$(run_agent auth status)

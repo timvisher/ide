@@ -126,7 +126,7 @@ then
   # Read-only verbs (list, view, show, status, checks, diff, browse,
   # download, clone, watch, login, logout, refresh) are deliberately
   # absent from this regex.
-  gh_guard__mutating_verbs='create|edit|delete|close|reopen|comment|review|merge|ready|lock|unlock|pin|unpin|transfer|develop|rename|archive|unarchive|fork|sync|set-default|deploy-key|run|rerun|cancel|enable|disable|set|add|remove|rebuild|stop|upload|delete-asset|copy|link|unlink|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit|mark-template|update-branch'
+  gh_guard__mutating_verbs='create|edit|delete|close|reopen|comment|review|merge|ready|lock|unlock|pin|unpin|transfer|develop|rename|archive|unarchive|fork|sync|deploy-key|run|rerun|cancel|enable|disable|set|add|remove|rebuild|stop|upload|delete-asset|copy|link|unlink|field-create|field-delete|item-add|item-archive|item-create|item-delete|item-edit|mark-template|update-branch'
 
   if [[ $gh_guard__verb =~ ^(${gh_guard__mutating_verbs})$ ]] &&
      ! gh_guard__is_timvisher_gh_ancestor
