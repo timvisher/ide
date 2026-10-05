@@ -2055,15 +2055,16 @@ Subcommands
     Any other 'status' invocation passes through to git.
 
   sync-trunk <path>
-    Soft-fork trunk sync.  See "Other subcommands" below.
+    Soft-fork trunk sync.  See "sync-trunk" below.
 
   worktree gc [options] [<target>...]
     Remove merged worktrees, archiving workflow files first.
     Any other 'worktree' invocation passes through to git.
 
   worktree sweep-bogus
-    Sweep bogus worktrees across every trunk cache.  Global by nature,
-    so -C has no effect on it.
+    Sweep bogus worktrees across every trunk cache.  Global by nature:
+    -C is accepted and ignored, including a -C path that does not
+    exist.
 
   <git-args...>
     Anything else passes through to git (with agent safety wrappers).
@@ -3669,7 +3670,7 @@ case $1 in
   worktree)
     case ${2:-} in
       gc)          in_chdir worktree_gc "${@:3}" ;;
-      sweep-bogus) in_chdir sweep_bogus_worktrees_in_all_caches ;;
+      sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
       *)           git "${chdir_args[@]}" "$@" ;;
     esac
     ;;
