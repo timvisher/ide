@@ -1612,6 +1612,22 @@ else
   fail "info outside worktree: expected failure, got rc=${rc} '${result}'"
 fi
 
+# Test: info --json survives a detached HEAD, emitting a null branch
+run_test
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)
+result=$(cd "$info_worktree" && info__cmd --json 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.branch' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branch | type' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.repo' <<<"$result") == "$info_repo" ]]
+then
+  pass "info --json on a detached HEAD emits a null branch and keeps path fields"
+else
+  fail "info --json detached: rc=${rc} got '${result}'"
+fi
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
+
 # Test: info .branch fails on detached HEAD
 run_test
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)

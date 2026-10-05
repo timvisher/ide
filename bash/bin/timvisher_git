@@ -2214,6 +2214,10 @@ Fields:
   {"timvisher_git":{"org":…,"repo":…,"branch":…,"branchPath":…,
                     "absPath":…,"prefixPath":…}}
 
+On a detached HEAD .branch is null rather than an error, because every
+other field is path-derived and still resolves.  The scalar '.branch'
+form still fails on a detached HEAD.
+
 Note .branch is the GIT branch name while .branchPath is derived from
 the worktree's position on disk.  They coincide across worktrees this
 tool creates, because the layout mirrors branch names, but a worktree
@@ -2260,7 +2264,9 @@ Fields:
   .absPath       Absolute path to the worktree root
   .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
 
---json emits every field at once under a .timvisher_git key.
+--json emits every field at once under a .timvisher_git key.  On a
+detached HEAD .branch is null; every path-derived field still
+resolves.  The scalar '.branch' form still fails on a detached HEAD.
 EOF
 }
 
@@ -2342,7 +2348,7 @@ info__cmd() {
       repo=$(get_repo "$prefix_path") ||
         die "info --json: unable to determine repo for '%s'" "$prefix_path"
       branch=$(git symbolic-ref --short HEAD 2>/dev/null) ||
-        die "info --json: HEAD is detached"
+        branch=
 
       jq -n \
         --arg org "$org" \
@@ -2351,7 +2357,8 @@ info__cmd() {
         --arg branchPath "$(info__branch_path "$prefix_path")" \
         --arg absPath "$toplevel" \
         --arg prefixPath "$prefix_path" \
-        '{timvisher_git: {org: $org, repo: $repo, branch: $branch,
+        '{timvisher_git: {org: $org, repo: $repo,
+                          branch: (if $branch == "" then null else $branch end),
                           branchPath: $branchPath, absPath: $absPath,
                           prefixPath: $prefixPath}}' ||
         die "info --json: unable to render JSON"
