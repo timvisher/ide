@@ -1684,19 +1684,25 @@ else
   fail "--help: rc=${rc} got '${result}'"
 fi
 
-# Test: -h and help are aliases
+# Test: -h is an alias for --help
 run_test
-for help_flag in -h help
-do
-  result=$("$script" "$help_flag" 2>&1) && rc=0 || rc=$?
-  if (( rc != 0 )) || [[ $result != *"timvisher_git <subcommand>"* ]]
-  then
-    fail "'${help_flag}' alias: rc=${rc} got '${result}'"
-    break
-  fi
-done
-[[ $result == *"timvisher_git <subcommand>"* ]] &&
-  pass "-h and help aliases print timvisher_git usage"
+result=$("$script" -h 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-h prints timvisher_git usage"
+else
+  fail "-h alias: rc=${rc} got '${result}'"
+fi
+
+# Test: bare 'help' is an alias for --help
+run_test
+result=$("$script" help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "bare 'help' prints timvisher_git usage"
+else
+  fail "help alias: rc=${rc} got '${result}'"
+fi
 
 # Test: --help works outside a git repository
 run_test
@@ -1816,7 +1822,7 @@ else
   fail "-C empty path: rc=${rc} got '${result}'"
 fi
 
-# Test: -C still allows --help, even with a path that does not exist
+# Test: -C <existing-path> --help prints usage
 run_test
 result=$("$script" -C "$info_worktree" --help 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
@@ -1826,6 +1832,7 @@ else
   fail "-C --help: rc=${rc} got '${result}'"
 fi
 
+# Test: --help needs no usable context at all, not even a real -C path
 run_test
 result=$("$script" -C "$tmpdir/no-such-dir" --help 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
@@ -1846,20 +1853,47 @@ else
   fail "-C status --all-published: rc=${rc} got '${result}'"
 fi
 
+# Test: -C reaches a side-effecting in_chdir subcommand.
+# reconcile-repo-config writes its sentinel relative to the worktree it
+# runs in, so a bad -C must stop it before it touches anything.
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" reconcile-repo-config 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C <bad-path> stops a side-effecting subcommand before it runs"
+else
+  fail "-C reconcile-repo-config: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# worktree sweep-bogus is global: -C is accepted and ignored
+# ---------------------------------------------------------------------------
+
+# Test: a valid -C does not change what sweep-bogus scans
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" worktree sweep-bogus 2>&1) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "worktree sweep-bogus accepts a valid -C"
+else
+  fail "sweep-bogus -C valid: rc=${rc} got '${result}'"
+fi
+
+# Test: sweep-bogus does not even need the -C path to exist
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$tmpdir/no-such-dir" worktree sweep-bogus 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result != *"unable to enter"* ]]
+then
+  pass "worktree sweep-bogus ignores -C entirely, bad path included"
+else
+  fail "sweep-bogus -C bad: rc=${rc} got '${result}'"
+fi
+
 # ---------------------------------------------------------------------------
 # help passthrough
 # ---------------------------------------------------------------------------
 
-# Test: bare 'help' is ours; 'help <git-subcommand>' is git's
-run_test
-result=$("$script" help 2>&1) && rc=0 || rc=$?
-if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
-then
-  pass "bare 'help' prints timvisher_git usage"
-else
-  fail "bare help: rc=${rc} got '${result}'"
-fi
-
+# Test: 'help <git-subcommand>' reaches git rather than printing our usage
 run_test
 result=$("$script" help rev-parse 2>&1) && rc=0 || rc=$?
 if [[ $result != *"timvisher_git <subcommand>"* ]]
@@ -1867,6 +1901,17 @@ then
   pass "'help <git-subcommand>' passes through to git rather than printing our usage"
 else
   fail "help rev-parse: rc=${rc} printed timvisher_git usage"
+fi
+
+# Test: 'help <git-subcommand>' forwards -C to git, so unlike bare
+# help it does depend on the -C path being usable.
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" help rev-parse 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result != *"timvisher_git <subcommand>"* ]]
+then
+  pass "'help <git-subcommand>' with a bad -C fails in git, not in our help bypass"
+else
+  fail "help rev-parse with bad -C: rc=${rc} got '${result}'"
 fi
 
 # ---------------------------------------------------------------------------

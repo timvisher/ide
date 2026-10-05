@@ -317,6 +317,21 @@ else
   fail "-C bad path: rc=${rc} got '${result}'"
 fi
 
+# Test: an existing non-repo -C path is a different failure from a
+# path that does not exist
+run_test
+nonrepo_c="$tmpdir/exists-but-not-a-repo"
+mkdir -p "$nonrepo_c"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$nonrepo_c' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) &&
+   [[ $result == *"Not in a git repository"* ]] &&
+   [[ $result != *"unable to enter"* ]]
+then
+  pass "-C <existing-non-repo> reports 'Not in a git repository', not 'unable to enter'"
+else
+  fail "-C existing non-repo: rc=${rc} got '${result}'"
+fi
+
 # Test: --help wins over a bad -C path
 run_test
 result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/no-such-dir' --help" 2>&1) && rc=0 || rc=$?
