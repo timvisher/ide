@@ -15,7 +15,7 @@ source ~/.functions/gh.bash ||
   }
 
 usage() {
-  cat <<'USAGE' >&2
+  cat <<'USAGE'
   timvisher_gh - GitHub workflow commands
 
   Usage:
@@ -113,7 +113,9 @@ usage() {
         .forkNetwork.mainOwner  Owner of the fork network root
         .me                     Authenticated GitHub username
     - --json emits every field at once, merged with
-      'timvisher_git info --json':
+      'timvisher_git info --json'.  Unlike the scalar fields, --json
+      therefore requires a worktree under $TIMVISHER_GIT_HOME, since
+      that is what timvisher_git decomposes:
         {"timvisher_git": {org, repo, branch, branchPath, absPath,
                            prefixPath},
          "timvisher_gh":  {me, forkNetwork: {mainRepo, mainOwner}}}
@@ -140,13 +142,15 @@ while [[ ${1-} == -C ]]
 do
   (( 2 <= $# )) ||
     die 'Option -C requires a <path> argument'
+  [[ -n $2 ]] ||
+    die 'Option -C requires a non-empty <path> argument'
   chdir=$2
   shift 2
 done
 
 if [[ $# -eq 0 ]]
 then
-  usage
+  usage >&2
   exit 1
 fi
 
@@ -156,6 +160,11 @@ case $1 in
     exit 0
     ;;
 esac
+
+if [[ -n $chdir && ! -d $chdir ]]
+then
+  die "Option -C: unable to enter '%s'" "$chdir"
+fi
 
 toplevel=$(command git -C "${chdir:-.}" rev-parse --show-toplevel) ||
   die 'Not in a git repository'
@@ -878,9 +887,9 @@ gh_info() {
       git_blob=$(timvisher_git info --json) ||
         die 'Unable to query timvisher_git context for %s' "$toplevel"
       main_repo=$(gh_info .forkNetwork.mainRepo) ||
-        exit $?
+        return $?
       me=$(gh_info .me) ||
-        exit $?
+        return $?
 
       jq -n \
         --argjson git "$git_blob" \
@@ -916,7 +925,7 @@ case $cmd in
     gh_comment "$@"
     ;;
   *)
-    usage
+    usage >&2
     exit 1
     ;;
 esac

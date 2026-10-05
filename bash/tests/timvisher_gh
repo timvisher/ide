@@ -272,6 +272,101 @@ else
   fail "info extra positional: rc=${rc} got '${result}'"
 fi
 
+# Test: a null branch from timvisher_git passes through intact, so a
+# detached worktree still yields a usable blob
+run_test
+export MOCK_LOG="$tmpdir/log_info_json_detached"
+touch "$MOCK_LOG"
+mkdir -p "$tmpdir/detachedbin"
+cp "$tmpdir/mockbin/gh" "$tmpdir/detachedbin/gh"
+cat > "$tmpdir/detachedbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"timvisher_git":{"org":"testuser","repo":"testrepo","branch":null,"branchPath":"main","absPath":"/fake","prefixPath":"testuser/testrepo/main"}}
+JSON
+MOCK
+chmod +x "$tmpdir/detachedbin/timvisher_git"
+result=$(cd "$tmpdir/repo" && PATH="$tmpdir/detachedbin:$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.branch | type' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "main" ]] &&
+   [[ $(jq -r '.timvisher_gh.me' <<<"$result") == "testuser" ]]
+then
+  pass "info --json carries a null branch through for a detached worktree"
+else
+  fail "info --json detached: rc=${rc} got '${result}'"
+fi
+
+# Test: -C with an empty path errors rather than silently meaning cwd
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"non-empty"* ]]
+then
+  pass "-C with an empty path errors"
+else
+  fail "-C empty path: rc=${rc} got '${result}'"
+fi
+
+# Test: a bad -C path says so, rather than blaming the git context
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/no-such-dir' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C with a non-existent path reports the path, not 'Not in a git repository'"
+else
+  fail "-C bad path: rc=${rc} got '${result}'"
+fi
+
+# Test: --help wins over a bad -C path
+run_test
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/no-such-dir' --help" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]]
+then
+  pass "-C <bad-path> --help still prints usage"
+else
+  fail "-C bad path --help: rc=${rc} got '${result}'"
+fi
+
+# Test: --help goes to stdout; usage-on-error goes to stderr
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' --help" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]]
+then
+  pass "--help writes usage to stdout"
+else
+  fail "--help on stdout: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script'" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "no-args usage goes to stderr, not stdout"
+else
+  fail "no-args stream: rc=${rc} stdout='${result}'"
+fi
+
+# Test: info --json surfaces a timvisher_git failure rather than
+# emitting a blob with a missing half
+run_test
+export MOCK_LOG="$tmpdir/log_info_json_gitfail"
+touch "$MOCK_LOG"
+mkdir -p "$tmpdir/failgitbin"
+cp "$tmpdir/mockbin/gh" "$tmpdir/failgitbin/gh"
+cat > "$tmpdir/failgitbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+echo "info: worktree is not under TIMVISHER_GIT_HOME" >&2
+exit 1
+MOCK
+chmod +x "$tmpdir/failgitbin/timvisher_git"
+result=$(cd "$tmpdir/repo" && PATH="$tmpdir/failgitbin:$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Unable to query timvisher_git context"* ]]
+then
+  pass "info --json fails when timvisher_git cannot resolve the worktree"
+else
+  fail "info --json git failure: rc=${rc} got '${result}'"
+fi
+
 # Test: no git context is an error, not an elided blob
 run_test
 result=$(cd "$nonrepo_dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?

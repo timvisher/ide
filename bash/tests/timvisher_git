@@ -1553,6 +1553,23 @@ else
   fail "info .branchPath flat: expected empty, got '${result}'"
 fi
 
+# Test: info .branchPath keeps every branch segment
+run_test
+deep_worktree="${live_dir}/deeporg/deeprepo/a/b/c"
+mkdir -p "$deep_worktree"
+(
+  cd "$deep_worktree" || exit 1
+  TIMVISHER_AGENT= git init -q
+  TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q
+)
+result=$(cd "$deep_worktree" && info__cmd .branchPath)
+if [[ $result == "a/b/c" ]]
+then
+  pass "info .branchPath keeps multi-segment branch parts"
+else
+  fail "info .branchPath deep: expected 'a/b/c', got '${result}'"
+fi
+
 # Test: info --json emits every field under .timvisher_git
 run_test
 result=$(cd "$info_worktree" && info__cmd --json)
@@ -1628,6 +1645,16 @@ else
 fi
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
 
+# Test: info --json outside the managed root fails like the scalar form
+run_test
+result=$(cd "$outside_dir" && info__cmd --json 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"not under TIMVISHER_GIT_HOME"* ]]
+then
+  pass "info --json outside the managed worktree root fails"
+else
+  fail "info --json outside root: expected failure, got rc=${rc} '${result}'"
+fi
+
 # Test: info .branch fails on detached HEAD
 run_test
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)
@@ -1695,7 +1722,7 @@ missing_subcommands=()
 while IFS= read -r sub
 do
   [[ -n $sub ]] || continue
-  [[ $usage_text == *"$sub"* ]] || missing_subcommands+=("$sub")
+  grep -qE "^  ${sub}( |\$)" <<<"$usage_text" || missing_subcommands+=("$sub")
 done <<<"$dispatch_subcommands"
 if (( ${#missing_subcommands[@]} == 0 )) && [[ -n $dispatch_subcommands ]]
 then
@@ -1779,7 +1806,17 @@ else
   fail "-C bad path: rc=${rc} got '${result}'"
 fi
 
-# Test: -C still allows --help
+# Test: -C with an empty path errors rather than silently meaning cwd
+run_test
+result=$("$script" -C "" info .org 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"non-empty"* ]]
+then
+  pass "-C with an empty path errors"
+else
+  fail "-C empty path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C still allows --help, even with a path that does not exist
 run_test
 result=$("$script" -C "$info_worktree" --help 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
@@ -1787,6 +1824,71 @@ then
   pass "-C <path> --help still prints usage"
 else
   fail "-C --help: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-C <bad-path> --help still prints usage"
+else
+  fail "-C bad path --help: rc=${rc} got '${result}'"
+fi
+
+# Test: -C applies to non-info subcommands too (status --all-published
+# names the branch it inspected, proving which worktree it ran in)
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" status --all-published 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"$info_branch"* ]]
+then
+  pass "-C <path> applies to non-info subcommands"
+else
+  fail "-C status --all-published: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# help passthrough
+# ---------------------------------------------------------------------------
+
+# Test: bare 'help' is ours; 'help <git-subcommand>' is git's
+run_test
+result=$("$script" help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "bare 'help' prints timvisher_git usage"
+else
+  fail "bare help: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$("$script" help rev-parse 2>&1) && rc=0 || rc=$?
+if [[ $result != *"timvisher_git <subcommand>"* ]]
+then
+  pass "'help <git-subcommand>' passes through to git rather than printing our usage"
+else
+  fail "help rev-parse: rc=${rc} printed timvisher_git usage"
+fi
+
+# ---------------------------------------------------------------------------
+# usage stream: help-on-request goes to stdout, usage-on-error to stderr
+# ---------------------------------------------------------------------------
+
+run_test
+result=$("$script" --help 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "--help writes usage to stdout"
+else
+  fail "--help on stdout: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$("$script" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "no-args usage goes to stderr, not stdout"
+else
+  fail "no-args stream: rc=${rc} stdout='${result}'"
 fi
 
 # ---------------------------------------------------------------------------

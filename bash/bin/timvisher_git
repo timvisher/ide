@@ -1989,7 +1989,7 @@ sync_trunk() {
 # ---------------------------------------------------------------------------
 
 usage() {
-  cat >&2 <<'EOF'
+  cat <<'EOF'
 Usage: timvisher_git <subcommand> [args...]
        timvisher_git <git-args...>
 
@@ -2006,10 +2006,15 @@ Global options
 
   -h, --help, help
               Show this help.  Works from anywhere, including outside a
-              git repository.
+              git repository.  'help <git-subcommand>' still passes
+              through to 'git help <git-subcommand>'.
 
 Subcommands
 -----------
+
+  help [<git-subcommand>]
+    With no argument, show this help.  With one, pass through to
+    'git help <git-subcommand>'.
 
   clone <target> [stack-on-base]
     Idempotently produce a worktree for <target>.  See "clone" below.
@@ -2057,7 +2062,8 @@ Subcommands
     Any other 'worktree' invocation passes through to git.
 
   worktree sweep-bogus
-    Sweep bogus worktrees across every trunk cache.
+    Sweep bogus worktrees across every trunk cache.  Global by nature,
+    so -C has no effect on it.
 
   <git-args...>
     Anything else passes through to git (with agent safety wrappers).
@@ -2240,7 +2246,7 @@ EOF
 }
 
 clone_usage() {
-  usage
+  usage >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -3611,8 +3617,9 @@ while [[ ${1-} == -C ]]
 do
   (( 2 <= $# )) ||
     die "Option -C requires a <path> argument"
-  chdir=$(cd "$2" && pwd -P) ||
-    die "Option -C: unable to enter '%s'" "$2"
+  [[ -n $2 ]] ||
+    die "Option -C requires a non-empty <path> argument"
+  chdir=$2
   chdir_args=(-C "$chdir")
   shift 2
 done
@@ -3627,12 +3634,21 @@ in_chdir() {
 }
 
 case $1 in
-  -h|--help|help)
+  -h|--help)
     usage
     exit 0
     ;;
+  help)
+    if (( $# == 1 ))
+    then
+      usage
+      exit 0
+    fi
+    git "${chdir_args[@]}" "$@"
+    exit $?
+    ;;
   '')
-    usage
+    usage >&2
     exit 1
     ;;
   clone)        in_chdir clone "${@:2}" ;;
