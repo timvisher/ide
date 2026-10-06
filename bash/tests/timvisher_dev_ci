@@ -466,6 +466,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# install_regen_merge_driver / remove_regen_merge_driver
+# ---------------------------------------------------------------------------
+
+regen_fixture() {
+  local dir=$1
+  "$test_git" init "$dir" >/dev/null 2>&1
+  "$test_git" -C "$dir" config core.hooksPath /dev/null
+}
+
+run_test
+rg_cwd=$PWD
+rg_clean="$tmpdir/regen_clean"
+regen_fixture "$rg_clean"
+rg_clean_attr="$rg_clean/.git/info/attributes"
+cd "$rg_clean" || { echo "cannot cd to $rg_clean" >&2; exit 1; }
+install_regen_merge_driver "BUILD.bazel RELEASES.md"
+rg_live=false
+if [[ $("$test_git" check-attr merge BUILD.bazel) == *"merge: devci-regen"* ]] &&
+   [[ $("$test_git" check-attr merge RELEASES.md) == *"merge: devci-regen"* ]] &&
+   [[ $("$test_git" config --get merge.devci-regen.driver) == "true" ]]
+then
+  rg_live=true
+fi
+remove_regen_merge_driver
+rg_driver=$("$test_git" config --get merge.devci-regen.driver)
+rg_name=$("$test_git" config --get merge.devci-regen.name)
+rg_attr_left=$("$test_git" check-attr merge BUILD.bazel)
+cd "$rg_cwd" || { echo "cannot cd back to $rg_cwd" >&2; exit 1; }
+if "$rg_live" &&
+   [[ -z $rg_driver ]] &&
+   [[ -z $rg_name ]] &&
+   [[ ! -e $rg_clean_attr ]] &&
+   [[ $rg_attr_left != *"devci-regen"* ]]
+then
+  pass "regen driver: installed for the merge, then fully removed from config and attributes"
+else
+  fail "regen driver clean repo: live=$rg_live driver='$rg_driver' name='$rg_name' attr_exists=$( [[ -e $rg_clean_attr ]] && echo yes || echo no ) attr='$rg_attr_left'"
+fi
+
+run_test
+rg_keep="$tmpdir/regen_preexisting"
+regen_fixture "$rg_keep"
+rg_keep_attr="$rg_keep/.git/info/attributes"
+mkdir -p "$(dirname "$rg_keep_attr")"
+printf '*.png binary\nBUILD.bazel merge=devci-regen\n' > "$rg_keep_attr"
+cd "$rg_keep" || { echo "cannot cd to $rg_keep" >&2; exit 1; }
+install_regen_merge_driver "BUILD.bazel RELEASES.md"
+remove_regen_merge_driver
+cd "$rg_cwd" || { echo "cannot cd back to $rg_cwd" >&2; exit 1; }
+rg_keep_content=$(cat "$rg_keep_attr")
+if [[ -e $rg_keep_attr ]] &&
+   [[ $rg_keep_content == *"*.png binary"* ]] &&
+   [[ $rg_keep_content == *"BUILD.bazel merge=devci-regen"* ]] &&
+   [[ $rg_keep_content != *"RELEASES.md"* ]]
+then
+  pass "regen driver: removal keeps a pre-existing attributes file and its lines"
+else
+  fail "regen driver pre-existing: exists=$( [[ -e $rg_keep_attr ]] && echo yes || echo no ) content='$rg_keep_content'"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
