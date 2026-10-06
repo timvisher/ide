@@ -1988,7 +1988,7 @@ sync_trunk() {
 # Main entry point
 # ---------------------------------------------------------------------------
 
-usage() {
+show_help() {
   cat <<'EOF'
 Usage: timvisher_git <subcommand> [args...]
        timvisher_git <git-args...>
@@ -2246,8 +2246,11 @@ upstream changes reach trunk via feature branches -> dev, not here.
 EOF
 }
 
-clone_usage() {
-  usage >&2
+# Usage text is diagnostic by default: it accompanies a caller error, so
+# it belongs on stderr. show_help is the only path that wants it on
+# stdout, because there the caller asked for it.
+usage() {
+  show_help >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -2255,7 +2258,7 @@ clone_usage() {
 # ---------------------------------------------------------------------------
 
 info__usage() {
-  cat <<'EOF'
+  cat >&2 <<'EOF'
 Usage: timvisher_git info <field>
        timvisher_git info --json
 
@@ -2300,7 +2303,7 @@ info__cmd() {
 
   if [[ -z $field ]]
   then
-    info__usage >&2
+    info__usage
     return 1
   fi
 
@@ -2422,7 +2425,7 @@ clone() {
 
   if [[ -z $target ]]
   then
-    clone_usage
+    usage
     return 1
   fi
 
@@ -3636,20 +3639,20 @@ in_chdir() {
 
 case $1 in
   -h|--help)
-    usage
+    show_help
     exit 0
     ;;
   help)
     if (( $# == 1 ))
     then
-      usage
+      show_help
       exit 0
     fi
     git "${chdir_args[@]}" "$@"
     exit $?
     ;;
   '')
-    usage >&2
+    usage
     exit 1
     ;;
   clone)        in_chdir clone "${@:2}" ;;

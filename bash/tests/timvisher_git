@@ -1936,6 +1936,37 @@ else
   fail "no-args stream: rc=${rc} stdout='${result}'"
 fi
 
+# Test: a failing subcommand puts NOTHING on stdout.  bash/bin/git:1601
+# and bash/bin/ntmux3:39 both do `org=$(timvisher_git info .org
+# 2>/dev/null) || true` -- they capture stdout and discard stderr, so a
+# usage blob leaking to stdout would be assigned to $org and pass the
+# `[[ -n $org ]]` guard.
+run_test
+leaked=()
+for args in "info" "clone" "fork nope"
+do
+  # shellcheck disable=SC2086  # deliberate word splitting of the arg list
+  out=$(cd "$info_worktree" && "$script" $args 2>/dev/null)
+  [[ -n $out ]] && leaked+=("$args")
+done
+if (( ${#leaked[@]} == 0 ))
+then
+  pass "failing subcommands leak nothing to stdout (info, clone, fork)"
+else
+  fail "stdout leak from: ${leaked[*]}"
+fi
+
+# Test: show_help and usage are the same text on opposite streams
+run_test
+help_out=$("$script" --help 2>/dev/null)
+err_out=$("$script" 2>&1 >/dev/null)
+if [[ -n $help_out && -n $err_out && $help_out == "$err_out" ]]
+then
+  pass "show_help and usage emit the same text on opposite streams"
+else
+  fail "stream pair: help=${#help_out} bytes, err=${#err_out} bytes"
+fi
+
 # ---------------------------------------------------------------------------
 # migrate_cache_to_bare_if_needed tests
 # ---------------------------------------------------------------------------
