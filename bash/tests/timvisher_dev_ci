@@ -3,8 +3,6 @@
 # Tests for timvisher_dev_ci's agent-facing surface: --help, hooks
 # subcommand, run-tests convenience, and structured error paths.
 
-set -uo pipefail
-
 failures=0
 tests=0
 

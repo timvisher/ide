@@ -3,8 +3,6 @@
 # Tests for timvisher_gh
 # Heavy mocking since this interacts with git, gh, and macOS open.
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -30,7 +28,8 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 # Set up a fake git repo
 mkdir -p "$tmpdir/repo"
-cd "$tmpdir/repo"
+cd "$tmpdir/repo" ||
+  { echo "cannot cd to the fixture repo" >&2; exit 1; }
 "$real_git" init -q .
 "$real_git" config user.email "test@test.com"
 "$real_git" config user.name "Test"
