@@ -131,6 +131,9 @@ Terraform is the shape to expect: a language guide for provider
 constraints and tagging, plus a skill for the planning workflow.
 Reading one does not excuse skipping the other.
 
+The `guides` skill carries this as a workflow and is surfaced in the
+skills listing every session, which the language guides are not.
+
 Treat everything in a guide as _*extremely important*_ and follow it by
 default. These are not style suggestions: each contains hard
 prohibitions whose violation means the work gets reverted.
