@@ -3,8 +3,6 @@
 # Tests for timvisher_dev_ci's agent-facing surface: --help, hooks
 # subcommand, run-tests convenience, and structured error paths.
 
-set -uo pipefail
-
 failures=0
 tests=0
 
@@ -145,17 +143,36 @@ fake_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/myrepo/dev"
 mkdir -p "$fake_wt_unresolved"
 fake_wt=$(cd "$fake_wt_unresolved" && pwd -P)
 
-# fork_network_main_owner calls `timvisher_gh info .forkNetwork.mainOwner`
-# which hits the GitHub API.  Stub it via PATH so the test doesn't make
-# network calls and doesn't depend on `timvisher_gh` being installed.
+# Hook resolution calls `timvisher_gh -C <wt> info --json`, which hits
+# the GitHub API.  Stub it via PATH so the test makes no network calls
+# and does not depend on `timvisher_gh` being installed.  The stub
+# derives org/repo/branchPath from the -C path the way the real tool
+# does, and records each invocation so tests can assert on caching and
+# on the path actually queried.
+fake_git_home_real=$(cd "$TIMVISHER_GIT_HOME" && pwd -P)
 mkdir -p "$tmpdir/mockbin"
-cat > "$tmpdir/mockbin/timvisher_gh" <<'MOCK'
+cat > "$tmpdir/mockbin/timvisher_gh" <<MOCK
 #!/usr/bin/env bash
-case "$1 $2" in
-  "info .forkNetwork.mainOwner") echo "myorg" ;;
-  "info .me") echo "myorg" ;;
-  *) echo "(mock) unhandled: $*" >&2; exit 2 ;;
-esac
+if [[ \$1 == -C && \$3 == info && \$4 == --json ]]
+then
+  printf '%s\\n' "\$2" >> "$tmpdir/tgh-calls"
+  rel=\${2#${TIMVISHER_GIT_HOME}/}
+  rel=\${rel#${fake_git_home_real}/}
+  org=\${rel%%/*}
+  rest=\${rel#*/}
+  repo=\${rest%%/*}
+  branch=\${rest#*/}
+  [[ \$branch == "\$repo" ]] && branch=""
+  jq -n --arg org "\$org" --arg repo "\$repo" --arg branch "\$branch" \\
+    '{timvisher_git: {org: \$org, repo: \$repo, branch: \$branch,
+                      branchPath: \$branch, absPath: "", prefixPath: ""},
+      timvisher_gh: {me: \$org,
+                     forkNetwork: {mainRepo: (\$org + "/" + \$repo),
+                                   mainOwner: \$org}}}'
+  exit 0
+fi
+echo "(mock) unhandled: \$*" >&2
+exit 2
 MOCK
 chmod +x "$tmpdir/mockbin/timvisher_gh"
 
@@ -257,6 +274,312 @@ then
 else
   fail "hooks run -C no arg: rc=$rc out='$out'"
 fi
+
+# ---------------------------------------------------------------------------
+# hooks ls: cwd-independence
+# ---------------------------------------------------------------------------
+
+# Test: `hooks ls <path>` answers for <path> from any cwd
+run_test
+from_inside=$(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls 2>&1)
+: > "$tmpdir/tgh-calls"
+from_outside=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls "$fake_wt" 2>&1)
+queried_path=$(sort -u "$tmpdir/tgh-calls")
+if [[ $from_inside == "$from_outside" ]] && [[ $from_inside == *"run-tests.sh"* ]]
+then
+  pass "hooks ls from a non-repo cwd matches hooks ls from inside the worktree"
+else
+  fail "hooks ls cwd-independence: inside='${from_inside}' outside='${from_outside}'"
+fi
+
+# The context must be resolved from the target worktree, not the cwd.
+run_test
+if [[ $queried_path == "$fake_wt" ]]
+then
+  pass "hooks ls <path> resolves context from <path>, not the caller's cwd"
+else
+  fail "expected timvisher_gh -C '${fake_wt}', got '${queried_path}'"
+fi
+
+# The resolved hook must actually appear, not just match an all-(none)
+# answer on both sides.
+run_test
+if [[ $from_outside == *"$hook_dir/run-tests.sh"* ]]
+then
+  pass "hooks ls from outside resolves the level-1 hook"
+else
+  fail "hooks ls from outside did not resolve the hook: '${from_outside}'"
+fi
+
+# ---------------------------------------------------------------------------
+# context blob is fetched once per worktree, not once per hook name
+# ---------------------------------------------------------------------------
+
+run_test
+: > "$tmpdir/tgh-calls"
+(cd "$fake_wt" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls >/dev/null 2>&1)
+calls=$(wc -l < "$tmpdir/tgh-calls" | tr -d ' ')
+if (( calls == 1 ))
+then
+  pass "hooks ls resolves the context blob once for all KNOWN_HOOKS"
+else
+  fail "expected 1 timvisher_gh call across all KNOWN_HOOKS, got ${calls}"
+fi
+
+# ---------------------------------------------------------------------------
+# an unresolvable context halts loudly instead of reporting (none)
+# ---------------------------------------------------------------------------
+
+mkdir -p "$tmpdir/failbin"
+cat > "$tmpdir/failbin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "Not in a git repository" >&2
+exit 1
+MOCK
+chmod +x "$tmpdir/failbin/timvisher_gh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/failbin:$PATH" "$script" hooks ls 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_worktree_context_unresolvable"'* ]] &&
+   [[ $out != *"(none)"* ]]
+then
+  pass "hooks ls halts on an unresolvable context instead of reporting (none)"
+else
+  fail "hooks ls context error: rc=$rc out='$out'"
+fi
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/failbin:$PATH" "$script" hooks run run-tests.sh 2>&1)
+rc=$?
+if (( rc != 0 )) && [[ $out == *'"code":"dev_ci_worktree_context_unresolvable"'* ]]
+then
+  pass "hooks run halts on an unresolvable context"
+else
+  fail "hooks run context error: rc=$rc out='$out'"
+fi
+
+# The underlying stderr must survive to the operator; discarding it is
+# what made the original bug invisible.
+run_test
+stderr_out=$(cd "$fake_wt" && PATH="$tmpdir/failbin:$PATH" "$script" hooks run run-tests.sh 2>&1)
+if [[ $stderr_out == *"Not in a git repository"* ]]
+then
+  pass "the failing timvisher_gh stderr reaches the operator"
+else
+  fail "timvisher_gh stderr was swallowed: '${stderr_out}'"
+fi
+
+# ---------------------------------------------------------------------------
+# a well-formed but incomplete blob is an error, not "no hook configured"
+# ---------------------------------------------------------------------------
+
+mkdir -p "$tmpdir/badbin"
+cat > "$tmpdir/badbin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+echo '{"timvisher_git":{"repo":"myrepo"},"timvisher_gh":{}}'
+MOCK
+chmod +x "$tmpdir/badbin/timvisher_gh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/badbin:$PATH" "$script" hooks ls 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_worktree_context_unresolvable"'* ]] &&
+   [[ $out != *"(none)"* ]]
+then
+  pass "a blob missing required fields halts instead of reporting (none)"
+else
+  fail "incomplete blob: rc=$rc out='$out'"
+fi
+
+mkdir -p "$tmpdir/garbagebin"
+cat > "$tmpdir/garbagebin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+echo 'not json at all'
+MOCK
+chmod +x "$tmpdir/garbagebin/timvisher_gh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/garbagebin:$PATH" "$script" hooks ls 2>&1)
+rc=$?
+if (( rc != 0 )) && [[ $out == *'"code":"dev_ci_worktree_context_unresolvable"'* ]]
+then
+  pass "malformed JSON from timvisher_gh halts"
+else
+  fail "malformed blob: rc=$rc out='$out'"
+fi
+
+# An empty string builds cascade paths with a doubled slash, which
+# match nothing -- as unusable as a missing key.
+mkdir -p "$tmpdir/emptybin"
+cat > "$tmpdir/emptybin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+echo '{"timvisher_git":{"repo":"myrepo","branchPath":"dev"},"timvisher_gh":{"me":"","forkNetwork":{"mainOwner":""}}}'
+MOCK
+chmod +x "$tmpdir/emptybin/timvisher_gh"
+
+run_test
+out=$(cd "$fake_wt" && PATH="$tmpdir/emptybin:$PATH" "$script" hooks ls 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_worktree_context_unresolvable"'* ]] &&
+   [[ $out != *"(none)"* ]]
+then
+  pass "an empty-string mainOwner/me halts instead of reporting (none)"
+else
+  fail "empty-string blob: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# a worktree sitting directly at <org>/<repo> has an empty branchPath
+# ---------------------------------------------------------------------------
+
+# Test: an empty branchPath still resolves the level-1 hook.  The
+# cascade inputs are read one per line, so an empty field in the middle
+# of that list must not shift the ones after it.
+flat_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/flatrepo"
+mkdir -p "$flat_wt_unresolved"
+flat_wt=$(cd "$flat_wt_unresolved" && pwd -P)
+flat_hook_dir="$XDG_CONFIG_HOME/timvisher/ide/timvisher_dev_ci/hooks/myorg/flatrepo"
+mkdir -p "$flat_hook_dir"
+printf '#!/usr/bin/env bash\n' > "$flat_hook_dir/run-tests.sh"
+chmod +x "$flat_hook_dir/run-tests.sh"
+
+run_test
+out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls "$flat_wt" 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ $out == *"$flat_hook_dir/run-tests.sh"* ]]
+then
+  pass "an empty branchPath still resolves the level-1 hook"
+else
+  fail "flat worktree: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
+# find_hooks tri-state at the function level
+# ---------------------------------------------------------------------------
+
+# Load the helper functions without the top-level dispatch.  The mock
+# goes on PATH for the function-level tests only, and comes back off
+# before the script-level tests resume.
+fh_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
+eval "$fh_body"
+saved_path=$PATH
+PATH="$tmpdir/mockbin:$PATH"
+
+# find_hooks emits NUL-terminated paths and reports found vs none by
+# exit code; an unresolvable context is the caller's prime, not its
+# return value.
+run_test
+_worktree_context=()
+worktree_context "$fake_wt"
+declare -a fh_out=()
+readarray -d '' -t fh_out < <(find_hooks "$fake_wt" "run-tests.sh")
+fh_found_count=${#fh_out[@]}
+find_hooks "$fake_wt" "run-tests.sh" >/dev/null
+fh_found_rc=$?
+readarray -d '' -t fh_out < <(find_hooks "$fake_wt" "definitely-not-a-hook.sh")
+fh_none_count=${#fh_out[@]}
+find_hooks "$fake_wt" "definitely-not-a-hook.sh" >/dev/null
+fh_none_rc=$?
+if (( fh_found_rc == 0 )) && (( fh_found_count == 1 )) &&
+   (( fh_none_rc == 1 )) && (( fh_none_count == 0 ))
+then
+  pass "find_hooks: exit 0 + paths when found, exit 1 + nothing when none"
+else
+  fail "find_hooks: found rc=${fh_found_rc} n=${fh_found_count}; none rc=${fh_none_rc} n=${fh_none_count}"
+fi
+
+# Test: a path containing a newline survives the cascade intact
+run_test
+newline_hook=$(printf '%s/weird\nname.sh' "$hook_dir")
+printf '#!/usr/bin/env bash\n' > "$newline_hook" 2>/dev/null && chmod +x "$newline_hook" 2>/dev/null
+if [[ -x $newline_hook ]]
+then
+  readarray -d '' -t fh_out < <(find_hooks "$fake_wt" "$(printf 'weird\nname.sh')")
+  if (( ${#fh_out[@]} == 1 )) && [[ ${fh_out[0]} == "$newline_hook" ]]
+  then
+    pass "a hook path containing a newline round-trips as one element"
+  else
+    fail "newline path: got ${#fh_out[@]} element(s): $(printf '%q ' "${fh_out[@]}")"
+  fi
+  rm -f "$newline_hook"
+else
+  fail "newline path: could not create the fixture"
+fi
+
+# Test: find_hooks refuses to walk an unprimed cascade.  run-tests.sh
+# resolves for this fixture when primed, so "no output" here is the
+# refusal and not a "no hook configured" answer.
+run_test
+_worktree_context=()
+unprimed_stdout=$(find_hooks "$fake_wt" "run-tests.sh" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $unprimed_stdout ]]
+then
+  pass "find_hooks on an unprimed context refuses to answer"
+else
+  fail "unprimed find_hooks: rc=${rc} stdout='${unprimed_stdout}'"
+fi
+
+# ---------------------------------------------------------------------------
+# the context cache is keyed canonically, not by path spelling
+# ---------------------------------------------------------------------------
+
+run_test
+_worktree_context=()
+: > "$tmpdir/tgh-calls"
+worktree_context "$fake_wt"
+worktree_context "${fake_wt}/"
+worktree_context "$fake_wt_unresolved"
+calls=$(wc -l < "$tmpdir/tgh-calls" | tr -d ' ')
+if (( calls == 1 ))
+then
+  pass "worktree_context caches across equivalent spellings of one worktree"
+else
+  fail "expected 1 lookup across 3 spellings, got ${calls}"
+fi
+
+# Test: a gate-then-run pair resolves the blob once, not twice
+run_test
+_worktree_context=()
+: > "$tmpdir/tgh-calls"
+hook_exists "$fake_wt" "run-tests.sh" &&
+  run_hooks "$fake_wt" "run-tests.sh" >/dev/null 2>&1
+calls=$(wc -l < "$tmpdir/tgh-calls" | tr -d ' ')
+if (( calls == 1 ))
+then
+  pass "hook_exists followed by run_hooks resolves the context once"
+else
+  fail "expected 1 lookup across hook_exists + run_hooks, got ${calls}"
+fi
+
+# ---------------------------------------------------------------------------
+# ensure_repo_script migrates a legacy x. file to the context-derived path
+# ---------------------------------------------------------------------------
+
+run_test
+_worktree_context=()
+legacy_wt="$TIMVISHER_GIT_HOME/myorg/legacyrepo/feature/deep"
+mkdir -p "$legacy_wt"
+cat > "$legacy_wt/x.run-tests.sh" <<'LEGACY'
+#!/usr/bin/env bash
+echo legacy
+LEGACY
+REPO_HOOKS_DIR="$tmpdir/repo-hooks"
+REPO_HOOKS_EXT_DIR="$tmpdir/ext-hooks"
+mkdir -p "$REPO_HOOKS_DIR" "$REPO_HOOKS_EXT_DIR"
+ensure_repo_script "$legacy_wt" "run-tests.sh" >/dev/null 2>&1
+migrated="$REPO_HOOKS_DIR/myorg/legacyrepo/feature/deep/run-tests.sh"
+if [[ -x $migrated ]]
+then
+  pass "ensure_repo_script migrates x. files to <main-owner>/<repo>/<branchPath>/"
+else
+  fail "legacy migration: expected '${migrated}'; tree: $(find "$REPO_HOOKS_DIR" -type f 2>/dev/null | tr '\n' ' ')"
+fi
+
+PATH=$saved_path
 
 # ---------------------------------------------------------------------------
 # run-tests convenience wraps hooks run run-tests.sh

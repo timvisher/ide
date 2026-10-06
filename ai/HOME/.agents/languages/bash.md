@@ -73,3 +73,46 @@
   warn "No default region set for csp '%s' account '%s'." "$csp" "$account_id_or_alias"
   ```
 
+#### Usage and Help Output
+
+- Usage text is **diagnostic by default**: most of the time it is printed
+  because the caller made a mistake, so it belongs on **stderr** with a
+  non-zero exit.
+- An explicit `--help` is different -- the caller asked for that output, so
+  it goes to **stdout** with exit 0. `cmd --help | less` must work.
+- Do not append `>&2` at each error site. Split the two, name both, and let
+  every call site be a bare call:
+  ```bash
+  # content, on stdout
+  show_help() {
+    cat <<'EOF'
+  Usage: mytool <subcommand> [args...]
+  EOF
+  }
+
+  # diagnostic wrapper: the common case
+  usage() {
+    show_help >&2
+  }
+
+  case ${1-} in
+    -h|--help)
+      show_help          # asked for it: stdout, exit 0
+      exit 0
+      ;;
+    '')
+      usage              # caller error: stderr, non-zero
+      exit 1
+      ;;
+  esac
+  ```
+- Getting this backwards is not cosmetic. A caller doing
+  `v=$(mytool query 2>/dev/null)` keeps stdout and throws stderr away, so
+  usage text leaking to stdout during a failure becomes the value of `$v`
+  and passes a `[[ -n $v ]]` guard.
+- A usage function that serves only an error path (nothing routes `--help`
+  to it) can bake `>&2` into its own definition.
+- **Tests must assert the two streams separately.** `2>&1` cannot tell them
+  apart, so a test that captures it will pass while `--help | less` is
+  broken. Assert that `cmd --help 2>/dev/null` produces output and that
+  `cmd 2>/dev/null` produces none.

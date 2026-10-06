@@ -3,8 +3,6 @@
 # Tests for timvisher_gh
 # Heavy mocking since this interacts with git, gh, and macOS open.
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -30,7 +28,8 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 # Set up a fake git repo
 mkdir -p "$tmpdir/repo"
-cd "$tmpdir/repo"
+cd "$tmpdir/repo" ||
+  { echo "cannot cd to the fixture repo" >&2; exit 1; }
 "$real_git" init -q .
 "$real_git" config user.email "test@test.com"
 "$real_git" config user.name "Test"
@@ -89,6 +88,12 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == user ]]
+then
+  echo "testuser"
+elif [[ $1 == api && $2 == repos/* ]]
+then
+  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
@@ -140,6 +145,20 @@ fi
 MOCK
 chmod +x "$tmpdir/mockbin/osascript"
 
+cat > "$tmpdir/mockbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == info && $2 == --json ]]
+then
+  cat <<'JSON'
+{"timvisher_git":{"org":"testuser","repo":"testrepo","branch":"main","branchPath":"main","absPath":"/fake/testuser/testrepo/main","prefixPath":"testuser/testrepo/main"}}
+JSON
+  exit 0
+fi
+echo "(mock timvisher_git) unhandled: $*" >&2
+exit 2
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_git"
+
 test_path="$tmpdir/mockbin:$PATH"
 
 # --- dispatch tests ---
@@ -164,6 +183,18 @@ else
   fail "--help prints usage: got '${result}'"
 fi
 
+# Test: --help works outside a git repository
+run_test
+nonrepo_dir="$tmpdir/not-a-repo"
+mkdir -p "$nonrepo_dir"
+result=$(cd "$nonrepo_dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' --help" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]] && [[ $result != *"Not in a git repository"* ]]
+then
+  pass "--help works outside a git repository"
+else
+  fail "--help outside repo: rc=${rc} got '${result}'"
+fi
+
 # Test: unknown subcommand prints usage and exits nonzero
 run_test
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' bogus" 2>&1 || true)
@@ -172,6 +203,192 @@ then
   pass "unknown subcommand prints usage"
 else
   fail "unknown subcommand prints usage: got '${result}'"
+fi
+
+# --- info tests ---
+
+# Test: info --json merges the timvisher_git blob with the gh fields
+run_test
+export MOCK_LOG="$tmpdir/log_info_json"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.org' <<<"$result") == "testuser" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "main" ]] &&
+   [[ $(jq -r '.timvisher_gh.me' <<<"$result") == "testuser" ]] &&
+   [[ $(jq -r '.timvisher_gh.forkNetwork.mainRepo' <<<"$result") == "upstreamorg/testrepo" ]] &&
+   [[ $(jq -r '.timvisher_gh.forkNetwork.mainOwner' <<<"$result") == "upstreamorg" ]]
+then
+  pass "info --json emits .timvisher_git and .timvisher_gh"
+else
+  fail "info --json: rc=${rc} got '${result}'"
+fi
+
+# Test: -C resolves context from the path, not the cwd
+run_test
+export MOCK_LOG="$tmpdir/log_info_c"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/repo' info .me" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "testuser" ]]
+then
+  pass "-C <path> info .me resolves from the path"
+else
+  fail "-C info .me: rc=${rc} got '${result}'"
+fi
+
+# Test: -C must come before the subcommand to be recognised
+run_test
+export MOCK_LOG="$tmpdir/log_info_c_after"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info -C '$tmpdir/repo'" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Not in a git repository"* ]]
+then
+  pass "post-subcommand -C is not treated as a context flag"
+else
+  fail "post-subcommand -C: rc=${rc} got '${result}'"
+fi
+
+# Test: -C without a path errors
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"requires a <path> argument"* ]]
+then
+  pass "-C with no path errors"
+else
+  fail "-C no path: rc=${rc} got '${result}'"
+fi
+
+# Test: an extra positional arg errors rather than silently answering
+# for the current directory
+run_test
+export MOCK_LOG="$tmpdir/log_info_extra"
+touch "$MOCK_LOG"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info .me '$tmpdir/repo'" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unexpected argument"* ]]
+then
+  pass "info rejects an extra positional arg"
+else
+  fail "info extra positional: rc=${rc} got '${result}'"
+fi
+
+# Test: a null branch from timvisher_git passes through intact, so a
+# detached worktree still yields a usable blob
+run_test
+export MOCK_LOG="$tmpdir/log_info_json_detached"
+touch "$MOCK_LOG"
+mkdir -p "$tmpdir/detachedbin"
+cp "$tmpdir/mockbin/gh" "$tmpdir/detachedbin/gh"
+cat > "$tmpdir/detachedbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"timvisher_git":{"org":"testuser","repo":"testrepo","branch":null,"branchPath":"main","absPath":"/fake","prefixPath":"testuser/testrepo/main"}}
+JSON
+MOCK
+chmod +x "$tmpdir/detachedbin/timvisher_git"
+result=$(cd "$tmpdir/repo" && PATH="$tmpdir/detachedbin:$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.branch | type' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "main" ]] &&
+   [[ $(jq -r '.timvisher_gh.me' <<<"$result") == "testuser" ]]
+then
+  pass "info --json carries a null branch through for a detached worktree"
+else
+  fail "info --json detached: rc=${rc} got '${result}'"
+fi
+
+# Test: -C with an empty path errors rather than silently meaning cwd
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"non-empty"* ]]
+then
+  pass "-C with an empty path errors"
+else
+  fail "-C empty path: rc=${rc} got '${result}'"
+fi
+
+# Test: a bad -C path says so, rather than blaming the git context
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/no-such-dir' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C with a non-existent path reports the path, not 'Not in a git repository'"
+else
+  fail "-C bad path: rc=${rc} got '${result}'"
+fi
+
+# Test: an existing non-repo -C path is a different failure from a
+# path that does not exist
+run_test
+nonrepo_c="$tmpdir/exists-but-not-a-repo"
+mkdir -p "$nonrepo_c"
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$nonrepo_c' info .me" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) &&
+   [[ $result == *"Not in a git repository"* ]] &&
+   [[ $result != *"unable to enter"* ]]
+then
+  pass "-C <existing-non-repo> reports 'Not in a git repository', not 'unable to enter'"
+else
+  fail "-C existing non-repo: rc=${rc} got '${result}'"
+fi
+
+# Test: --help wins over a bad -C path
+run_test
+result=$(cd "$tmpdir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' -C '$tmpdir/no-such-dir' --help" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]]
+then
+  pass "-C <bad-path> --help still prints usage"
+else
+  fail "-C bad path --help: rc=${rc} got '${result}'"
+fi
+
+# Test: --help goes to stdout; usage-on-error goes to stderr
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' --help" 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"Usage:"* ]]
+then
+  pass "--help writes usage to stdout"
+else
+  fail "--help on stdout: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(cd "$tmpdir/repo" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script'" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "no-args usage goes to stderr, not stdout"
+else
+  fail "no-args stream: rc=${rc} stdout='${result}'"
+fi
+
+# Test: info --json surfaces a timvisher_git failure rather than
+# emitting a blob with a missing half
+run_test
+export MOCK_LOG="$tmpdir/log_info_json_gitfail"
+touch "$MOCK_LOG"
+mkdir -p "$tmpdir/failgitbin"
+cp "$tmpdir/mockbin/gh" "$tmpdir/failgitbin/gh"
+cat > "$tmpdir/failgitbin/timvisher_git" <<'MOCK'
+#!/usr/bin/env bash
+echo "info: worktree is not under TIMVISHER_GIT_HOME" >&2
+exit 1
+MOCK
+chmod +x "$tmpdir/failgitbin/timvisher_git"
+result=$(cd "$tmpdir/repo" && PATH="$tmpdir/failgitbin:$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Unable to query timvisher_git context"* ]]
+then
+  pass "info --json fails when timvisher_git cannot resolve the worktree"
+else
+  fail "info --json git failure: rc=${rc} got '${result}'"
+fi
+
+# Test: no git context is an error, not an elided blob
+run_test
+result=$(cd "$nonrepo_dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' info --json" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"Not in a git repository"* ]]
+then
+  pass "info --json with no git context errors"
+else
+  fail "info --json no context: rc=${rc} got '${result}'"
 fi
 
 # --- pr tests ---
@@ -659,6 +876,12 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
+elif [[ $1 == api && $2 == user ]]
+then
+  echo "testuser"
+elif [[ $1 == api && $2 == repos/* ]]
+then
+  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'

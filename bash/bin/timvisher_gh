@@ -14,12 +14,15 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
-usage() {
-  cat <<'USAGE' >&2
+show_help() {
+  cat <<'USAGE'
   timvisher_gh - GitHub workflow commands
 
   Usage:
+    timvisher_gh [-C <path>] <subcommand> [args...]
+
     timvisher_gh info <field>    Query repository metadata
+    timvisher_gh info --json     Query the whole context blob
     timvisher_gh pr              Create a PR from pr.md (or open existing)
     timvisher_gh pr edit         Edit an existing PR from pr.md
     timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
@@ -109,17 +112,68 @@ usage() {
                                 (the repo itself if not a fork)
         .forkNetwork.mainOwner  Owner of the fork network root
         .me                     Authenticated GitHub username
+    - --json emits every field at once, merged with
+      'timvisher_git info --json'.  Unlike the scalar fields, --json
+      therefore requires a worktree under $TIMVISHER_GIT_HOME, since
+      that is what timvisher_git decomposes:
+        {"timvisher_git": {org, repo, branch, branchPath, absPath,
+                           prefixPath},
+         "timvisher_gh":  {me, forkNetwork: {mainRepo, mainOwner}}}
+    - A git context is required.  Extra positional arguments are an
+      error; use -C to point at another worktree.
+    - .me is context-sensitive by design: the gh account is pinned per
+      repository owner, so it varies by repo.  Cache it per context,
+      never process-wide.
 
   Both pr/issue create subcommands:
     - Store the resulting URL in <file>.url
     - Open the URL in the browser on subsequent runs
 
   Options:
+    -C <path>           Resolve context from <path> instead of the
+                        current directory.  Must come BEFORE the
+                        subcommand.
     -h, --help, help    Show this help
 USAGE
 }
 
-toplevel=$(command git rev-parse --show-toplevel) ||
+# Usage text is diagnostic by default: it accompanies a caller error, so
+# it belongs on stderr. show_help is the only path that wants it on
+# stdout, because there the caller asked for it.
+usage() {
+  show_help >&2
+}
+
+chdir=
+while [[ ${1-} == -C ]]
+do
+  (( 2 <= $# )) ||
+    die 'Option -C requires a <path> argument'
+  [[ -n $2 ]] ||
+    die 'Option -C requires a non-empty <path> argument'
+  chdir=$2
+  shift 2
+done
+
+if (( $# == 0 ))
+then
+  usage
+  exit 1
+fi
+
+case $1 in
+  -h|--help|help)
+    show_help
+    exit 0
+    ;;
+esac
+
+if [[ -n $chdir && ! -d $chdir ]]
+then
+  die "Option -C: unable to enter '%s'" "$chdir"
+fi
+
+toplevel=$(command git -C "${chdir:-.}" rev-parse --show-toplevel) ||
   die 'Not in a git repository'
 
 cd "$toplevel" ||
@@ -804,6 +858,10 @@ gh_info() {
   [[ -n $field ]] ||
     die 'info requires a <field> argument'
 
+  (( $# <= 1 )) ||
+    die "info: unexpected argument '%s'; use 'timvisher_gh -C <path> info %s' to query another worktree" \
+      "$2" "$field"
+
   case $field in
     .forkNetwork.mainRepo)
       local repo_json
@@ -831,6 +889,50 @@ gh_info() {
       command gh api user --jq .login ||
         die 'Unable to query authenticated user'
       ;;
+    --json)
+      # The .timvisher_* keys are namespaced so a caller can merge this
+      # document into gh's own JSON if they want both. We deliberately
+      # do not do that merge for them by extending gh's output in
+      # place, because gh cannot be modified and every route in costs
+      # more than it returns:
+      #
+      #   - '--json' rejects unknown field names outright ("Unknown
+      #     JSON field"), so naming our keys there would mean
+      #     intercepting the flag and rewriting the caller's field list
+      #     against a registry of names that are ours.
+      #   - gh's '--jq' is gojq, not jq. Lifting the expression out to
+      #     a real jq so it can see merged keys swaps the evaluator
+      #     under the caller: gojq has no keys_unsorted and no
+      #     $__loc__, so expressions that did not change would start
+      #     behaving differently.
+      #   - Responses are not all objects. 'pr list --json' is an
+      #     array, which has no top-level key to extend, so the
+      #     semantics would be per-command rather than general.
+      #   - '--template' could never see merged keys, and the gh shim
+      #     execs gh, so capturing output to post-process it would cost
+      #     streaming, pager behavior and exit-code transparency on
+      #     every gh call to serve the few that want our context.
+      #
+      # Hence a subcommand we own the contract for: always an object,
+      # no foreign flags to rewrite, no evaluator swapped. Callers who
+      # want both documents merge them on their side.
+      local git_blob main_repo me
+      git_blob=$(timvisher_git info --json) ||
+        die 'Unable to query timvisher_git context for %s' "$toplevel"
+      main_repo=$(gh_info .forkNetwork.mainRepo) ||
+        return $?
+      me=$(gh_info .me) ||
+        return $?
+
+      jq -n \
+        --argjson git "$git_blob" \
+        --arg me "$me" \
+        --arg mainRepo "$main_repo" \
+        '$git + {timvisher_gh: {me: $me,
+                                forkNetwork: {mainRepo: $mainRepo,
+                                              mainOwner: ($mainRepo | split("/")[0])}}}' ||
+        die 'Unable to render JSON'
+      ;;
     *)
       die "Unknown info field: '%s'" "$field"
       ;;
@@ -838,19 +940,6 @@ gh_info() {
 }
 
 # --- dispatch ---
-
-if [[ $# -eq 0 ]]
-then
-  usage
-  exit 1
-fi
-
-case $1 in
-  -h|--help|help)
-    usage
-    exit 0
-    ;;
-esac
 
 cmd=$1
 shift

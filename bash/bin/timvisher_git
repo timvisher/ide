@@ -1988,8 +1988,90 @@ sync_trunk() {
 # Main entry point
 # ---------------------------------------------------------------------------
 
-clone_usage() {
-  cat >&2 <<'EOF'
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_git <subcommand> [args...]
+       timvisher_git <git-args...>
+
+Worktree-based git clone/worktree manager.  Unrecognised subcommands
+pass through to git, so timvisher_git can stand in for git everywhere.
+
+Global options
+--------------
+
+  -C <path>   Run as if timvisher_git were started in <path>.  Must come
+              BEFORE the subcommand.  Passed through to git for the
+              git-passthrough case ('timvisher_git -C <p> status' runs
+              'git -C <p> status').
+
+  -h, --help, help
+              Show this help.  Works from anywhere, including outside a
+              git repository.  'help <git-subcommand>' still passes
+              through to 'git help <git-subcommand>'.
+
+Subcommands
+-----------
+
+  help [<git-subcommand>]
+    With no argument, show this help.  With one, pass through to
+    'git help <git-subcommand>'.
+
+  clone <target> [stack-on-base]
+    Idempotently produce a worktree for <target>.  See "clone" below.
+
+  fork <org>/<repo>[/<branch>]
+    Fork <org>/<repo> to the configured fork user, then clone the fork.
+
+  info <field>
+  info --json
+    Query metadata about the current worktree.  See "info" below.
+
+  is-branch-ish <source>
+    Exit 0 if <source> looks like something clone can resolve to a
+    worktree (a managed worktree path, a URL, or an org/repo shorthand).
+
+  rewrite-trunk-subpath <branch>
+    Rewrite "<trunk>/<subpath>" into "<branch-prefix>/<subpath>" when the
+    first segment is the repo's trunk branch and a prefix is configured.
+    Prints the (possibly unchanged) branch name; never fails.
+
+  reconcile-repo-config [<org>/<repo>]
+    Re-run the repo-config hook for worktrees whose config predates the
+    hook, or was applied under a stale org.  Writes a sentinel naming the
+    hook applied so the git wrapper can detect drift cheaply.
+
+  reconcile-maintenance [<trunk-path>]
+    Prune dead entries from the git maintenance registry and register
+    <trunk-path>.  Registers trunks (one per object store), and writes to
+    ~/.config/git/config_machine rather than the tracked global config.
+
+  ensure-maintenance-scheduler
+    Install the launchctl maintenance scheduler via
+    'git maintenance start' if it is missing.
+
+  status --all-published
+    Report unpushed commits, staged/unstaged changes, and untracked
+    files.  Exits non-zero if anything is unpublished.
+    Any other 'status' invocation passes through to git.
+
+  sync-trunk <path>
+    Soft-fork trunk sync.  See "sync-trunk" below.
+
+  worktree gc [options] [<target>...]
+    Remove merged worktrees, archiving workflow files first.
+    Any other 'worktree' invocation passes through to git.
+
+  worktree sweep-bogus
+    Sweep bogus worktrees across every trunk cache.  Global by nature:
+    -C is accepted and ignored, including a -C path that does not
+    exist.
+
+  <git-args...>
+    Anything else passes through to git (with agent safety wrappers).
+
+clone
+-----
+
 Usage: timvisher_git clone <target> [stack-on-base]
 
 Idempotently produce a worktree for <target> with correct remotes and
@@ -2114,26 +2196,61 @@ configured fork_user (~/.config/timvisher/ide/git_fork_user):
               upstream/<baseRefName> for cross-repo PRs,
               origin/<baseRefName> for same-repo PRs
 
-Other subcommands
------------------
+info
+----
 
-  timvisher_git info <field>
-    Query metadata about the current worktree.
-    Fields: .org, .repo, .branch, .absPath, .prefixPath
+Usage: timvisher_git info <field>
+       timvisher_git info --json
 
-  timvisher_git sync-trunk <path>
-    For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
-    Finds or creates the trunk worktree, fetches, and reports its state
-    against origin/<trunk>.  Does NOT merge upstream and does NOT push;
-    upstream changes reach trunk via feature branches -> dev, not here.
-      - Unpublished commits on trunk (ahead of origin): exits non-zero.
-      - Up to date with origin/<trunk>: prints nothing, returns 0.
-      - Behind origin/<trunk>: prints the trunk worktree path to stdout
-        so the caller can run tests, pull --rebase, and re-test.
+Query metadata about the current worktree.  Requires a git context,
+either the current directory or '-C <path>'.  Extra positional
+arguments are an error.
 
-  timvisher_git <git-args...>
-    Passes through to git (with agent safety wrappers).
+Fields:
+  .org           Organisation component of the worktree path
+  .repo          Repository name from the worktree path
+  .branch        Current branch name (git symbolic-ref)
+  .branchPath    Branch-parts component of the worktree path
+                 (prefixPath with <org>/<repo>/ removed; empty when the
+                 worktree sits directly at <org>/<repo>)
+  .absPath       Absolute path to the worktree root
+  .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
+
+--json emits every field at once as a .timvisher_git object:
+
+  {"timvisher_git":{"org":…,"repo":…,"branch":…,"branchPath":…,
+                    "absPath":…,"prefixPath":…}}
+
+On a detached HEAD .branch is null rather than an error, because every
+other field is path-derived and still resolves.  The scalar '.branch'
+form still fails on a detached HEAD.
+
+Note .branch is the GIT branch name while .branchPath is derived from
+the worktree's position on disk.  They coincide across worktrees this
+tool creates, because the layout mirrors branch names, but a worktree
+can be checked out to a different branch.
+
+sync-trunk
+----------
+
+Usage: timvisher_git sync-trunk <path>
+
+For soft fork repos only (detected by x.timvisher_git.soft-fork cookie).
+Finds or creates the trunk worktree, fetches, and reports its state
+against origin/<trunk>.  Does NOT merge upstream and does NOT push;
+upstream changes reach trunk via feature branches -> dev, not here.
+  - Unpublished commits on trunk (ahead of origin): exits non-zero.
+  - Up to date with origin/<trunk>: prints nothing, returns 0.
+  - Behind origin/<trunk>: prints the trunk worktree path to stdout
+    so the caller can run tests, pull --rebase, and re-test.
 EOF
+}
+
+# Usage text is diagnostic by default: it accompanies a caller error, so
+# it belongs on stderr. show_help is the only path that wants it on
+# stdout, because there the caller asked for it.
+usage() {
+  show_help >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -2141,18 +2258,44 @@ EOF
 # ---------------------------------------------------------------------------
 
 info__usage() {
-  cat <<'EOF'
+  cat >&2 <<'EOF'
 Usage: timvisher_git info <field>
+       timvisher_git info --json
 
-Query metadata about the current worktree.
+Query metadata about the current worktree.  Use 'timvisher_git -C
+<path> info …' to query a worktree other than the current directory.
 
 Fields:
   .org           Organisation component of the worktree path
   .repo          Repository name from the worktree path
   .branch        Current branch name (git symbolic-ref)
+  .branchPath    Branch-parts component of the worktree path (empty
+                 when the worktree sits directly at <org>/<repo>)
   .absPath       Absolute path to the worktree root
   .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
+
+--json emits every field at once under a .timvisher_git key.  On a
+detached HEAD .branch is null; every path-derived field still
+resolves.  The scalar '.branch' form still fails on a detached HEAD.
 EOF
+}
+
+info__branch_path() {
+  local prefix_path=$1
+
+  local after_org=${prefix_path#*/}
+  if [[ $after_org == "$prefix_path" ]]
+  then
+    return 0
+  fi
+
+  local after_repo=${after_org#*/}
+  if [[ $after_repo == "$after_org" ]]
+  then
+    return 0
+  fi
+
+  printf '%s' "$after_repo"
 }
 
 info__cmd() {
@@ -2160,9 +2303,13 @@ info__cmd() {
 
   if [[ -z $field ]]
   then
-    info__usage >&2
+    info__usage
     return 1
   fi
+
+  (( $# <= 1 )) ||
+    die "info: unexpected argument '%s'; use 'timvisher_git -C <path> info %s' to query another worktree" \
+        "$2" "$field"
 
   local toplevel
   toplevel=$(git rev-parse --show-toplevel 2>/dev/null) ||
@@ -2194,11 +2341,37 @@ info__cmd() {
         die "info .branch: HEAD is detached"
       printf '%s\n' "$branch"
       ;;
+    .branchPath)
+      info__branch_path "$prefix_path"
+      printf '\n'
+      ;;
     .absPath)
       printf '%s\n' "$toplevel"
       ;;
     .prefixPath)
       printf '%s\n' "$prefix_path"
+      ;;
+    --json)
+      local org repo branch
+      org=$(get_org "$prefix_path") ||
+        die "info --json: unable to determine org for '%s'" "$prefix_path"
+      repo=$(get_repo "$prefix_path") ||
+        die "info --json: unable to determine repo for '%s'" "$prefix_path"
+      branch=$(git symbolic-ref --short HEAD 2>/dev/null) ||
+        branch=
+
+      jq -n \
+        --arg org "$org" \
+        --arg repo "$repo" \
+        --arg branch "$branch" \
+        --arg branchPath "$(info__branch_path "$prefix_path")" \
+        --arg absPath "$toplevel" \
+        --arg prefixPath "$prefix_path" \
+        '{timvisher_git: {org: $org, repo: $repo,
+                          branch: (if $branch == "" then null else $branch end),
+                          branchPath: $branchPath, absPath: $absPath,
+                          prefixPath: $prefixPath}}' ||
+        die "info --json: unable to render JSON"
       ;;
     *)
       die "info: unknown field '%s'" "$field"
@@ -2252,7 +2425,7 @@ clone() {
 
   if [[ -z $target ]]
   then
-    clone_usage
+    usage
     return 1
   fi
 
@@ -3442,28 +3615,67 @@ reconcile_maintenance_repos() {
   done
 }
 
+chdir=
+chdir_args=()
+while [[ ${1-} == -C ]]
+do
+  (( 2 <= $# )) ||
+    die "Option -C requires a <path> argument"
+  [[ -n $2 ]] ||
+    die "Option -C requires a non-empty <path> argument"
+  chdir=$2
+  chdir_args=(-C "$chdir")
+  shift 2
+done
+
+in_chdir() {
+  if [[ -n $chdir ]]
+  then
+    cd "$chdir" ||
+      die "Option -C: unable to enter '%s'" "$chdir"
+  fi
+  "$@"
+}
+
 case $1 in
-  clone)        clone "${@:2}" ;;
-  fork)         fork "${@:2}" ;;
-  info)         info__cmd "${@:2}" ;;
-  is-branch-ish) is_branch_ish "${@:2}" ;;
-  rewrite-trunk-subpath) maybe_rewrite_trunk_subpath "${@:2}" ;;
-  reconcile-repo-config) reconcile_repo_config "${@:2}" ;;
-  reconcile-maintenance) reconcile_maintenance_repos "${@:2}" ;;
-  ensure-maintenance-scheduler) ensure_maintenance_scheduler "${@:2}" ;;
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  help)
+    if (( $# == 1 ))
+    then
+      show_help
+      exit 0
+    fi
+    git "${chdir_args[@]}" "$@"
+    exit $?
+    ;;
+  '')
+    usage
+    exit 1
+    ;;
+  clone)        in_chdir clone "${@:2}" ;;
+  fork)         in_chdir fork "${@:2}" ;;
+  info)         in_chdir info__cmd "${@:2}" ;;
+  is-branch-ish) in_chdir is_branch_ish "${@:2}" ;;
+  rewrite-trunk-subpath) in_chdir maybe_rewrite_trunk_subpath "${@:2}" ;;
+  reconcile-repo-config) in_chdir reconcile_repo_config "${@:2}" ;;
+  reconcile-maintenance) in_chdir reconcile_maintenance_repos "${@:2}" ;;
+  ensure-maintenance-scheduler) in_chdir ensure_maintenance_scheduler "${@:2}" ;;
   status)
     case ${2:-} in
-      --all-published) status__all_published ;;
-      *)               git "$@" ;;
+      --all-published) in_chdir status__all_published ;;
+      *)               git "${chdir_args[@]}" "$@" ;;
     esac
     ;;
-  sync-trunk)   sync_trunk "${@:2}" ;;
+  sync-trunk)   in_chdir sync_trunk "${@:2}" ;;
   worktree)
     case ${2:-} in
-      gc)          worktree_gc "${@:3}" ;;
+      gc)          in_chdir worktree_gc "${@:3}" ;;
       sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
-      *)           git "$@" ;;
+      *)           git "${chdir_args[@]}" "$@" ;;
     esac
     ;;
-  *)            git "$@" ;;
+  *)            git "${chdir_args[@]}" "$@" ;;
 esac

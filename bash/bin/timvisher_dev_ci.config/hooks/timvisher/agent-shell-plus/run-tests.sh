@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Level 2 (my repo) hook: applies to every branch under
 # <my-github-user>/agent-shell-plus.  The cascade resolves Level 2 as
-# ${gh_me}/${_wt_repo}/ — for this user that's timvisher/agent-shell-plus/.
+# <me>/<repo>/ — for this user that's timvisher/agent-shell-plus/.
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 

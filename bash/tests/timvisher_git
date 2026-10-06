@@ -1526,6 +1526,76 @@ else
   fail "info .prefixPath: expected '${expected_prefix}', got '${result}'"
 fi
 
+# Test: info .branchPath returns the branch-parts component
+run_test
+result=$(cd "$info_worktree" && info__cmd .branchPath)
+if [[ $result == "$info_branch" ]]
+then
+  pass "info .branchPath returns branch parts"
+else
+  fail "info .branchPath: expected '${info_branch}', got '${result}'"
+fi
+
+# Test: info .branchPath is empty for a worktree directly at <org>/<repo>
+run_test
+flat_worktree="${live_dir}/flatorg/flatrepo"
+mkdir -p "$flat_worktree"
+(
+  cd "$flat_worktree" || exit 1
+  TIMVISHER_AGENT= git init -q
+  TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q
+)
+result=$(cd "$flat_worktree" && info__cmd .branchPath)
+if [[ -z $result ]]
+then
+  pass "info .branchPath is empty with no branch parts"
+else
+  fail "info .branchPath flat: expected empty, got '${result}'"
+fi
+
+# Test: info .branchPath keeps every branch segment
+run_test
+deep_worktree="${live_dir}/deeporg/deeprepo/a/b/c"
+mkdir -p "$deep_worktree"
+(
+  cd "$deep_worktree" || exit 1
+  TIMVISHER_AGENT= git init -q
+  TIMVISHER_AGENT= git -c user.name=Test -c user.email=test@test commit --allow-empty -m "init" -q
+)
+result=$(cd "$deep_worktree" && info__cmd .branchPath)
+if [[ $result == "a/b/c" ]]
+then
+  pass "info .branchPath keeps multi-segment branch parts"
+else
+  fail "info .branchPath deep: expected 'a/b/c', got '${result}'"
+fi
+
+# Test: info --json emits every field under .timvisher_git
+run_test
+result=$(cd "$info_worktree" && info__cmd --json)
+if [[ $(jq -r '.timvisher_git.org' <<<"$result") == "$info_org" ]] &&
+   [[ $(jq -r '.timvisher_git.repo' <<<"$result") == "$info_repo" ]] &&
+   [[ $(jq -r '.timvisher_git.branch' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.absPath' <<<"$result") == "$info_worktree_real" ]] &&
+   [[ $(jq -r '.timvisher_git.prefixPath' <<<"$result") == "$expected_prefix" ]]
+then
+  pass "info --json emits the full .timvisher_git blob"
+else
+  fail "info --json: got '${result}'"
+fi
+
+# Test: an extra positional arg errors rather than silently answering
+# for the current directory
+run_test
+result=$(cd "$info_worktree" && info__cmd .org "$flat_worktree" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unexpected argument"* ]]
+then
+  pass "info rejects an extra positional arg"
+else
+  fail "info extra positional: expected failure, got rc=${rc} '${result}'"
+fi
+
 # Test: info with no field prints usage and fails
 run_test
 result=$(cd "$info_worktree" && info__cmd 2>&1) && rc=0 || rc=$?
@@ -1559,6 +1629,32 @@ else
   fail "info outside worktree: expected failure, got rc=${rc} '${result}'"
 fi
 
+# Test: info --json survives a detached HEAD, emitting a null branch
+run_test
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)
+result=$(cd "$info_worktree" && info__cmd --json 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_git.branch' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branch | type' <<<"$result") == "null" ]] &&
+   [[ $(jq -r '.timvisher_git.branchPath' <<<"$result") == "$info_branch" ]] &&
+   [[ $(jq -r '.timvisher_git.repo' <<<"$result") == "$info_repo" ]]
+then
+  pass "info --json on a detached HEAD emits a null branch and keeps path fields"
+else
+  fail "info --json detached: rc=${rc} got '${result}'"
+fi
+(cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
+
+# Test: info --json outside the managed root fails like the scalar form
+run_test
+result=$(cd "$outside_dir" && info__cmd --json 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"not under TIMVISHER_GIT_HOME"* ]]
+then
+  pass "info --json outside the managed worktree root fails"
+else
+  fail "info --json outside root: expected failure, got rc=${rc} '${result}'"
+fi
+
 # Test: info .branch fails on detached HEAD
 run_test
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout --detach -q HEAD)
@@ -1571,6 +1667,305 @@ else
 fi
 # Restore branch for any future tests
 (cd "$info_worktree" && TIMVISHER_AGENT= git checkout -q "$info_branch")
+
+# ---------------------------------------------------------------------------
+# top-level usage tests (invoke the script, not the sourced functions)
+# ---------------------------------------------------------------------------
+
+# Test: --help prints timvisher_git's own usage, not git's
+run_test
+result=$("$script" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"timvisher_git <subcommand>"* ]] &&
+   [[ $result != "usage: git "* ]]
+then
+  pass "--help prints timvisher_git usage, not git's"
+else
+  fail "--help: rc=${rc} got '${result}'"
+fi
+
+# Test: -h is an alias for --help
+run_test
+result=$("$script" -h 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-h prints timvisher_git usage"
+else
+  fail "-h alias: rc=${rc} got '${result}'"
+fi
+
+# Test: bare 'help' is an alias for --help
+run_test
+result=$("$script" help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "bare 'help' prints timvisher_git usage"
+else
+  fail "help alias: rc=${rc} got '${result}'"
+fi
+
+# Test: --help works outside a git repository
+run_test
+help_nonrepo="$tmpdir/help_outside_repo"
+mkdir -p "$help_nonrepo"
+result=$(cd "$help_nonrepo" && "$script" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "--help works outside a git repository"
+else
+  fail "--help outside repo: rc=${rc} got '${result}'"
+fi
+
+# Test: usage covers every subcommand in the dispatch table
+run_test
+dispatch_subcommands=$(
+  sed -n '/^case \$1 in$/,/^esac$/p' "$script" |
+    grep -oE "^  [a-z][a-z-]*\)" |
+    tr -d ' )'
+)
+usage_text=$("$script" --help 2>&1)
+missing_subcommands=()
+while IFS= read -r sub
+do
+  [[ -n $sub ]] || continue
+  grep -qE "^  ${sub}( |\$)" <<<"$usage_text" || missing_subcommands+=("$sub")
+done <<<"$dispatch_subcommands"
+if (( ${#missing_subcommands[@]} == 0 )) && [[ -n $dispatch_subcommands ]]
+then
+  pass "usage covers every subcommand in the dispatch table"
+else
+  fail "usage missing subcommands: ${missing_subcommands[*]:-(none parsed)}"
+fi
+
+# Test: no args prints usage and exits non-zero
+run_test
+result=$("$script" 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "no args prints timvisher_git usage and exits non-zero"
+else
+  fail "no args: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# pre-subcommand -C tests
+# ---------------------------------------------------------------------------
+
+# Test: -C resolves context for timvisher_git's own subcommands
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" info .org 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "$info_org" ]]
+then
+  pass "-C <path> info .org answers for the path, not the cwd"
+else
+  fail "-C info .org: rc=${rc} got '${result}'"
+fi
+
+# Test: -C and the cwd agree
+run_test
+from_cwd=$(cd "$info_worktree" && "$script" info --json 2>/dev/null)
+from_flag=$(cd "$tmpdir" && "$script" -C "$info_worktree" info --json 2>/dev/null)
+if [[ -n $from_cwd && $from_cwd == "$from_flag" ]]
+then
+  pass "-C <path> info --json matches the same query run from inside <path>"
+else
+  fail "-C cwd-independence: cwd='${from_cwd}' flag='${from_flag}'"
+fi
+
+# Test: -C is re-emitted when passing through to git
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" rev-parse --show-toplevel 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "$info_worktree_real" ]]
+then
+  pass "-C <path> is re-emitted on git passthrough"
+else
+  fail "-C passthrough: rc=${rc} got '${result}'"
+fi
+
+# Test: post-subcommand -C is left alone for git to interpret
+run_test
+result=$(cd "$info_worktree" && "$script" log -C -1 --format=%s 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result != *"unable to enter"* ]]
+then
+  pass "post-subcommand -C keeps git's meaning (log -C)"
+else
+  fail "log -C: rc=${rc} got '${result}'"
+fi
+
+# Test: -C without a path errors
+run_test
+result=$("$script" -C 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"requires a <path> argument"* ]]
+then
+  pass "-C with no path errors"
+else
+  fail "-C no path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C with an unusable path errors
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" info .org 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C with a non-existent path errors"
+else
+  fail "-C bad path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C with an empty path errors rather than silently meaning cwd
+run_test
+result=$("$script" -C "" info .org 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"non-empty"* ]]
+then
+  pass "-C with an empty path errors"
+else
+  fail "-C empty path: rc=${rc} got '${result}'"
+fi
+
+# Test: -C <existing-path> --help prints usage
+run_test
+result=$("$script" -C "$info_worktree" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-C <path> --help still prints usage"
+else
+  fail "-C --help: rc=${rc} got '${result}'"
+fi
+
+# Test: --help needs no usable context at all, not even a real -C path
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" --help 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "-C <bad-path> --help still prints usage"
+else
+  fail "-C bad path --help: rc=${rc} got '${result}'"
+fi
+
+# Test: -C applies to non-info subcommands too (status --all-published
+# names the branch it inspected, proving which worktree it ran in)
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" status --all-published 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"$info_branch"* ]]
+then
+  pass "-C <path> applies to non-info subcommands"
+else
+  fail "-C status --all-published: rc=${rc} got '${result}'"
+fi
+
+# Test: -C reaches a side-effecting in_chdir subcommand.
+# reconcile-repo-config writes its sentinel relative to the worktree it
+# runs in, so a bad -C must stop it before it touches anything.
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" reconcile-repo-config 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter"* ]]
+then
+  pass "-C <bad-path> stops a side-effecting subcommand before it runs"
+else
+  fail "-C reconcile-repo-config: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# worktree sweep-bogus is global: -C is accepted and ignored
+# ---------------------------------------------------------------------------
+
+# Test: a valid -C does not change what sweep-bogus scans
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$info_worktree" worktree sweep-bogus 2>&1) && rc=0 || rc=$?
+if (( rc == 0 ))
+then
+  pass "worktree sweep-bogus accepts a valid -C"
+else
+  fail "sweep-bogus -C valid: rc=${rc} got '${result}'"
+fi
+
+# Test: sweep-bogus does not even need the -C path to exist
+run_test
+result=$(cd "$tmpdir" && "$script" -C "$tmpdir/no-such-dir" worktree sweep-bogus 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result != *"unable to enter"* ]]
+then
+  pass "worktree sweep-bogus ignores -C entirely, bad path included"
+else
+  fail "sweep-bogus -C bad: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# help passthrough
+# ---------------------------------------------------------------------------
+
+# Test: 'help <git-subcommand>' reaches git rather than printing our usage
+run_test
+result=$("$script" help rev-parse 2>&1) && rc=0 || rc=$?
+if [[ $result != *"timvisher_git <subcommand>"* ]]
+then
+  pass "'help <git-subcommand>' passes through to git rather than printing our usage"
+else
+  fail "help rev-parse: rc=${rc} printed timvisher_git usage"
+fi
+
+# Test: 'help <git-subcommand>' forwards -C to git, so unlike bare
+# help it does depend on the -C path being usable.
+run_test
+result=$("$script" -C "$tmpdir/no-such-dir" help rev-parse 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result != *"timvisher_git <subcommand>"* ]]
+then
+  pass "'help <git-subcommand>' with a bad -C fails in git, not in our help bypass"
+else
+  fail "help rev-parse with bad -C: rc=${rc} got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# usage stream: help-on-request goes to stdout, usage-on-error to stderr
+# ---------------------------------------------------------------------------
+
+run_test
+result=$("$script" --help 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == *"timvisher_git <subcommand>"* ]]
+then
+  pass "--help writes usage to stdout"
+else
+  fail "--help on stdout: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$("$script" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "no-args usage goes to stderr, not stdout"
+else
+  fail "no-args stream: rc=${rc} stdout='${result}'"
+fi
+
+# Test: a failing subcommand puts NOTHING on stdout.  bash/bin/git:1601
+# and bash/bin/ntmux3:39 both do `org=$(timvisher_git info .org
+# 2>/dev/null) || true` -- they capture stdout and discard stderr, so a
+# usage blob leaking to stdout would be assigned to $org and pass the
+# `[[ -n $org ]]` guard.
+run_test
+leaked=()
+for args in "info" "clone" "fork nope"
+do
+  # shellcheck disable=SC2086  # deliberate word splitting of the arg list
+  out=$(cd "$info_worktree" && "$script" $args 2>/dev/null)
+  [[ -n $out ]] && leaked+=("$args")
+done
+if (( ${#leaked[@]} == 0 ))
+then
+  pass "failing subcommands leak nothing to stdout (info, clone, fork)"
+else
+  fail "stdout leak from: ${leaked[*]}"
+fi
+
+# Test: show_help and usage are the same text on opposite streams
+run_test
+help_out=$("$script" --help 2>/dev/null)
+err_out=$("$script" 2>&1 >/dev/null)
+if [[ -n $help_out && -n $err_out && $help_out == "$err_out" ]]
+then
+  pass "show_help and usage emit the same text on opposite streams"
+else
+  fail "stream pair: help=${#help_out} bytes, err=${#err_out} bytes"
+fi
 
 # ---------------------------------------------------------------------------
 # migrate_cache_to_bare_if_needed tests
