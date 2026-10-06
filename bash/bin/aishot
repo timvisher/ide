@@ -23,6 +23,11 @@ REVIEW_CATEGORIES="correctness security performance reliability maintainability 
 REVIEW_STATUSES="open addressed wontfix refuted"
 REVIEW_REVIEWERS="claude codex gemini human"
 
+# FIXME: adopt the usage/show_help split used by timvisher_git and
+# timvisher_gh. show_help writes to stdout and the five error paths each
+# append >&2, so one forgotten redirect puts usage text on stdout during
+# a failure. Add `usage() { show_help >&2; }` and have the error paths
+# call that bare, leaving show_help for the explicit --help request.
 show_help() {
     cat <<'EOF'
 Usage: aishot [--with=claude,codex] <prompt>
