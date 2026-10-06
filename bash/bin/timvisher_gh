@@ -883,6 +883,32 @@ gh_info() {
         die 'Unable to query authenticated user'
       ;;
     --json)
+      # The .timvisher_* keys are namespaced so a caller can merge this
+      # document into gh's own JSON if they want both. We deliberately
+      # do not do that merge for them by extending gh's output in
+      # place, because gh cannot be modified and every route in costs
+      # more than it returns:
+      #
+      #   - '--json' rejects unknown field names outright ("Unknown
+      #     JSON field"), so naming our keys there would mean
+      #     intercepting the flag and rewriting the caller's field list
+      #     against a registry of names that are ours.
+      #   - gh's '--jq' is gojq, not jq. Lifting the expression out to
+      #     a real jq so it can see merged keys swaps the evaluator
+      #     under the caller: gojq has no keys_unsorted and no
+      #     $__loc__, so expressions that did not change would start
+      #     behaving differently.
+      #   - Responses are not all objects. 'pr list --json' is an
+      #     array, which has no top-level key to extend, so the
+      #     semantics would be per-command rather than general.
+      #   - '--template' could never see merged keys, and the gh shim
+      #     execs gh, so capturing output to post-process it would cost
+      #     streaming, pager behavior and exit-code transparency on
+      #     every gh call to serve the few that want our context.
+      #
+      # Hence a subcommand we own the contract for: always an object,
+      # no foreign flags to rewrite, no evaluator swapped. Callers who
+      # want both documents merge them on their side.
       local git_blob main_repo me
       git_blob=$(timvisher_git info --json) ||
         die 'Unable to query timvisher_git context for %s' "$toplevel"
