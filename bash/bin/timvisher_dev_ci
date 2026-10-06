@@ -264,13 +264,21 @@ worktree_context() {
     _worktree_context[$key]=$blob
 }
 
-# Read one jq field out of a worktree's cached context blob.
-# Usage: worktree_context_field "/path/to/worktree" '.timvisher_git.repo'
-worktree_context_field() {
+# Emit the cascade inputs from a worktree's cached context blob, one
+# per line, in a fixed order: repo, branchPath, mainOwner, me.
+# branchPath is the only one that may be empty, and it is not last, so
+# command substitution cannot swallow it.
+# Usage: fields=$(worktree_context_fields "/path/to/worktree")
+worktree_context_fields() {
     local key
     key=$(worktree_context_key "$1")
 
-    jq -er "$2" <<<"${_worktree_context[$key]}"
+    [[ -n ${_worktree_context[$key]+set} ]] ||
+        die "worktree_context_fields: context for '%s' was not resolved first" "$1"
+
+    jq -r '.timvisher_git.repo, .timvisher_git.branchPath,
+           .timvisher_gh.forkNetwork.mainOwner, .timvisher_gh.me' \
+        <<<"${_worktree_context[$key]}"
 }
 
 # Halt the run when a worktree's context cannot be resolved.
@@ -296,15 +304,17 @@ find_hooks() {
     local worktree_path=$1
     local hook_name=$2
 
-    [[ -n ${_worktree_context[$(worktree_context_key "$worktree_path")]+set} ]] ||
-        die "find_hooks: context for '%s' was not resolved before the cascade walk" \
-            "$worktree_path"
+    local fields
+    fields=$(worktree_context_fields "$worktree_path") ||
+        return 1
 
     local repo branch_path main_owner me
-    repo=$(worktree_context_field "$worktree_path" '.timvisher_git.repo')
-    branch_path=$(worktree_context_field "$worktree_path" '.timvisher_git.branchPath')
-    main_owner=$(worktree_context_field "$worktree_path" '.timvisher_gh.forkNetwork.mainOwner')
-    me=$(worktree_context_field "$worktree_path" '.timvisher_gh.me')
+    {
+        read -r repo
+        read -r branch_path
+        read -r main_owner
+        read -r me
+    } <<<"$fields"
 
     # Build the search order: 4 levels × 2 dirs.
     local -a candidates=()
@@ -407,10 +417,16 @@ ensure_repo_script() {
         die_unresolvable_context "$worktree_path"
 
     # Migration target uses the fork network main owner path.
+    local fields
+    fields=$(worktree_context_fields "$worktree_path") ||
+        die_unresolvable_context "$worktree_path"
+
     local wt_repo branch_path main_owner
-    wt_repo=$(worktree_context_field "$worktree_path" '.timvisher_git.repo')
-    branch_path=$(worktree_context_field "$worktree_path" '.timvisher_git.branchPath')
-    main_owner=$(worktree_context_field "$worktree_path" '.timvisher_gh.forkNetwork.mainOwner')
+    {
+        read -r wt_repo
+        read -r branch_path
+        read -r main_owner
+    } <<<"$fields"
     local target_rel="${main_owner}/${wt_repo}"
     [[ -n $branch_path ]] && target_rel="${target_rel}/${branch_path}"
 
@@ -1202,11 +1218,17 @@ cmd__ensure_tests() {
     worktree_context "$worktree_path" ||
         die_unresolvable_context "$worktree_path"
 
+    local fields
+    fields=$(worktree_context_fields "$worktree_path") ||
+        die_unresolvable_context "$worktree_path"
+
     local wt_repo branch_path main_owner me
-    wt_repo=$(worktree_context_field "$worktree_path" '.timvisher_git.repo')
-    branch_path=$(worktree_context_field "$worktree_path" '.timvisher_git.branchPath')
-    main_owner=$(worktree_context_field "$worktree_path" '.timvisher_gh.forkNetwork.mainOwner')
-    me=$(worktree_context_field "$worktree_path" '.timvisher_gh.me')
+    {
+        read -r wt_repo
+        read -r branch_path
+        read -r main_owner
+        read -r me
+    } <<<"$fields"
     local target_rel="${main_owner}/${wt_repo}"
     [[ -n $branch_path ]] && target_rel="${target_rel}/${branch_path}"
     local target_path="${REPO_HOOKS_DIR}/${target_rel}/run-tests.sh"

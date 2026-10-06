@@ -433,6 +433,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# a worktree sitting directly at <org>/<repo> has an empty branchPath
+# ---------------------------------------------------------------------------
+
+# Test: an empty branchPath still resolves the level-1 hook.  The
+# cascade inputs are read one per line, so an empty field in the middle
+# of that list must not shift the ones after it.
+flat_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/flatrepo"
+mkdir -p "$flat_wt_unresolved"
+flat_wt=$(cd "$flat_wt_unresolved" && pwd -P)
+flat_hook_dir="$XDG_CONFIG_HOME/timvisher/ide/timvisher_dev_ci/hooks/myorg/flatrepo"
+mkdir -p "$flat_hook_dir"
+printf '#!/usr/bin/env bash\n' > "$flat_hook_dir/run-tests.sh"
+chmod +x "$flat_hook_dir/run-tests.sh"
+
+run_test
+out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls "$flat_wt" 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ $out == *"$flat_hook_dir/run-tests.sh"* ]]
+then
+  pass "an empty branchPath still resolves the level-1 hook"
+else
+  fail "flat worktree: rc=$rc out='$out'"
+fi
+
+# ---------------------------------------------------------------------------
 # find_hooks tri-state at the function level
 # ---------------------------------------------------------------------------
 
