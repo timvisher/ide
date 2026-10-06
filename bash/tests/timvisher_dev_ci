@@ -789,64 +789,98 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# install_regen_merge_driver / remove_regen_merge_driver
+# resolve_regen_conflicts
 # ---------------------------------------------------------------------------
 
-regen_fixture() {
+# Two branches off a shared base that each regenerate the same files, so
+# merging the second conflicts on whatever $1 names.
+make_conflict_fixture() {
   local dir=$1
-  "$test_git" init "$dir" >/dev/null 2>&1
+  "$test_git" init -b main "$dir" >/dev/null 2>&1
   "$test_git" -C "$dir" config core.hooksPath /dev/null
+  "$test_git" -C "$dir" config user.email t@t
+  "$test_git" -C "$dir" config user.name t
+  mkdir -p "$dir/sub"
+  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" add -A
+  "$test_git" -C "$dir" commit -q -m init
+
+  "$test_git" -C "$dir" checkout -q -b feature-a
+  printf 'srcs = ["foo.go", "a.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go", "a.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo // a\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" commit -q -am a
+
+  "$test_git" -C "$dir" checkout -q main
+  "$test_git" -C "$dir" checkout -q -b feature-b
+  printf 'srcs = ["foo.go", "b.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go", "b.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo // b\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" commit -q -am b
 }
 
+rc_cwd=$PWD
+
+# Conflicts confined to generated files: resolved, merge concluded, ours kept.
 run_test
-rg_cwd=$PWD
-rg_clean="$tmpdir/regen_clean"
-regen_fixture "$rg_clean"
-rg_clean_attr="$rg_clean/.git/info/attributes"
-cd "$rg_clean" || { echo "cannot cd to $rg_clean" >&2; exit 1; }
-install_regen_merge_driver "BUILD.bazel RELEASES.md"
-rg_live=false
-if [[ $("$test_git" check-attr merge BUILD.bazel) == *"merge: devci-regen"* ]] &&
-   [[ $("$test_git" check-attr merge RELEASES.md) == *"merge: devci-regen"* ]] &&
-   [[ $("$test_git" config --get merge.devci-regen.driver) == "true" ]]
+rc_gen="$tmpdir/regen_generated_only"
+make_conflict_fixture "$rc_gen"
+"$test_git" -C "$rc_gen" checkout -q feature-a
+"$test_git" -C "$rc_gen" checkout -q feature-b -- foo.go
+"$test_git" -C "$rc_gen" commit -q -am "take b's foo.go"
+"$test_git" -C "$rc_gen" merge --no-edit feature-b >/dev/null 2>&1
+cd "$rc_gen" || { echo "cannot cd to $rc_gen" >&2; exit 1; }
+rc_conflicts_before=$("$test_git" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
+resolve_regen_conflicts "BUILD.bazel"
+rc_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+if (( rc_rc == 0 )) &&
+   [[ $rc_conflicts_before == "BUILD.bazel sub/BUILD.bazel " ]] &&
+   [[ ! -e $rc_gen/.git/MERGE_HEAD ]] &&
+   [[ -z $("$test_git" -C "$rc_gen" status --porcelain) ]] &&
+   [[ $(cat "$rc_gen/BUILD.bazel") == 'srcs = ["foo.go", "a.go"]' ]] &&
+   [[ $(cat "$rc_gen/sub/BUILD.bazel") == 'srcs = ["keep.go", "a.go"]' ]]
 then
-  rg_live=true
-fi
-remove_regen_merge_driver
-rg_driver=$("$test_git" config --get merge.devci-regen.driver)
-rg_name=$("$test_git" config --get merge.devci-regen.name)
-rg_attr_left=$("$test_git" check-attr merge BUILD.bazel)
-cd "$rg_cwd" || { echo "cannot cd back to $rg_cwd" >&2; exit 1; }
-if "$rg_live" &&
-   [[ -z $rg_driver ]] &&
-   [[ -z $rg_name ]] &&
-   [[ ! -e $rg_clean_attr ]] &&
-   [[ $rg_attr_left != *"devci-regen"* ]]
-then
-  pass "regen driver: installed for the merge, then fully removed from config and attributes"
+  pass "resolve_regen_conflicts: generated-only conflict is resolved to ours and the merge concluded"
 else
-  fail "regen driver clean repo: live=$rg_live driver='$rg_driver' name='$rg_name' attr_exists=$( [[ -e $rg_clean_attr ]] && echo yes || echo no ) attr='$rg_attr_left'"
+  fail "regen generated-only: rc=$rc_rc before='$rc_conflicts_before' merging=$( [[ -e $rc_gen/.git/MERGE_HEAD ]] && echo yes || echo no ) root='$(cat "$rc_gen/BUILD.bazel")' sub='$(cat "$rc_gen/sub/BUILD.bazel")'"
 fi
 
+# A source file in the conflict set: refuse, and touch nothing.
 run_test
-rg_keep="$tmpdir/regen_preexisting"
-regen_fixture "$rg_keep"
-rg_keep_attr="$rg_keep/.git/info/attributes"
-mkdir -p "$(dirname "$rg_keep_attr")"
-printf '*.png binary\nBUILD.bazel merge=devci-regen\n' > "$rg_keep_attr"
-cd "$rg_keep" || { echo "cannot cd to $rg_keep" >&2; exit 1; }
-install_regen_merge_driver "BUILD.bazel RELEASES.md"
-remove_regen_merge_driver
-cd "$rg_cwd" || { echo "cannot cd back to $rg_cwd" >&2; exit 1; }
-rg_keep_content=$(cat "$rg_keep_attr")
-if [[ -e $rg_keep_attr ]] &&
-   [[ $rg_keep_content == *"*.png binary"* ]] &&
-   [[ $rg_keep_content == *"BUILD.bazel merge=devci-regen"* ]] &&
-   [[ $rg_keep_content != *"RELEASES.md"* ]]
+rc_src="$tmpdir/regen_source_conflict"
+make_conflict_fixture "$rc_src"
+"$test_git" -C "$rc_src" checkout -q feature-a
+"$test_git" -C "$rc_src" merge --no-edit feature-b >/dev/null 2>&1
+cd "$rc_src" || { echo "cannot cd to $rc_src" >&2; exit 1; }
+resolve_regen_conflicts "BUILD.bazel"
+rc_src_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+rc_src_still=$("$test_git" -C "$rc_src" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
+if (( rc_src_rc != 0 )) &&
+   [[ -e $rc_src/.git/MERGE_HEAD ]] &&
+   [[ $rc_src_still == "BUILD.bazel foo.go sub/BUILD.bazel " ]]
 then
-  pass "regen driver: removal keeps a pre-existing attributes file and its lines"
+  pass "resolve_regen_conflicts: refuses a conflict set containing a source file, resolving nothing"
 else
-  fail "regen driver pre-existing: exists=$( [[ -e $rg_keep_attr ]] && echo yes || echo no ) content='$rg_keep_content'"
+  fail "regen source conflict: rc=$rc_src_rc merging=$( [[ -e $rc_src/.git/MERGE_HEAD ]] && echo yes || echo no ) still='$rc_src_still'"
+fi
+
+# No merge in progress at all: nothing to resolve.
+run_test
+rc_none="$tmpdir/regen_no_conflict"
+make_conflict_fixture "$rc_none"
+cd "$rc_none" || { echo "cannot cd to $rc_none" >&2; exit 1; }
+resolve_regen_conflicts "BUILD.bazel"
+rc_none_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+if (( rc_none_rc != 0 ))
+then
+  pass "resolve_regen_conflicts: no conflicted paths is not a resolution"
+else
+  fail "regen no conflict: expected non-zero, got $rc_none_rc"
 fi
 
 # ---------------------------------------------------------------------------
