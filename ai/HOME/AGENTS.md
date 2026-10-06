@@ -107,29 +107,50 @@ When starting a session, read the Beads and Topics section below and use the `be
 
 ## Documentation Index
 
-### Languages (Required)
+### Guides (Required)
 
-**Your _*FIRST*_ action when a task touches a language or technology is
-to check for a guide and read it.** Before writing, editing, or
-reviewing code — and before acting on any outside reviewer's findings
-about it — read the matching `~/.agents/languages/<lang>.md`. Reading
-one costs a few seconds; they are 15-90 lines each.
+**Your _*FIRST*_ action when a task touches any language, tool, or
+technology is to check whether a guide exists for it, and read it.**
+That means before writing, editing or reviewing anything — and before
+acting on an outside reviewer's findings about it.
+
+Guides live in two places. Check both; some subjects have one of each,
+and the tool guide does not repeat the language conventions:
+
+- `~/.agents/languages/<name>.md` — conventions for a language.
+  _*NOT*_ loaded into your context automatically. You have to go read
+  the file. Indexed below.
+- `~/.agents/skills/<name>/SKILL.md` — workflow for a tool or
+  technology: `beads`, `ddtool`, `terraform`, `ipaam`, `appgate`,
+  `aws-cli`, `git`, `github`, `worktree`, `dev-ci`, `org-mode`, and
+  ~30 more. Surfaced in the skills listing — invoke the skill rather
+  than improvising the tool's usage. `ls ~/.agents/skills/` is the
+  authoritative inventory.
+
+Terraform is the shape to expect: a language guide for provider
+constraints and tagging, plus a skill for the planning workflow.
+Reading one does not excuse skipping the other.
 
 Treat everything in a guide as _*extremely important*_ and follow it by
-default. These are not style suggestions: each one contains hard
+default. These are not style suggestions: each contains hard
 prohibitions whose violation means the work gets reverted.
 
-A guide can be overridden only by a more specific local convention or
-by the human explicitly saying so for a particular case. Absent that,
-the guide wins — over your own instinct, over the surrounding code's
-existing habits, and over any outside reviewer, linter, or tool that
-recommends otherwise. Outside reviewers do not know these conventions;
-cross-check their advice against the guide before implementing it. If a
-guide and some other source conflict and you cannot reconcile them,
+A guide is overridable only by a more specific local convention, or by
+the human saying so for a particular case. Absent that, the guide wins
+— over your own instinct, over the surrounding code's existing habits,
+and over any outside reviewer, linter, or tool that recommends
+otherwise. Outside reviewers do not know these conventions;
+cross-check their advice against the guide before implementing it. If
+a guide and another source conflict and you cannot reconcile them,
 stop and ask rather than guessing.
 
-Each entry below leads with the rules most likely to get work thrown
-out. The list is not the guide — read the file.
+Reading a guide costs seconds — the language guides are 15-90 lines
+each. Length is never a reason to skip one.
+
+#### Language guides
+
+Each entry leads with the rules most likely to get work thrown out.
+The list is not the guide — read the file.
 
 - `~/.agents/languages/bash.md` —
   _*NEVER*_ 'safe mode' (`set -e`/`-u`/`-o pipefail`, together or
