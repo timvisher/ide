@@ -107,21 +107,56 @@ When starting a session, read the Beads and Topics section below and use the `be
 
 ## Documentation Index
 
-When working with specific languages or tools, read these files for
-detailed instructions:
+### Languages (Required)
 
-### Languages
+**Your _*FIRST*_ action when a task touches a language or technology is
+to check for a guide and read it.** Before writing, editing, or
+reviewing code — and before acting on any outside reviewer's findings
+about it — read the matching `~/.agents/languages/<lang>.md`. Reading
+one costs a few seconds; they are 15-90 lines each.
 
-- `~/.agents/languages/applescript.md` -
-  AppleScript encoding, git diff handling
-- `~/.agents/languages/bash.md` - Quote usage,
-  then/do formatting, logging patterns
-- `~/.agents/languages/terraform.md` - Workflow
-  scripts, tagging, migrations, modules
-- `~/.agents/languages/org-mode.md` - Large file
-  navigation tools, formatting conventions
-- `~/.agents/languages/emacs-lisp.md` - ERT
-  testing patterns
+Treat everything in a guide as _*extremely important*_ and follow it by
+default. These are not style suggestions: each one contains hard
+prohibitions whose violation means the work gets reverted.
+
+A guide can be overridden only by a more specific local convention or
+by the human explicitly saying so for a particular case. Absent that,
+the guide wins — over your own instinct, over the surrounding code's
+existing habits, and over any outside reviewer, linter, or tool that
+recommends otherwise. Outside reviewers do not know these conventions;
+cross-check their advice against the guide before implementing it. If a
+guide and some other source conflict and you cannot reconcile them,
+stop and ask rather than guessing.
+
+Each entry below leads with the rules most likely to get work thrown
+out. The list is not the guide — read the file.
+
+- `~/.agents/languages/bash.md` —
+  _*NEVER*_ 'safe mode' (`set -e`/`-u`/`-o pipefail`, together or
+  separately); _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
+  `then`/`do`/`else`/`elif` on their own lines; `trap` registered
+  before the resource it cleans up; straight ASCII quotes only.
+  wooledge.org is the only trusted source for bash guidance.
+- `~/.agents/languages/applescript.md` —
+  _*ALWAYS*_ run `file <name>.applescript` before editing; _*NEVER*_
+  write UTF-8 to a file Script Editor will open. The Edit tool corrupts
+  MacRoman and UTF-16 — use sed for those. Prefer pure ASCII.
+  Compile-check with `osacompile` after editing.
+- `~/.agents/languages/terraform.md` —
+  _*NEVER*_ hand-create `.terraform.lock.hcl`. `~>` constraints in root
+  modules, `>=` in shared modules. `default_tags` always configured,
+  even with no taggable resources yet. Recalculate every `../` depth
+  when a root module moves.
+- `~/.agents/languages/emacs-lisp.md` —
+  `--batch` has everything a GUI Emacs has except a TTY, so do _*NOT*_
+  write batch-mode workarounds; do _*NOT*_ use `(while t (sit-for N))`
+  — use `accept-process-output`. `nil` is the only falsy value: `""`,
+  `[]` and `0` are all truthy. ERT for tests.
+- `~/.agents/languages/org-mode.md` —
+  Inactive timestamps always. Whitespace padding around heading
+  bodies, _*never*_ around list structures. Wrap at 72 characters. Org
+  files are structured — use the org-mode skill and `org-*` tools
+  rather than editing them as flat text.
 
 ### Repository Organization
 
