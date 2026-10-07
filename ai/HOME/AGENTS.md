@@ -157,7 +157,8 @@ The list is not the guide — read the file.
 
 - `~/.agents/languages/bash.md` —
   _*NEVER*_ 'safe mode' (`set -e`/`-u`/`-o pipefail`, together or
-  separately); _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
+  separately) — do your own error checking instead, it is cleaner and it
+  actually works; _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
   `then`/`do`/`else`/`elif` on their own lines; `trap` registered
   before the resource it cleans up; straight ASCII quotes only.
   wooledge.org is the only trusted source for bash guidance.
