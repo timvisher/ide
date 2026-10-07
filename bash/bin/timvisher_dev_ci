@@ -1291,12 +1291,17 @@ cmd__ensure_tests() {
     local my_repo_path="${REPO_HOOKS_DIR}/${me}/${wt_repo}/run-tests.sh"
     local subpath_path="${REPO_HOOKS_DIR}/${me}/${wt_repo}/<subpath>/run-tests.sh"
     local fork_repo_dir="${REPO_HOOKS_DIR}/${main_owner}/${wt_repo}"
+    local my_repo_dir="${REPO_HOOKS_DIR}/${me}/${wt_repo}"
+    local my_branch_path="${my_repo_dir}/${branch_path}/run-tests.sh"
 
     mkdir -p "$(dirname "$target_path")"
 
-    local repo_rung_block
+    local repo_rung_block branch_rung_block hook_dirs
     if [[ $fork_repo_path == "$my_repo_path" ]]
     then
+        hook_dirs="${fork_repo_dir}/"
+        branch_rung_block="- Branch rung (this branch only, exact match):
+    ${target_path}"
         repo_rung_block="- Repo rung (this clone is on the fork-network main owner, so
   \"your repo\" and \"the upstream repo\" are the same path; anything
   written here applies to every fork the user maintains of this repo):
@@ -1306,14 +1311,18 @@ cmd__ensure_tests() {
     ${fork_repo_path}
 - Repo rung, your repo (applies to all your branches):
     ${my_repo_path}"
+        hook_dirs="${fork_repo_dir}/ and ${my_repo_dir}/"
+        branch_rung_block="- Branch rung, your repo (this branch only, exact match):
+    ${my_branch_path}
+- Branch rung, fork-network owner (this branch in every fork, exact match):
+    ${target_path}"
     fi
 
     local rung_block="${repo_rung_block}
 - Subpath rung (applies on every branch that changes something under
   <subpath>, a directory relative to the repo root):
     ${subpath_path}
-- Branch rung (this branch only, exact match):
-    ${target_path}
+${branch_rung_block}
 
 Default to the repo rung (${my_repo_path}) when the script has no
 branch- or directory-specific dependencies.  Use a subpath rung when
@@ -1323,8 +1332,9 @@ differs by branch.  Use the fork-network repo rung only when you
 intend to contribute the hook upstream.
 
 A subpath rung only resolves while the worktree has a change under
-that directory vs '@{u}...'.  A worktree with nothing changed vs its
-upstream sees only the repo and branch rungs."
+that directory vs '@{u}...', an uncommitted change, or an untracked
+file there.  A worktree with none of those sees only the repo and
+branch rungs."
 
     local prompt_file
     prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") ||
@@ -1359,8 +1369,8 @@ frameworks are in use.  Look at:
 - Makefile, package.json, go.mod, setup.py/pyproject.toml, Cask, etc.
 - Existing CI configuration (.github/workflows/, .gitlab-ci.yml, etc.)
 - README or CONTRIBUTING docs for test instructions
-- Existing hooks for sibling branches under
-  ${fork_repo_dir}/ -- they often already encode the right
+- Existing hooks for sibling branches and subpaths under
+  ${hook_dirs} -- they often already encode the right
   invocation; lift their content rather than reinventing.
 
 The script should:
@@ -1379,15 +1389,18 @@ semantics match the script you're writing:
 ${rung_block}
 
 When you write at the repo or a subpath rung, look for redundant
-per-branch hooks under ${fork_repo_dir}/<branch>/run-tests.sh
-whose content is now covered by the broader hook -- delete those
-files so the cascade does not run the same logic twice.
+branch-rung hooks at <owner-dir>/<branch>/run-tests.sh under
+${hook_dirs} whose content is now covered by the broader hook, and
+delete those files so the same logic does not run twice.  Branch and
+subpath hooks share that tree, so only treat a directory as a branch
+rung when its path is the full name of a branch ('git branch -a'),
+and never delete one whose path names a directory in this repo.
 
 Whichever path you pick, write the script there, make it
 executable, and stop.  Do not run the tests yourself.
 PROMPT_EOF
 
-    info "ensure_tests: launching agent to create run-tests.sh at '%s'" "$target_path"
+    info "ensure_tests: launching agent to create run-tests.sh for '%s'" "$worktree_path"
 
     if claudeshot "$(< "$prompt_file")"
     then
@@ -1398,11 +1411,11 @@ PROMPT_EOF
 
     rm -f "$prompt_file"
 
-    if [[ -x $target_path ]]
+    if hook_exists "$worktree_path" "run-tests.sh"
     then
-        info "ensure_tests: run-tests.sh created successfully at '%s'" "$target_path"
+        info "ensure_tests: run-tests.sh now resolves for '%s'" "$worktree_path"
     else
-        warn "ensure_tests: agent did not create run-tests.sh"
+        warn "ensure_tests: no run-tests.sh resolves for '%s' after the agent ran" "$worktree_path"
     fi
 }
 
