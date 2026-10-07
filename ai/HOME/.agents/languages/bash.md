@@ -122,9 +122,9 @@
 
 #### Quote Usage in Bash
 
-- **ALWAYS** replace ‘ (U+2018) and ‘ (U+2019) with ‘ (straight
+- **ALWAYS** replace ‘ (U+2018) and ’ (U+2019) with ' (straight
   apostrophe, U+0027)
-- **ALWAYS** replace “ (U+201C) and “ (U+201D) with “ (straight
+- **ALWAYS** replace “ (U+201C) and ” (U+201D) with " (straight
   quotation mark, U+0022)
 - In log messages, use straight ASCII quotes around logged terms
 - Examples:
