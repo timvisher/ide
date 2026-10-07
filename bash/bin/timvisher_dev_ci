@@ -193,7 +193,8 @@ is_dev_integration_worktree() {
 #
 #   1. repo:    <owner>/aws-vault/<hook>
 #   2. subpath: <owner>/aws-vault/<subpath>/<hook>, for every directory
-#               containing a change vs '@{u}...' and each of its
+#               containing a change vs '@{u}...', an uncommitted
+#               change, or an untracked file, and each of its
 #               ancestors, shallower before deeper, equal depths
 #               ordered lexicographically
 #   3. branch:  <owner>/aws-vault/dev/<hook>, exact full branch path
@@ -206,8 +207,8 @@ is_dev_integration_worktree() {
 # last.  Resolved paths are deduplicated so the same file is never
 # executed twice.
 #
-# Subpath rungs depend on content: a worktree with no changes vs its
-# upstream gets only the repo and branch rungs.
+# Subpath rungs depend on content: a clean worktree with no changes vs
+# its upstream gets only the repo and branch rungs.
 
 # Cached `timvisher_gh info --json` blobs, keyed by worktree path.
 declare -A _worktree_context
@@ -290,30 +291,58 @@ die_unresolvable_context() {
         --suggestion "Confirm '${worktree_path}' is a worktree under \$TIMVISHER_GIT_HOME"
 }
 
-# Emit the repo-relative subpath of every directory containing a change
-# vs '@{u}...', plus each of its ancestors below the repo root, ordered
-# shallowest first with equal depths ordered lexicographically.  Emits
-# nothing when the worktree has no upstream or no changes.
-# Usage: changed_subpaths "/path/to/worktree"
+# Emit, NUL terminated, the repo-relative subpath of every directory
+# containing a change vs '@{u}...', an uncommitted change, or an
+# untracked file, plus each of its ancestors below the repo root,
+# ordered shallowest first with equal depths ordered lexicographically.
+# Usage: readarray -d '' -t subpaths < <(changed_subpaths "$wt")
 changed_subpaths() {
     local worktree_path=$1
 
-    git -C "$worktree_path" -c core.quotePath=false diff --name-only '@{u}...' 2>/dev/null |
-        awk -F/ '
-            {
-                path = ""
-                for (i = 1; i < NF; i++)
-                {
-                    path = (i == 1) ? $i : path "/" $i
-                    if (!(path in seen))
-                    {
-                        seen[path] = 1
-                        printf "%d\t%s\n", i, path
-                    }
-                }
-            }' |
-        LC_ALL=C sort -t $'\t' -k1,1n -k2,2 |
-        cut -f2-
+    local -A seen=()
+    local path dir
+    while IFS= read -r -d '' path
+    do
+        dir=$path
+        if [[ $dir == */ ]]
+        then
+            dir=${dir%/}
+            seen[$dir]=1
+        fi
+        while [[ $dir == */* ]]
+        do
+            dir=${dir%/*}
+            seen[$dir]=1
+        done
+    done < <(
+        git -C "$worktree_path" diff --name-only -z --no-renames '@{u}...' 2>/dev/null
+        git -C "$worktree_path" status --porcelain=v1 -z --no-renames --untracked-files=normal 2>/dev/null |
+            while IFS= read -r -d '' path
+            do
+                printf '%s\0' "${path:3}"
+            done
+    )
+
+    local slashes line
+    for dir in "${!seen[@]}"
+    do
+        slashes=${dir//[!\/]/}
+        printf '%d\t%s\0' "${#slashes}" "$dir"
+    done |
+        LC_ALL=C sort -z -t $'\t' -k1,1n -k2,2 |
+        while IFS= read -r -d '' line
+        do
+            printf '%s\0' "${line#*$'\t'}"
+        done
+}
+
+_subpath_snapshot_key=""
+declare -a _subpath_snapshot=()
+
+# Usage: snapshot_changed_subpaths "/path/to/worktree"
+snapshot_changed_subpaths() {
+    _subpath_snapshot_key=$(worktree_context_key "$1")
+    readarray -d '' -t _subpath_snapshot < <(changed_subpaths "$1")
 }
 
 # Print all matching hook scripts across the rung walk in run order, NUL
@@ -337,14 +366,25 @@ find_hooks() {
         read -r me
     } <<<"$fields"
 
+    local -a subpaths=()
+    if [[ -n $_subpath_snapshot_key &&
+          $_subpath_snapshot_key == "$(worktree_context_key "$worktree_path")" ]]
+    then
+        subpaths=("${_subpath_snapshot[@]}")
+    else
+        readarray -d '' -t subpaths < <(changed_subpaths "$worktree_path")
+    fi
+
     local -a rungs=("")
     local subpath
-    while IFS= read -r subpath
+    for subpath in "${subpaths[@]}"
     do
         rungs+=("/${subpath}")
-    done < <(changed_subpaths "$worktree_path")
+    done
     [[ -n $branch_path ]] && rungs+=("/${branch_path}")
 
+    # Deduplicate resolved paths (e.g. when me == main_owner) while
+    # preserving rung order.
     local -A seen=()
     local -a resolved=()
     local rung owner dir full_path
@@ -1915,6 +1955,7 @@ cmd_hooks_ls() {
     worktree_path=$(resolve_worktree_path "${1:-}") || exit $?
 
     require_worktree_context "$worktree_path"
+    snapshot_changed_subpaths "$worktree_path"
 
     printf 'hooks for %s:\n\n' "$worktree_path"
 
@@ -2338,11 +2379,12 @@ HOOK CASCADE
         2. subpath: <owner>/<repo>/<subpath>/<hook>
         3. branch:  <owner>/<repo>/<branch-parts>/<hook>
 
-    Subpath rungs are every directory containing a change vs '@{u}...'
-    plus each of its ancestors, shallower before deeper, equal depths
-    ordered lexicographically. A worktree with no changes vs its
-    upstream gets only the repo and branch rungs. Branch rungs match
-    the full branch path exactly (no prefixes).
+    Subpath rungs are every directory containing a change vs '@{u}...',
+    an uncommitted change, or an untracked file, plus each of its
+    ancestors, shallower before deeper, equal depths ordered
+    lexicographically. A clean worktree with no changes vs its upstream
+    gets only the repo and branch rungs. Branch rungs match the full
+    branch path exactly (no prefixes).
 
     Within each rung, <owner> is tried as the fork-network main owner,
     then <my-github-user>. For each owner, two directories are checked

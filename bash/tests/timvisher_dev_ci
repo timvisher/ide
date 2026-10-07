@@ -890,7 +890,9 @@ rung_wt=$(cd "$rung_wt_unresolved" && pwd -P)
 "$test_git" -C "$rung_wt" config core.hooksPath /dev/null
 "$test_git" -C "$rung_wt" config user.email t@t
 "$test_git" -C "$rung_wt" config user.name t
+mkdir -p "$rung_wt/old"
 printf 'base\n' > "$rung_wt/root.txt"
+printf 'moved\n' > "$rung_wt/old/moved.txt"
 "$test_git" -C "$rung_wt" add -A
 "$test_git" -C "$rung_wt" commit -q -m base
 "$test_git" -C "$rung_wt" checkout -q -b feat/x --track main
@@ -902,9 +904,15 @@ done
 "$test_git" -C "$rung_wt" add -A
 "$test_git" -C "$rung_wt" commit -q -m change
 
+join_subpaths() {
+  local -a got=()
+  readarray -d '' -t got < <(changed_subpaths "$1")
+  printf '%s|' "${got[@]}"
+}
+
 run_test
-rung_subpaths=$(changed_subpaths "$rung_wt" | tr '\n' ' ')
-if [[ $rung_subpaths == "a z a/b a/d " ]]
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "a|z|a/b|a/d|" ]]
 then
   pass "changed_subpaths: changed dirs and ancestors, shallow first, ties lexicographic"
 else
@@ -915,11 +923,73 @@ run_test
 rung_none=$(changed_subpaths "$tmpdir" 2>&1)
 if [[ -z $rung_none ]]
 then
-  pass "changed_subpaths: emits nothing outside a repo with an upstream"
+  pass "changed_subpaths: emits nothing outside a repo"
 else
   fail "changed_subpaths outside repo: got '${rung_none}'"
 fi
 
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/mv --track main
+mkdir -p "$rung_wt/new"
+"$test_git" -C "$rung_wt" mv old/moved.txt new/moved.txt
+"$test_git" -C "$rung_wt" commit -q -m mv
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "new|old|" ]]
+then
+  pass "changed_subpaths: a rename counts its source and destination dirs"
+else
+  fail "changed_subpaths rename: got '${rung_subpaths}'"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/wip --track main
+mkdir -p "$rung_wt/staged" "$rung_wt/untracked/deep"
+printf 'wip\n' >> "$rung_wt/old/moved.txt"
+printf 'staged\n' > "$rung_wt/staged/s.txt"
+"$test_git" -C "$rung_wt" add staged/s.txt
+printf 'untracked\n' > "$rung_wt/untracked/deep/u.txt"
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "old|staged|untracked|" ]]
+then
+  pass "changed_subpaths: uncommitted, staged, and untracked changes count"
+else
+  fail "changed_subpaths wip: got '${rung_subpaths}'"
+fi
+"$test_git" -C "$rung_wt" reset -q --hard
+"$test_git" -C "$rung_wt" clean -q -fd
+
+run_test
+rung_nl_dir=$(printf 'nl\ndir')
+"$test_git" -C "$rung_wt" checkout -q -b feat/nl --track main
+mkdir -p "$rung_wt/$rung_nl_dir"
+printf 'q\n' > "$rung_wt/$rung_nl_dir/\"q\".txt"
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m nl
+readarray -d '' -t rung_nl < <(changed_subpaths "$rung_wt")
+if (( ${#rung_nl[@]} == 1 )) && [[ ${rung_nl[0]} == "$rung_nl_dir" ]]
+then
+  pass "changed_subpaths: a dir name with a newline and a quoted file name round-trips"
+else
+  fail "changed_subpaths newline: got $(printf '%q ' "${rung_nl[@]}")"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/nou main
+"$test_git" -C "$rung_wt" branch -q --unset-upstream 2>/dev/null
+mkdir -p "$rung_wt/nou"
+printf 'n\n' > "$rung_wt/nou/n.txt"
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "nou|" ]]
+then
+  pass "changed_subpaths: without an upstream only uncommitted work counts"
+else
+  fail "changed_subpaths no upstream: got '${rung_subpaths}'"
+fi
+"$test_git" -C "$rung_wt" clean -q -fd
+"$test_git" -C "$rung_wt" checkout -q feat/x
+
+rung_saved_repo_hooks_dir=$REPO_HOOKS_DIR
+rung_saved_repo_hooks_ext_dir=$REPO_HOOKS_EXT_DIR
 REPO_HOOKS_DIR="$tmpdir/rung-repo-hooks"
 REPO_HOOKS_EXT_DIR="$tmpdir/rung-ext-hooks"
 
@@ -971,7 +1041,7 @@ readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
 rung_ab_count=0
 for h in "${rung_out[@]}"
 do
-  [[ $h == "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh" ]] && (( ++rung_ab_count ))
+  [[ $h == "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh" ]] && (( rung_ab_count += 1 ))
 done
 if (( rung_ab_count == 1 )) &&
    [[ ${rung_out[${#rung_out[@]}-1]} == "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh" ]]
@@ -991,10 +1061,33 @@ rung_clean_expected=(
 )
 if [[ ${rung_out[*]} == "${rung_clean_expected[*]}" ]]
 then
-  pass "find_hooks: no changes vs @{u} leaves only the repo and branch rungs"
+  pass "find_hooks: a clean worktree with no changes vs @{u} gets only the repo and branch rungs"
 else
   fail "clean worktree: got $(printf '\n  %s' "${rung_out[@]}")"
 fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q feat/x
+prime_rung_context feat/x
+snapshot_changed_subpaths "$rung_wt"
+"$test_git" -C "$rung_wt" checkout -q feat/clean
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_snapshot_used=${#rung_out[@]}
+_subpath_snapshot_key=$(worktree_context_key "$tmpdir")
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_snapshot_other=${#rung_out[@]}
+_subpath_snapshot_key=""
+_subpath_snapshot=()
+if (( rung_snapshot_used == ${#rung_expected[@]} )) &&
+   (( rung_snapshot_other == ${#rung_clean_expected[@]} ))
+then
+  pass "find_hooks: a subpath snapshot applies only to the worktree it was taken for"
+else
+  fail "subpath snapshot: same-worktree n=${rung_snapshot_used}, other-worktree n=${rung_snapshot_other}"
+fi
+
+REPO_HOOKS_DIR=$rung_saved_repo_hooks_dir
+REPO_HOOKS_EXT_DIR=$rung_saved_repo_hooks_ext_dir
 
 # ---------------------------------------------------------------------------
 # Summary
