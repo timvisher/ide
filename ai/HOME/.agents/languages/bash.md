@@ -65,16 +65,19 @@
   ```bash
   failures=0
 
-  check_one "$case" || (( failures++ ))
+  check_one "$case" || (( failures += 1 ))
 
   if (( 0 < failures ))
   then
     exit 1
   fi
   ```
-- Note what the accumulate example does _*not*_ need: a trailing `|| true`.
-  `(( x++ ))` returns 1 when the prior value was 0, which only matters under
-  `errexit`. Once you are not using it, the workaround it forced can go too.
+- Prefer `(( x += 1 ))` to `(( x++ ))`. Post-increment evaluates to the value
+  *before* the bump, so `(( x++ ))` exits non-zero when `x` was 0 — which
+  under `errexit` kills the script the first time it counts anything, and is
+  why safe-mode codebases fill up with `|| true`. `(( x += 1 ))` evaluates to
+  the new value, so it only exits non-zero when the result is genuinely 0.
+  Without `errexit` neither one aborts anything, and the `|| true` can go.
 
 #### Mutexes and Temp File Cleanup
 
