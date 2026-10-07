@@ -52,6 +52,26 @@ if [[ $1 == repo && $2 == set-default ]]; then
   exit 0
 fi
 
+if [[ $1 == api && $2 == repos/* ]]; then
+  repo_path=${2#repos/}
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    shift
+  done
+  case $repo_path in
+    oldorg/testrepo)  json='{"fork":false,"source":null,"archived":true}' ;;
+    liveorg/testrepo) json='{"fork":false,"source":null,"archived":false}' ;;
+    *) echo '{"message":"Not Found","status":"404"}'; exit 1 ;;
+  esac
+  if [[ -n $jq_expr ]]; then
+    echo "$json" | jq -c "$jq_expr"
+  else
+    echo "$json"
+  fi
+  exit 0
+fi
+
 # --- gh repo view --json ... --jq ... ---
 if [[ $1 == repo && $2 == view ]]; then
   shift 2
@@ -215,6 +235,7 @@ case $pr_url in
 esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
+ln -s "${script_dir}/bin/timvisher_gh" "$tmpdir/mockbin/timvisher_gh"
 
 # Declare the associative array at global scope BEFORE sourcing the script.
 # typeset -A inside a function creates a local, so the eval'd script body's
@@ -1008,6 +1029,39 @@ else
   fail "is_branch_ish should accept valid org/repo/branch"
 fi
 
+run_test
+if is_branch_ish "main" "testorg/testrepo/feature/top" 2>/dev/null
+then
+  pass "is_branch_ish accepts a relative branch-ish given a context"
+else
+  fail "is_branch_ish should accept a bare branch name when a context is given"
+fi
+
+run_test
+if is_branch_ish "not a branch" "testorg/testrepo/feature/top" 2>/dev/null
+then
+  fail "is_branch_ish should reject an invalid branch name even with a context"
+else
+  pass "is_branch_ish rejects an invalid branch name even with a context"
+fi
+
+run_test
+if is_branch_ish "main" "banana" 2>/dev/null
+then
+  fail "is_branch_ish should reject a context that is not itself a complete branch-ish"
+else
+  pass "is_branch_ish rejects a context that is not a complete branch-ish"
+fi
+
+run_test
+if "$script" is-branch-ish main testorg/testrepo/feature/top 2>/dev/null &&
+  ! "$script" is-branch-ish main 2>/dev/null
+then
+  pass "is-branch-ish CLI takes the optional context"
+else
+  fail "is-branch-ish CLI: 'main' should pass only with a context"
+fi
+
 # Test: accepts org/repo shorthand (resolves to trunk)
 run_test
 if is_branch_ish "testorg/testrepo" 2>/dev/null
@@ -1164,6 +1218,367 @@ then
   pass "clone_stacked: rejects mismatched org/repo"
 else
   fail "clone_stacked: should reject mismatched org/repo"
+fi
+
+run_test
+if (cd "$live_dir/testorg/testrepo" && is_branch_ish ./feature/base) 2>/dev/null
+then
+  pass "is_branch_ish: accepts a ./relative managed worktree path"
+else
+  fail "is_branch_ish: should accept a ./relative managed worktree path"
+fi
+
+run_test
+if is_branch_ish "main" "$live_dir/testorg/testrepo/feature/base" 2>/dev/null
+then
+  pass "is_branch_ish: a managed worktree path is a valid context"
+else
+  fail "is_branch_ish: a managed worktree path should be a valid context"
+fi
+
+stack_base_as_human() {
+  (
+    unset CLAUDECODE TIMVISHER_CODEX TIMVISHER_AGENT timvisher_logging_log_level
+    "$@"
+  )
+}
+
+stack_base_as_agent() {
+  (
+    unset CLAUDECODE TIMVISHER_CODEX timvisher_logging_log_level
+    export TIMVISHER_AGENT=1
+    "$@"
+  )
+}
+
+stack_base_err="$tmpdir/stack_base.err"
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" main 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/main" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: slash-less base is a branch of the target repo, no warning"
+else
+  fail "resolve_stack_base: slash-less base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: base qualified with the target org/repo is used as-is"
+else
+  fail "resolve_stack_base: qualified base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "TestOrg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "TestOrg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: org match is case-insensitive"
+else
+  fail "resolve_stack_base: case-insensitive org: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "to/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "to/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: base qualified via an org alias of the target is used as-is"
+else
+  fail "resolve_stack_base: alias-qualified base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -q ambiguous "$stack_base_err" &&
+  grep -qF "Pass the base qualified to make the intent explicit: testorg/testrepo/feature/base" "$stack_base_err"
+then
+  pass "resolve_stack_base: slashed unqualified base defaults to the target repo and warns"
+else
+  fail "resolve_stack_base: ambiguous base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "someone/area/thing" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/someone/area/thing" ]] &&
+  grep -qF "names repo someone/area" "$stack_base_err"
+then
+  pass "resolve_stack_base: warning names the repo the base would otherwise point at"
+else
+  fail "resolve_stack_base: foreign-looking base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF '"type":"instruction"' "$stack_base_err" &&
+  grep -qF '"code":"timvisher_git_stack_base_inherited"' "$stack_base_err"
+then
+  pass "resolve_stack_base: ambiguity reaches agents as an aictl instruction"
+else
+  fail "resolve_stack_base: agent notice: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+stack_base_with_siblings() {
+  (
+    org_aliases[tg]="testorg,oldorg,liveorg,ghostorg"
+    "$@"
+  )
+}
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF "shares an org alias with the target's testorg/testrepo" "$stack_base_err" &&
+  grep -qF "oldorg/testrepo is archived; testorg/testrepo is the live repo" "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias-sibling org is rewritten to the target's, noting the archived repo"
+else
+  fail "resolve_stack_base: archived alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "liveorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF "shares an org alias" "$stack_base_err" &&
+  ! grep -qF "archived" "$stack_base_err"
+then
+  pass "resolve_stack_base: a live alias sibling is rewritten with no archived note"
+else
+  fail "resolve_stack_base: live alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "ghostorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -qF "archived" "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias sibling is still rewritten when the archived lookup fails"
+else
+  fail "resolve_stack_base: unknown alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo" ]]
+then
+  pass "resolve_stack_base: an alias-sibling org/repo with no branch becomes the target's org/repo"
+else
+  fail "resolve_stack_base: alias sibling org/repo: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF '"code":"timvisher_git_stack_base_alias_sibling"' "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias-sibling rewrite reaches agents as an aictl instruction"
+else
+  fail "resolve_stack_base: agent alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "https://github.com/testorg/testrepo/pull/7" 2>"$stack_base_err")
+if [[ $result == "https://github.com/testorg/testrepo/pull/7" ]]
+then
+  pass "resolve_stack_base: URL base passes through unchanged"
+else
+  fail "resolve_stack_base: URL base: got '${result}'"
+fi
+
+run_test
+if [[ -d $live_dir/testorg/testrepo/feature/base ]]
+then
+  result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "$live_dir/testorg/testrepo/feature/base" 2>"$stack_base_err")
+  if [[ $result == "testorg/testrepo/feature/base" ]]
+  then
+    pass "resolve_stack_base: absolute worktree path resolves to its org/repo/branch"
+  else
+    fail "resolve_stack_base: absolute worktree path: got '${result}', stderr: $(cat "$stack_base_err")"
+  fi
+
+  run_test
+  result=$(cd "$live_dir/testorg/testrepo" && stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+  if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+  then
+    pass "resolve_stack_base: relative managed worktree dir is a filesystem ref, no warning"
+  else
+    fail "resolve_stack_base: relative worktree dir: got '${result}', stderr: $(cat "$stack_base_err")"
+  fi
+else
+  fail "resolve_stack_base: base worktree from the clone_stacked tests is missing"
+fi
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/a" "otherorg/otherrepo/feature/b" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "resolves to repo otherorg/otherrepo" "$stack_base_err" &&
+  grep -qF "pass testorg/testrepo/feature/b" "$stack_base_err"
+then
+  pass "clone_stacked: mismatch error names the parsed repo and suggests the fix"
+else
+  fail "clone_stacked: mismatch error (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/a" "otherorg/otherrepo/feature/b" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF '"code":"timvisher_git_stack_base_repo_mismatch"' "$stack_base_err"
+then
+  pass "clone_stacked: mismatch reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent mismatch (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+inherit_dir=$(stack_base_as_human clone "testorg/testrepo/feature/inherit-top" "feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+inherit_base_head=$("$test_git" -C "$live_dir/testorg/testrepo/feature/base" rev-parse HEAD 2>/dev/null)
+if (( rc == 0 )) && [[ -d $inherit_dir && -n $inherit_base_head ]] &&
+  [[ $("$test_git" -C "$inherit_dir" rev-parse HEAD 2>/dev/null) == "$inherit_base_head" ]]
+then
+  pass "clone: a bare stack base stacks onto the target repo's branch"
+else
+  fail "clone: bare stack base (rc=${rc}, dir='${inherit_dir}', head='$("$test_git" -C "$inherit_dir" rev-parse HEAD 2>&1)', base_head='${inherit_base_head}'): $(cat "$stack_base_err")"
+fi
+
+stack_cache="$cache_dir/repo_trunks/testorg/testrepo"
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/typo-top" "testorg/testrepo/feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "stack-on-base branch 'feature/bsae' does not exist in testorg/testrepo" "$stack_base_err" &&
+  [[ ! -e $live_dir/testorg/testrepo/feature/bsae ]] &&
+  ! "$test_git" -C "$stack_cache" show-ref --verify --quiet refs/heads/feature/bsae
+then
+  pass "clone_stacked: a missing base branch is an error and creates nothing"
+else
+  fail "clone_stacked: missing base (rc=${rc}, typo dir exists? $([[ -e $live_dir/testorg/testrepo/feature/bsae ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human clone "testorg/testrepo/feature/typo-top" "feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF "does not exist" "$stack_base_err"
+then
+  pass "clone: a misspelled bare stack base is an error"
+else
+  fail "clone: misspelled bare base (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/typo-top" "testorg/testrepo/feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_base_missing"' "$stack_base_err"
+then
+  pass "clone_stacked: a missing base reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent missing base (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+local_only_tree=$("$test_git" -C "$stack_cache" rev-parse "refs/remotes/origin/${default_branch}^{tree}")
+local_only_commit=$("$test_git" -C "$stack_cache" -c user.email=t@t -c user.name=t \
+  commit-tree "$local_only_tree" -p "refs/remotes/origin/${default_branch}" -m "local only")
+"$test_git" -C "$stack_cache" update-ref refs/heads/feature/local-only "$local_only_commit"
+local_only_dir=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/on-local-only" "testorg/testrepo/feature/local-only" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $("$test_git" -C "$local_only_dir" rev-parse HEAD 2>/dev/null) == "$local_only_commit" ]]
+then
+  pass "clone_stacked: a local-only base branch still stacks"
+else
+  fail "clone_stacked: local-only base (rc=${rc}, dir='${local_only_dir}'): $(cat "$stack_base_err")"
+fi
+
+run_test
+stack_cache_refspec=$("$test_git" -C "$stack_cache" config --get remote.origin.fetch)
+"$test_git" -C "$stack_cache" config remote.origin.fetch "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+"$test_git" -C "$source_repo" checkout -q -b feature/late "$default_branch"
+"$test_git" -C "$source_repo" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+  commit -q --allow-empty -m "late remote branch"
+late_commit=$("$test_git" -C "$source_repo" rev-parse HEAD)
+"$test_git" -C "$source_repo" checkout -q "$default_branch"
+late_dir=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/on-late" "testorg/testrepo/feature/late" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $("$test_git" -C "$late_dir" rev-parse HEAD 2>/dev/null) == "$late_commit" ]]
+then
+  pass "clone_stacked: a base created on origin after the last fetch stacks onto it, not the trunk"
+else
+  fail "clone_stacked: late remote base (rc=${rc}, head='$("$test_git" -C "$late_dir" rev-parse HEAD 2>&1)', want='${late_commit}'): $(cat "$stack_base_err")"
+fi
+"$test_git" -C "$stack_cache" config --replace-all remote.origin.fetch "$stack_cache_refspec"
+
+stack_trunk_dir="$live_dir/testorg/testrepo/$default_branch"
+stack_trunk_before=$("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}")
+
+for stack_trunk_target in "testorg/testrepo" "testorg/testrepo/${default_branch}"
+do
+  run_test
+  result=$(stack_base_as_human clone_stacked "$stack_trunk_target" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+  if (( 0 < rc )) &&
+    grep -qF "is the trunk of testorg/testrepo" "$stack_base_err" &&
+    [[ $("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}") == "$stack_trunk_before" ]]
+  then
+    pass "clone_stacked: refuses to stack the trunk ('${stack_trunk_target}', trunk worktree present: $([[ -d $stack_trunk_dir ]] && echo yes || echo no))"
+  else
+    fail "clone_stacked: stacking the trunk via '${stack_trunk_target}' (rc=${rc}): $(cat "$stack_base_err")"
+  fi
+done
+
+run_test
+stack_base_as_human clone "testorg/testrepo" >/dev/null 2>&1
+stack_trunk_before=$("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}")
+result=$(stack_base_as_human clone_stacked "testorg/testrepo" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if [[ -d $stack_trunk_dir ]] && (( 0 < rc )) &&
+  grep -qF "is the trunk of testorg/testrepo" "$stack_base_err" &&
+  [[ $("$test_git" -C "$stack_trunk_dir" rev-parse HEAD) == "$stack_trunk_before" ]]
+then
+  pass "clone_stacked: refuses to stack the trunk even when its worktree already exists"
+else
+  fail "clone_stacked: stacking an existing trunk worktree (rc=${rc}, trunk wt exists? $([[ -d $stack_trunk_dir ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_target_is_trunk"' "$stack_base_err"
+then
+  pass "clone_stacked: stacking the trunk reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent trunk target (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+"$test_git" -C "$source_repo" checkout -q -b feature/teammate "$default_branch"
+"$test_git" -C "$source_repo" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+  commit -q --allow-empty -m "teammate work"
+"$test_git" -C "$source_repo" checkout -q "$default_branch"
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/teammate" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "target branch 'feature/teammate' already exists on origin in testorg/testrepo" "$stack_base_err" &&
+  [[ ! -e $live_dir/testorg/testrepo/feature/teammate ]] &&
+  ! "$test_git" -C "$stack_cache" show-ref --verify --quiet refs/heads/feature/teammate
+then
+  pass "clone_stacked: refuses to stack onto a branch that already exists on origin, and creates nothing"
+else
+  fail "clone_stacked: existing origin target (rc=${rc}, dir exists? $([[ -e $live_dir/testorg/testrepo/feature/teammate ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+"$test_git" -C "$stack_cache" update-ref refs/heads/feature/local-target "refs/remotes/origin/${default_branch}"
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/local-target" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "already exists locally in testorg/testrepo" "$stack_base_err" &&
+  grep -qF "branch -D 'feature/local-target'" "$stack_base_err"
+then
+  pass "clone_stacked: refuses an existing local-only target and suggests deleting a leftover"
+else
+  fail "clone_stacked: existing local target (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/teammate" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_target_exists"' "$stack_base_err"
+then
+  pass "clone_stacked: an existing target reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent existing target (rc=${rc}): $(cat "$stack_base_err")"
 fi
 
 # ---------------------------------------------------------------------------

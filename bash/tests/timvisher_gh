@@ -91,9 +91,12 @@ then
 elif [[ $1 == api && $2 == user ]]
 then
   echo "testuser"
+elif [[ $1 == api && $2 == repos/archivedorg/* ]]
+then
+  echo '{"fork":false,"source":null,"archived":true}'
 elif [[ $1 == api && $2 == repos/* ]]
 then
-  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
+  echo '{"fork":true,"source":"upstreamorg/testrepo","archived":false}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
@@ -389,6 +392,101 @@ then
   pass "info --json with no git context errors"
 else
   fail "info --json no context: rc=${rc} got '${result}'"
+fi
+
+run_timvisher_gh_in() {
+  local dir=$1
+  shift
+  local quoted
+  printf -v quoted '%q ' "$@"
+  (cd "$dir" && PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' ${quoted}")
+}
+
+run_test
+export MOCK_LOG="$tmpdir/log_r_archived"
+: > "$MOCK_LOG"
+result=$(run_timvisher_gh_in "$tmpdir" -R archivedorg/oldrepo info .archived 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == true ]] && grep -qF 'mock-gh api repos/archivedorg/oldrepo' "$MOCK_LOG"
+then
+  pass "-R OWNER/REPO info .archived answers for a repository with no worktree"
+else
+  fail "-R info .archived: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir/repo" info .archived 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == false ]]
+then
+  pass "info .archived is false for a live repository"
+else
+  fail "info .archived in a worktree: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir" --repo github.com/someorg/somerepo info .forkNetwork.mainRepo 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == upstreamorg/testrepo ]]
+then
+  pass "--repo accepts github.com/OWNER/REPO and resolves fields without a worktree"
+else
+  fail "--repo github.com/OWNER/REPO: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir/repo" -C "$tmpdir/repo" -R someorg/somerepo info .me 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"mutually exclusive"* ]]
+then
+  pass "-C and -R together are rejected"
+else
+  fail "-C with -R: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir/repo" -R someorg/somerepo pr ready 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"only supported with 'info'"* ]]
+then
+  pass "-R is rejected for subcommands that need a worktree"
+else
+  fail "-R with pr: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir" -R just-an-owner info .me 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"is not OWNER/REPO"* ]]
+then
+  pass "-R rejects a value that is not OWNER/REPO"
+else
+  fail "-R bad spec: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir" -R someorg/somerepo info --json 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"info --json needs a worktree"* ]]
+then
+  pass "-R with info --json explains that --json needs a worktree"
+else
+  fail "-R info --json: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(run_timvisher_gh_in "$tmpdir" -R 2>&1) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"requires an OWNER/REPO argument"* ]]
+then
+  pass "-R with no argument errors"
+else
+  fail "-R no argument: rc=${rc} got '${result}'"
+fi
+
+run_test
+export MOCK_LOG="$tmpdir/log_json_archived"
+: > "$MOCK_LOG"
+result=$(run_timvisher_gh_in "$tmpdir/repo" info --json 2>/dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.timvisher_gh.archived' <<<"$result") == false ]] &&
+   [[ $(grep -c 'mock-gh api repos/' "$MOCK_LOG") == 1 ]]
+then
+  pass "info --json carries archived and fetches the repository once"
+else
+  fail "info --json archived: rc=${rc} repos-calls=$(grep -c 'mock-gh api repos/' "$MOCK_LOG") got '${result}'"
 fi
 
 # --- pr tests ---
@@ -879,9 +977,12 @@ then
 elif [[ $1 == api && $2 == user ]]
 then
   echo "testuser"
+elif [[ $1 == api && $2 == repos/archivedorg/* ]]
+then
+  echo '{"fork":false,"source":null,"archived":true}'
 elif [[ $1 == api && $2 == repos/* ]]
 then
-  echo '{"fork":true,"source":"upstreamorg/testrepo"}'
+  echo '{"fork":true,"source":"upstreamorg/testrepo","archived":false}'
 elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'

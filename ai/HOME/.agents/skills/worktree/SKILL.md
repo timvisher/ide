@@ -13,7 +13,8 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ## Usage
 
 ```
-ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [base_dir | file]
+ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]
+ntmux3 [-d] org/repo/branch branch-ish
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -55,6 +56,73 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
   creating a new one.
 - `-d` skips the "inside tmux" guard, so it works from within an
   existing session.
+
+## Stacked worktrees
+
+Pass a branch-ish as the second argument to start the new worktree from
+an existing branch instead of the trunk. The new worktree is reset to
+the base branch's HEAD.
+
+A branch-ish names a branch. It is **complete** when it resolves on its
+own (a worktree path, a URL, `org/repo/branch`) and **relative** when it
+is a bare branch name that needs a repo for context. Stacking only works
+within one repo, so the target supplies that context: a relative base is
+a branch of the target's repo.
+
+```bash
+# CORRECT — the base is a branch of the target's repo, given bare:
+source ~/.bashrc && ntmux3 -d ddoghq/appgate/timvisher/feature-top timvisher/feature-base
+
+# CORRECT — or qualified with the same org/repo as the target:
+source ~/.bashrc && ntmux3 -d ddoghq/appgate/timvisher/feature-top ddoghq/appgate/timvisher/feature-base
+```
+
+Arg 2 resolves in this order:
+
+- An existing **file** opens in the editor. It is never a stack base.
+- A **worktree path** (`/…`, `./…`, `../…`, `~/…`, or a relative
+  directory that is a managed worktree) or a **GitHub URL** is used as
+  given.
+- `org/repo/branch` whose org/repo is the **target's** (org aliases and
+  case differences count) is used as given.
+- `org/repo/branch` whose org shares an **org alias group** with the
+  target's (for example `DataDog` and `ddoghq`) names the same repo, so
+  it is moved onto the target's org with a
+  `timvisher_git_stack_base_alias_sibling` notice. The notice also says
+  when the repo it named is archived.
+- **Anything else is a relative branch-ish**, resolved as a branch of
+  the target's repo. A base with a
+  slash that doesn't start with the target's org/repo is ambiguous —
+  `timvisher/feature-base` could also be read as org `timvisher`, repo
+  `feature-base` — so it is used as a branch of the target's repo and a
+  `timvisher_git_stack_base_inherited` notice says so. Qualify the base
+  to make the intent explicit and silence the notice.
+- A value that is neither an existing file nor a branch-ish (for
+  example, one containing a space) is ignored with an
+  `ntmux3_arg2_ignored` notice, and nothing is stacked.
+
+A base that explicitly names a *different* repo (a URL or worktree path
+into another repo) fails with `timvisher_git_stack_base_repo_mismatch`,
+which names the repo it resolved to and suggests a corrected base.
+
+The base branch must already exist, as a local branch or on origin. A
+missing base fails with `timvisher_git_stack_base_missing` instead of
+being created off the trunk, so a misspelled base is caught rather than
+quietly giving you a worktree on the trunk.
+
+The target must be a new branch. Stacking resets the target to the
+base's HEAD, so stacking a branch that already exists would drop its own
+commits from your local copy, and `ntmux3 -d org/repo <base>` would move
+your local trunk onto the base. Neither is allowed:
+
+- The trunk fails with `timvisher_git_stack_target_is_trunk`, whether or
+  not its worktree already exists.
+- Any other branch that exists locally or on origin fails with
+  `timvisher_git_stack_target_exists`.
+
+Re-running is still safe. If the target worktree already exists it is
+left alone rather than re-stacked, and an interrupted stack (an
+`x.ntmux3-building` marker in the target) is resumed.
 
 ## When is the worktree ready? (read this before editing)
 

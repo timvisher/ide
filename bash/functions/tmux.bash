@@ -211,7 +211,11 @@ function ntmux {
 alias nt=ntmux
 
 function ntmux3__usage() {
-    echo 'Usage: ntmux3 [-d] [GitHub PR URL | [github_org_or_org_alias/[repo_name/]]session_name] [base_dir | file]' >&2
+    echo 'Usage: ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]' >&2
+    echo '       ntmux3 [-d] org/repo/branch branch-ish' >&2
+    echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
+    echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must be a' >&2
+    echo '  new branch.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
     return 1
 }
 
@@ -564,14 +568,26 @@ function ntmux3() {
     # Handle arg2: stacked worktree or file
     if [[ -n $base_dir_or_target_file ]]
     then
-        if timvisher_git is-branch-ish "$base_dir_or_target_file"
+        if [[ -f $base_dir_or_target_file ]]
         then
-            info 'arg 2 is a branch-ish; assuming stacked worktree: %s stacked on %s' \
+            if [[ -z $target_file ]]
+            then
+                target_file="$base_dir_or_target_file"
+            fi
+        elif timvisher_git is-branch-ish "$base_dir_or_target_file" "$clone_target"
+        then
+            info 'arg 2 is a branch-ish; stacking %s on %s' \
                 "$clone_target" "$base_dir_or_target_file"
             stack_on_base="$base_dir_or_target_file"
-        elif [[ -z $target_file && -f $base_dir_or_target_file ]]
+        elif [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_notice &>/dev/null
         then
-            target_file="$base_dir_or_target_file"
+            aictl_notice \
+                --code "ntmux3_arg2_ignored" \
+                --message "arg 2 '${base_dir_or_target_file}' is neither an existing file nor a branch-ish, so it was ignored and nothing is stacked." \
+                --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        else
+            warn "arg 2 '%s' is neither an existing file nor a branch-ish; ignoring it" \
+                "$base_dir_or_target_file"
         fi
     fi
 

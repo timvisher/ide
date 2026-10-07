@@ -20,6 +20,7 @@ show_help() {
 
   Usage:
     timvisher_gh [-C <path>] <subcommand> [args...]
+    timvisher_gh -R OWNER/REPO info <field>
 
     timvisher_gh info <field>    Query repository metadata
     timvisher_gh info --json     Query the whole context blob
@@ -111,6 +112,8 @@ show_help() {
         .forkNetwork.mainRepo   OWNER/REPO of the fork network root
                                 (the repo itself if not a fork)
         .forkNetwork.mainOwner  Owner of the fork network root
+        .archived               true if the repository is archived,
+                                false otherwise
         .me                     Authenticated GitHub username
     - --json emits every field at once, merged with
       'timvisher_git info --json'.  Unlike the scalar fields, --json
@@ -118,9 +121,13 @@ show_help() {
       that is what timvisher_git decomposes:
         {"timvisher_git": {org, repo, branch, branchPath, absPath,
                            prefixPath},
-         "timvisher_gh":  {me, forkNetwork: {mainRepo, mainOwner}}}
-    - A git context is required.  Extra positional arguments are an
-      error; use -C to point at another worktree.
+         "timvisher_gh":  {me, archived, forkNetwork: {mainRepo,
+                                                       mainOwner}}}
+    - A context is required: a git worktree (the current directory or
+      -C <path>), or a repository named with -R.  Extra positional
+      arguments are an error.
+    - -R takes no worktree, so --json, which needs one, is an error with
+      -R; query the scalar fields instead.
     - .me is context-sensitive by design: the gh account is pinned per
       repository owner, so it varies by repo.  Cache it per context,
       never process-wide.
@@ -133,6 +140,13 @@ show_help() {
     -C <path>           Resolve context from <path> instead of the
                         current directory.  Must come BEFORE the
                         subcommand.
+    -R, --repo OWNER/REPO
+                        Name a repository instead of resolving one
+                        from a worktree, like gh's -R.  Takes OWNER/REPO
+                        or github.com/OWNER/REPO.  Only 'info' accepts
+                        it; every other subcommand needs a worktree.
+                        Mutually exclusive with -C.  Must come BEFORE
+                        the subcommand.
     -h, --help, help    Show this help
 USAGE
 }
@@ -145,14 +159,30 @@ usage() {
 }
 
 chdir=
-while [[ ${1-} == -C ]]
+repo_override=
+while (( 0 < $# ))
 do
-  (( 2 <= $# )) ||
-    die 'Option -C requires a <path> argument'
-  [[ -n $2 ]] ||
-    die 'Option -C requires a non-empty <path> argument'
-  chdir=$2
-  shift 2
+  case $1 in
+    -C)
+      (( 2 <= $# )) ||
+        die 'Option -C requires a <path> argument'
+      [[ -n $2 ]] ||
+        die 'Option -C requires a non-empty <path> argument'
+      chdir=$2
+      shift 2
+      ;;
+    -R|--repo)
+      (( 2 <= $# )) ||
+        die 'Option %s requires an OWNER/REPO argument' "$1"
+      [[ -n $2 ]] ||
+        die 'Option %s requires a non-empty OWNER/REPO argument' "$1"
+      repo_override=$2
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
 done
 
 if (( $# == 0 ))
@@ -168,38 +198,55 @@ case $1 in
     ;;
 esac
 
-if [[ -n $chdir && ! -d $chdir ]]
+if [[ -n $chdir && -n $repo_override ]]
 then
-  die "Option -C: unable to enter '%s'" "$chdir"
+  die 'Options -C and -R are mutually exclusive: -C names a worktree, -R names a repository'
 fi
 
-toplevel=$(command git -C "${chdir:-.}" rev-parse --show-toplevel) ||
-  die 'Not in a git repository'
-
-cd "$toplevel" ||
-  die 'Unable to cd to top level directory '%s'' "$toplevel"
-
-# Determine the target remote for the operation.
-# Use the branch's tracking remote when set; otherwise prefer 'upstream'
-# (fork parent) if it exists, falling back to 'origin'.  This respects
-# soft-fork repos where tracking intentionally points at origin.
-target_remote=
-tracking_remote=$(command git config "branch.$(command git rev-parse --abbrev-ref HEAD).remote" 2>/dev/null) || true
-if [[ -n $tracking_remote ]] && git remote | grep -qx "$tracking_remote"
+if [[ -n $repo_override ]]
 then
-  target_remote=$tracking_remote
-elif git remote | grep -q '^upstream$'
-then
-  target_remote='upstream'
+  [[ $1 == info ]] ||
+    die "Option -R is only supported with 'info'; '%s' needs a worktree (use -C)" "$1"
+
+  repo_spec=${repo_override#github.com/}
+  if ! [[ $repo_spec =~ ^[^/]+/[^/]+$ ]]
+  then
+    die "Option -R: '%s' is not OWNER/REPO (or github.com/OWNER/REPO)" "$repo_override"
+  fi
 else
-  target_remote='origin'
-fi
+  if [[ -n $chdir && ! -d $chdir ]]
+  then
+    die "Option -C: unable to enter '%s'" "$chdir"
+  fi
 
-# Get the OWNER/REPO spec from the remote's URL (host-agnostic parse shared
-# with the gh shim, so Enterprise host aliases resolve like github.com).
-repo_spec=$(timvisher_gh__repo_spec_from_url "$(git remote get-url "$target_remote")")
-[[ -n $repo_spec ]] ||
-  die "Could not determine repository spec for remote '%s'" "$target_remote"
+  toplevel=$(command git -C "${chdir:-.}" rev-parse --show-toplevel) ||
+    die 'Not in a git repository'
+
+  cd "$toplevel" ||
+    die 'Unable to cd to top level directory '%s'' "$toplevel"
+
+  # Determine the target remote for the operation.
+  # Use the branch's tracking remote when set; otherwise prefer 'upstream'
+  # (fork parent) if it exists, falling back to 'origin'.  This respects
+  # soft-fork repos where tracking intentionally points at origin.
+  target_remote=
+  tracking_remote=$(command git config "branch.$(command git rev-parse --abbrev-ref HEAD).remote" 2>/dev/null) || true
+  if [[ -n $tracking_remote ]] && git remote | grep -qx "$tracking_remote"
+  then
+    target_remote=$tracking_remote
+  elif git remote | grep -q '^upstream$'
+  then
+    target_remote='upstream'
+  else
+    target_remote='origin'
+  fi
+
+  # Get the OWNER/REPO spec from the remote's URL (host-agnostic parse shared
+  # with the gh shim, so Enterprise host aliases resolve like github.com).
+  repo_spec=$(timvisher_gh__repo_spec_from_url "$(git remote get-url "$target_remote")")
+  [[ -n $repo_spec ]] ||
+    die "Could not determine repository spec for remote '%s'" "$target_remote"
+fi
 
 # Pin GH_TOKEN to the gh account configured for this repo's org, so we
 # authenticate as the identity that can see the repo on multi-account setups.
@@ -852,6 +899,24 @@ gh_comment() {
 
 # --- subcommand: info ---
 
+gh_info__repo_json() {
+  command gh api "repos/${repo_spec}" --jq '{fork, source: .source.full_name, archived}' ||
+    die 'Unable to query repo metadata for %s' "$repo_spec"
+}
+
+gh_info__main_repo() {
+  local repo_json=$1 is_fork source_repo
+  is_fork=$(jq -r .fork <<<"$repo_json")
+  source_repo=$(jq -r .source <<<"$repo_json")
+
+  if [[ $is_fork == true && $source_repo != null ]]
+  then
+    printf '%s\n' "$source_repo"
+  else
+    printf '%s\n' "$repo_spec"
+  fi
+}
+
 gh_info() {
   local field=${1-}
 
@@ -859,25 +924,20 @@ gh_info() {
     die 'info requires a <field> argument'
 
   (( $# <= 1 )) ||
-    die "info: unexpected argument '%s'; use 'timvisher_gh -C <path> info %s' to query another worktree" \
-      "$2" "$field"
+    die "info: unexpected argument '%s'; use 'timvisher_gh -C <path> info %s' to query another worktree, or 'timvisher_gh -R OWNER/REPO info %s' to query another repository" \
+      "$2" "$field" "$field"
 
+  local repo_json
   case $field in
     .forkNetwork.mainRepo)
-      local repo_json
-      repo_json=$(command gh api "repos/${repo_spec}" --jq '{fork, source: .source.full_name}') ||
-        die 'Unable to query repo metadata for %s' "$repo_spec"
-
-      local is_fork source_repo
-      is_fork=$(jq -r .fork <<<"$repo_json")
-      source_repo=$(jq -r .source <<<"$repo_json")
-
-      if [[ $is_fork == true && $source_repo != null ]]
-      then
-        printf '%s\n' "$source_repo"
-      else
-        printf '%s\n' "$repo_spec"
-      fi
+      repo_json=$(gh_info__repo_json) ||
+        return $?
+      gh_info__main_repo "$repo_json"
+      ;;
+    .archived)
+      repo_json=$(gh_info__repo_json) ||
+        return $?
+      jq -r '.archived == true' <<<"$repo_json"
       ;;
     .forkNetwork.mainOwner)
       local main_repo
@@ -916,11 +976,16 @@ gh_info() {
       # Hence a subcommand we own the contract for: always an object,
       # no foreign flags to rewrite, no evaluator swapped. Callers who
       # want both documents merge them on their side.
-      local git_blob main_repo me
+      [[ -z $repo_override ]] ||
+        die "info --json needs a worktree, since it merges 'timvisher_git info --json'; -R names only a repository, so query a single field instead"
+
+      local git_blob main_repo archived me
       git_blob=$(timvisher_git info --json) ||
         die 'Unable to query timvisher_git context for %s' "$toplevel"
-      main_repo=$(gh_info .forkNetwork.mainRepo) ||
+      repo_json=$(gh_info__repo_json) ||
         return $?
+      main_repo=$(gh_info__main_repo "$repo_json")
+      archived=$(jq '.archived == true' <<<"$repo_json")
       me=$(gh_info .me) ||
         return $?
 
@@ -928,7 +993,9 @@ gh_info() {
         --argjson git "$git_blob" \
         --arg me "$me" \
         --arg mainRepo "$main_repo" \
+        --argjson archived "$archived" \
         '$git + {timvisher_gh: {me: $me,
+                                archived: $archived,
                                 forkNetwork: {mainRepo: $mainRepo,
                                               mainOwner: ($mainRepo | split("/")[0])}}}' ||
         die 'Unable to render JSON'

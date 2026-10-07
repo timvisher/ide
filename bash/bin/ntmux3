@@ -51,6 +51,7 @@ suggestions+=(--suggestion "source ~/.bashrc && ntmux3 -d org/repo/branch-name")
 if [[ -n $org_repo ]]
 then
   suggestions+=(--suggestion "Current repo is ${org_repo} — example: source ~/.bashrc && ntmux3 -d ${org_repo}/your-branch-name")
+  suggestions+=(--suggestion "To stack on an existing branch of the same repo, pass it as arg 2: source ~/.bashrc && ntmux3 -d ${org_repo}/your-branch-name base-branch-name")
 fi
 
 suggestions+=(--suggestion "Use timvisher_git info .org and timvisher_git info .repo to derive the org/repo prefix")
