@@ -1166,6 +1166,14 @@ else
   fail "clone_stacked: should reject mismatched org/repo"
 fi
 
+run_test
+if (cd "$live_dir/testorg/testrepo" && is_branch_ish ./feature/base) 2>/dev/null
+then
+  pass "is_branch_ish: accepts a ./relative managed worktree path"
+else
+  fail "is_branch_ish: should accept a ./relative managed worktree path"
+fi
+
 # ---------------------------------------------------------------------------
 # temp-build + move invariant tests (ide-8hi)
 #

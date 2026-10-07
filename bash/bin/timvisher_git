@@ -2777,7 +2777,7 @@ is_branch_ish() {
       git -C "$expanded" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
       local common_dir
       common_dir=$(cd "$expanded" && \
-        cd "$(git -C "$expanded" rev-parse --git-common-dir 2>/dev/null)" && \
+        cd "$(git rev-parse --git-common-dir 2>/dev/null)" && \
         pwd -P 2>/dev/null) || return 1
       local resolved_trunks
       resolved_trunks=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || return 1
