@@ -1008,6 +1008,31 @@ else
   fail "is_branch_ish should accept valid org/repo/branch"
 fi
 
+run_test
+if is_branch_ish "main" "testorg/testrepo/feature/top" 2>/dev/null
+then
+  pass "is_branch_ish accepts a relative branch-ish given a context"
+else
+  fail "is_branch_ish should accept a bare branch name when a context is given"
+fi
+
+run_test
+if is_branch_ish "not a branch" "testorg/testrepo/feature/top" 2>/dev/null
+then
+  fail "is_branch_ish should reject an invalid branch name even with a context"
+else
+  pass "is_branch_ish rejects an invalid branch name even with a context"
+fi
+
+run_test
+if "$script" is-branch-ish main testorg/testrepo/feature/top 2>/dev/null &&
+  ! "$script" is-branch-ish main 2>/dev/null
+then
+  pass "is-branch-ish CLI takes the optional context"
+else
+  fail "is-branch-ish CLI: 'main' should pass only with a context"
+fi
+
 # Test: accepts org/repo shorthand (resolves to trunk)
 run_test
 if is_branch_ish "testorg/testrepo" 2>/dev/null

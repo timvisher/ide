@@ -139,7 +139,7 @@ route() {
     ntmux() { printf 'open\n' >>"${sentinel}"; }
     timvisher_git() {
       case "${1:-}" in
-        is-branch-ish) return 0 ;;
+        is-branch-ish) [[ ${2:-} != *' '* ]] ;;
         clone) printf 'clone %s\n' "${*:2}" >>"${sentinel}"; printf '/nonexistent' ;;
         *) return 0 ;;
       esac
@@ -192,6 +192,9 @@ assert_route "$(route "${standalone_wt}" some-branch)" clone open \
 printf 'notes\n' >"${standalone_wt}/sub/notes.txt" || { echo "FAIL: setup notes file" >&2; exit 1; }
 assert_route "$(route "${standalone_wt}" "${standalone_wt}/sub/notes.txt")" open clone \
   "existing file as arg2 opens in the editor and is never a stack base"
+
+assert_route "$(route "${standalone_wt}" "not a branch")" open clone \
+  "arg2 that is neither a file nor a branch-ish is ignored, not stacked"
 
 run_test
 got=$(route someorg/somerepo/feature/top feature/base)

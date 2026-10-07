@@ -2032,9 +2032,15 @@ Subcommands
   info --json
     Query metadata about the current worktree.  See "info" below.
 
-  is-branch-ish <source>
-    Exit 0 if <source> looks like something clone can resolve to a
-    worktree (a managed worktree path, a URL, or an org/repo shorthand).
+  is-branch-ish <source> [<context>]
+    Exit 0 if <source> is a branch-ish: a name for a branch that clone can
+    resolve to a worktree.  A complete branch-ish resolves on its own (a
+    managed worktree path, a URL, or an org/repo[/branch] shorthand).  A
+    relative branch-ish is a bare branch name like main that needs a repo
+    for context; it counts only when <context> (a complete branch-ish in
+    that repo) is given.  A bare branch with a slash, like feature/base, is
+    shaped like org/repo, so it passes on its own and is disambiguated
+    against the context where one exists (see clone).
 
   rewrite-trunk-subpath <branch>
     Rewrite "<trunk>/<subpath>" into "<branch-prefix>/<subpath>" when the
@@ -2100,8 +2106,8 @@ from partial failures.
   - a GitHub URL
   - org/repo/branch, where org/repo is the target's (aliases count)
 
-Any other value is read as a branch of the target's repo, so these are
-equivalent:
+Any other value is a relative branch-ish, resolved as a branch of the
+target's repo, so these are equivalent:
 
   timvisher_git clone ddoghq/appgate/feature/top ddoghq/appgate/feature/base
   timvisher_git clone ddoghq/appgate/feature/top feature/base
@@ -3049,7 +3055,7 @@ fork() {
 }
 
 is_branch_ish() {
-  local source=${1:-}
+  local source=${1:-} context=${2:-}
 
   [[ -n $source ]] || return 1
 
@@ -3085,8 +3091,10 @@ is_branch_ish() {
   # and left clone() to die with a misleading generic message.
   case $source in
     */*) return 0 ;;
-    *)   return 1 ;;
   esac
+
+  [[ -n $context ]] &&
+    command git check-ref-format --branch "$source" >/dev/null 2>&1
 }
 
 status__all_published() {

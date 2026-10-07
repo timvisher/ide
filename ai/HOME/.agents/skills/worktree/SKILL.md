@@ -61,8 +61,13 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
 
 Pass a branch-ish as the second argument to start the new worktree from
 an existing branch instead of the trunk. The new worktree is reset to
-the base branch's HEAD. Stacking only works within one repo, so a bare
-branch name is also accepted and read as a branch of the target's repo.
+the base branch's HEAD.
+
+A branch-ish names a branch. It is **complete** when it resolves on its
+own (a worktree path, a URL, `org/repo/branch`) and **relative** when it
+is a bare branch name that needs a repo for context. Stacking only works
+within one repo, so the target supplies that context: a relative base is
+a branch of the target's repo.
 
 ```bash
 # CORRECT — the base is a branch of the target's repo, given bare:
@@ -80,12 +85,16 @@ Arg 2 resolves in this order:
   given.
 - `org/repo/branch` whose org/repo is the **target's** (org aliases and
   case differences count) is used as given.
-- **Anything else is a branch of the target's repo.** A base with a
+- **Anything else is a relative branch-ish**, resolved as a branch of
+  the target's repo. A base with a
   slash that doesn't start with the target's org/repo is ambiguous —
   `timvisher/feature-base` could also be read as org `timvisher`, repo
   `feature-base` — so it is used as a branch of the target's repo and a
   `timvisher_git_stack_base_inherited` notice says so. Qualify the base
   to make the intent explicit and silence the notice.
+- A value that is neither an existing file nor a branch-ish (for
+  example, one containing a space) is ignored with an
+  `ntmux3_arg2_ignored` notice, and nothing is stacked.
 
 A base that explicitly names a *different* repo (a URL or worktree path
 into another repo) fails with `timvisher_git_stack_base_repo_mismatch`,

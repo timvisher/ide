@@ -215,7 +215,7 @@ function ntmux3__usage() {
     echo '       ntmux3 [-d] org/repo/branch branch-ish' >&2
     echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
     echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must' >&2
-    echo '  not be the trunk.  A bare branch name is read as a branch of org/repo.' >&2
+    echo '  not be the trunk.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
     return 1
 }
 
@@ -574,10 +574,20 @@ function ntmux3() {
             then
                 target_file="$base_dir_or_target_file"
             fi
-        else
-            info 'arg 2 is not a file; stacking %s on %s' \
+        elif timvisher_git is-branch-ish "$base_dir_or_target_file" "$clone_target"
+        then
+            info 'arg 2 is a branch-ish; stacking %s on %s' \
                 "$clone_target" "$base_dir_or_target_file"
             stack_on_base="$base_dir_or_target_file"
+        elif [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_notice &>/dev/null
+        then
+            aictl_notice \
+                --code "ntmux3_arg2_ignored" \
+                --message "arg 2 '${base_dir_or_target_file}' is neither an existing file nor a branch-ish, so it was ignored and nothing is stacked." \
+                --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        else
+            warn "arg 2 '%s' is neither an existing file nor a branch-ish; ignoring it" \
+                "$base_dir_or_target_file"
         fi
     fi
 
