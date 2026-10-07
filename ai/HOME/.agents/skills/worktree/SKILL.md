@@ -105,13 +105,19 @@ missing base fails with `timvisher_git_stack_base_missing` instead of
 being created off the trunk, so a misspelled base is caught rather than
 quietly giving you a worktree on the trunk.
 
-The target must not be the trunk. Stacking resets the target to the
-base's HEAD, so `ntmux3 -d org/repo <base>` would move your local trunk
-onto the base. It fails with `timvisher_git_stack_target_is_trunk`
-instead, whether or not the trunk worktree already exists.
+The target must be a new branch. Stacking resets the target to the
+base's HEAD, so stacking a branch that already exists would drop its own
+commits from your local copy, and `ntmux3 -d org/repo <base>` would move
+your local trunk onto the base. Neither is allowed:
 
-If the target worktree already exists, it is left alone rather than
-re-stacked.
+- The trunk fails with `timvisher_git_stack_target_is_trunk`, whether or
+  not its worktree already exists.
+- Any other branch that exists locally or on origin fails with
+  `timvisher_git_stack_target_exists`.
+
+Re-running is still safe. If the target worktree already exists it is
+left alone rather than re-stacked, and an interrupted stack (an
+`x.ntmux3-building` marker in the target) is resumed.
 
 ## When is the worktree ready? (read this before editing)
 

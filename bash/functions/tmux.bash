@@ -214,8 +214,8 @@ function ntmux3__usage() {
     echo 'Usage: ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]' >&2
     echo '       ntmux3 [-d] org/repo/branch branch-ish' >&2
     echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
-    echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must' >&2
-    echo '  not be the trunk.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
+    echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must be a' >&2
+    echo '  new branch.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
     return 1
 }
 

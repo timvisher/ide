@@ -1465,6 +1465,44 @@ else
   fail "clone_stacked: agent trunk target (rc=${rc}): $(cat "$stack_base_err")"
 fi
 
+"$test_git" -C "$source_repo" checkout -q -b feature/teammate "$default_branch"
+"$test_git" -C "$source_repo" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+  commit -q --allow-empty -m "teammate work"
+"$test_git" -C "$source_repo" checkout -q "$default_branch"
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/teammate" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "target branch 'feature/teammate' already exists on origin in testorg/testrepo" "$stack_base_err" &&
+  [[ ! -e $live_dir/testorg/testrepo/feature/teammate ]] &&
+  ! "$test_git" -C "$stack_cache" show-ref --verify --quiet refs/heads/feature/teammate
+then
+  pass "clone_stacked: refuses to stack onto a branch that already exists on origin, and creates nothing"
+else
+  fail "clone_stacked: existing origin target (rc=${rc}, dir exists? $([[ -e $live_dir/testorg/testrepo/feature/teammate ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+"$test_git" -C "$stack_cache" update-ref refs/heads/feature/local-target "refs/remotes/origin/${default_branch}"
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/local-target" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "already exists locally in testorg/testrepo" "$stack_base_err" &&
+  grep -qF "branch -D 'feature/local-target'" "$stack_base_err"
+then
+  pass "clone_stacked: refuses an existing local-only target and suggests deleting a leftover"
+else
+  fail "clone_stacked: existing local target (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/teammate" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_target_exists"' "$stack_base_err"
+then
+  pass "clone_stacked: an existing target reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent existing target (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
 # ---------------------------------------------------------------------------
 # temp-build + move invariant tests (ide-8hi)
 #

@@ -2096,9 +2096,11 @@ the base: the base worktree is cloned first (ensuring it exists), then
 the target is reset --hard to the base branch's HEAD.  Both must be in
 the same org/repo, and the base branch must already exist, as a local
 branch or on origin -- a missing base is an error, not a new branch off
-the trunk.  The target must not be the trunk: stacking would reset it
-onto the base.  An x.ntmux3-building marker provides idempotent recovery
-from partial failures.
+the trunk.  The target must be a new branch -- not the trunk, and not a
+branch that already exists locally or on origin -- since stacking resets
+it onto the base.  An existing target worktree is left alone, and an
+x.ntmux3-building marker provides idempotent recovery from partial
+failures.
 
 [stack-on-base] accepts every form <target> does:
 
@@ -2799,6 +2801,76 @@ die_stack_target_is_trunk() {
   die '%s %s' "$message" "${suggestions[*]}"
 }
 
+die_if_stack_target_exists() {
+  local target=$1 base=$2 trunk_cache=$3 org_repo=$4 branch=$5
+
+  local local_copy=
+  if command git -C "$trunk_cache" show-ref --verify --quiet "refs/heads/${branch}"
+  then
+    local_copy=true
+  fi
+
+  local rc=0 on_origin=
+  command git -C "$trunk_cache" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 || rc=$?
+  if (( rc == 0 ))
+  then
+    on_origin=true
+  elif (( rc != 2 ))
+  then
+    die "clone_stacked: could not reach origin to check whether target branch '%s' already exists (git ls-remote exited %s)" \
+      "$branch" "$rc"
+  fi
+
+  if [[ -z $local_copy && -z $on_origin ]]
+  then
+    return 0
+  fi
+
+  local where
+  if [[ -n $local_copy && -n $on_origin ]]
+  then
+    where="locally and on origin"
+  elif [[ -n $local_copy ]]
+  then
+    where="locally"
+  else
+    where="on origin"
+  fi
+
+  local message reason
+  printf -v message "clone_stacked: target branch '%s' already exists %s in %s. Stacking resets the target to the base branch's HEAD, so it would drop that branch's own commits from your local copy." \
+    "$branch" "$where" "$org_repo"
+  reason="A stacked worktree needs a new branch to carry the stack. An existing branch already carries its own history, and git will reset it without complaint."
+
+  local -a suggestions=(
+    "Pick a new branch name for the stack: ntmux3 -d ${org_repo}/<new-branch> ${base}"
+    "To work on the existing branch as it is, drop the stack base: ntmux3 -d ${target}"
+  )
+  if [[ -n $local_copy && -z $on_origin ]]
+  then
+    suggestions+=("If it is a leftover local branch from an interrupted run, delete it first: git -C '${trunk_cache}' branch -D '${branch}'")
+  fi
+
+  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
+  then
+    local -a suggestion_args=()
+    local suggestion
+    for suggestion in "${suggestions[@]}"
+    do
+      suggestion_args+=(--suggestion "$suggestion")
+    done
+    aictl_die \
+      --code timvisher_git_stack_target_exists \
+      --message "$message" \
+      --reason "$reason" \
+      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+      "${suggestion_args[@]}"
+  fi
+
+  local IFS=' '
+  die '%s %s' "$message" "${suggestions[*]}"
+}
+
 clone_stacked() {
   local target=$1 stack_on_base=$2
 
@@ -2847,15 +2919,21 @@ clone_stacked() {
     die '%s %s' "$message" "${suggestions[*]}"
   fi
 
-  local target_check_cache target_check_branch target_check_trunk
+  local target_check_cache target_check_dir_and_branch target_check_branch target_check_trunk
   target_check_cache=$(cache_trunk "$target") ||
     die "clone_stacked: unable to cache trunk for target '%s'" "$target"
-  target_check_branch=$(branch_path_for_source "$target" "$target_check_cache")
-  target_check_branch=${target_check_branch#*;}
+  target_check_dir_and_branch=$(branch_path_for_source "$target" "$target_check_cache")
+  target_check_branch=${target_check_dir_and_branch#*;}
   target_check_trunk=$(get_trunk_branch_name_from_cache "$target_check_cache")
   if [[ $target_check_branch == "$target_check_trunk" ]]
   then
     die_stack_target_is_trunk "$target" "$stack_on_base" "${target_org}/${target_repo}" "$target_check_trunk"
+  fi
+
+  if [[ ! -d ${live_repo_dir}/${target_check_dir_and_branch%%;*} ]]
+  then
+    die_if_stack_target_exists "$target" "$stack_on_base" "$target_check_cache" \
+      "${target_org}/${target_repo}" "$target_check_branch"
   fi
 
   if [[ $stack_on_base != https://github.com/*/*/pull/* ]]
