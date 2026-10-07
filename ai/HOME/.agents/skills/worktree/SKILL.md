@@ -13,7 +13,7 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ## Usage
 
 ```
-ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [base_dir | file]
+ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [file | stack-on-base]
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -55,6 +55,46 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
   creating a new one.
 - `-d` skips the "inside tmux" guard, so it works from within an
   existing session.
+
+## Stacked worktrees
+
+Pass a second argument to start the new worktree from an existing
+branch instead of the trunk. The new worktree is reset to the base
+branch's HEAD. Stacking only works within one repo.
+
+```bash
+# CORRECT — the base is a branch of the target's repo, given bare:
+source ~/.bashrc && ntmux3 -d ddoghq/appgate/timvisher/feature-top timvisher/feature-base
+
+# CORRECT — or qualified with the same org/repo as the target:
+source ~/.bashrc && ntmux3 -d ddoghq/appgate/timvisher/feature-top ddoghq/appgate/timvisher/feature-base
+```
+
+Arg 2 resolves in this order:
+
+- An existing **file** opens in the editor. It is never a stack base.
+- A **worktree path** (`/…`, `./…`, `../…`, `~/…`, or a relative
+  directory that is a managed worktree) or a **GitHub URL** is used as
+  given.
+- `org/repo/branch` whose org/repo is the **target's** (org aliases and
+  case differences count) is used as given.
+- **Anything else is a branch of the target's repo.** A base with a
+  slash that doesn't start with the target's org/repo is ambiguous —
+  `timvisher/feature-base` could also be read as org `timvisher`, repo
+  `feature-base` — so it is used as a branch of the target's repo and a
+  `timvisher_git_stack_base_inherited` notice says so. Qualify the base
+  to make the intent explicit and silence the notice.
+
+A base that explicitly names a *different* repo (a URL or worktree path
+into another repo) fails with `timvisher_git_stack_base_repo_mismatch`,
+which names the repo it resolved to and suggests a corrected base.
+
+Two behaviors to know:
+
+- If the base branch doesn't exist, it is created off the trunk, so a
+  misspelled base silently becomes a new branch. Check the name.
+- If the target worktree already exists, it is left alone rather than
+  re-stacked.
 
 ## When is the worktree ready? (read this before editing)
 
