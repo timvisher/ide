@@ -2634,7 +2634,7 @@ stack_base_orgs_are_alias_siblings() {
 
 stack_base_repo_is_archived() {
   local archived
-  archived=$(gh repo view "$1" --json isArchived --jq .isArchived 2>/dev/null) || return 1
+  archived=$(timvisher_gh -R "$1" info .archived 2>/dev/null) || return 1
   [[ $archived == true ]]
 }
 

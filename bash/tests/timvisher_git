@@ -52,6 +52,26 @@ if [[ $1 == repo && $2 == set-default ]]; then
   exit 0
 fi
 
+if [[ $1 == api && $2 == repos/* ]]; then
+  repo_path=${2#repos/}
+  jq_expr=
+  while (( $# )); do
+    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
+    shift
+  done
+  case $repo_path in
+    oldorg/testrepo)  json='{"fork":false,"source":null,"archived":true}' ;;
+    liveorg/testrepo) json='{"fork":false,"source":null,"archived":false}' ;;
+    *) echo '{"message":"Not Found","status":"404"}'; exit 1 ;;
+  esac
+  if [[ -n $jq_expr ]]; then
+    echo "$json" | jq -c "$jq_expr"
+  else
+    echo "$json"
+  fi
+  exit 0
+fi
+
 # --- gh repo view --json ... --jq ... ---
 if [[ $1 == repo && $2 == view ]]; then
   shift 2
@@ -83,12 +103,6 @@ if [[ $1 == repo && $2 == view ]]; then
       ;;
     softforkuser/parentrepo)
       echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[{"name":"soft-fork"}]}' | jq -r "$jq_expr"
-      ;;
-    oldorg/testrepo)
-      echo '{"isArchived":true}' | jq -r "$jq_expr"
-      ;;
-    liveorg/testrepo)
-      echo '{"isArchived":false}' | jq -r "$jq_expr"
       ;;
     *)
       echo "not found" >&2; exit 1 ;;
@@ -221,6 +235,7 @@ case $pr_url in
 esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
+ln -s "${script_dir}/bin/timvisher_gh" "$tmpdir/mockbin/timvisher_gh"
 
 # Declare the associative array at global scope BEFORE sourcing the script.
 # typeset -A inside a function creates a local, so the eval'd script body's
