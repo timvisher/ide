@@ -2037,8 +2037,9 @@ Subcommands
     resolve to a worktree.  A complete branch-ish resolves on its own (a
     managed worktree path, a URL, or an org/repo[/branch] shorthand).  A
     relative branch-ish is a bare branch name like main that needs a repo
-    for context; it counts only when <context> (a complete branch-ish in
-    that repo) is given.  A bare branch with a slash, like feature/base, is
+    for context; it counts only when <context> is given.  Any complete
+    branch-ish is a valid context, since it names a repo; a relative one is
+    not.  A bare branch with a slash, like feature/base, is
     shaped like org/repo, so it passes on its own and is disambiguated
     against the context where one exists (see clone).
 
@@ -3094,6 +3095,7 @@ is_branch_ish() {
   esac
 
   [[ -n $context ]] &&
+    is_branch_ish "$context" &&
     command git check-ref-format --branch "$source" >/dev/null 2>&1
 }
 

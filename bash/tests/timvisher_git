@@ -1025,6 +1025,14 @@ else
 fi
 
 run_test
+if is_branch_ish "main" "banana" 2>/dev/null
+then
+  fail "is_branch_ish should reject a context that is not itself a complete branch-ish"
+else
+  pass "is_branch_ish rejects a context that is not a complete branch-ish"
+fi
+
+run_test
 if "$script" is-branch-ish main testorg/testrepo/feature/top 2>/dev/null &&
   ! "$script" is-branch-ish main 2>/dev/null
 then
@@ -1197,6 +1205,14 @@ then
   pass "is_branch_ish: accepts a ./relative managed worktree path"
 else
   fail "is_branch_ish: should accept a ./relative managed worktree path"
+fi
+
+run_test
+if is_branch_ish "main" "$live_dir/testorg/testrepo/feature/base" 2>/dev/null
+then
+  pass "is_branch_ish: a managed worktree path is a valid context"
+else
+  fail "is_branch_ish: a managed worktree path should be a valid context"
 fi
 
 stack_base_as_human() {
