@@ -2089,8 +2089,9 @@ the base: the base worktree is cloned first (ensuring it exists), then
 the target is reset --hard to the base branch's HEAD.  Both must be in
 the same org/repo, and the base branch must already exist, as a local
 branch or on origin -- a missing base is an error, not a new branch off
-the trunk.  An x.ntmux3-building marker provides idempotent recovery from
-partial failures.
+the trunk.  The target must not be the trunk: stacking would reset it
+onto the base.  An x.ntmux3-building marker provides idempotent recovery
+from partial failures.
 
 [stack-on-base] accepts every form <target> does:
 
@@ -2758,6 +2759,39 @@ ensure_stack_base_branch_exists() {
   die '%s %s' "$message" "${suggestions[*]}"
 }
 
+die_stack_target_is_trunk() {
+  local target=$1 base=$2 org_repo=$3 trunk=$4
+
+  local message reason
+  printf -v message "clone_stacked: target '%s' is the trunk of %s ('%s'). Stacking resets the target to the base branch's HEAD, so it would move your local %s onto '%s' and leave it ahead of origin/%s." \
+    "$target" "$org_repo" "$trunk" "$trunk" "$base" "$trunk"
+  reason="A stacked worktree needs a new branch to carry the stack. The trunk never is one, and git will happily reset it anyway."
+
+  local -a suggestions=(
+    "Name a new branch for the target: ntmux3 -d ${org_repo}/<new-branch> ${base}"
+    "To open the trunk itself, drop the stack base: ntmux3 -d ${target}"
+  )
+
+  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
+  then
+    local -a suggestion_args=()
+    local suggestion
+    for suggestion in "${suggestions[@]}"
+    do
+      suggestion_args+=(--suggestion "$suggestion")
+    done
+    aictl_die \
+      --code timvisher_git_stack_target_is_trunk \
+      --message "$message" \
+      --reason "$reason" \
+      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+      "${suggestion_args[@]}"
+  fi
+
+  local IFS=' '
+  die '%s %s' "$message" "${suggestions[*]}"
+}
+
 clone_stacked() {
   local target=$1 stack_on_base=$2
 
@@ -2806,7 +2840,17 @@ clone_stacked() {
     die '%s %s' "$message" "${suggestions[*]}"
   fi
 
-  # Clone the base first — ensures its worktree and local branch exist.
+  local target_check_cache target_check_branch target_check_trunk
+  target_check_cache=$(cache_trunk "$target") ||
+    die "clone_stacked: unable to cache trunk for target '%s'" "$target"
+  target_check_branch=$(branch_path_for_source "$target" "$target_check_cache")
+  target_check_branch=${target_check_branch#*;}
+  target_check_trunk=$(get_trunk_branch_name_from_cache "$target_check_cache")
+  if [[ $target_check_branch == "$target_check_trunk" ]]
+  then
+    die_stack_target_is_trunk "$target" "$stack_on_base" "${target_org}/${target_repo}" "$target_check_trunk"
+  fi
+
   if [[ $stack_on_base != https://github.com/*/*/pull/* ]]
   then
     local base_trunk_cache base_branch_dir_and_branch
@@ -2817,6 +2861,7 @@ clone_stacked() {
       "${base_branch_dir_and_branch%%;*}" "${base_branch_dir_and_branch#*;}"
   fi
 
+  # Clone the base first — ensures its worktree and local branch exist.
   info "clone_stacked: ensuring base worktree for '%s'" "$stack_on_base"
   local base_dir
   base_dir=$(ensure_worktree "$stack_on_base") ||

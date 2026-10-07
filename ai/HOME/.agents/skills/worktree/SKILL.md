@@ -13,7 +13,8 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ## Usage
 
 ```
-ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [file | branch-ish]
+ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]
+ntmux3 [-d] org/repo/branch branch-ish
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -94,6 +95,11 @@ The base branch must already exist, as a local branch or on origin. A
 missing base fails with `timvisher_git_stack_base_missing` instead of
 being created off the trunk, so a misspelled base is caught rather than
 quietly giving you a worktree on the trunk.
+
+The target must not be the trunk. Stacking resets the target to the
+base's HEAD, so `ntmux3 -d org/repo <base>` would move your local trunk
+onto the base. It fails with `timvisher_git_stack_target_is_trunk`
+instead, whether or not the trunk worktree already exists.
 
 If the target worktree already exists, it is left alone rather than
 re-stacked.

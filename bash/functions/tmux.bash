@@ -211,9 +211,11 @@ function ntmux {
 alias nt=ntmux
 
 function ntmux3__usage() {
-    echo 'Usage: ntmux3 [-d] [GitHub PR URL | [github_org_or_org_alias/[repo_name/]]session_name] [file | branch-ish]' >&2
-    echo '  An existing file as arg 2 opens in the editor.  Anything else is a branch-ish to stack the new' >&2
-    echo '  worktree on.  A bare branch name is read as a branch in the same repo as arg 1.' >&2
+    echo 'Usage: ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]' >&2
+    echo '       ntmux3 [-d] org/repo/branch branch-ish' >&2
+    echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
+    echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must' >&2
+    echo '  not be the trunk.  A bare branch name is read as a branch of org/repo.' >&2
     return 1
 }
 

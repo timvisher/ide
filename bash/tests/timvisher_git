@@ -1385,6 +1385,45 @@ else
 fi
 "$test_git" -C "$stack_cache" config --replace-all remote.origin.fetch "$stack_cache_refspec"
 
+stack_trunk_dir="$live_dir/testorg/testrepo/$default_branch"
+stack_trunk_before=$("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}")
+
+for stack_trunk_target in "testorg/testrepo" "testorg/testrepo/${default_branch}"
+do
+  run_test
+  result=$(stack_base_as_human clone_stacked "$stack_trunk_target" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+  if (( 0 < rc )) &&
+    grep -qF "is the trunk of testorg/testrepo" "$stack_base_err" &&
+    [[ $("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}") == "$stack_trunk_before" ]]
+  then
+    pass "clone_stacked: refuses to stack the trunk ('${stack_trunk_target}', trunk worktree present: $([[ -d $stack_trunk_dir ]] && echo yes || echo no))"
+  else
+    fail "clone_stacked: stacking the trunk via '${stack_trunk_target}' (rc=${rc}): $(cat "$stack_base_err")"
+  fi
+done
+
+run_test
+stack_base_as_human clone "testorg/testrepo" >/dev/null 2>&1
+stack_trunk_before=$("$test_git" -C "$stack_cache" rev-parse --verify --quiet "refs/heads/${default_branch}")
+result=$(stack_base_as_human clone_stacked "testorg/testrepo" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if [[ -d $stack_trunk_dir ]] && (( 0 < rc )) &&
+  grep -qF "is the trunk of testorg/testrepo" "$stack_base_err" &&
+  [[ $("$test_git" -C "$stack_trunk_dir" rev-parse HEAD) == "$stack_trunk_before" ]]
+then
+  pass "clone_stacked: refuses to stack the trunk even when its worktree already exists"
+else
+  fail "clone_stacked: stacking an existing trunk worktree (rc=${rc}, trunk wt exists? $([[ -d $stack_trunk_dir ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo" "testorg/testrepo/feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_target_is_trunk"' "$stack_base_err"
+then
+  pass "clone_stacked: stacking the trunk reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent trunk target (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
 # ---------------------------------------------------------------------------
 # temp-build + move invariant tests (ide-8hi)
 #
