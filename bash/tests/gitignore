@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+# Tests for the repo .gitignore negations under ai/HOME/.agents
+
+failures=0
+tests=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+repo_root=$(cd "$(dirname "$0")/.." && cd .. && pwd)
+
+assert_addable() {
+  local path=$1
+  local label=$2
+
+  run_test
+  if git -C "$repo_root" check-ignore -q --no-index "$path"
+  then
+    fail "${label}: '${path}' is ignored but must be addable"
+  else
+    pass "$label"
+  fi
+}
+
+assert_ignored() {
+  local path=$1
+  local label=$2
+
+  run_test
+  if git -C "$repo_root" check-ignore -q --no-index "$path"
+  then
+    pass "$label"
+  else
+    fail "${label}: '${path}' is not ignored but must be"
+  fi
+}
+
+assert_addable ai/HOME/.agents/skills/newskill/SKILL.md \
+  'a new skill under .agents is addable'
+assert_addable ai/HOME/.agents/skills/newskill/agents/openai.yaml \
+  'a new skill support file is addable'
+assert_addable ai/HOME/.agents/languages/newlang.md \
+  'a new language guide is addable'
+assert_addable ai/HOME/.agents/skills/guides/SKILL.md \
+  'the guides skill itself is addable'
+
+assert_ignored ai/HOME/.agents/skills/guides/.DS_Store \
+  '.DS_Store under .agents stays ignored'
+assert_ignored ai/HOME/.agents/.DS_Store \
+  '.DS_Store at the .agents root stays ignored'
+assert_ignored ai/HOME/.agents/scratch.pyc \
+  '*.pyc under .agents stays ignored'
+assert_ignored ai/HOME/.agents/__pycache__/mod.py \
+  '__pycache__/ under .agents stays ignored'
+assert_ignored ai/HOME/.agents/skills/guides/__pycache__/mod.py \
+  'nested __pycache__/ under .agents stays ignored'
+
+run_test
+tracked_count=$(git -C "$repo_root" ls-files ai/HOME/.agents | grep -c .)
+if (( 0 < tracked_count ))
+then
+  pass "ai/HOME/.agents has tracked files (${tracked_count})"
+else
+  fail 'ai/HOME/.agents has no tracked files'
+fi
+
+run_test
+if untracked=$(git -C "$repo_root" ls-files --others --exclude-standard ai/HOME/.agents | grep .)
+then
+  fail "unexpected untracked files under ai/HOME/.agents: ${untracked}"
+else
+  pass 'no untracked files under ai/HOME/.agents'
+fi
+
+printf '\n'
+printf 'Results: %s/%s passed\n' "$(( tests - failures ))" "$tests"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

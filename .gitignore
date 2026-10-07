@@ -10,8 +10,4 @@ emacs/emacs.d/agent/
 emacs/emacs.d/projectile-frecency.eld
 !AGENTS.md
 !CLAUDE.md
-
-# This repo is the source of ai/HOME/.agents; the global ignore
-# pattern for the installed ~/.agents symlink must not apply here.
 !ai/HOME/.agents/
-!ai/HOME/.agents/**
