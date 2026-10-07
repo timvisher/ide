@@ -85,6 +85,11 @@ Arg 2 resolves in this order:
   given.
 - `org/repo/branch` whose org/repo is the **target's** (org aliases and
   case differences count) is used as given.
+- `org/repo/branch` whose org shares an **org alias group** with the
+  target's (for example `DataDog` and `ddoghq`) names the same repo, so
+  it is moved onto the target's org with a
+  `timvisher_git_stack_base_alias_sibling` notice. The notice also says
+  when the repo it named is archived.
 - **Anything else is a relative branch-ish**, resolved as a branch of
   the target's repo. A base with a
   slash that doesn't start with the target's org/repo is ambiguous —

@@ -84,6 +84,12 @@ if [[ $1 == repo && $2 == view ]]; then
     softforkuser/parentrepo)
       echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[{"name":"soft-fork"}]}' | jq -r "$jq_expr"
       ;;
+    oldorg/testrepo)
+      echo '{"isArchived":true}' | jq -r "$jq_expr"
+      ;;
+    liveorg/testrepo)
+      echo '{"isArchived":false}' | jq -r "$jq_expr"
+      ;;
     *)
       echo "not found" >&2; exit 1 ;;
   esac
@@ -1298,6 +1304,63 @@ then
   pass "resolve_stack_base: ambiguity reaches agents as an aictl instruction"
 else
   fail "resolve_stack_base: agent notice: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+stack_base_with_siblings() {
+  (
+    org_aliases[tg]="testorg,oldorg,liveorg,ghostorg"
+    "$@"
+  )
+}
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF "shares an org alias with the target's testorg/testrepo" "$stack_base_err" &&
+  grep -qF "oldorg/testrepo is archived; testorg/testrepo is the live repo" "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias-sibling org is rewritten to the target's, noting the archived repo"
+else
+  fail "resolve_stack_base: archived alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "liveorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF "shares an org alias" "$stack_base_err" &&
+  ! grep -qF "archived" "$stack_base_err"
+then
+  pass "resolve_stack_base: a live alias sibling is rewritten with no archived note"
+else
+  fail "resolve_stack_base: live alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "ghostorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -qF "archived" "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias sibling is still rewritten when the archived lookup fails"
+else
+  fail "resolve_stack_base: unknown alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo" ]]
+then
+  pass "resolve_stack_base: an alias-sibling org/repo with no branch becomes the target's org/repo"
+else
+  fail "resolve_stack_base: alias sibling org/repo: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent stack_base_with_siblings resolve_stack_base "testorg/testrepo/feature/target" "oldorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF '"code":"timvisher_git_stack_base_alias_sibling"' "$stack_base_err"
+then
+  pass "resolve_stack_base: an alias-sibling rewrite reaches agents as an aictl instruction"
+else
+  fail "resolve_stack_base: agent alias sibling: got '${result}', stderr: $(cat "$stack_base_err")"
 fi
 
 run_test

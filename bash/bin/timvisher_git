@@ -2108,6 +2108,10 @@ failures.
     relative directory that is a managed worktree)
   - a GitHub URL
   - org/repo/branch, where org/repo is the target's (aliases count)
+  - org/repo/branch, where org shares an org alias group with the
+    target's org and repo matches: it names the same repo, so it is moved
+    onto the target's org, with a warning that also says when the named
+    repo is archived
 
 Any other value is a relative branch-ish, resolved as a branch of the
 target's repo, so these are equivalent:
@@ -2613,6 +2617,27 @@ stack_base_org_matches() {
   return 1
 }
 
+stack_base_orgs_are_alias_siblings() {
+  local base_org=${1,,} target_org=$2 candidate
+  [[ $base_org != "${target_org,,}" ]] || return 1
+
+  while IFS= read -r candidate
+  do
+    if [[ ${candidate,,} == "$base_org" ]]
+    then
+      return 0
+    fi
+  done < <(hook_org_candidates "$target_org")
+
+  return 1
+}
+
+stack_base_repo_is_archived() {
+  local archived
+  archived=$(gh repo view "$1" --json isArchived --jq .isArchived 2>/dev/null) || return 1
+  [[ $archived == true ]]
+}
+
 resolve_stack_base() {
   local target=$1 base=$2
 
@@ -2658,6 +2683,39 @@ resolve_stack_base() {
       stack_base_org_matches "$base_org" "$target_org" "$target"
     then
       printf '%s' "$base"
+      return
+    fi
+
+    if [[ $base_repo == "$target_repo" ]] &&
+      stack_base_orgs_are_alias_siblings "$base_org" "$target_org"
+    then
+      local sibling="${target_org}/${target_repo}"
+      if [[ $base == */*/* ]]
+      then
+        sibling+="/${base#*/*/}"
+      fi
+
+      local sibling_message
+      printf -v sibling_message "stack-on-base '%s' names %s/%s, which shares an org alias with the target's %s/%s, so it is being used as '%s'." \
+        "$base" "$base_org" "$base_repo" "$target_org" "$target_repo" "$sibling"
+      if stack_base_repo_is_archived "${base_org}/${base_repo}"
+      then
+        sibling_message+=" ${base_org}/${base_repo} is archived; ${target_org}/${target_repo} is the live repo."
+      fi
+
+      if timvisher_git__driven_by_agent && declare -F aictl_notice &>/dev/null
+      then
+        aictl_notice \
+          --code timvisher_git_stack_base_alias_sibling \
+          --message "$sibling_message" \
+          --reason "Orgs in the same org alias group host the same repos, and a stacked worktree's base must be in the target's repo." \
+          --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+          --suggestion "Pass the base under the target's org to make this explicit: ${sibling}"
+      else
+        warn '%s' "$sibling_message"
+      fi
+
+      printf '%s' "$sibling"
       return
     fi
   fi
