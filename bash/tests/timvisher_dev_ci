@@ -436,7 +436,7 @@ fi
 # a worktree sitting directly at <org>/<repo> has an empty branchPath
 # ---------------------------------------------------------------------------
 
-# Test: an empty branchPath still resolves the level-1 hook.  The
+# Test: an empty branchPath still resolves the repo-rung hook.  The
 # cascade inputs are read one per line, so an empty field in the middle
 # of that list must not shift the ones after it.
 flat_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/flatrepo"
@@ -452,7 +452,7 @@ out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls "$flat_wt"
 rc=$?
 if (( rc == 0 )) && [[ $out == *"$flat_hook_dir/run-tests.sh"* ]]
 then
-  pass "an empty branchPath still resolves the level-1 hook"
+  pass "an empty branchPath still resolves the repo-rung hook"
 else
   fail "flat worktree: rc=$rc out='$out'"
 fi
@@ -881,6 +881,119 @@ then
   pass "resolve_regen_conflicts: no conflicted paths is not a resolution"
 else
   fail "regen no conflict: expected non-zero, got $rc_none_rc"
+fi
+
+rung_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/rungrepo/feat/x"
+mkdir -p "$rung_wt_unresolved"
+rung_wt=$(cd "$rung_wt_unresolved" && pwd -P)
+"$test_git" init -q -b main "$rung_wt"
+"$test_git" -C "$rung_wt" config core.hooksPath /dev/null
+"$test_git" -C "$rung_wt" config user.email t@t
+"$test_git" -C "$rung_wt" config user.name t
+printf 'base\n' > "$rung_wt/root.txt"
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m base
+"$test_git" -C "$rung_wt" checkout -q -b feat/x --track main
+mkdir -p "$rung_wt/z" "$rung_wt/a/d" "$rung_wt/a/b"
+for f in z/f.txt a/d/e.txt a/b/c.txt root.txt
+do
+  printf 'change\n' >> "$rung_wt/$f"
+done
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m change
+
+run_test
+rung_subpaths=$(changed_subpaths "$rung_wt" | tr '\n' ' ')
+if [[ $rung_subpaths == "a z a/b a/d " ]]
+then
+  pass "changed_subpaths: changed dirs and ancestors, shallow first, ties lexicographic"
+else
+  fail "changed_subpaths: got '${rung_subpaths}'"
+fi
+
+run_test
+rung_none=$(changed_subpaths "$tmpdir" 2>&1)
+if [[ -z $rung_none ]]
+then
+  pass "changed_subpaths: emits nothing outside a repo with an upstream"
+else
+  fail "changed_subpaths outside repo: got '${rung_none}'"
+fi
+
+REPO_HOOKS_DIR="$tmpdir/rung-repo-hooks"
+REPO_HOOKS_EXT_DIR="$tmpdir/rung-ext-hooks"
+
+make_rung_hook() {
+  mkdir -p "$1"
+  printf '#!/usr/bin/env bash\n' > "$1/rung.sh"
+  chmod +x "$1/rung.sh"
+}
+
+prime_rung_context() {
+  _worktree_context=()
+  _worktree_context[$(worktree_context_key "$rung_wt")]=$(
+    jq -n --arg branch "$1" \
+      '{timvisher_git: {repo: "rungrepo", branchPath: $branch},
+        timvisher_gh: {me: "meorg", forkNetwork: {mainOwner: "mainorg"}}}')
+}
+
+rung_expected=(
+  "$REPO_HOOKS_DIR/mainorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/a/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/z/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/feat/x/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/feat/x/rung.sh"
+)
+for h in "${rung_expected[@]}"
+do
+  make_rung_hook "$(dirname "$h")"
+done
+make_rung_hook "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/q"
+make_rung_hook "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/feat"
+
+run_test
+prime_rung_context feat/x
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+if [[ ${rung_out[*]} == "${rung_expected[*]}" ]]
+then
+  pass "find_hooks: repo, then subpath shallow to deep, then exact branch; owner then dir within a rung"
+else
+  fail "rung order: got $(printf '\n  %s' "${rung_out[@]}")"
+fi
+
+run_test
+prime_rung_context a/b
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_ab_count=0
+for h in "${rung_out[@]}"
+do
+  [[ $h == "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh" ]] && (( ++rung_ab_count ))
+done
+if (( rung_ab_count == 1 )) &&
+   [[ ${rung_out[${#rung_out[@]}-1]} == "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh" ]]
+then
+  pass "find_hooks: a branch key equal to a subpath key runs once"
+else
+  fail "coinciding keys: got $(printf '\n  %s' "${rung_out[@]}")"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/clean --track main
+prime_rung_context feat/x
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_clean_expected=(
+  "${rung_expected[@]:0:3}"
+  "${rung_expected[@]:7:2}"
+)
+if [[ ${rung_out[*]} == "${rung_clean_expected[*]}" ]]
+then
+  pass "find_hooks: no changes vs @{u} leaves only the repo and branch rungs"
+else
+  fail "clean worktree: got $(printf '\n  %s' "${rung_out[@]}")"
 fi
 
 # ---------------------------------------------------------------------------

@@ -21,28 +21,14 @@
 #   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
 #
-# Hook scripts (run-tests.sh, post-integrate.sh) cascade across 4 levels,
-# from general to specific.  For a fork of ByteNess/aws-vault checked
-# out as timvisher-dd/aws-vault with branch "dev":
-#
-#   Level 1 (fork-network repo):   ByteNess/aws-vault/<hook>
-#   Level 2 (my repo):             timvisher-dd/aws-vault/<hook>
-#   Level 3 (fork-network branch): ByteNess/aws-vault/dev/<hook>
-#   Level 4 (my branch):           timvisher-dd/aws-vault/dev/<hook>
-#
-# At each level, two directories are checked in order:
-#   a. bash/bin/timvisher_dev_ci.config/hooks/  (checked-in, timvisher/ide)
-#   b. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/  (machine-specific)
-#
-# ALL matching hooks run (they cascade, not shadow).  Resolved paths
-# are deduplicated, so when "me" equals the fork-network main owner
-# the same file is not executed twice.
+# Hook scripts (run-tests.sh, post-integrate.sh) are resolved by a rung
+# walk.  See "Hook helpers" below for the full model.
 #
 # Fork-network main owner is resolved via timvisher_gh info and cached.
 #
 # If a legacy x.<hook> file exists in a worktree and no hook is found
-# at any cascade level, it is auto-migrated to the checked-in config
-# dir (a) under the fork network path.
+# at any rung, it is auto-migrated to the checked-in config dir under
+# the fork network branch rung.
 
 source ~/.functions/logging.bash ||
     {
@@ -200,19 +186,28 @@ is_dev_integration_worktree() {
 # Hook helpers: map worktree paths to hook scripts
 # ---------------------------------------------------------------------------
 #
-# Hooks are resolved across a 4-level cascade, from general to specific.
-# For a worktree at ~/git/timvisher-dd/aws-vault/dev/ where the fork
-# network main is ByteNess/aws-vault and "me" is timvisher-dd:
+# Hooks are resolved by walking rungs from least to most specific.  For
+# a worktree at ~/git/timvisher-dd/aws-vault/dev/ where the fork network
+# main is ByteNess/aws-vault and "me" is timvisher-dd, each rung is a key
+# under <owner>/aws-vault/:
 #
-#   1. fork-network repo:   <main-owner>/aws-vault/<hook>
-#   2. my repo:             timvisher-dd/aws-vault/<hook>
-#   3. fork-network branch: <main-owner>/aws-vault/dev/<hook>
-#   4. my branch:           timvisher-dd/aws-vault/dev/<hook>
+#   1. repo:    <owner>/aws-vault/<hook>
+#   2. subpath: <owner>/aws-vault/<subpath>/<hook>, for every directory
+#               containing a change vs '@{u}...' and each of its
+#               ancestors, shallower before deeper, equal depths
+#               ordered lexicographically
+#   3. branch:  <owner>/aws-vault/dev/<hook>, exact full branch path
+#               only (no prefix matching)
 #
-# At each level, both REPO_HOOKS_DIR and REPO_HOOKS_EXT_DIR are checked
-# (in that order).  All matching hooks run; they do not shadow each
-# other.  Resolved paths are deduplicated so the same file is never
+# Within a rung, the fork network main owner (ByteNess) is checked
+# before me (timvisher-dd), and within an owner REPO_HOOKS_DIR is
+# checked before REPO_HOOKS_EXT_DIR.  All matching hooks run, in that
+# order; they do not shadow each other, so the most specific hook runs
+# last.  Resolved paths are deduplicated so the same file is never
 # executed twice.
+#
+# Subpath rungs depend on content: a worktree with no changes vs its
+# upstream gets only the repo and branch rungs.
 
 # Cached `timvisher_gh info --json` blobs, keyed by worktree path.
 declare -A _worktree_context
@@ -264,7 +259,7 @@ worktree_context() {
     _worktree_context[$key]=$blob
 }
 
-# Emit the cascade inputs from a worktree's cached context blob, one
+# Emit the rung walk inputs from a worktree's cached context blob, one
 # per line, in a fixed order: repo, branchPath, mainOwner, me.
 # branchPath is the only one that may be empty, and it is not last, so
 # command substitution cannot swallow it.
@@ -295,7 +290,33 @@ die_unresolvable_context() {
         --suggestion "Confirm '${worktree_path}' is a worktree under \$TIMVISHER_GIT_HOME"
 }
 
-# Print all matching hook scripts across the 4-level cascade, NUL
+# Emit the repo-relative subpath of every directory containing a change
+# vs '@{u}...', plus each of its ancestors below the repo root, ordered
+# shallowest first with equal depths ordered lexicographically.  Emits
+# nothing when the worktree has no upstream or no changes.
+# Usage: changed_subpaths "/path/to/worktree"
+changed_subpaths() {
+    local worktree_path=$1
+
+    git -C "$worktree_path" -c core.quotePath=false diff --name-only '@{u}...' 2>/dev/null |
+        awk -F/ '
+            {
+                path = ""
+                for (i = 1; i < NF; i++)
+                {
+                    path = (i == 1) ? $i : path "/" $i
+                    if (!(path in seen))
+                    {
+                        seen[path] = 1
+                        printf "%d\t%s\n", i, path
+                    }
+                }
+            }' |
+        LC_ALL=C sort -t $'\t' -k1,1n -k2,2 |
+        cut -f2-
+}
+
+# Print all matching hook scripts across the rung walk in run order, NUL
 # terminated.  Returns 0 if any hook resolved, 1 if none is configured.
 # Requires the worktree's context to be primed already: callers run
 # worktree_context in their own shell, where a failure can halt.
@@ -316,40 +337,30 @@ find_hooks() {
         read -r me
     } <<<"$fields"
 
-    # Build the search order: 4 levels × 2 dirs.
-    local -a candidates=()
+    local -a rungs=("")
+    local subpath
+    while IFS= read -r subpath
+    do
+        rungs+=("/${subpath}")
+    done < <(changed_subpaths "$worktree_path")
+    [[ -n $branch_path ]] && rungs+=("/${branch_path}")
 
-    # Level 1: fork-network repo
-    candidates+=("${main_owner}/${repo}/${hook_name}")
-
-    # Level 2: my repo
-    candidates+=("${me}/${repo}/${hook_name}")
-
-    # Levels 3 and 4 only apply when there are branch parts.
-    if [[ -n $branch_path ]]
-    then
-        # Level 3: fork-network branch
-        candidates+=("${main_owner}/${repo}/${branch_path}/${hook_name}")
-
-        # Level 4: my branch
-        candidates+=("${me}/${repo}/${branch_path}/${hook_name}")
-    fi
-
-    # Deduplicate resolved paths (e.g. when me == main_owner) while
-    # preserving cascade order.
     local -A seen=()
     local -a resolved=()
-    local candidate dir full_path
-    for candidate in "${candidates[@]}"
+    local rung owner dir full_path
+    for rung in "${rungs[@]}"
     do
-        for dir in "$REPO_HOOKS_DIR" "$REPO_HOOKS_EXT_DIR"
+        for owner in "$main_owner" "$me"
         do
-            full_path="${dir}/${candidate}"
-            if [[ -x $full_path && -z ${seen[$full_path]+set} ]]
-            then
-                seen[$full_path]=1
-                resolved+=("$full_path")
-            fi
+            for dir in "$REPO_HOOKS_DIR" "$REPO_HOOKS_EXT_DIR"
+            do
+                full_path="${dir}/${owner}/${repo}${rung}/${hook_name}"
+                if [[ -x $full_path && -z ${seen[$full_path]+set} ]]
+                then
+                    seen[$full_path]=1
+                    resolved+=("$full_path")
+                fi
+            done
         done
     done
 
@@ -405,7 +416,7 @@ run_hooks() {
 }
 
 # Ensure a hook script exists.  If a legacy x.<name> file exists in the
-# worktree and no hook is found at any cascade level, migrate it to the
+# worktree and no hook is found at any rung, migrate it to the
 # checked-in config dir (REPO_HOOKS_DIR) under the fork network path.
 # Returns 0 if a hook is found (after migration), 1 otherwise.
 # Usage: ensure_repo_script "/path/to/worktree" "run-tests.sh"
@@ -434,7 +445,7 @@ ensure_repo_script() {
     local legacy_path="${worktree_path}/x.${script_name}"
 
     # Migrate legacy x. file if it exists and no config version exists
-    # in any cascade level.
+    # at any rung.
     if ! hook_exists "$worktree_path" "$script_name" &&
        [[ -f $legacy_path ]]
     then
@@ -1219,10 +1230,6 @@ cmd__ensure_tests() {
         return 0
     fi
 
-    # Compute the candidate paths for each cascade level.  The agent
-    # chooses one at write time -- broader levels (1, 2) avoid
-    # per-branch duplication when the script has no branch-specific
-    # dependencies; narrower levels (3, 4) handle the diverging case.
     worktree_context "$worktree_path" ||
         die_unresolvable_context "$worktree_path"
 
@@ -1240,49 +1247,44 @@ cmd__ensure_tests() {
     local target_rel="${main_owner}/${wt_repo}"
     [[ -n $branch_path ]] && target_rel="${target_rel}/${branch_path}"
     local target_path="${REPO_HOOKS_DIR}/${target_rel}/run-tests.sh"
-    local level1_path="${REPO_HOOKS_DIR}/${main_owner}/${wt_repo}/run-tests.sh"
-    local level2_path="${REPO_HOOKS_DIR}/${me}/${wt_repo}/run-tests.sh"
+    local fork_repo_path="${REPO_HOOKS_DIR}/${main_owner}/${wt_repo}/run-tests.sh"
+    local my_repo_path="${REPO_HOOKS_DIR}/${me}/${wt_repo}/run-tests.sh"
+    local subpath_path="${REPO_HOOKS_DIR}/${me}/${wt_repo}/<subpath>/run-tests.sh"
     local fork_repo_dir="${REPO_HOOKS_DIR}/${main_owner}/${wt_repo}"
-    # When me == main_owner (e.g. a fresh clone of upstream rather than
-    # the user's fork), Level 1 and Level 2 collapse to the same path.
-    # Surface that in the prompt rather than presenting them as
-    # distinct levels.
-    local levels_collide="false"
-    if [[ $level1_path == "$level2_path" ]]
-    then
-        levels_collide="true"
-    fi
 
     mkdir -p "$(dirname "$target_path")"
 
-    local cascade_levels_block
-    if [[ $levels_collide == "true" ]]
+    local repo_rung_block
+    if [[ $fork_repo_path == "$my_repo_path" ]]
     then
-        cascade_levels_block="- Level 1 / Level 2 (collide for this worktree -- this clone is on
-  the fork-network main owner, so \"your repo\" and \"the upstream
-  repo\" are the same path):
-    ${level1_path}
-- Level 3/4 (this branch only):
-    ${target_path}
-
-Default to the Level 1/2 path (${level1_path}) when the script has
-no branch-specific dependencies.  Use Level 3/4 only when the
-script genuinely differs by branch.  Note that anything you write
-at the broader path applies to every fork the user maintains of
-this repo, so be conservative -- prefer Level 3/4 if uncertain."
+        repo_rung_block="- Repo rung (this clone is on the fork-network main owner, so
+  \"your repo\" and \"the upstream repo\" are the same path; anything
+  written here applies to every fork the user maintains of this repo):
+    ${fork_repo_path}"
     else
-        cascade_levels_block="- Level 1 (fork-network repo, applies to every fork):
-    ${level1_path}
-- Level 2 (your repo, applies to all your branches):
-    ${level2_path}
-- Level 3/4 (this branch only):
+        repo_rung_block="- Repo rung, fork-network owner (applies to every fork):
+    ${fork_repo_path}
+- Repo rung, your repo (applies to all your branches):
+    ${my_repo_path}"
+    fi
+
+    local rung_block="${repo_rung_block}
+- Subpath rung (applies on every branch that changes something under
+  <subpath>, a directory relative to the repo root):
+    ${subpath_path}
+- Branch rung (this branch only, exact match):
     ${target_path}
 
-Default to Level 2 (${level2_path}) when the script has no
-branch-specific dependencies.  Use Level 3/4 only when the script
-genuinely differs by branch.  Use Level 1 only when you intend to
-contribute the hook upstream."
-    fi
+Default to the repo rung (${my_repo_path}) when the script has no
+branch- or directory-specific dependencies.  Use a subpath rung when
+the script only makes sense for one part of the repo (e.g. one app
+in a monorepo).  Use the branch rung only when the script genuinely
+differs by branch.  Use the fork-network repo rung only when you
+intend to contribute the hook upstream.
+
+A subpath rung only resolves while the worktree has a change under
+that directory vs '@{u}...'.  A worktree with nothing changed vs its
+upstream sees only the repo and branch rungs."
 
     local prompt_file
     prompt_file=$(mktemp "${worktree_path}/x.dev-ci-prompt.XXXXXX") ||
@@ -1295,7 +1297,7 @@ Sanity check first.  Run:
 
     timvisher_dev_ci hooks ls
 
-If a run-tests.sh hook already resolves at any cascade level for
+If a run-tests.sh hook already resolves at any rung for
 this worktree, do not create a new one -- exit 0.  The orchestrator
 checks too, but this guards against drift between the internal
 hook_exists helper and the public CLI.
@@ -1328,14 +1330,15 @@ The script should:
 - Print clear headers before each step (e.g. "--- lint ---", "--- test ---")
 - Be executable (chmod +x)
 
-Cascade level choice.  All matching hooks across the 4-level
-cascade run (no shadowing), so a broader-level hook eliminates
-per-branch duplication.  Pick the broadest level whose semantics
-match the script you're writing:
+Rung choice.  Hooks resolve by walking rungs from least to most
+specific (repo, then subpath shallower to deeper, then branch), and
+all matching hooks run (no shadowing), so a broader-rung hook
+eliminates per-branch duplication.  Pick the broadest rung whose
+semantics match the script you're writing:
 
-${cascade_levels_block}
+${rung_block}
 
-When you write at Level 1 or Level 2, look for redundant
+When you write at the repo or a subpath rung, look for redundant
 per-branch hooks under ${fork_repo_dir}/<branch>/run-tests.sh
 whose content is now covered by the broader hook -- delete those
 files so the cascade does not run the same logic twice.
@@ -1992,9 +1995,9 @@ cmd_hooks_run() {
             aictl_die \
                 --code "dev_ci_hooks_run_none_resolved" \
                 --message "No KNOWN_HOOKS resolved for '${worktree_path}'; nothing to run" \
-                --reason "Every entry in KNOWN_HOOKS (run-tests.sh, post-integrate.sh, pre-run-tests.sh, pre-post-integrate.sh) was checked across all 4 cascade levels and none had a matching script." \
+                --reason "Every entry in KNOWN_HOOKS (run-tests.sh, post-integrate.sh, pre-run-tests.sh, pre-post-integrate.sh) was checked across every rung and none had a matching script." \
                 --suggestion "Run 'timvisher_dev_ci hooks ls' to see the empty cascade" \
-                --suggestion "Add a hook script under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<branch-parts>]/" \
+                --suggestion "Add a hook script under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<subpath>|/<branch-parts>]/" \
                 --suggestion "Or run timvisher_dev_ci's full pipeline ('timvisher_dev_ci .'), which can launch an agent to author run-tests.sh"
         fi
     else
@@ -2013,9 +2016,9 @@ cmd_hooks_run() {
             aictl_die \
                 --code "dev_ci_hook_unresolvable" \
                 --message "Hook(s) not found in cascade for '${worktree_path}': ${missing_str}" \
-                --reason "Explicit hook names must resolve via the 4-level cascade. An unresolvable hook usually means it has not been written yet for this worktree, or the hook name was misspelled." \
+                --reason "Explicit hook names must resolve via the rung walk. An unresolvable hook usually means it has not been written yet for this worktree, or the hook name was misspelled." \
                 --suggestion "Run 'timvisher_dev_ci hooks ls' to see what's available" \
-                --suggestion "Add the hook under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<branch-parts>]/"
+                --suggestion "Add the hook under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<subpath>|/<branch-parts>]/"
         fi
 
         hooks_to_run=("${hook_args[@]}")
@@ -2329,19 +2332,27 @@ KNOWN HOOKS
 
 HOOK CASCADE
     For a worktree at ~/git/<org>/<repo>/<branch-parts>/, hooks are
-    resolved across 4 levels (general → specific):
+    resolved by walking rungs from least to most specific:
 
-        1. <fork-network-main-owner>/<repo>/<hook>
-        2. <my-github-user>/<repo>/<hook>
-        3. <fork-network-main-owner>/<repo>/<branch-parts>/<hook>
-        4. <my-github-user>/<repo>/<branch-parts>/<hook>
+        1. repo:    <owner>/<repo>/<hook>
+        2. subpath: <owner>/<repo>/<subpath>/<hook>
+        3. branch:  <owner>/<repo>/<branch-parts>/<hook>
 
-    For each level, two directories are checked in order:
+    Subpath rungs are every directory containing a change vs '@{u}...'
+    plus each of its ancestors, shallower before deeper, equal depths
+    ordered lexicographically. A worktree with no changes vs its
+    upstream gets only the repo and branch rungs. Branch rungs match
+    the full branch path exactly (no prefixes).
+
+    Within each rung, <owner> is tried as the fork-network main owner,
+    then <my-github-user>. For each owner, two directories are checked
+    in order:
         a. bash/bin/timvisher_dev_ci.config/hooks/  (checked-in, in this repo)
         b. ~/.config/timvisher/ide/timvisher_dev_ci/hooks/  (machine-specific)
 
-    All matching hooks run in cascade order (no shadowing). Resolved
-    paths are deduplicated so the same file is never executed twice.
+    All matching hooks run in that order (no shadowing), so the most
+    specific hook runs last. Resolved paths are deduplicated so the
+    same file is never executed twice.
 
 EXIT
     0   success
