@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+
+# Tests for agent skill metadata and AGENTS.md / guide consistency
+
+failures=0
+tests=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+repo_root=$(cd "$(dirname "$0")/.." && cd .. && pwd)
+skills_dir="${repo_root}/ai/HOME/.agents/skills"
+languages_dir="${repo_root}/ai/HOME/.agents/languages"
+agents_md="${repo_root}/ai/HOME/AGENTS.md"
+
+folded_description() {
+  awk '
+    /^---[[:space:]]*$/ { marker += 1; next }
+    marker != 1         { next }
+    capturing && /^  / {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      out = (out == "") ? line : out " " line
+      next
+    }
+    capturing { capturing = 0 }
+    /^description:/ {
+      rest = $0
+      sub(/^description:[[:space:]]*/, "", rest)
+      if (rest ~ /^[>|]/ || rest == "")
+      {
+        capturing = 1
+      }
+      else
+      {
+        out = rest
+      }
+    }
+    END { print out }
+  ' "$1"
+}
+
+frontmatter_name() {
+  awk '
+    /^---[[:space:]]*$/ { marker += 1; next }
+    marker != 1         { next }
+    /^name:[[:space:]]/ {
+      sub(/^name:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+for skill_path in "$skills_dir"/*/
+do
+  skill=$(basename "$skill_path")
+
+  run_test
+  if [[ -f ${skill_path}SKILL.md ]]
+  then
+    pass "${skill}: has SKILL.md"
+  else
+    fail "${skill}: missing SKILL.md"
+    continue
+  fi
+
+  run_test
+  declared=$(frontmatter_name "${skill_path}SKILL.md")
+  if [[ $declared == "$skill" ]]
+  then
+    pass "${skill}: frontmatter name matches directory"
+  else
+    fail "${skill}: frontmatter name '${declared}' != directory '${skill}'"
+  fi
+
+  run_test
+  description=$(folded_description "${skill_path}SKILL.md")
+  length=${#description}
+  if (( 0 < length )) && (( length <= 1536 ))
+  then
+    pass "${skill}: description is ${length} chars, within budget"
+  else
+    fail "${skill}: description length ${length} outside 1..1536"
+  fi
+done
+
+while read -r guide
+do
+  run_test
+  if [[ -f ${languages_dir}/${guide} ]]
+  then
+    pass "AGENTS.md references language guide ${guide}, which exists here"
+  elif [[ -f ${HOME}/.agents/languages/${guide} ]]
+  then
+    pass "AGENTS.md references ${guide}, installed from another repo"
+  else
+    fail "AGENTS.md references ~/.agents/languages/${guide}, which does not exist"
+  fi
+done < <(grep -oE '~/\.agents/languages/[a-z0-9_-]+\.md' "$agents_md" |
+           sed 's|.*/||' |
+           sort -u)
+
+printf '\n'
+printf 'Results: %s/%s passed\n' "$(( tests - failures ))" "$tests"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

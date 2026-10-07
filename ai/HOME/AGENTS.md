@@ -107,21 +107,85 @@ When starting a session, read the Beads and Topics section below and use the `be
 
 ## Documentation Index
 
-When working with specific languages or tools, read these files for
-detailed instructions:
+### Guides (Required)
 
-### Languages
+**Your _*FIRST*_ action when a task touches any language, tool, or
+technology is to check whether a guide exists for it, and read it.**
+That means before writing, editing or reviewing anything — and before
+acting on an outside reviewer's findings about it.
 
-- `~/.agents/languages/applescript.md` -
-  AppleScript encoding, git diff handling
-- `~/.agents/languages/bash.md` - Quote usage,
-  then/do formatting, logging patterns
-- `~/.agents/languages/terraform.md` - Workflow
-  scripts, tagging, migrations, modules
-- `~/.agents/languages/org-mode.md` - Large file
-  navigation tools, formatting conventions
-- `~/.agents/languages/emacs-lisp.md` - ERT
-  testing patterns
+Guides live in two places. Check both; some subjects have one of each,
+and the tool guide does not repeat the language conventions:
+
+- `~/.agents/languages/<name>.md` — conventions for a language.
+  _*NOT*_ loaded into your context automatically. You have to go read
+  the file. Indexed below.
+- `~/.agents/skills/<name>/SKILL.md` — workflow for a tool or
+  technology: `beads`, `git`, `github`, `worktree`, `dev-ci`,
+  `org-mode`, and ~30 more. Surfaced in the skills listing — invoke the
+  skill rather than improvising the tool's usage. Some skills install
+  from the DataDog system-extensions repo rather than this one
+  (`ddtool`, `terraform`, `ipaam`, `appgate`, `aws-cli`), so they are
+  present only where that repo is installed. `ls ~/.agents/skills/` is
+  the authoritative inventory either way.
+
+Terraform is the shape to expect: a language guide for provider
+constraints and tagging, plus a skill for the planning workflow.
+Reading one does not excuse skipping the other.
+
+The `guides` skill carries this as a workflow and is surfaced in the
+skills listing every session, which the language guides are not.
+
+Treat everything in a guide as _*extremely important*_ and follow it by
+default. These are not style suggestions: each contains hard
+prohibitions whose violation means the work gets reverted.
+
+A guide is overridable only by a more specific local convention, or by
+the human saying so for a particular case. Absent that, the guide wins
+— over your own instinct, over the surrounding code's existing habits,
+and over any outside reviewer, linter, or tool that recommends
+otherwise. Outside reviewers do not know these conventions;
+cross-check their advice against the guide before implementing it. If
+a guide and another source conflict and you cannot reconcile them,
+stop and ask rather than guessing.
+
+Reading a guide costs seconds — none of them is long, and a hardcoded page
+count here would only go stale. Length is never a reason to skip one.
+
+#### Language guides
+
+Each entry leads with the rules most likely to get work thrown out.
+The list is not the guide — read the file.
+
+- `~/.agents/languages/bash.md` —
+  _*NEVER*_ enable 'safe mode' (`set -e`/`-u`/`-o pipefail`) globally,
+  together or separately — do your own error checking instead, it is
+  cleaner and it actually works. `pipefail` scoped to a single pipeline
+  is the one exception. _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
+  `then`/`do`/`else`/`elif` on their own lines; `trap` registered
+  before the resource it cleans up; straight ASCII quotes only.
+  wooledge.org is the only trusted source for bash guidance.
+- `~/.agents/languages/applescript.md` —
+  _*ALWAYS*_ run `file <name>.applescript` before editing; _*NEVER*_
+  write UTF-8 to a file Script Editor will open. The Edit tool corrupts
+  MacRoman and UTF-16 — use sed for those. Prefer pure ASCII.
+  Compile-check with `osacompile` after editing.
+- `~/.agents/languages/terraform.md` —
+  _*NEVER*_ hand-create `.terraform.lock.hcl`. Prefer `~>` constraints
+  in root modules and `>=` in shared modules. `default_tags` always configured,
+  even with no taggable resources yet. Recalculate every `../` depth
+  when a root module moves.
+- `~/.agents/languages/emacs-lisp.md` —
+  `--batch` has everything a GUI Emacs has except a TTY, so do _*NOT*_
+  write batch-mode workarounds; do _*NOT*_ use `(while t (sit-for N))`
+  — use `accept-process-output`. `nil` is the only falsy value: `""`,
+  `[]` and `0` are all truthy. ERT for tests.
+- `~/.agents/languages/org-mode.md` —
+  Inactive timestamps always. Whitespace padding around heading
+  bodies, _*never*_ around list structures. Wrap at 72 characters. Org
+  files are structured — interact with them in a way that honors that;
+  for large files use the org-mode skill and its `org-*` helper tools
+  rather than flat-text editing.
 
 ### Repository Organization
 

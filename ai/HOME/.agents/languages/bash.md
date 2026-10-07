@@ -1,6 +1,10 @@
 ### Bash
 
-- _**NEVER**_ use so-called 'safe mode' (`set -euo pipefail`) https://mywiki.wooledge.org/BashFAQ/105
+- _**NEVER**_ enable so-called 'safe mode' (`set -euo pipefail`) globally,
+  whether the flags appear together or separately. Do your own error checking
+  instead — see "Error Handling" below, which also covers the one scoped use
+  of `pipefail` that is fine. https://mywiki.wooledge.org/BashFAQ/105 and
+  pitfall 60 on https://mywiki.wooledge.org/BashPitfalls
 - https://mywiki.wooledge.org/ and sources it links directly to are the only source of good guidance on writing Bash on the Internet.
 - _**NEVER**_ use `seq`. Use brace expansion (`{0..100}`) or C-style for loops instead.
 - Always put `then`, `do`, `else`, `elif` on their own lines
@@ -16,6 +20,64 @@
     echo "$item"
   done
   ```
+
+#### Error Handling
+
+- The shell cannot detect errors. All it has is a command's exit status, and
+  plenty of commands exit non-zero without anything being wrong. That is why
+  the automatic mechanisms do not work, and why you check the things you
+  actually care about, where you care about them.
+- `-e` (`errexit`) is the worst of the three. Its rules for when to abort are,
+  per BashFAQ/105, "extremely convoluted", they still miss simple cases, and
+  they have changed between Bash versions. Commands in an `if` test, and every
+  command in a pipeline but the last, are silently immune — so it gives you
+  false confidence exactly where you wanted a guarantee. The FAQ's own advice:
+  "don't use set -e. Add your own error checking instead."
+- `-u` (`nounset`) breaks correct scripts on ordinary idioms — optional
+  positional parameters, empty arrays. wooledge takes no side on it
+  (BashFAQ/112), calling it controversial and warning it is not always safe to
+  add to the top of a script. Use `"${1-}"` rather than reaching for it.
+- `pipefail` is reasonable for one specific pipeline that needs it, but
+  _**NEVER**_ globally at the top of a file. Scope it so you cannot clobber a
+  caller that already set it — a subshell, or `local -` inside a function:
+  ```bash
+  count=$(
+    set -o pipefail
+    grep -c -- "$pattern" "$file" | head -1
+  )
+
+  parse_feed() {
+    local -                 # restores all shell options on return
+    set -o pipefail
+    curl -fsS -- "$url" | gunzip
+  }
+  ```
+- Check the call, report it, and decide what to do:
+  ```bash
+  if ! cp -- "$src" "$dst"
+  then
+    printf 'cp failed: "%s" -> "%s"\n' "$src" "$dst" >&2
+    exit 1
+  fi
+  ```
+- Accumulate when you want every failure reported rather than the first one
+  aborting the run — this is what a test suite wants:
+  ```bash
+  failures=0
+
+  check_one "$case" || (( failures += 1 ))
+
+  if (( 0 < failures ))
+  then
+    exit 1
+  fi
+  ```
+- Prefer `(( x += 1 ))` to `(( x++ ))`. Post-increment evaluates to the value
+  *before* the bump, so `(( x++ ))` exits non-zero when `x` was 0 — which
+  under `errexit` kills the script the first time it counts anything, and is
+  why safe-mode codebases fill up with `|| true`. `(( x += 1 ))` evaluates to
+  the new value, so it only exits non-zero when the result is genuinely 0.
+  Without `errexit` neither one aborts anything, and the `|| true` can go.
 
 #### Mutexes and Temp File Cleanup
 
@@ -60,9 +122,9 @@
 
 #### Quote Usage in Bash
 
-- **ALWAYS** replace ‘ (U+2018) and ‘ (U+2019) with ‘ (straight
+- **ALWAYS** replace ‘ (U+2018) and ’ (U+2019) with ' (straight
   apostrophe, U+0027)
-- **ALWAYS** replace “ (U+201C) and “ (U+201D) with “ (straight
+- **ALWAYS** replace “ (U+201C) and ” (U+201D) with " (straight
   quotation mark, U+0022)
 - In log messages, use straight ASCII quotes around logged terms
 - Examples:
