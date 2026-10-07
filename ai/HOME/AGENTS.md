@@ -156,9 +156,10 @@ Each entry leads with the rules most likely to get work thrown out.
 The list is not the guide — read the file.
 
 - `~/.agents/languages/bash.md` —
-  _*NEVER*_ 'safe mode' (`set -e`/`-u`/`-o pipefail`, together or
-  separately) — do your own error checking instead, it is cleaner and it
-  actually works; _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
+  _*NEVER*_ enable 'safe mode' (`set -e`/`-u`/`-o pipefail`) globally,
+  together or separately — do your own error checking instead, it is
+  cleaner and it actually works. `pipefail` scoped to a single pipeline
+  is the one exception. _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
   `then`/`do`/`else`/`elif` on their own lines; `trap` registered
   before the resource it cleans up; straight ASCII quotes only.
   wooledge.org is the only trusted source for bash guidance.

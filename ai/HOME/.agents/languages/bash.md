@@ -1,8 +1,9 @@
 ### Bash
 
-- _**NEVER**_ use so-called 'safe mode' (`set -euo pipefail`), whether the
-  flags appear together or separately. Do your own error checking instead —
-  see "Error Handling" below. https://mywiki.wooledge.org/BashFAQ/105 and
+- _**NEVER**_ enable so-called 'safe mode' (`set -euo pipefail`) globally,
+  whether the flags appear together or separately. Do your own error checking
+  instead — see "Error Handling" below, which also covers the one scoped use
+  of `pipefail` that is fine. https://mywiki.wooledge.org/BashFAQ/105 and
   pitfall 60 on https://mywiki.wooledge.org/BashPitfalls
 - https://mywiki.wooledge.org/ and sources it links directly to are the only source of good guidance on writing Bash on the Internet.
 - _**NEVER**_ use `seq`. Use brace expansion (`{0..100}`) or C-style for loops instead.
@@ -34,11 +35,23 @@
   "don't use set -e. Add your own error checking instead."
 - `-u` (`nounset`) breaks correct scripts on ordinary idioms — optional
   positional parameters, empty arrays. wooledge takes no side on it
-  (BashFAQ/112) and warns it "is **not** always safe to add to the top of a
-  script". Use `"${1-}"` rather than reaching for it.
-- `pipefail` is reasonable for one specific pipeline that needs it. Enable it
-  around that pipeline and turn it off afterwards. _**NEVER**_ enable it
-  globally at the top of a file.
+  (BashFAQ/112), calling it controversial and warning it is not always safe to
+  add to the top of a script. Use `"${1-}"` rather than reaching for it.
+- `pipefail` is reasonable for one specific pipeline that needs it, but
+  _**NEVER**_ globally at the top of a file. Scope it so you cannot clobber a
+  caller that already set it — a subshell, or `local -` inside a function:
+  ```bash
+  count=$(
+    set -o pipefail
+    grep -c -- "$pattern" "$file" | head -1
+  )
+
+  parse_feed() {
+    local -                 # restores all shell options on return
+    set -o pipefail
+    curl -fsS -- "$url" | gunzip
+  }
+  ```
 - Check the call, report it, and decide what to do:
   ```bash
   if ! cp -- "$src" "$dst"
