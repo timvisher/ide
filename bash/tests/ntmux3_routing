@@ -13,7 +13,7 @@
 # A *managed* worktree (its git common dir lives under the trunk cache,
 # ~/.cache/timvisher_git_worktrees/repo_trunks) must still go through
 # clone so it gets the normal managed handling.  So must org/repo
-# shorthands and stacked-worktree requests (arg2 is a branch-ish).
+# shorthands and stacked-worktree requests (arg2 is not a file).
 #
 # Strategy: stub the two terminal routes — `ntmux` (session open) and
 # `timvisher_git` (clone) — AFTER sourcing tmux.bash (the source defines
@@ -140,7 +140,7 @@ route() {
     timvisher_git() {
       case "${1:-}" in
         is-branch-ish) return 0 ;;
-        clone) printf 'clone\n' >>"${sentinel}"; printf '/nonexistent' ;;
+        clone) printf 'clone %s\n' "${*:2}" >>"${sentinel}"; printf '/nonexistent' ;;
         *) return 0 ;;
       esac
     }
@@ -185,9 +185,22 @@ assert_route "$(route "${managed_wt}")" clone open \
 assert_route "$(route someorg/somerepo)" clone open \
   "org/repo shorthand routes to clone"
 
-# Existing working tree + branch-ish arg2 (stacked worktree) -> clone.
+# Existing working tree + non-file arg2 (stacked worktree) -> clone.
 assert_route "$(route "${standalone_wt}" some-branch)" clone open \
   "stacked-worktree request routes to clone"
+
+printf 'notes\n' >"${standalone_wt}/sub/notes.txt" || { echo "FAIL: setup notes file" >&2; exit 1; }
+assert_route "$(route "${standalone_wt}" "${standalone_wt}/sub/notes.txt")" open clone \
+  "existing file as arg2 opens in the editor and is never a stack base"
+
+run_test
+got=$(route someorg/somerepo/feature/top feature/base)
+if [[ $got == *"clone someorg/somerepo/feature/top feature/base"* ]]
+then
+  pass "bare stack base is forwarded to timvisher_git clone (route=${got})"
+else
+  fail "bare stack base should be forwarded to clone, got '${got:-<none>}'"
+fi
 
 echo
 echo "Results: $((tests - failures))/${tests} passed"

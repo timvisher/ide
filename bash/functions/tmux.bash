@@ -211,7 +211,9 @@ function ntmux {
 alias nt=ntmux
 
 function ntmux3__usage() {
-    echo 'Usage: ntmux3 [-d] [GitHub PR URL | [github_org_or_org_alias/[repo_name/]]session_name] [base_dir | file]' >&2
+    echo 'Usage: ntmux3 [-d] [GitHub PR URL | [github_org_or_org_alias/[repo_name/]]session_name] [file | stack-on-base]' >&2
+    echo '  An existing file as arg 2 opens in the editor.  Anything else is the base to stack the new' >&2
+    echo '  worktree on: a branch of the same repo (bare or org/repo-qualified), a worktree path, or a URL.' >&2
     return 1
 }
 
@@ -564,14 +566,16 @@ function ntmux3() {
     # Handle arg2: stacked worktree or file
     if [[ -n $base_dir_or_target_file ]]
     then
-        if timvisher_git is-branch-ish "$base_dir_or_target_file"
+        if [[ -f $base_dir_or_target_file ]]
         then
-            info 'arg 2 is a branch-ish; assuming stacked worktree: %s stacked on %s' \
+            if [[ -z $target_file ]]
+            then
+                target_file="$base_dir_or_target_file"
+            fi
+        else
+            info 'arg 2 is not a file; stacking %s on %s' \
                 "$clone_target" "$base_dir_or_target_file"
             stack_on_base="$base_dir_or_target_file"
-        elif [[ -z $target_file && -f $base_dir_or_target_file ]]
-        then
-            target_file="$base_dir_or_target_file"
         fi
     fi
 
