@@ -1174,6 +1174,155 @@ else
   fail "is_branch_ish: should accept a ./relative managed worktree path"
 fi
 
+stack_base_as_human() {
+  (
+    unset CLAUDECODE TIMVISHER_CODEX TIMVISHER_AGENT timvisher_logging_log_level
+    "$@"
+  )
+}
+
+stack_base_as_agent() {
+  (
+    unset CLAUDECODE TIMVISHER_CODEX timvisher_logging_log_level
+    export TIMVISHER_AGENT=1
+    "$@"
+  )
+}
+
+stack_base_err="$tmpdir/stack_base.err"
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" main 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/main" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: slash-less base is a branch of the target repo, no warning"
+else
+  fail "resolve_stack_base: slash-less base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "testorg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: base qualified with the target org/repo is used as-is"
+else
+  fail "resolve_stack_base: qualified base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "TestOrg/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "TestOrg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: org match is case-insensitive"
+else
+  fail "resolve_stack_base: case-insensitive org: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "to/testrepo/feature/base" 2>"$stack_base_err")
+if [[ $result == "to/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+then
+  pass "resolve_stack_base: base qualified via an org alias of the target is used as-is"
+else
+  fail "resolve_stack_base: alias-qualified base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -q ambiguous "$stack_base_err" &&
+  grep -qF "Pass the base qualified to make the intent explicit: testorg/testrepo/feature/base" "$stack_base_err"
+then
+  pass "resolve_stack_base: slashed unqualified base defaults to the target repo and warns"
+else
+  fail "resolve_stack_base: ambiguous base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "someone/area/thing" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/someone/area/thing" ]] &&
+  grep -qF "names repo someone/area" "$stack_base_err"
+then
+  pass "resolve_stack_base: warning names the repo the base would otherwise point at"
+else
+  fail "resolve_stack_base: foreign-looking base: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+if [[ $result == "testorg/testrepo/feature/base" ]] &&
+  grep -qF '"type":"instruction"' "$stack_base_err" &&
+  grep -qF '"code":"timvisher_git_stack_base_inherited"' "$stack_base_err"
+then
+  pass "resolve_stack_base: ambiguity reaches agents as an aictl instruction"
+else
+  fail "resolve_stack_base: agent notice: got '${result}', stderr: $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "https://github.com/testorg/testrepo/pull/7" 2>"$stack_base_err")
+if [[ $result == "https://github.com/testorg/testrepo/pull/7" ]]
+then
+  pass "resolve_stack_base: URL base passes through unchanged"
+else
+  fail "resolve_stack_base: URL base: got '${result}'"
+fi
+
+run_test
+if [[ -d $live_dir/testorg/testrepo/feature/base ]]
+then
+  result=$(stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "$live_dir/testorg/testrepo/feature/base" 2>"$stack_base_err")
+  if [[ $result == "testorg/testrepo/feature/base" ]]
+  then
+    pass "resolve_stack_base: absolute worktree path resolves to its org/repo/branch"
+  else
+    fail "resolve_stack_base: absolute worktree path: got '${result}', stderr: $(cat "$stack_base_err")"
+  fi
+
+  run_test
+  result=$(cd "$live_dir/testorg/testrepo" && stack_base_as_human resolve_stack_base "testorg/testrepo/feature/target" "feature/base" 2>"$stack_base_err")
+  if [[ $result == "testorg/testrepo/feature/base" ]] && ! grep -q ambiguous "$stack_base_err"
+  then
+    pass "resolve_stack_base: relative managed worktree dir is a filesystem ref, no warning"
+  else
+    fail "resolve_stack_base: relative worktree dir: got '${result}', stderr: $(cat "$stack_base_err")"
+  fi
+else
+  fail "resolve_stack_base: base worktree from the clone_stacked tests is missing"
+fi
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/a" "otherorg/otherrepo/feature/b" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "resolves to repo otherorg/otherrepo" "$stack_base_err" &&
+  grep -qF "pass testorg/testrepo/feature/b" "$stack_base_err"
+then
+  pass "clone_stacked: mismatch error names the parsed repo and suggests the fix"
+else
+  fail "clone_stacked: mismatch error (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/a" "otherorg/otherrepo/feature/b" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF '"code":"timvisher_git_stack_base_repo_mismatch"' "$stack_base_err"
+then
+  pass "clone_stacked: mismatch reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent mismatch (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+inherit_dir=$(stack_base_as_human clone "testorg/testrepo/feature/inherit-top" "feature/base" 2>"$stack_base_err") && rc=0 || rc=$?
+inherit_base_head=$("$test_git" -C "$live_dir/testorg/testrepo/feature/base" rev-parse HEAD 2>/dev/null)
+if (( rc == 0 )) && [[ -d $inherit_dir && -n $inherit_base_head ]] &&
+  [[ $("$test_git" -C "$inherit_dir" rev-parse HEAD 2>/dev/null) == "$inherit_base_head" ]]
+then
+  pass "clone: a bare stack base stacks onto the target repo's branch"
+else
+  fail "clone: bare stack base (rc=${rc}, dir='${inherit_dir}', head='$("$test_git" -C "$inherit_dir" rev-parse HEAD 2>&1)', base_head='${inherit_base_head}'): $(cat "$stack_base_err")"
+fi
+
 # ---------------------------------------------------------------------------
 # temp-build + move invariant tests (ide-8hi)
 #

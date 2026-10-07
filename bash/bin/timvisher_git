@@ -10,6 +10,12 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+if [[ -f ~/.functions/aictl.bash ]]
+then
+  # shellcheck source=/dev/null
+  source ~/.functions/aictl.bash
+fi
+
 # shellcheck source=/dev/null
 source ~/.functions/gh.bash ||
   {
@@ -2080,9 +2086,27 @@ on the same target — existing worktrees are verified and repaired.
 
 When [stack-on-base] is provided, the target worktree is "stacked" on
 the base: the base worktree is cloned first (ensuring it exists), then
-the target is reset --hard to the base branch's HEAD.  Both arguments
-must resolve to the same org/repo.  An x.ntmux3-building marker provides
-idempotent recovery from partial failures.
+the target is reset --hard to the base branch's HEAD.  Both must be in
+the same org/repo.  An x.ntmux3-building marker provides idempotent
+recovery from partial failures.
+
+[stack-on-base] accepts every form <target> does:
+
+  - a worktree path (absolute, ./relative, ../relative, ~/..., or a
+    relative directory that is a managed worktree)
+  - a GitHub URL
+  - org/repo/branch, where org/repo is the target's (aliases count)
+
+Any other value is read as a branch of the target's repo, so these are
+equivalent:
+
+  timvisher_git clone ddoghq/appgate/feature/top ddoghq/appgate/feature/base
+  timvisher_git clone ddoghq/appgate/feature/top feature/base
+
+A value with a slash that does not start with the target's org/repo is
+ambiguous (feature/base could be read as org 'feature', repo 'base'), so
+it is resolved as a branch of the target's repo with a warning.  Qualify
+it to silence the warning.
 
 Resolution order
 ----------------
@@ -2097,8 +2121,8 @@ Resolution order
      b. Git working tree → ensure_existing_repo.
   2. Remote match — URL, or org/repo shorthand that resolves via aliases
      and the GitHub trunk cache → ensure_worktree.  When stack_on_base
-     is provided, both args must resolve as branch-ishes for
-     clone_stacked.
+     is provided it is first resolved against the target (see above),
+     and both must then be branch-ishes for clone_stacked.
   3. Error — if none of the above match.
 
   Relative paths without ./ prefix (e.g. "myrepo") are resolved against
@@ -2419,8 +2443,6 @@ strip_live_prefix() {
 
 clone() {
   local target=${1:-}
-  # REFACTOR: A future enhancement could allow stack_on_base to be a bare
-  # branch name (repo inferred from target).
   local stack_on_base=${2:-}
 
   if [[ -z $target ]]
@@ -2449,21 +2471,15 @@ clone() {
   local remote_target
   remote_target=$(strip_live_prefix "$target")
 
-  if [[ -n $stack_on_base ]]
+  if [[ -n $stack_on_base ]] && is_branch_ish "$remote_target"
   then
-    # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
-    case $stack_on_base in
-      '~')   stack_on_base="$HOME" ;;
-      '~/'*) stack_on_base="${HOME}/${stack_on_base#'~'/}" ;;
-    esac
-    stack_on_base=$(strip_live_prefix "$stack_on_base")
-  fi
-
-  if [[ -n $stack_on_base ]] &&
-    is_branch_ish "$remote_target" && is_branch_ish "$stack_on_base"
-  then
-    clone_stacked "$remote_target" "$stack_on_base"
-    return
+    stack_on_base=$(resolve_stack_base "$remote_target" "$stack_on_base") ||
+      die "clone: unable to resolve stack-on-base for '%s'" "$remote_target"
+    if is_branch_ish "$stack_on_base"
+    then
+      clone_stacked "$remote_target" "$stack_on_base"
+      return
+    fi
   fi
 
   # Route to ensure_worktree when strip_live_prefix produced a shorthand
@@ -2550,6 +2566,122 @@ clone() {
 # Stacked worktree: clone target on top of a base branch.
 # ---------------------------------------------------------------------------
 
+timvisher_git__driven_by_agent() {
+  [[ -n ${CLAUDECODE:-} || -n ${TIMVISHER_CODEX:-} || -n ${TIMVISHER_AGENT:-} ]]
+}
+
+stack_base_org_matches() {
+  local base_org=$1 target_org=$2 target=$3
+
+  if [[ ${base_org,,} == "${target_org,,}" ]]
+  then
+    return 0
+  fi
+
+  local target_raw_org=${target%%/*}
+  if [[ $target != *://* && $target != git@* && ${base_org,,} == "${target_raw_org,,}" ]]
+  then
+    return 0
+  fi
+
+  local candidates=${org_aliases[$base_org]:-}
+  [[ -n $candidates ]] || return 1
+
+  local -a group
+  local candidate
+  IFS=',' read -r -a group <<< "$candidates"
+  for candidate in "${group[@]}"
+  do
+    if [[ ${candidate,,} == "${target_org,,}" ]]
+    then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+resolve_stack_base() {
+  local target=$1 base=$2
+
+  # shellcheck disable=SC2088  # case patterns match literal '~', not expansion
+  case $base in
+    '~')   base="$HOME" ;;
+    '~/'*) base="${HOME}/${base#'~'/}" ;;
+  esac
+
+  case $base in
+    http://* | https://* | git@*)
+      printf '%s' "$base"
+      return
+      ;;
+    /* | ./* | ../*)
+      if [[ -d $base ]]
+      then
+        strip_live_prefix "$(cd "$base" && pwd -P)"
+      else
+        strip_live_prefix "$base"
+      fi
+      return
+      ;;
+  esac
+
+  if [[ -d $base ]] && is_branch_ish "./${base}"
+  then
+    strip_live_prefix "$(cd "$base" && pwd -P)"
+    return
+  fi
+
+  local target_org target_repo
+  target_org=$(get_org "$target") || return 1
+  target_repo=$(get_repo "$target") || return 1
+
+  local base_org='' base_repo=''
+  if [[ $base == */* ]]
+  then
+    base_org=${base%%/*}
+    base_repo=${base#*/}
+    base_repo=${base_repo%%/*}
+    if [[ $base_repo == "$target_repo" ]] &&
+      stack_base_org_matches "$base_org" "$target_org" "$target"
+    then
+      printf '%s' "$base"
+      return
+    fi
+  fi
+
+  local resolved="${target_org}/${target_repo}/${base}"
+
+  if [[ -z $base_org ]]
+  then
+    info "stack-on-base '%s' is a branch of %s/%s: '%s'" \
+      "$base" "$target_org" "$target_repo" "$resolved"
+    printf '%s' "$resolved"
+    return
+  fi
+
+  local message reason suggestion
+  printf -v message "stack-on-base '%s' is ambiguous. Read as org/repo/branch it names repo %s/%s, but a stacked worktree's base must be in the target's repo %s/%s, so it is being used as branch '%s' of %s/%s: '%s'." \
+    "$base" "$base_org" "$base_repo" "$target_org" "$target_repo" \
+    "$base" "$target_org" "$target_repo" "$resolved"
+  reason="clone_stacked only stacks within one repo, so the only usable reading of a base that does not start with the target's org/repo is a branch of the target's repo."
+  suggestion="Pass the base qualified to make the intent explicit: ${resolved}"
+
+  if timvisher_git__driven_by_agent && declare -F aictl_notice &>/dev/null
+  then
+    aictl_notice \
+      --code timvisher_git_stack_base_inherited \
+      --message "$message" \
+      --reason "$reason" \
+      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+      --suggestion "$suggestion"
+  else
+    warn '%s %s' "$message" "$suggestion"
+  fi
+
+  printf '%s' "$resolved"
+}
+
 clone_stacked() {
   local target=$1 stack_on_base=$2
 
@@ -2566,8 +2698,36 @@ clone_stacked() {
 
   if [[ $target_org != "$base_org" || $target_repo != "$base_repo" ]]
   then
-    die "clone_stacked: target '%s/%s' and stack-on-base '%s/%s' must be the same org/repo" \
-      "$target_org" "$target_repo" "$base_org" "$base_repo"
+    local message reason
+    printf -v message "clone_stacked: stack-on-base '%s' resolves to repo %s/%s, but target '%s' is in %s/%s. A stacked worktree's base must be a branch of the target's repo." \
+      "$stack_on_base" "$base_org" "$base_repo" "$target" "$target_org" "$target_repo"
+    reason="Stacking resets the target worktree to the base branch's HEAD, which only makes sense when both are branches of the same repository."
+
+    local -a suggestions=()
+    if [[ $stack_on_base != *://* && $stack_on_base != git@* && $stack_on_base == */*/* ]]
+    then
+      suggestions+=("If you meant branch '${stack_on_base#*/*/}' of ${target_org}/${target_repo}, pass ${target_org}/${target_repo}/${stack_on_base#*/*/}")
+    fi
+    suggestions+=("A base that does not start with an org/repo is read as a branch of the target's repo, so a bare branch name works: ntmux3 -d ${target} <branch>")
+
+    if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
+    then
+      local -a suggestion_args=()
+      local suggestion
+      for suggestion in "${suggestions[@]}"
+      do
+        suggestion_args+=(--suggestion "$suggestion")
+      done
+      aictl_die \
+        --code timvisher_git_stack_base_repo_mismatch \
+        --message "$message" \
+        --reason "$reason" \
+        --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+        "${suggestion_args[@]}"
+    fi
+
+    local IFS=' '
+    die '%s %s' "$message" "${suggestions[*]}"
   fi
 
   # Clone the base first — ensures its worktree and local branch exist.
