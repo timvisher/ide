@@ -13,7 +13,7 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ## Usage
 
 ```
-ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [file | stack-on-base]
+ntmux3 [-d] [GitHub PR URL | [org/[repo/]]branch] [file | branch-ish]
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -58,9 +58,10 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
 
 ## Stacked worktrees
 
-Pass a second argument to start the new worktree from an existing
-branch instead of the trunk. The new worktree is reset to the base
-branch's HEAD. Stacking only works within one repo.
+Pass a branch-ish as the second argument to start the new worktree from
+an existing branch instead of the trunk. The new worktree is reset to
+the base branch's HEAD. Stacking only works within one repo, so a bare
+branch name is also accepted and read as a branch of the target's repo.
 
 ```bash
 # CORRECT — the base is a branch of the target's repo, given bare:
