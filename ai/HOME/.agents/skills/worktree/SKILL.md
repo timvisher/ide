@@ -89,12 +89,13 @@ A base that explicitly names a *different* repo (a URL or worktree path
 into another repo) fails with `timvisher_git_stack_base_repo_mismatch`,
 which names the repo it resolved to and suggests a corrected base.
 
-Two behaviors to know:
+The base branch must already exist, as a local branch or on origin. A
+missing base fails with `timvisher_git_stack_base_missing` instead of
+being created off the trunk, so a misspelled base is caught rather than
+quietly giving you a worktree on the trunk.
 
-- If the base branch doesn't exist, it is created off the trunk, so a
-  misspelled base silently becomes a new branch. Check the name.
-- If the target worktree already exists, it is left alone rather than
-  re-stacked.
+If the target worktree already exists, it is left alone rather than
+re-stacked.
 
 ## When is the worktree ready? (read this before editing)
 

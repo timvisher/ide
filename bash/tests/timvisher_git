@@ -1323,6 +1323,68 @@ else
   fail "clone: bare stack base (rc=${rc}, dir='${inherit_dir}', head='$("$test_git" -C "$inherit_dir" rev-parse HEAD 2>&1)', base_head='${inherit_base_head}'): $(cat "$stack_base_err")"
 fi
 
+stack_cache="$cache_dir/repo_trunks/testorg/testrepo"
+
+run_test
+result=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/typo-top" "testorg/testrepo/feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) &&
+  grep -qF "stack-on-base branch 'feature/bsae' does not exist in testorg/testrepo" "$stack_base_err" &&
+  [[ ! -e $live_dir/testorg/testrepo/feature/bsae ]] &&
+  ! "$test_git" -C "$stack_cache" show-ref --verify --quiet refs/heads/feature/bsae
+then
+  pass "clone_stacked: a missing base branch is an error and creates nothing"
+else
+  fail "clone_stacked: missing base (rc=${rc}, typo dir exists? $([[ -e $live_dir/testorg/testrepo/feature/bsae ]] && echo yes || echo no)): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_human clone "testorg/testrepo/feature/typo-top" "feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF "does not exist" "$stack_base_err"
+then
+  pass "clone: a misspelled bare stack base is an error"
+else
+  fail "clone: misspelled bare base (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+result=$(stack_base_as_agent clone_stacked "testorg/testrepo/feature/typo-top" "testorg/testrepo/feature/bsae" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( 0 < rc )) && grep -qF '"code":"timvisher_git_stack_base_missing"' "$stack_base_err"
+then
+  pass "clone_stacked: a missing base reaches agents as an aictl instruction"
+else
+  fail "clone_stacked: agent missing base (rc=${rc}): $(cat "$stack_base_err")"
+fi
+
+run_test
+local_only_tree=$("$test_git" -C "$stack_cache" rev-parse "refs/remotes/origin/${default_branch}^{tree}")
+local_only_commit=$("$test_git" -C "$stack_cache" -c user.email=t@t -c user.name=t \
+  commit-tree "$local_only_tree" -p "refs/remotes/origin/${default_branch}" -m "local only")
+"$test_git" -C "$stack_cache" update-ref refs/heads/feature/local-only "$local_only_commit"
+local_only_dir=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/on-local-only" "testorg/testrepo/feature/local-only" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $("$test_git" -C "$local_only_dir" rev-parse HEAD 2>/dev/null) == "$local_only_commit" ]]
+then
+  pass "clone_stacked: a local-only base branch still stacks"
+else
+  fail "clone_stacked: local-only base (rc=${rc}, dir='${local_only_dir}'): $(cat "$stack_base_err")"
+fi
+
+run_test
+stack_cache_refspec=$("$test_git" -C "$stack_cache" config --get remote.origin.fetch)
+"$test_git" -C "$stack_cache" config remote.origin.fetch "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+"$test_git" -C "$source_repo" checkout -q -b feature/late "$default_branch"
+"$test_git" -C "$source_repo" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+  commit -q --allow-empty -m "late remote branch"
+late_commit=$("$test_git" -C "$source_repo" rev-parse HEAD)
+"$test_git" -C "$source_repo" checkout -q "$default_branch"
+late_dir=$(stack_base_as_human clone_stacked "testorg/testrepo/feature/on-late" "testorg/testrepo/feature/late" 2>"$stack_base_err") && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $("$test_git" -C "$late_dir" rev-parse HEAD 2>/dev/null) == "$late_commit" ]]
+then
+  pass "clone_stacked: a base created on origin after the last fetch stacks onto it, not the trunk"
+else
+  fail "clone_stacked: late remote base (rc=${rc}, head='$("$test_git" -C "$late_dir" rev-parse HEAD 2>&1)', want='${late_commit}'): $(cat "$stack_base_err")"
+fi
+"$test_git" -C "$stack_cache" config --replace-all remote.origin.fetch "$stack_cache_refspec"
+
 # ---------------------------------------------------------------------------
 # temp-build + move invariant tests (ide-8hi)
 #

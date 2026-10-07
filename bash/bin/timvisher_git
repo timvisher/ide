@@ -2087,8 +2087,10 @@ on the same target — existing worktrees are verified and repaired.
 When [stack-on-base] is provided, the target worktree is "stacked" on
 the base: the base worktree is cloned first (ensuring it exists), then
 the target is reset --hard to the base branch's HEAD.  Both must be in
-the same org/repo.  An x.ntmux3-building marker provides idempotent
-recovery from partial failures.
+the same org/repo, and the base branch must already exist, as a local
+branch or on origin -- a missing base is an error, not a new branch off
+the trunk.  An x.ntmux3-building marker provides idempotent recovery from
+partial failures.
 
 [stack-on-base] accepts every form <target> does:
 
@@ -2682,6 +2684,80 @@ resolve_stack_base() {
   printf '%s' "$resolved"
 }
 
+ensure_stack_base_branch_exists() {
+  local target=$1 base=$2 trunk_cache=$3 branch_dir=$4 branch=$5
+
+  if [[ $branch == "$(get_trunk_branch_name_from_cache "$trunk_cache")" ]] ||
+    command git -C "$trunk_cache" show-ref --verify --quiet "refs/heads/${branch}" ||
+    command git -C "$trunk_cache" show-ref --verify --quiet "refs/remotes/origin/${branch}"
+  then
+    return 0
+  fi
+
+  local rc=0
+  command git -C "$trunk_cache" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 || rc=$?
+
+  if (( rc == 0 ))
+  then
+    local refspec="+refs/heads/${branch}:refs/remotes/origin/${branch}"
+    command git -C "$trunk_cache" fetch --quiet origin "refs/heads/${branch}" >&2 ||
+      die "clone_stacked: stack-on-base branch '%s' exists on origin but could not be fetched into '%s'" \
+        "$branch" "$trunk_cache"
+    if ! command git -C "$trunk_cache" show-ref --verify --quiet "refs/remotes/origin/${branch}"
+    then
+      { command git -C "$trunk_cache" config --add remote.origin.fetch "$refspec" &&
+        command git -C "$trunk_cache" fetch --quiet origin "$refspec" >&2; } ||
+        die "clone_stacked: unable to register and fetch '%s' in '%s'" "$refspec" "$trunk_cache"
+    fi
+    return 0
+  fi
+
+  if (( rc != 2 ))
+  then
+    die "clone_stacked: could not reach origin to check whether stack-on-base branch '%s' exists (git ls-remote exited %s)" \
+      "$branch" "$rc"
+  fi
+
+  local org_repo=${branch_dir%"/${branch}"}
+  local trunk_branch
+  trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache")
+
+  local listing="git -C '${trunk_cache}' ls-remote --heads origin"
+  if [[ $branch == */* ]]
+  then
+    listing+=" 'refs/heads/${branch%%/*}/*'"
+  fi
+
+  local message reason
+  printf -v message "clone_stacked: stack-on-base branch '%s' does not exist in %s: it is not a local branch and not on origin." \
+    "$branch" "$org_repo"
+  reason="Stacking on a branch that does not exist would create it from ${trunk_branch} and stack the target on that, which is just a worktree off ${trunk_branch} plus a stray branch. A misspelled base is the usual cause."
+
+  local -a suggestions=(
+    "Check the branch name. Existing branches: ${listing}"
+    "To start from ${trunk_branch} instead, omit the stack base: ntmux3 -d ${target}"
+  )
+
+  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
+  then
+    local -a suggestion_args=()
+    local suggestion
+    for suggestion in "${suggestions[@]}"
+    do
+      suggestion_args+=(--suggestion "$suggestion")
+    done
+    aictl_die \
+      --code timvisher_git_stack_base_missing \
+      --message "$message" \
+      --reason "$reason" \
+      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+      "${suggestion_args[@]}"
+  fi
+
+  local IFS=' '
+  die '%s %s' "$message" "${suggestions[*]}"
+}
+
 clone_stacked() {
   local target=$1 stack_on_base=$2
 
@@ -2731,6 +2807,16 @@ clone_stacked() {
   fi
 
   # Clone the base first — ensures its worktree and local branch exist.
+  if [[ $stack_on_base != https://github.com/*/*/pull/* ]]
+  then
+    local base_trunk_cache base_branch_dir_and_branch
+    base_trunk_cache=$(cache_trunk "$stack_on_base") ||
+      die "clone_stacked: unable to cache trunk for stack-on-base '%s'" "$stack_on_base"
+    base_branch_dir_and_branch=$(branch_path_for_source "$stack_on_base" "$base_trunk_cache")
+    ensure_stack_base_branch_exists "$target" "$stack_on_base" "$base_trunk_cache" \
+      "${base_branch_dir_and_branch%%;*}" "${base_branch_dir_and_branch#*;}"
+  fi
+
   info "clone_stacked: ensuring base worktree for '%s'" "$stack_on_base"
   local base_dir
   base_dir=$(ensure_worktree "$stack_on_base") ||
