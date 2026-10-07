@@ -121,11 +121,13 @@ and the tool guide does not repeat the language conventions:
   _*NOT*_ loaded into your context automatically. You have to go read
   the file. Indexed below.
 - `~/.agents/skills/<name>/SKILL.md` — workflow for a tool or
-  technology: `beads`, `ddtool`, `terraform`, `ipaam`, `appgate`,
-  `aws-cli`, `git`, `github`, `worktree`, `dev-ci`, `org-mode`, and
-  ~30 more. Surfaced in the skills listing — invoke the skill rather
-  than improvising the tool's usage. `ls ~/.agents/skills/` is the
-  authoritative inventory.
+  technology: `beads`, `git`, `github`, `worktree`, `dev-ci`,
+  `org-mode`, and ~30 more. Surfaced in the skills listing — invoke the
+  skill rather than improvising the tool's usage. Some skills install
+  from the DataDog system-extensions repo rather than this one
+  (`ddtool`, `terraform`, `ipaam`, `appgate`, `aws-cli`), so they are
+  present only where that repo is installed. `ls ~/.agents/skills/` is
+  the authoritative inventory either way.
 
 Terraform is the shape to expect: a language guide for provider
 constraints and tagging, plus a skill for the planning workflow.
@@ -147,8 +149,8 @@ cross-check their advice against the guide before implementing it. If
 a guide and another source conflict and you cannot reconcile them,
 stop and ask rather than guessing.
 
-Reading a guide costs seconds — the language guides are 15-90 lines
-each. Length is never a reason to skip one.
+Reading a guide costs seconds — none of them is long, and a hardcoded page
+count here would only go stale. Length is never a reason to skip one.
 
 #### Language guides
 
@@ -169,8 +171,8 @@ The list is not the guide — read the file.
   MacRoman and UTF-16 — use sed for those. Prefer pure ASCII.
   Compile-check with `osacompile` after editing.
 - `~/.agents/languages/terraform.md` —
-  _*NEVER*_ hand-create `.terraform.lock.hcl`. `~>` constraints in root
-  modules, `>=` in shared modules. `default_tags` always configured,
+  _*NEVER*_ hand-create `.terraform.lock.hcl`. Prefer `~>` constraints
+  in root modules and `>=` in shared modules. `default_tags` always configured,
   even with no taggable resources yet. Recalculate every `../` depth
   when a root module moves.
 - `~/.agents/languages/emacs-lisp.md` —
@@ -181,8 +183,9 @@ The list is not the guide — read the file.
 - `~/.agents/languages/org-mode.md` —
   Inactive timestamps always. Whitespace padding around heading
   bodies, _*never*_ around list structures. Wrap at 72 characters. Org
-  files are structured — use the org-mode skill and `org-*` tools
-  rather than editing them as flat text.
+  files are structured — interact with them in a way that honors that;
+  for large files use the org-mode skill and its `org-*` helper tools
+  rather than flat-text editing.
 
 ### Repository Organization
 
