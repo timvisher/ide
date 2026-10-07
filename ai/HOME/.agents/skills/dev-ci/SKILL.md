@@ -1,6 +1,6 @@
 ---
 name: dev-ci
-description: Use timvisher_dev_ci to run a worktree's local CI hooks or inspect the cascade. Triggered ONLY by explicit mentions of `dev ci` / `dev_ci` / `dev-ci` / `timvisher_dev_ci`.
+description: Use timvisher_dev_ci to run a worktree's local CI hooks or inspect hook resolution. Triggered ONLY by explicit mentions of `dev ci` / `dev_ci` / `dev-ci` / `timvisher_dev_ci`.
 ---
 
 # timvisher_dev_ci
@@ -30,7 +30,7 @@ This skill is for USING `dev_ci` once it exists.
 From inside a worktree under `~/git/<org>/<repo>/<branch-parts>/`:
 
 ```bash
-timvisher_dev_ci run-tests          # run cascade-resolved run-tests.sh
+timvisher_dev_ci run-tests          # run rung-resolved run-tests.sh
                                     # (foreground, no tmux, no nested agent)
 
 timvisher_dev_ci hooks ls           # show what hooks resolve here
@@ -65,6 +65,6 @@ next concrete step.
 ## References
 
 - `timvisher_dev_ci --help` — full reference (synopsis, path
-  defaults, hook cascade rules, env vars). Read this rather than
+  defaults, hook resolution rules, env vars). Read this rather than
   guessing.
 - `dev-integration-branch` skill — for setting up new dev branches.

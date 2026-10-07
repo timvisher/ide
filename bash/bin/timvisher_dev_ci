@@ -1916,7 +1916,7 @@ print_summary() {
 
 # Resolve a path argument to an absolute, canonical worktree path.
 # Defaults to $PWD when arg is empty.  Errors via aictl_die if the
-# path is not under TIMVISHER_GIT_HOME, which the hook cascade
+# path is not under TIMVISHER_GIT_HOME, which hook resolution
 # requires (see find_hooks).
 resolve_worktree_path() {
     local path=${1:-$PWD}
@@ -1952,7 +1952,7 @@ resolve_worktree_path() {
         aictl_die \
             --code "dev_ci_path_not_in_git_home" \
             --message "'${resolved}' is not under TIMVISHER_GIT_HOME ('${git_base}')" \
-            --reason "The hook cascade resolves <org>/<repo>/<branch-parts> from the worktree path, which requires the worktree be under \$TIMVISHER_GIT_HOME (default ~/git/)." \
+            --reason "Hook resolution derives <org>/<repo>/<branch-parts> from the worktree path, which requires the worktree be under \$TIMVISHER_GIT_HOME (default ~/git/)." \
             --suggestion "cd into a worktree managed by timvisher_git" \
             --suggestion "Or set TIMVISHER_GIT_HOME to override the expected root"
     fi
@@ -1961,7 +1961,7 @@ resolve_worktree_path() {
 }
 
 # `hooks ls [path]` — list every KNOWN_HOOKS entry with its
-# cascade-resolved paths, or "(none)" when no hook is configured.
+# rung-resolved paths, or "(none)" when no hook is configured.
 # A context that cannot be resolved at all halts instead.
 cmd_hooks_ls() {
     local worktree_path
@@ -2050,7 +2050,7 @@ cmd_hooks_run() {
                 --code "dev_ci_hooks_run_none_resolved" \
                 --message "No KNOWN_HOOKS resolved for '${worktree_path}'; nothing to run" \
                 --reason "Every entry in KNOWN_HOOKS (run-tests.sh, post-integrate.sh, pre-run-tests.sh, pre-post-integrate.sh) was checked across every rung and none had a matching script." \
-                --suggestion "Run 'timvisher_dev_ci hooks ls' to see the empty cascade" \
+                --suggestion "Run 'timvisher_dev_ci hooks ls' to see that nothing resolves" \
                 --suggestion "Add a hook script under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<subpath>|/<branch-parts>]/" \
                 --suggestion "Or run timvisher_dev_ci's full pipeline ('timvisher_dev_ci .'), which can launch an agent to author run-tests.sh"
         fi
@@ -2069,7 +2069,7 @@ cmd_hooks_run() {
             local missing_str=${missing[*]}
             aictl_die \
                 --code "dev_ci_hook_unresolvable" \
-                --message "Hook(s) not found in cascade for '${worktree_path}': ${missing_str}" \
+                --message "Hook(s) not found at any rung for '${worktree_path}': ${missing_str}" \
                 --reason "Explicit hook names must resolve via the rung walk. An unresolvable hook usually means it has not been written yet for this worktree, or the hook name was misspelled." \
                 --suggestion "Run 'timvisher_dev_ci hooks ls' to see what's available" \
                 --suggestion "Add the hook under bash/bin/timvisher_dev_ci.config/hooks/<org>/<repo>[/<subpath>|/<branch-parts>]/"
@@ -2303,7 +2303,7 @@ cmd_integrate_local() {
             --code "dev_ci_integrate_build_only_no_hook" \
             --message "integrate --build-only: no post-integrate.sh resolves for '${dev_path}'" \
             --reason "--build-only runs post-integrate.sh and nothing else, so an unresolved hook would build nothing while still exiting 0 -- and a caller like the cfctl shim would go on to exec a stale binary." \
-            --suggestion "timvisher_dev_ci hooks ls -C '${dev_path}' shows the empty cascade" \
+            --suggestion "timvisher_dev_ci hooks ls -C '${dev_path}' shows that nothing resolves" \
             --suggestion "Add post-integrate.sh under '${REPO_HOOKS_EXT_DIR}/<org>/<repo>/<branch-parts>/'"
     fi
 
@@ -2343,7 +2343,7 @@ SYNOPSIS
 PATHS
     PATH defaults to $PWD when omitted from any subcommand.
     All paths must be under $TIMVISHER_GIT_HOME (default ~/git/) so the
-    hook cascade can resolve <org>/<repo>/<branch-parts>.
+    hook resolution can derive <org>/<repo>/<branch-parts>.
 
     Bare `timvisher_dev_ci` (no args):
       - Outside any worktree: runs every dev branch in the registry.
@@ -2356,7 +2356,7 @@ AGENT USAGE
 
         timvisher_dev_ci run-tests
 
-    This runs the cascade-resolved run-tests.sh hook(s) for the current
+    This runs the rung-resolved run-tests.sh hook(s) for the current
     worktree in the controlling TTY -- no tmux, no nested agent. The
     hook script encodes project-specific test conventions (correct
     build tags, lint flags, env vars). Prefer it over invoking
@@ -2384,7 +2384,7 @@ KNOWN HOOKS
     pre-run-tests.sh         Extension hook executed before run-tests.sh.
     pre-post-integrate.sh    Extension hook executed before post-integrate.sh.
 
-HOOK CASCADE
+HOOK RESOLUTION
     For a worktree at ~/git/<org>/<repo>/<branch-parts>/, hooks are
     resolved by walking rungs from least to most specific:
 
@@ -2644,4 +2644,4 @@ aictl_die \
     --message "Unknown command: '$1'" \
     --suggestion "timvisher_dev_ci --help" \
     --suggestion "timvisher_dev_ci hooks ls    # list resolved hooks for current worktree" \
-    --suggestion "timvisher_dev_ci run-tests   # run cascade-resolved run-tests.sh"
+    --suggestion "timvisher_dev_ci run-tests   # run rung-resolved run-tests.sh"
