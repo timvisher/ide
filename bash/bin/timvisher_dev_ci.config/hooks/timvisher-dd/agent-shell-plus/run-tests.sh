@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Level 2 (my repo) hook: applies to every branch under
-# timvisher-dd/agent-shell-plus.  Replaces the per-branch Level 3
+# Repo rung (my repo) hook: applies to every branch under
+# timvisher-dd/agent-shell-plus.  Replaces the per-branch fork-network
 # hooks under xenodium/agent-shell-plus/<branch>/ that were drifting
 # in formatting but did the same thing.
 

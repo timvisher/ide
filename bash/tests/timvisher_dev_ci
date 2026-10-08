@@ -45,7 +45,7 @@ if (( rc == 0 )) &&
    [[ $out == *"NAME"* ]] &&
    [[ $out == *"timvisher_dev_ci"* ]] &&
    [[ $out == *"AGENT USAGE"* ]] &&
-   [[ $out == *"HOOK CASCADE"* ]] &&
+   [[ $out == *"HOOK RESOLUTION"* ]] &&
    [[ $out == *"run-tests"* ]]
 then
   pass "--help prints structured help and exits 0"
@@ -411,7 +411,7 @@ else
   fail "malformed blob: rc=$rc out='$out'"
 fi
 
-# An empty string builds cascade paths with a doubled slash, which
+# An empty string builds hook paths with a doubled slash, which
 # match nothing -- as unusable as a missing key.
 mkdir -p "$tmpdir/emptybin"
 cat > "$tmpdir/emptybin/timvisher_gh" <<'MOCK'
@@ -436,8 +436,8 @@ fi
 # a worktree sitting directly at <org>/<repo> has an empty branchPath
 # ---------------------------------------------------------------------------
 
-# Test: an empty branchPath still resolves the level-1 hook.  The
-# cascade inputs are read one per line, so an empty field in the middle
+# Test: an empty branchPath still resolves the repo-rung hook.  The
+# rung walk inputs are read one per line, so an empty field in the middle
 # of that list must not shift the ones after it.
 flat_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/flatrepo"
 mkdir -p "$flat_wt_unresolved"
@@ -452,7 +452,7 @@ out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks ls "$flat_wt"
 rc=$?
 if (( rc == 0 )) && [[ $out == *"$flat_hook_dir/run-tests.sh"* ]]
 then
-  pass "an empty branchPath still resolves the level-1 hook"
+  pass "an empty branchPath still resolves the repo-rung hook"
 else
   fail "flat worktree: rc=$rc out='$out'"
 fi
@@ -492,7 +492,7 @@ else
   fail "find_hooks: found rc=${fh_found_rc} n=${fh_found_count}; none rc=${fh_none_rc} n=${fh_none_count}"
 fi
 
-# Test: a path containing a newline survives the cascade intact
+# Test: a path containing a newline survives the rung walk intact
 run_test
 newline_hook=$(printf '%s/weird\nname.sh' "$hook_dir")
 printf '#!/usr/bin/env bash\n' > "$newline_hook" 2>/dev/null && chmod +x "$newline_hook" 2>/dev/null
@@ -510,7 +510,7 @@ else
   fail "newline path: could not create the fixture"
 fi
 
-# Test: find_hooks refuses to walk an unprimed cascade.  run-tests.sh
+# Test: find_hooks refuses to walk an unprimed context.  run-tests.sh
 # resolves for this fixture when primed, so "no output" here is the
 # refusal and not a "no hook configured" answer.
 run_test
@@ -882,6 +882,212 @@ then
 else
   fail "regen no conflict: expected non-zero, got $rc_none_rc"
 fi
+
+rung_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/rungrepo/feat/x"
+mkdir -p "$rung_wt_unresolved"
+rung_wt=$(cd "$rung_wt_unresolved" && pwd -P)
+"$test_git" init -q -b main "$rung_wt"
+"$test_git" -C "$rung_wt" config core.hooksPath /dev/null
+"$test_git" -C "$rung_wt" config user.email t@t
+"$test_git" -C "$rung_wt" config user.name t
+mkdir -p "$rung_wt/old"
+printf 'base\n' > "$rung_wt/root.txt"
+printf 'moved\n' > "$rung_wt/old/moved.txt"
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m base
+"$test_git" -C "$rung_wt" checkout -q -b feat/x --track main
+mkdir -p "$rung_wt/z" "$rung_wt/a/d" "$rung_wt/a/b"
+for f in z/f.txt a/d/e.txt a/b/c.txt root.txt
+do
+  printf 'change\n' >> "$rung_wt/$f"
+done
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m change
+
+join_subpaths() {
+  local -a got=()
+  readarray -d '' -t got < <(changed_subpaths "$1")
+  printf '%s|' "${got[@]}"
+}
+
+run_test
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "a|z|a/b|a/d|" ]]
+then
+  pass "changed_subpaths: changed dirs and ancestors, shallow first, ties lexicographic"
+else
+  fail "changed_subpaths: got '${rung_subpaths}'"
+fi
+
+run_test
+rung_none=$(changed_subpaths "$tmpdir" 2>&1)
+if [[ -z $rung_none ]]
+then
+  pass "changed_subpaths: emits nothing outside a repo"
+else
+  fail "changed_subpaths outside repo: got '${rung_none}'"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/mv --track main
+mkdir -p "$rung_wt/new"
+"$test_git" -C "$rung_wt" mv old/moved.txt new/moved.txt
+"$test_git" -C "$rung_wt" commit -q -m mv
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "new|old|" ]]
+then
+  pass "changed_subpaths: a rename counts its source and destination dirs"
+else
+  fail "changed_subpaths rename: got '${rung_subpaths}'"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/wip --track main
+mkdir -p "$rung_wt/staged" "$rung_wt/untracked/deep"
+printf 'wip\n' >> "$rung_wt/old/moved.txt"
+printf 'staged\n' > "$rung_wt/staged/s.txt"
+"$test_git" -C "$rung_wt" add staged/s.txt
+printf 'untracked\n' > "$rung_wt/untracked/deep/u.txt"
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "old|staged|untracked|" ]]
+then
+  pass "changed_subpaths: uncommitted, staged, and untracked changes count"
+else
+  fail "changed_subpaths wip: got '${rung_subpaths}'"
+fi
+"$test_git" -C "$rung_wt" reset -q --hard
+"$test_git" -C "$rung_wt" clean -q -fd
+
+run_test
+rung_nl_dir=$(printf 'nl\ndir')
+"$test_git" -C "$rung_wt" checkout -q -b feat/nl --track main
+mkdir -p "$rung_wt/$rung_nl_dir"
+printf 'q\n' > "$rung_wt/$rung_nl_dir/\"q\".txt"
+"$test_git" -C "$rung_wt" add -A
+"$test_git" -C "$rung_wt" commit -q -m nl
+readarray -d '' -t rung_nl < <(changed_subpaths "$rung_wt")
+if (( ${#rung_nl[@]} == 1 )) && [[ ${rung_nl[0]} == "$rung_nl_dir" ]]
+then
+  pass "changed_subpaths: a dir name with a newline and a quoted file name round-trips"
+else
+  fail "changed_subpaths newline: got $(printf '%q ' "${rung_nl[@]}")"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/nou main
+"$test_git" -C "$rung_wt" branch -q --unset-upstream 2>/dev/null
+mkdir -p "$rung_wt/nou"
+printf 'n\n' > "$rung_wt/nou/n.txt"
+rung_subpaths=$(join_subpaths "$rung_wt")
+if [[ $rung_subpaths == "nou|" ]]
+then
+  pass "changed_subpaths: without an upstream only uncommitted work counts"
+else
+  fail "changed_subpaths no upstream: got '${rung_subpaths}'"
+fi
+"$test_git" -C "$rung_wt" clean -q -fd
+"$test_git" -C "$rung_wt" checkout -q feat/x
+
+rung_saved_repo_hooks_dir=$REPO_HOOKS_DIR
+rung_saved_repo_hooks_ext_dir=$REPO_HOOKS_EXT_DIR
+REPO_HOOKS_DIR="$tmpdir/rung-repo-hooks"
+REPO_HOOKS_EXT_DIR="$tmpdir/rung-ext-hooks"
+
+make_rung_hook() {
+  mkdir -p "$1"
+  printf '#!/usr/bin/env bash\n' > "$1/rung.sh"
+  chmod +x "$1/rung.sh"
+}
+
+prime_rung_context() {
+  _worktree_context=()
+  _worktree_context[$(worktree_context_key "$rung_wt")]=$(
+    jq -n --arg branch "$1" \
+      '{timvisher_git: {repo: "rungrepo", branchPath: $branch},
+        timvisher_gh: {me: "meorg", forkNetwork: {mainOwner: "mainorg"}}}')
+}
+
+rung_expected=(
+  "$REPO_HOOKS_DIR/mainorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/a/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/z/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/feat/x/rung.sh"
+  "$REPO_HOOKS_DIR/meorg/rungrepo/feat/x/rung.sh"
+)
+for h in "${rung_expected[@]}"
+do
+  make_rung_hook "$(dirname "$h")"
+done
+make_rung_hook "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/q"
+make_rung_hook "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/feat"
+
+run_test
+prime_rung_context feat/x
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+if [[ ${rung_out[*]} == "${rung_expected[*]}" ]]
+then
+  pass "find_hooks: repo, then subpath shallow to deep, then exact branch; owner then dir within a rung"
+else
+  fail "rung order: got $(printf '\n  %s' "${rung_out[@]}")"
+fi
+
+run_test
+prime_rung_context a/b
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_ab_count=0
+for h in "${rung_out[@]}"
+do
+  [[ $h == "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh" ]] && (( rung_ab_count += 1 ))
+done
+if (( rung_ab_count == 1 )) &&
+   [[ ${rung_out[${#rung_out[@]}-1]} == "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh" ]]
+then
+  pass "find_hooks: a branch key equal to a subpath key runs once"
+else
+  fail "coinciding keys: got $(printf '\n  %s' "${rung_out[@]}")"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q -b feat/clean --track main
+prime_rung_context feat/x
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_clean_expected=(
+  "${rung_expected[@]:0:3}"
+  "${rung_expected[@]:7:2}"
+)
+if [[ ${rung_out[*]} == "${rung_clean_expected[*]}" ]]
+then
+  pass "find_hooks: a clean worktree with no changes vs @{u} gets only the repo and branch rungs"
+else
+  fail "clean worktree: got $(printf '\n  %s' "${rung_out[@]}")"
+fi
+
+run_test
+"$test_git" -C "$rung_wt" checkout -q feat/x
+prime_rung_context feat/x
+snapshot_changed_subpaths "$rung_wt"
+"$test_git" -C "$rung_wt" checkout -q feat/clean
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_snapshot_used=${#rung_out[@]}
+_subpath_snapshot_key=$(worktree_context_key "$tmpdir")
+readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
+rung_snapshot_other=${#rung_out[@]}
+_subpath_snapshot_key=""
+_subpath_snapshot=()
+if (( rung_snapshot_used == ${#rung_expected[@]} )) &&
+   (( rung_snapshot_other == ${#rung_clean_expected[@]} ))
+then
+  pass "find_hooks: a subpath snapshot applies only to the worktree it was taken for"
+else
+  fail "subpath snapshot: same-worktree n=${rung_snapshot_used}, other-worktree n=${rung_snapshot_other}"
+fi
+
+REPO_HOOKS_DIR=$rung_saved_repo_hooks_dir
+REPO_HOOKS_EXT_DIR=$rung_saved_repo_hooks_ext_dir
 
 # ---------------------------------------------------------------------------
 # Summary
