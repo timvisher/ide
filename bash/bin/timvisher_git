@@ -2008,7 +2008,12 @@ Global options
   -C <path>   Run as if timvisher_git were started in <path>.  Must come
               BEFORE the subcommand.  Passed through to git for the
               git-passthrough case ('timvisher_git -C <p> status' runs
-              'git -C <p> status').
+              'git -C <p> status').  When <path> is not a directory
+              but is a branch-ish (see is-branch-ish), it is resolved
+              through clone first, so 'timvisher_git -C dd/appgate
+              worktree list' works -- and creates the worktree if it
+              does not exist yet.  A directory always wins.  When
+              given more than once, the last -C wins.
 
   -h, --help, help
               Show this help.  Works from anywhere, including outside a
@@ -4065,7 +4070,23 @@ do
   shift 2
 done
 
+resolve_chdir() {
+  [[ -n $chdir && ! -d $chdir ]] || return 0
+  is_branch_ish "$chdir" || return 0
+  local resolved
+  resolved=$(clone "$chdir") ||
+    die "Option -C: unable to resolve branch-ish '%s'" "$chdir"
+  chdir=$resolved
+  chdir_args=(-C "$chdir")
+}
+
+git_in_chdir() {
+  resolve_chdir
+  git "${chdir_args[@]}" "$@"
+}
+
 in_chdir() {
+  resolve_chdir
   if [[ -n $chdir ]]
   then
     cd "$chdir" ||
@@ -4085,7 +4106,7 @@ case $1 in
       show_help
       exit 0
     fi
-    git "${chdir_args[@]}" "$@"
+    git_in_chdir "$@"
     exit $?
     ;;
   '')
@@ -4103,7 +4124,7 @@ case $1 in
   status)
     case ${2:-} in
       --all-published) in_chdir status__all_published ;;
-      *)               git "${chdir_args[@]}" "$@" ;;
+      *)               git_in_chdir "$@" ;;
     esac
     ;;
   sync-trunk)   in_chdir sync_trunk "${@:2}" ;;
@@ -4111,8 +4132,8 @@ case $1 in
     case ${2:-} in
       gc)          in_chdir worktree_gc "${@:3}" ;;
       sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
-      *)           git "${chdir_args[@]}" "$@" ;;
+      *)           git_in_chdir "$@" ;;
     esac
     ;;
-  *)            git "${chdir_args[@]}" "$@" ;;
+  *)            git_in_chdir "$@" ;;
 esac

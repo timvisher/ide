@@ -1713,6 +1713,102 @@ else
   fail "clone: remote precedence: expected '${live_dir}/testorg/testrepo/${default_branch}', got rc=${rc} result='${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# -C <branch-ish> resolution
+# ---------------------------------------------------------------------------
+
+# Test: a branch-ish -C resolves through clone, at its trunk
+run_test
+result=$(
+  cd "$tmpdir" || exit 1
+  chdir=testorg/testrepo
+  chdir_args=(-C "$chdir")
+  resolve_chdir 2>/dev/null || exit 1
+  printf '%s|%s' "$chdir" "${chdir_args[*]}"
+) && rc=0 || rc=$?
+expected="${live_dir}/testorg/testrepo/${default_branch}"
+if (( rc == 0 )) && [[ $result == "${expected}|-C ${expected}" ]]
+then
+  pass "-C <branch-ish> resolves to the clone worktree"
+else
+  fail "-C branch-ish: expected '${expected}|-C ${expected}', got rc=${rc} result='${result}'"
+fi
+
+# Test: git passthrough runs in the resolved worktree
+run_test
+result=$(
+  cd "$tmpdir" || exit 1
+  chdir=testorg/testrepo
+  chdir_args=(-C "$chdir")
+  git_in_chdir rev-parse --show-toplevel 2>/dev/null
+) && rc=0 || rc=$?
+expected_real=$(cd "${live_dir}/testorg/testrepo/${default_branch}" && pwd -P)
+if (( rc == 0 )) && [[ $result == "$expected_real" ]]
+then
+  pass "-C <branch-ish> git passthrough runs in the resolved worktree"
+else
+  fail "-C branch-ish passthrough: expected '${expected_real}', got rc=${rc} result='${result}'"
+fi
+
+# Test: an existing directory wins over a branch-ish of the same shape
+run_test
+chdir_shadow="$tmpdir/chdir_shadow"
+mkdir -p "$chdir_shadow/testorg/testrepo"
+result=$(
+  {
+    cd "$chdir_shadow" || exit 1
+    clone() { echo "clone called" >&2; return 1; }
+    chdir=testorg/testrepo
+    chdir_args=(-C "$chdir")
+    resolve_chdir || exit 1
+    printf '%s|%s' "$chdir" "${chdir_args[*]}"
+  } 2>&1
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "testorg/testrepo|-C testorg/testrepo" ]]
+then
+  pass "-C prefers an existing directory over a branch-ish"
+else
+  fail "-C directory precedence: rc=${rc} got '${result}'"
+fi
+
+# Test: a non-branch-ish -C is left for cd to reject
+run_test
+result=$(
+  {
+    cd "$tmpdir" || exit 1
+    clone() { echo "clone called" >&2; return 1; }
+    chdir=no-such-dir
+    chdir_args=(-C "$chdir")
+    resolve_chdir || exit 1
+    printf '%s' "$chdir"
+  } 2>&1
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == no-such-dir ]]
+then
+  pass "-C leaves a non-branch-ish path alone"
+else
+  fail "-C non-branch-ish: rc=${rc} got '${result}'"
+fi
+
+# Test: a failed clone stops -C with a branch-ish error
+run_test
+result=$(
+  {
+    cd "$tmpdir" || exit 1
+    clone() { return 1; }
+    chdir=testorg/testrepo/does-not-matter
+    chdir_args=(-C "$chdir")
+    resolve_chdir
+    echo "kept going"
+  } 2>&1
+) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to resolve branch-ish 'testorg/testrepo/does-not-matter'"* && $result != *"kept going"* ]]
+then
+  pass "-C <branch-ish> dies when clone fails"
+else
+  fail "-C branch-ish clone failure: rc=${rc} got '${result}'"
+fi
+
 # Test: clone prefers remote over coincidental local directory (symlink)
 # Simulates the real-world case where ~/dd is a symlink and "dd/testrepo"
 # resolves as a local directory even though it's an org/repo shorthand.
