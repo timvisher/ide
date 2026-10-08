@@ -1802,11 +1802,135 @@ result=$(
     echo "kept going"
   } 2>&1
 ) && rc=0 || rc=$?
-if (( 0 < rc )) && [[ $result == *"unable to resolve branch-ish 'testorg/testrepo/does-not-matter'"* && $result != *"kept going"* ]]
+if (( 0 < rc )) && [[ $result == *"'testorg/testrepo/does-not-matter' is not a path, and cloning it as a branch-ish failed"* && $result != *"kept going"* ]]
 then
   pass "-C <branch-ish> dies when clone fails"
 else
   fail "-C branch-ish clone failure: rc=${rc} got '${result}'"
+fi
+
+# Test: an existing regular file wins over a branch-ish of the same shape
+run_test
+mkdir -p "$chdir_shadow/fileorg"
+: > "$chdir_shadow/fileorg/filerepo"
+result=$(
+  {
+    cd "$chdir_shadow" || exit 1
+    clone() { echo "clone called" >&2; return 1; }
+    chdir=fileorg/filerepo
+    chdir_args=(-C "$chdir")
+    resolve_chdir || exit 1
+    printf '%s' "$chdir"
+  } 2>&1
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == fileorg/filerepo ]]
+then
+  pass "-C prefers an existing file over a branch-ish"
+else
+  fail "-C file precedence: rc=${rc} got '${result}'"
+fi
+
+# Test: -C resolution never auto-forks
+run_test
+result=$(
+  cd "$tmpdir" || exit 1
+  clone() { printf '%s' "${TIMVISHER_GIT_NO_AUTO_FORK-unset}"; }
+  chdir=testorg/testrepo/feature/x
+  chdir_args=(-C "$chdir")
+  resolve_chdir 2>/dev/null || exit 1
+  printf '%s' "$chdir"
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == 1 ]]
+then
+  pass "-C <branch-ish> resolves with auto-fork disabled"
+else
+  fail "-C auto-fork guard: rc=${rc} got '${result}'"
+fi
+
+# Test: in_chdir enters the resolved worktree
+run_test
+result=$(
+  cd "$tmpdir" || exit 1
+  chdir=testorg/testrepo
+  chdir_args=(-C "$chdir")
+  in_chdir pwd -P 2>/dev/null
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == "$expected_real" ]]
+then
+  pass "-C <branch-ish> in_chdir runs in the resolved worktree"
+else
+  fail "-C branch-ish in_chdir: expected '${expected_real}', got rc=${rc} result='${result}'"
+fi
+
+# Test: in_chdir still rejects a non-branch-ish missing path
+run_test
+result=$(
+  {
+    cd "$tmpdir" || exit 1
+    chdir=no-such-dir
+    chdir_args=(-C "$chdir")
+    in_chdir pwd
+  } 2>&1
+) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ $result == *"unable to enter 'no-such-dir'"* ]]
+then
+  pass "-C <non-branch-ish> in_chdir dies with 'unable to enter'"
+else
+  fail "-C non-branch-ish in_chdir: rc=${rc} got '${result}'"
+fi
+
+# End-to-end: the real CLI resolves -C <branch-ish>, under a HOME whose
+# trunk cache points at the local source repo.
+cli_home="$tmpdir/cli_home"
+cli_live="$tmpdir/cli_live"
+cli_cache="$cli_home/.cache/timvisher_git_worktrees/repo_trunks/testorg/testrepo"
+mkdir -p "$cli_home" "$cli_live" "${cli_cache%/*}"
+cli_live=$(cd "$cli_live" && pwd -P)
+ln -s "$HOME/.functions" "$cli_home/.functions"
+"$test_git" init --bare -q "$cli_cache"
+"$test_git" -C "$cli_cache" remote add origin "$source_repo"
+"$test_git" -C "$cli_cache" fetch -q origin >/dev/null 2>&1
+"$test_git" -C "$cli_cache" remote set-head origin -a >/dev/null 2>&1
+cli_expected="$cli_live/testorg/testrepo/${default_branch}"
+
+run_test
+result=$(
+  cd "$tmpdir" &&
+    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+      "$script" -C testorg/testrepo rev-parse --show-toplevel 2>/dev/null
+) && rc=0 || rc=$?
+cli_expected_real=$(cd "$cli_expected" 2>/dev/null && pwd -P)
+if (( rc == 0 )) && [[ -n $cli_expected_real && $result == "$cli_expected_real" ]]
+then
+  pass "CLI: -C <branch-ish> git passthrough creates and runs in the worktree"
+else
+  fail "CLI -C branch-ish passthrough: expected '${cli_expected_real}', got rc=${rc} result='${result}'"
+fi
+
+run_test
+result=$(
+  cd "$tmpdir" &&
+    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+      "$script" -C testorg/testrepo info .repo 2>/dev/null
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == testrepo ]]
+then
+  pass "CLI: -C <branch-ish> reaches timvisher_git's own subcommands"
+else
+  fail "CLI -C branch-ish info: rc=${rc} got '${result}'"
+fi
+
+run_test
+result=$(
+  cd "$tmpdir" &&
+    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+      "$script" -C "$tmpdir/no-such-dir" -C testorg/testrepo info .repo 2>/dev/null
+) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $result == testrepo ]]
+then
+  pass "CLI: the last -C wins when it is a branch-ish"
+else
+  fail "CLI repeated -C: rc=${rc} got '${result}'"
 fi
 
 # Test: clone prefers remote over coincidental local directory (symlink)

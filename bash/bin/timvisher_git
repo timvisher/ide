@@ -2008,12 +2008,15 @@ Global options
   -C <path>   Run as if timvisher_git were started in <path>.  Must come
               BEFORE the subcommand.  Passed through to git for the
               git-passthrough case ('timvisher_git -C <p> status' runs
-              'git -C <p> status').  When <path> is not a directory
-              but is a branch-ish (see is-branch-ish), it is resolved
+              'git -C <p> status').  When <path> does not exist but
+              is a branch-ish (see is-branch-ish), it is resolved
               through clone first, so 'timvisher_git -C dd/appgate
               worktree list' works -- and creates the worktree if it
-              does not exist yet.  A directory always wins.  When
-              given more than once, the last -C wins.
+              does not exist yet.  The match is by shape, so a
+              mistyped relative path with a slash is cloned too.
+              Auto-fork is disabled for this resolution.  An existing
+              path always wins.  When given more than once, the last
+              -C wins; unlike git, -C values do not compose.
 
   -h, --help, help
               Show this help.  Works from anywhere, including outside a
@@ -4071,11 +4074,11 @@ do
 done
 
 resolve_chdir() {
-  [[ -n $chdir && ! -d $chdir ]] || return 0
+  [[ -n $chdir && ! -e $chdir ]] || return 0
   is_branch_ish "$chdir" || return 0
   local resolved
-  resolved=$(clone "$chdir") ||
-    die "Option -C: unable to resolve branch-ish '%s'" "$chdir"
+  resolved=$(TIMVISHER_GIT_NO_AUTO_FORK=1 clone "$chdir") ||
+    die "Option -C: '%s' is not a path, and cloning it as a branch-ish failed" "$chdir"
   chdir=$resolved
   chdir_args=(-C "$chdir")
 }
