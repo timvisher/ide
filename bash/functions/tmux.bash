@@ -43,9 +43,17 @@ function ntmux3__attach() {
             --message "tmux session '${session_name}' is ready; attaching." \
             --data "$data" \
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        ntmux3__mark_verdict
     fi
 
     tmux attach -t="$session_name"
+}
+
+function ntmux3__mark_verdict() {
+    if [[ -n ${ntmux3__verdict_marker:-} ]]
+    then
+        printf 'x' >> "$ntmux3__verdict_marker"
+    fi
 }
 
 function maybe_set_beads_topic {
@@ -276,6 +284,7 @@ function ntmux3__fail() {
             --code "$NTMUX3_CODE_FAILED" \
             --message "$1" \
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        ntmux3__mark_verdict
     fi
     return 1
 }
@@ -666,20 +675,67 @@ function ntmux3__resolve_session_name() {
     printf '%s' "$name"
 }
 
+function ntmux3__report_exit() {
+    local status=$1 why=$2
+
+    if [[ -n $ntmux3__verdict_marker && ! -s $ntmux3__verdict_marker ]]
+    then
+        ntmux3__fail "ntmux3 ${why} before a tmux session was ready."
+    fi
+    return "$status"
+}
+
+function ntmux3__reporting() (
+    local ntmux3__verdict_marker=
+    trap '[[ -n $ntmux3__verdict_marker ]] && rm -f -- "$ntmux3__verdict_marker"' EXIT
+    ntmux3__verdict_marker=$(mktemp "${TMPDIR:-/tmp}/ntmux3-verdict.XXXXXX") ||
+        ntmux3__verdict_marker=
+
+    ntmux3__emit_started
+
+    trap 'ntmux3__report_exit 130 "was interrupted"; exit 130' INT
+    trap 'ntmux3__report_exit 129 "was hung up"; exit 129' HUP
+    trap 'ntmux3__report_exit 143 "was terminated"; exit 143' TERM
+
+    local status=0
+    ntmux3__main "$@" || status=$?
+    ntmux3__report_exit "$status" "exited with status ${status}"
+)
+
 function ntmux3() {
+    if [[ ${1-} == -T ]]
+    then
+        shift
+        if [[ ${1-} == -d ]]
+        then
+            ntmux3__fail 'ntmux3 -T cannot be combined with -d: the terminal window has to attach to report that its session is ready.'
+            return
+        fi
+        ntmux3__terminal "$@"
+        return
+    fi
+
+    if [[ ${1-} == -d && ${2-} == -T ]]
+    then
+        ntmux3__fail 'ntmux3 -d cannot be combined with -T: the terminal window has to attach to report that its session is ready.'
+        return
+    fi
+
+    if [[ -n ${TIMVISHER_AICTL_LOG:-} ]]
+    then
+        ntmux3__reporting "$@"
+    else
+        ntmux3__main "$@"
+    fi
+}
+
+function ntmux3__main() {
     local detached=
     if [[ $1 == -d ]]
     then
         detached=true
         shift
-    elif [[ $1 == -T ]]
-    then
-        shift
-        ntmux3__terminal "$@"
-        return
     fi
-
-    ntmux3__emit_started
 
     local clone_target=
     local target_file=

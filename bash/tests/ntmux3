@@ -275,16 +275,17 @@ else
   fail "tmux env scrub: calls='$(cat "${t_dir}/tmux.calls")'"
 fi
 
-# run_ntmux3 <log> <timvisher_git clone behavior> <args...>: run the real
-# ntmux3 with only its external collaborators stubbed.
+# run_ntmux3 <log> <timvisher_git clone behavior> <ntmux behavior> <args...>:
+# run the real ntmux3 with only its external collaborators stubbed.
 run_ntmux3() {
-  local log=$1 clone=$2
-  shift 2
+  local log=$1 clone=$2 ntmux=$3
+  shift 3
   env -u TMUX -u TIMVISHER_AGENT TIMVISHER_AICTL_LOG="$log" PATH="${stub_bin}:${PATH}" \
+    TMPDIR="${t_dir}/tmp" \
     bash -c "${preamble}
       info() { :; }
       maybe_set_beads_topic() { :; }
-      ntmux() { :; }
+      ntmux() { ${ntmux}; }
       timvisher_git() {
         case \$1 in
           clone) ${clone} ;;
@@ -299,7 +300,7 @@ run_ntmux3() {
 
 run_test
 log="${t_dir}/real-fail.jsonl"
-run_ntmux3 "$log" 'return 1' someorg/somerepo
+run_ntmux3 "$log" 'return 1' 'return 0' someorg/somerepo
 codes=$(jq -r .code "$log" 2>/dev/null | paste -sd, -) || true
 started_pid=$(jq -r 'select(.code == "ntmux3_started") | .data.pid' "$log" 2>/dev/null) || true
 if [[ $codes == ntmux3_started,ntmux3_worktree_building,ntmux3_failed ]] &&
@@ -312,14 +313,50 @@ fi
 
 run_test
 log="${t_dir}/real-ready.jsonl"
-run_ntmux3 "$log" "printf '%s' '${session_dir}'" someorg/somerepo
+# shellcheck disable=SC2016
+run_ntmux3 "$log" "printf '%s' '${session_dir}'" 'ntmux3__attach "$1"' someorg/somerepo
 codes=$(jq -r .code "$log" 2>/dev/null | paste -sd, -) || true
-if [[ $codes == ntmux3_started,ntmux3_worktree_building,ntmux3_worktree_ready ]]
+if [[ $codes == ntmux3_started,ntmux3_worktree_building,ntmux3_worktree_ready,ntmux3_session_ready ]]
 then
-  pass "ntmux3 with the log set emits building/ready without -d or TIMVISHER_AGENT"
+  pass "ntmux3 with the log set emits building/ready/session_ready and nothing after the attach"
 else
   fail "ntmux3 log on success: codes='${codes}'"
 fi
+
+verdict_markers() {
+  find "${t_dir}/tmp" -name 'ntmux3-verdict.*' | wc -l | tr -d ' '
+}
+
+# assert_exit_reported <desc> <clone> <ntmux> <message>
+assert_exit_reported() {
+  local desc=$1 clone=$2 ntmux=$3 message=$4
+  local log="${t_dir}/exit-${RANDOM}.jsonl"
+  run_test
+  run_ntmux3 "$log" "$clone" "$ntmux" someorg/somerepo
+  local last
+  last=$(tail -n 1 "$log" 2>/dev/null | jq -r '.code + ": " + .message' 2>/dev/null) || true
+  if [[ $last == "ntmux3_failed: ${message}" ]] &&
+    (( $(jq -r 'select(.code == "ntmux3_failed") | .code' "$log" | wc -l) == 1 )) &&
+    [[ $(verdict_markers) == 0 ]]
+  then
+    pass "$desc"
+  else
+    fail "${desc}: last='${last}' log='$(cat "$log" 2>/dev/null)' markers=$(verdict_markers)"
+  fi
+}
+
+assert_exit_reported "a failure that bypasses ntmux3__fail is reported as ntmux3_failed" \
+  "printf '%s' '${session_dir}'" 'return 1' \
+  'ntmux3 exited with status 1 before a tmux session was ready.'
+assert_exit_reported "returning 0 without a session is reported as ntmux3_failed" \
+  "printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 exited with status 0 before a tmux session was ready.'
+assert_exit_reported "being terminated mid-run is reported as ntmux3_failed" \
+  "self=\$BASHPID; kill -TERM \$(ps -o ppid= -p \$self); printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 was terminated before a tmux session was ready.'
+assert_exit_reported "ntmux3__fail is the only verdict when it already reported" \
+  'return 1' 'return 0' \
+  "Unable to clone 'someorg/somerepo'"
 
 # ---------------------------------------------------------------------------
 # ntmux3 -T end to end
@@ -372,9 +409,8 @@ tmux() {
     attach) sleep 30 ;;
   esac
 }
-ntmux3() {
+ntmux3__main() {
   printf '%s\0' "\$@" > '${t_dir}/args'
-  ntmux3__emit_started
   case \${NTMUX3_TEST_SCENARIO:-} in
     ready)
       aictl_notice --code "\$NTMUX3_CODE_WORKTREE_BUILDING" --message building
@@ -386,7 +422,10 @@ ntmux3() {
       sleep 30
       ;;
     closed)
-      return 0
+      exit 0
+      ;;
+    returned)
+      return 1
       ;;
     deadline)
       sleep 30
@@ -466,6 +505,36 @@ then
 else
   fail "-T closed: rc=${rc} out='${out}' err='${err}'"
 fi
+
+run_test
+SECONDS=0
+run_terminal returned someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"message":"ntmux3 exited with status 1 before a tmux session was ready."'* ]] &&
+  (( SECONDS < 10 ))
+then
+  pass "-T returned: an early return without a verdict fails promptly with ntmux3_failed"
+else
+  fail "-T returned: rc=${rc} out='${out}' err='${err}' seconds=${SECONDS}"
+fi
+
+for combo in '-T -d' '-d -T'
+do
+  run_test
+  read -ra combo_args <<<"$combo"
+  rm -f "${t_dir}/osascript.arg"
+  run_terminal_combo_err=$(TIMVISHER_AGENT=1 PATH="${stub_bin}:${PATH}" \
+    bash -c "${preamble} ntmux3 \"\$@\"" _ "${combo_args[@]}" someorg/somerepo 2>&1 >/dev/null) &&
+    combo_rc=0 || combo_rc=$?
+  if (( combo_rc == 1 )) &&
+    [[ $run_terminal_combo_err == *'"code":"ntmux3_failed"'* ]] &&
+    [[ ! -e ${t_dir}/osascript.arg ]]
+  then
+    pass "ntmux3 ${combo} is rejected"
+  else
+    fail "ntmux3 ${combo}: rc=${combo_rc} err='${run_terminal_combo_err}'"
+  fi
+done
 
 run_test
 SECONDS=0
