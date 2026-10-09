@@ -43,8 +43,10 @@ show_help() {
                                  Update an existing comment from <file>
     timvisher_gh comment reply <comment-url> <file>
                                  Reply to a review comment from <file>
+    timvisher_gh comment react <comment-url> <file>
+                                 React to a PR comment with the reaction in <file>
     timvisher_gh comment delete [--force] <file>
-                                 Delete the comment tracked by <file>.url
+                                 Delete the comment or reaction tracked by <file>.url
 
   pr subcommand:
     - Requires a clean git status
@@ -98,6 +100,8 @@ show_help() {
     - Updates the existing comment with contents of <file>
     - Handles both top-level PR/issue comments (#issuecomment-<ID>)
       and inline review-thread replies (#discussion_r<ID>)
+    - Refuses <file>.url files that track a reaction; reactions can't
+      be edited
 
   comment reply subcommand:
     - Replies to a PR review comment (inline discussion thread)
@@ -105,13 +109,26 @@ show_help() {
     - Stores the reply URL in <file>.url
     - If <file>.url already exists, prints the URL to stdout
 
+  comment react subcommand:
+    - Adds an emoji reaction to a PR comment
+    - <comment-url> is the full GitHub URL with #discussion_r<ID> or
+      #issuecomment-<ID>
+    - <file> holds a single reaction: +1, -1, laugh, confused, heart,
+      hooray, rocket or eyes (or the matching emoji: 👍 👎 😄 😕 ❤️ 🎉
+      🚀 👀)
+    - Stores the reaction's API URL in <file>.url
+    - If <file>.url already exists, prints the URL to stdout
+    - Reactions are idempotent: reacting again with the same reaction
+      reports 'already reacted' and records the existing reaction
+
   comment delete subcommand:
-    - Deletes the PR comment tracked by <file>.url
+    - Deletes the PR comment or reaction tracked by <file>.url
     - Prompts for confirmation before deleting, unless --force is given
       (intended for batch cleanup of many tracked comments)
     - Removes <file>.url on successful deletion
-    - Handles both top-level PR/issue comments (#issuecomment-<ID>)
-      and inline review-thread replies (#discussion_r<ID>)
+    - Handles both top-level PR/issue comments (#issuecomment-<ID>),
+      inline review-thread replies (#discussion_r<ID>) and reactions
+      (.../comments/<ID>/reactions/<RID> API URLs)
 
   info subcommand:
     - Queries metadata about the current repository via GitHub API
@@ -679,6 +696,9 @@ gh_comment_edit() {
   elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
   then
     comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
+  elif [[ $comment_url =~ /comments/[0-9]+/reactions/[0-9]+$ ]]
+  then
+    die "'%s.url' tracks a reaction (%s), which can't be edited; use 'comment delete' and 'comment react' instead" "$comment_file" "$comment_url"
   else
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
   fi
@@ -738,6 +758,86 @@ gh_comment_reply() {
   tee <<<"$reply_url" "${comment_file}.url"
 }
 
+gh_comment_react() {
+  local comment_url=${1-}
+  local reaction_file=${2-}
+
+  [[ -n $comment_url ]] ||
+    die 'comment react requires a <comment-url> argument'
+
+  [[ -n $reaction_file ]] ||
+    die 'comment react requires a <file> argument'
+
+  [[ -r $reaction_file ]] ||
+    die "'%s' is not readable" "$reaction_file"
+
+  if [[ -r "${reaction_file}.url" ]]
+  then
+    info "'%s.url' already exists" "$reaction_file"
+    cat "${reaction_file}.url"
+    return
+  fi
+
+  local reactions_path
+  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
+  then
+    reactions_path="repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}/reactions"
+  elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
+  then
+    reactions_path="repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}/reactions"
+  else
+    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
+  fi
+
+  local reaction
+  reaction=$(< "$reaction_file")
+  reaction=${reaction#"${reaction%%[![:space:]]*}"}
+  reaction=${reaction%"${reaction##*[![:space:]]}"}
+
+  case $reaction in
+    +1|-1|laugh|confused|heart|hooray|rocket|eyes)
+      ;;
+    '👍') reaction=+1 ;;
+    '👎') reaction=-1 ;;
+    '😄') reaction=laugh ;;
+    '😕') reaction=confused ;;
+    '❤️'|'❤') reaction=heart ;;
+    '🎉') reaction=hooray ;;
+    '🚀') reaction=rocket ;;
+    '👀') reaction=eyes ;;
+    *)
+      die "'%s' doesn't hold a valid reaction: got '%s' (expected one of +1 -1 laugh confused heart hooray rocket eyes, or 👍 👎 😄 😕 ❤️ 🎉 🚀 👀)" "$reaction_file" "$reaction"
+      ;;
+  esac
+
+  local response
+  response=$(
+    gh api \
+       --include \
+       --method POST \
+       "$reactions_path" \
+       -f "content=${reaction}" \
+       --jq '.id'
+  ) ||
+    die 'Unable to post reaction'
+
+  local status_line=${response%%$'\n'*}
+  local reaction_id=${response##*$'\n'}
+  reaction_id=${reaction_id%$'\r'}
+
+  [[ $reaction_id =~ ^[0-9]+$ ]] ||
+    die "Unexpected response posting reaction: '%s'" "$response"
+
+  local _ status
+  read -r _ status _ <<<"$status_line"
+  if [[ $status == 200 ]]
+  then
+    info "Already reacted with '%s'" "$reaction"
+  fi
+
+  tee <<<"https://api.github.com/${reactions_path}/${reaction_id}" "${reaction_file}.url"
+}
+
 gh_comment_delete() {
   local force=0
 
@@ -771,28 +871,28 @@ gh_comment_delete() {
 
   info 'Found comment URL: %s' "$comment_url"
 
-  local comment_path
+  local comment_path exists_path kind=comment
   if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
   then
     comment_path="/repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}"
   elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
   then
     comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
-  else
-    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
-  fi
-
-  local head_err
-  if ! head_err=$(gh api "${comment_path}" --method HEAD 2>&1 >/dev/null)
+  elif [[ $comment_url =~ ^https://api\.github\.com((/repos/[^/]+/[^/]+/(pulls|issues)/comments/[0-9]+)/reactions/[0-9]+)$ ]]
   then
-    if [[ $head_err == *'HTTP 404'* ]]
-    then
-      info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
-      rm -v "${comment_file}.url" >&2
-      return
-    fi
-    printf '%s\n' "$head_err" >&2
-    die "Couldn't check whether '%s' still exists; keeping '%s.url'" "$comment_path" "$comment_file"
+    comment_path=${BASH_REMATCH[1]}
+    exists_path=${BASH_REMATCH[2]}
+    kind=reaction
+  else
+    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID>, #issuecomment-<ID> or .../comments/<ID>/reactions/<RID>)" "$comment_url"
+  fi
+  exists_path=${exists_path:-$comment_path}
+
+  if ! gh api --method HEAD "${exists_path}" 2>/dev/null
+  then
+    info 'Comment at '%s' no longer exists. Removing stale URL file.' "$exists_path"
+    rm -v "${comment_file}.url" >&2
+    return
   fi
 
   if (( ! force ))
@@ -825,9 +925,13 @@ gh_comment_delete() {
   then
     # Successful DELETE returns empty body
     rm -v "${comment_file}.url" >&2
-    info 'Deleted comment for '%s'' "$comment_file"
+    info 'Deleted %s for '%s'' "$kind" "$comment_file"
+  elif [[ 'Not Found' == $( <<<"$rj" jq -r '.message' ) ]]
+  then
+    rm -v "${comment_file}.url" >&2
+    info '%s already gone. Removed URL file for '%s'' "${kind^}" "$comment_file"
   else
-    die "Unexpected response deleting comment for '%s': %s" "$comment_file" "$rj"
+    error 'Unexpected response deleting %s for '%s': %s' "$kind" "$comment_file" "$rj"
   fi
 }
 
@@ -870,6 +974,11 @@ gh_comment() {
     reply)
       shift
       gh_comment_reply "$@"
+      return
+      ;;
+    react)
+      shift
+      gh_comment_react "$@"
       return
       ;;
     delete)
