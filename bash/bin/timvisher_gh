@@ -111,13 +111,15 @@ show_help() {
 
   comment react subcommand:
     - Adds an emoji reaction to a PR comment
-    - <comment-url> is the full GitHub URL with #discussion_r<ID> or
-      #issuecomment-<ID>
+    - <comment-url> is https://github.com/OWNER/REPO/pull/N, optionally
+      followed by /files or /changes and a ?query, ending in
+      #discussion_r<ID> or #issuecomment-<ID>
     - <file> holds a single reaction: +1, -1, laugh, confused, heart,
       hooray, rocket or eyes (or the matching emoji: 👍 👎 😄 😕 ❤️ 🎉
       🚀 👀, without skin tones)
     - Stores the reaction's API URL in <file>.url
-    - If <file>.url already exists, prints the URL to stdout
+    - If <file>.url already exists, prints the URL to stdout; to
+      change the reaction, 'comment delete' it first
     - Refuses a <file>.url that tracks a reaction on a different
       comment; use one file per comment
     - Reactions are idempotent: reacting again with the same reaction
@@ -274,6 +276,22 @@ else
   [[ -n $repo_spec ]] ||
     die "Could not determine repository spec for remote '%s'" "$target_remote"
 fi
+
+# Pin GH_TOKEN to the gh account configured for this repo's org, so we
+# authenticate as the identity that can see the repo on multi-account setups.
+# This is the same resolution the gh PATH shim applies to all gh calls; doing
+# it here too keeps timvisher_gh correct even if invoked without the shim
+# first on PATH. No mapping → active account (the unchanged default).
+startup_gh_token_set=0
+startup_gh_token=
+if [[ -v GH_TOKEN ]]
+then
+  startup_gh_token_set=1
+  startup_gh_token=$GH_TOKEN
+fi
+timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
+  die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
+    "${repo_spec%%/*}"
 
 # --- subcommand: pr ---
 
@@ -655,6 +673,41 @@ end run' "$issue_url"
 
 comment_reaction_api_url_re='^https://api\.github\.com((/repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+)/reactions/[0-9]+)$'
 
+gh_comment__use_token_for_owner() {
+  local owner=$1
+  local worktree_owner=${repo_spec%%/*}
+
+  if [[ ${owner,,} != "${worktree_owner,,}" ]]
+  then
+    if (( startup_gh_token_set ))
+    then
+      export GH_TOKEN=$startup_gh_token
+    else
+      unset GH_TOKEN
+    fi
+  fi
+
+  timvisher_gh__pin_token_for_owner "$owner" ||
+    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." "$owner"
+}
+
+gh_comment__http_status() {
+  local status
+  read -r _ status _ <<<"${1%%$'\n'*}"
+  if [[ ${1%%$'\n'*} == HTTP/* && $status =~ ^[0-9]{3}$ ]]
+  then
+    printf '%s' "$status"
+  else
+    printf 'none'
+  fi
+}
+
+gh_comment__repo_reachable() {
+  local owner_repo=$1 response
+  response=$(gh api --method HEAD --include "/repos/${owner_repo}" --hostname github.com 2>&1)
+  [[ $(gh_comment__http_status "$response") == 2?? ]]
+}
+
 # Resolve the PR URL for comment operations.
 # Checks (in order): --pull-request= flag, pr.md.url, Chrome active tab.
 resolve_pr_url() {
@@ -776,29 +829,21 @@ gh_comment_react() {
   [[ -r $reaction_file ]] ||
     die "'%s' is not readable" "$reaction_file"
 
-  local comment_url_re='^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+(/[a-z]+)?#'
+  local comment_url_re='^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/[0-9]+(/(files|changes))?(\?[^#]*)?#'
   local owner_repo reactions_path
   if [[ $comment_url =~ ${comment_url_re}discussion_r([0-9]+)$ ]]
   then
     owner_repo=${BASH_REMATCH[1]}
-    reactions_path="repos/${owner_repo}/pulls/comments/${BASH_REMATCH[3]}/reactions"
+    reactions_path="repos/${owner_repo}/pulls/comments/${BASH_REMATCH[5]}/reactions"
   elif [[ $comment_url =~ ${comment_url_re}issuecomment-([0-9]+)$ ]]
   then
     owner_repo=${BASH_REMATCH[1]}
-    reactions_path="repos/${owner_repo}/issues/comments/${BASH_REMATCH[3]}/reactions"
-  else
-    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
+    reactions_path="repos/${owner_repo}/issues/comments/${BASH_REMATCH[5]}/reactions"
   fi
 
-  if [[ -r "${reaction_file}.url" ]]
+  if [[ -z $owner_repo || ${owner_repo#*/} == . || ${owner_repo#*/} == .. ]]
   then
-    local tracked_url
-    tracked_url=$(< "${reaction_file}.url")
-    [[ $tracked_url == "https://api.github.com/${reactions_path}/"* ]] ||
-      die "'%s.url' tracks '%s', not a reaction on '%s'; use a separate file per comment" "$reaction_file" "$tracked_url" "$comment_url"
-    info "'%s.url' already exists" "$reaction_file"
-    printf '%s\n' "$tracked_url"
-    return
+    die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
   fi
 
   local reaction
@@ -822,9 +867,20 @@ gh_comment_react() {
       ;;
   esac
 
-  timvisher_gh__pin_token_for_owner "${owner_repo%%/*}" ||
-    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
-      "${owner_repo%%/*}"
+  if [[ -r "${reaction_file}.url" ]]
+  then
+    local tracked_url
+    tracked_url=$(< "${reaction_file}.url")
+    [[ $tracked_url =~ $comment_reaction_api_url_re ]] ||
+      die "'%s.url' doesn't hold a reaction API URL: '%s'" "$reaction_file" "$tracked_url"
+    [[ ${tracked_url,,} == "https://api.github.com/${reactions_path,,}/"* ]] ||
+      die "'%s.url' tracks '%s', not a reaction on '%s'; use a separate file per comment" "$reaction_file" "$tracked_url" "$comment_url"
+    info "'%s.url' already exists; to change the reaction, 'comment delete' it first" "$reaction_file"
+    printf '%s\n' "$tracked_url"
+    return
+  fi
+
+  gh_comment__use_token_for_owner "${owner_repo%%/*}"
 
   local response
   response=$(
@@ -838,14 +894,12 @@ gh_comment_react() {
   ) ||
     die 'Unable to post reaction'
 
-  local status_line=${response%%$'\n'*}
+  local status
+  status=$(gh_comment__http_status "$response")
   local reaction_id=${response##*$'\n'}
   reaction_id=${reaction_id%$'\r'}
 
-  local status
-  read -r _ status _ <<<"$status_line"
-
-  [[ $status_line == HTTP/* && $reaction_id =~ ^[0-9]+$ ]] ||
+  [[ $status != none && $reaction_id =~ ^[0-9]+$ ]] ||
     die "Unexpected response posting reaction: '%s'" "$response"
 
   if [[ $status == 200 ]]
@@ -853,8 +907,10 @@ gh_comment_react() {
     info "Already reacted with '%s'" "$reaction"
   fi
 
-  tee <<<"https://api.github.com/${reactions_path}/${reaction_id}" "${reaction_file}.url" ||
-    die "Unable to write '%s.url'" "$reaction_file"
+  local reaction_url="https://api.github.com/${reactions_path}/${reaction_id}"
+  printf '%s\n' "$reaction_url" > "${reaction_file}.url" ||
+    die "Unable to write '%s.url'; the reaction is '%s'" "$reaction_file" "$reaction_url"
+  printf '%s\n' "$reaction_url"
 }
 
 gh_comment_delete() {
@@ -910,24 +966,25 @@ gh_comment_delete() {
   fi
   exists_path=${exists_path:-$comment_path}
 
-  timvisher_gh__pin_token_for_owner "${owner_repo%%/*}" ||
-    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
-      "${owner_repo%%/*}"
+  gh_comment__use_token_for_owner "${owner_repo%%/*}"
 
   local head_response head_status
-  head_response=$(gh api --method HEAD --include "${exists_path}" --hostname github.com 2>/dev/null)
-  read -r _ head_status _ <<<"${head_response%%$'\n'*}"
+  head_response=$(gh api --method HEAD --include "${exists_path}" --hostname github.com 2>&1)
+  head_status=$(gh_comment__http_status "$head_response")
 
   case $head_status in
     2??)
       ;;
     404|410)
+      gh_comment__repo_reachable "$owner_repo" ||
+        die "'%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.url'" "$exists_path" "$head_status" "$owner_repo" "$comment_file"
       info "Comment at '%s' no longer exists. Removing stale %s URL file '%s.url'." "$exists_path" "$kind" "$comment_file"
-      rm -v "${comment_file}.url" >&2
+      rm -v "${comment_file}.url" >&2 ||
+        die "Unable to remove stale '%s.url'" "$comment_file"
       return
       ;;
     *)
-      die "Unable to check whether '%s' still exists (HTTP status '%s'); keeping '%s.url'" "$exists_path" "${head_status:-none}" "$comment_file"
+      die "Unable to check whether '%s' still exists (HTTP status '%s'); keeping '%s.url': %s" "$exists_path" "$head_status" "$comment_file" "$head_response"
       ;;
   esac
 
@@ -951,21 +1008,25 @@ gh_comment_delete() {
        -H "X-GitHub-Api-Version: 2022-11-28" \
        "${comment_path}" \
        --hostname github.com \
-       2>/dev/null
+       2>&1
   )
-  read -r _ delete_status _ <<<"${delete_response%%$'\n'*}"
+  delete_status=$(gh_comment__http_status "$delete_response")
 
   case $delete_status in
     2??)
-      rm -v "${comment_file}.url" >&2
+      rm -v "${comment_file}.url" >&2 ||
+        die "Deleted %s for '%s', but unable to remove '%s.url'" "$kind" "$comment_file" "$comment_file"
       info "Deleted %s for '%s'" "$kind" "$comment_file"
       ;;
     404)
-      rm -v "${comment_file}.url" >&2
+      gh_comment__repo_reachable "$owner_repo" ||
+        die "DELETE '%s' returned 404, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.url'" "$comment_path" "$owner_repo" "$comment_file"
+      rm -v "${comment_file}.url" >&2 ||
+        die "%s already gone for '%s', but unable to remove '%s.url'" "${kind^}" "$comment_file" "$comment_file"
       info "%s already gone. Removed URL file for '%s'" "${kind^}" "$comment_file"
       ;;
     *)
-      die "Unexpected response deleting %s for '%s' (HTTP status '%s'); keeping '%s.url': %s" "$kind" "$comment_file" "${delete_status:-none}" "$comment_file" "${delete_response##*$'\n'}"
+      die "Unexpected response deleting %s for '%s' (HTTP status '%s'); keeping '%s.url': %s" "$kind" "$comment_file" "$delete_status" "$comment_file" "$delete_response"
       ;;
   esac
 }
