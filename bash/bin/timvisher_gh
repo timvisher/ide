@@ -115,11 +115,14 @@ show_help() {
       #issuecomment-<ID>
     - <file> holds a single reaction: +1, -1, laugh, confused, heart,
       hooray, rocket or eyes (or the matching emoji: 👍 👎 😄 😕 ❤️ 🎉
-      🚀 👀)
+      🚀 👀, without skin tones)
     - Stores the reaction's API URL in <file>.url
     - If <file>.url already exists, prints the URL to stdout
+    - Refuses a <file>.url that tracks a reaction on a different
+      comment; use one file per comment
     - Reactions are idempotent: reacting again with the same reaction
-      reports 'already reacted' and records the existing reaction
+      records the existing reaction and logs 'already reacted' at INFO
+      level
 
   comment delete subcommand:
     - Deletes the PR comment or reaction tracked by <file>.url
@@ -650,6 +653,8 @@ end run' "$issue_url"
 
 # --- subcommand: comment ---
 
+comment_reaction_api_url_re='^https://api\.github\.com((/repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+)/reactions/[0-9]+)$'
+
 # Resolve the PR URL for comment operations.
 # Checks (in order): --pull-request= flag, pr.md.url, Chrome active tab.
 resolve_pr_url() {
@@ -696,7 +701,7 @@ gh_comment_edit() {
   elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
   then
     comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
-  elif [[ $comment_url =~ /comments/[0-9]+/reactions/[0-9]+$ ]]
+  elif [[ $comment_url =~ $comment_reaction_api_url_re ]]
   then
     die "'%s.url' tracks a reaction (%s), which can't be edited; use 'comment delete' and 'comment react' instead" "$comment_file" "$comment_url"
   else
@@ -771,22 +776,29 @@ gh_comment_react() {
   [[ -r $reaction_file ]] ||
     die "'%s' is not readable" "$reaction_file"
 
-  if [[ -r "${reaction_file}.url" ]]
+  local comment_url_re='^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+(/[a-z]+)?#'
+  local owner_repo reactions_path
+  if [[ $comment_url =~ ${comment_url_re}discussion_r([0-9]+)$ ]]
   then
-    info "'%s.url' already exists" "$reaction_file"
-    cat "${reaction_file}.url"
-    return
-  fi
-
-  local reactions_path
-  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
+    owner_repo=${BASH_REMATCH[1]}
+    reactions_path="repos/${owner_repo}/pulls/comments/${BASH_REMATCH[3]}/reactions"
+  elif [[ $comment_url =~ ${comment_url_re}issuecomment-([0-9]+)$ ]]
   then
-    reactions_path="repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}/reactions"
-  elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
-  then
-    reactions_path="repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}/reactions"
+    owner_repo=${BASH_REMATCH[1]}
+    reactions_path="repos/${owner_repo}/issues/comments/${BASH_REMATCH[3]}/reactions"
   else
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
+  fi
+
+  if [[ -r "${reaction_file}.url" ]]
+  then
+    local tracked_url
+    tracked_url=$(< "${reaction_file}.url")
+    [[ $tracked_url == "https://api.github.com/${reactions_path}/"* ]] ||
+      die "'%s.url' tracks '%s', not a reaction on '%s'; use a separate file per comment" "$reaction_file" "$tracked_url" "$comment_url"
+    info "'%s.url' already exists" "$reaction_file"
+    printf '%s\n' "$tracked_url"
+    return
   fi
 
   local reaction
@@ -806,9 +818,13 @@ gh_comment_react() {
     '🚀') reaction=rocket ;;
     '👀') reaction=eyes ;;
     *)
-      die "'%s' doesn't hold a valid reaction: got '%s' (expected one of +1 -1 laugh confused heart hooray rocket eyes, or 👍 👎 😄 😕 ❤️ 🎉 🚀 👀)" "$reaction_file" "$reaction"
+      die "'%s' doesn't hold a valid reaction: got '%s' (expected one of +1 -1 laugh confused heart hooray rocket eyes, or 👍 👎 😄 😕 ❤️ 🎉 🚀 👀 without skin tones)" "$reaction_file" "$reaction"
       ;;
   esac
+
+  timvisher_gh__pin_token_for_owner "${owner_repo%%/*}" ||
+    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
+      "${owner_repo%%/*}"
 
   local response
   response=$(
@@ -817,7 +833,8 @@ gh_comment_react() {
        --method POST \
        "$reactions_path" \
        -f "content=${reaction}" \
-       --jq '.id'
+       --jq '.id' \
+       --hostname github.com
   ) ||
     die 'Unable to post reaction'
 
@@ -825,17 +842,19 @@ gh_comment_react() {
   local reaction_id=${response##*$'\n'}
   reaction_id=${reaction_id%$'\r'}
 
-  [[ $reaction_id =~ ^[0-9]+$ ]] ||
+  local status
+  read -r _ status _ <<<"$status_line"
+
+  [[ $status_line == HTTP/* && $reaction_id =~ ^[0-9]+$ ]] ||
     die "Unexpected response posting reaction: '%s'" "$response"
 
-  local _ status
-  read -r _ status _ <<<"$status_line"
   if [[ $status == 200 ]]
   then
     info "Already reacted with '%s'" "$reaction"
   fi
 
-  tee <<<"https://api.github.com/${reactions_path}/${reaction_id}" "${reaction_file}.url"
+  tee <<<"https://api.github.com/${reactions_path}/${reaction_id}" "${reaction_file}.url" ||
+    die "Unable to write '%s.url'" "$reaction_file"
 }
 
 gh_comment_delete() {
@@ -871,29 +890,46 @@ gh_comment_delete() {
 
   info 'Found comment URL: %s' "$comment_url"
 
-  local comment_path exists_path kind=comment
+  local comment_path exists_path owner_repo kind=comment
   if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#discussion_r([0-9]+) ]]
   then
-    comment_path="/repos/${BASH_REMATCH[1]}/pulls/comments/${BASH_REMATCH[2]}"
+    owner_repo=${BASH_REMATCH[1]}
+    comment_path="/repos/${owner_repo}/pulls/comments/${BASH_REMATCH[2]}"
   elif [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/[0-9]+#issuecomment-([0-9]+) ]]
   then
-    comment_path="/repos/${BASH_REMATCH[1]}/issues/comments/${BASH_REMATCH[2]}"
-  elif [[ $comment_url =~ ^https://api\.github\.com((/repos/[^/]+/[^/]+/(pulls|issues)/comments/[0-9]+)/reactions/[0-9]+)$ ]]
+    owner_repo=${BASH_REMATCH[1]}
+    comment_path="/repos/${owner_repo}/issues/comments/${BASH_REMATCH[2]}"
+  elif [[ $comment_url =~ $comment_reaction_api_url_re ]]
   then
     comment_path=${BASH_REMATCH[1]}
     exists_path=${BASH_REMATCH[2]}
+    owner_repo=${BASH_REMATCH[3]}
     kind=reaction
   else
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID>, #issuecomment-<ID> or .../comments/<ID>/reactions/<RID>)" "$comment_url"
   fi
   exists_path=${exists_path:-$comment_path}
 
-  if ! gh api --method HEAD "${exists_path}" 2>/dev/null
-  then
-    info 'Comment at '%s' no longer exists. Removing stale URL file.' "$exists_path"
-    rm -v "${comment_file}.url" >&2
-    return
-  fi
+  timvisher_gh__pin_token_for_owner "${owner_repo%%/*}" ||
+    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
+      "${owner_repo%%/*}"
+
+  local head_response head_status
+  head_response=$(gh api --method HEAD --include "${exists_path}" --hostname github.com 2>/dev/null)
+  read -r _ head_status _ <<<"${head_response%%$'\n'*}"
+
+  case $head_status in
+    2??)
+      ;;
+    404|410)
+      info "Comment at '%s' no longer exists. Removing stale %s URL file '%s.url'." "$exists_path" "$kind" "$comment_file"
+      rm -v "${comment_file}.url" >&2
+      return
+      ;;
+    *)
+      die "Unable to check whether '%s' still exists (HTTP status '%s'); keeping '%s.url'" "$exists_path" "${head_status:-none}" "$comment_file"
+      ;;
+  esac
 
   if (( ! force ))
   then
@@ -905,34 +941,33 @@ gh_comment_delete() {
     fi
   fi
 
-  local rj rc=0
-  rj=$(
+  local delete_response delete_status
+  delete_response=$(
     gh api \
        "${comment_path}" \
        --method DELETE \
+       --include \
        -H "Accept: application/vnd.github+json" \
-       -H "X-GitHub-Api-Version: 2022-11-28"
-  ) || rc=$?
+       -H "X-GitHub-Api-Version: 2022-11-28" \
+       "${comment_path}" \
+       --hostname github.com \
+       2>/dev/null
+  )
+  read -r _ delete_status _ <<<"${delete_response%%$'\n'*}"
 
-  if [[ -n $rj && 'Not Found' == $( <<<"$rj" jq -r '.message' 2>/dev/null ) ]]
-  then
-    rm -v "${comment_file}.url" >&2
-    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
-  elif (( rc != 0 ))
-  then
-    die "Deleting '%s' failed (rc=%d): %s; keeping '%s.url'" "$comment_path" "$rc" "$rj" "$comment_file"
-  elif [[ -z $rj ]]
-  then
-    # Successful DELETE returns empty body
-    rm -v "${comment_file}.url" >&2
-    info 'Deleted %s for '%s'' "$kind" "$comment_file"
-  elif [[ 'Not Found' == $( <<<"$rj" jq -r '.message' ) ]]
-  then
-    rm -v "${comment_file}.url" >&2
-    info '%s already gone. Removed URL file for '%s'' "${kind^}" "$comment_file"
-  else
-    error 'Unexpected response deleting %s for '%s': %s' "$kind" "$comment_file" "$rj"
-  fi
+  case $delete_status in
+    2??)
+      rm -v "${comment_file}.url" >&2
+      info "Deleted %s for '%s'" "$kind" "$comment_file"
+      ;;
+    404)
+      rm -v "${comment_file}.url" >&2
+      info "%s already gone. Removed URL file for '%s'" "${kind^}" "$comment_file"
+      ;;
+    *)
+      die "Unexpected response deleting %s for '%s' (HTTP status '%s'); keeping '%s.url': %s" "$kind" "$comment_file" "${delete_status:-none}" "$comment_file" "${delete_response##*$'\n'}"
+      ;;
+  esac
 }
 
 gh_comment() {

@@ -130,19 +130,10 @@ then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
 elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  if [[ -n ${MOCK_HEAD_ERR-} ]]
-  then
-    echo "$MOCK_HEAD_ERR" >&2
-    exit 1
-  fi
-elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
+  printf 'HTTP/2.0 200 OK\r\n\r\n'
+elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
 then
-  if [[ -n ${MOCK_DELETE_FAIL-} ]]
-  then
-    [[ -n ${MOCK_DELETE_BODY-} ]] &&
-      echo "$MOCK_DELETE_BODY"
-    exit 1
-  fi
+  printf 'HTTP/2.0 204 No Content\r\n\r\n'
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -1077,19 +1068,10 @@ then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
 elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  if [[ -n ${MOCK_HEAD_ERR-} ]]
-  then
-    echo "$MOCK_HEAD_ERR" >&2
-    exit 1
-  fi
-elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
+  printf 'HTTP/2.0 200 OK\r\n\r\n'
+elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
 then
-  if [[ -n ${MOCK_DELETE_FAIL-} ]]
-  then
-    [[ -n ${MOCK_DELETE_BODY-} ]] &&
-      echo "$MOCK_DELETE_BODY"
-    exit 1
-  fi
+  printf 'HTTP/2.0 204 No Content\r\n\r\n'
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -1312,20 +1294,6 @@ else
   fail "comment delete removes .url file after deletion: .url file still exists"
 fi
 
-# Test: comment delete parses #discussion_r URLs
-run_test
-echo "https://github.com/testuser/testrepo/pull/1#discussion_r555" > "$tmpdir/repo/comment.md.url"
-export MOCK_LOG="$tmpdir/log_comment_delete_discussion"
-touch "$MOCK_LOG"
-PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete --force comment.md" 2>&1 || true
-if grep -q 'mock-gh api --method DELETE .* /repos/testuser/testrepo/pulls/comments/555$' "$MOCK_LOG"
-then
-  pass "comment delete parses #discussion_r URLs"
-else
-  fail "comment delete parses #discussion_r URLs: got $(cat "$MOCK_LOG")"
-fi
-rm -f "$tmpdir/repo/comment.md.url"
-
 # --- comment react tests ---
 
 mkdir -p "$tmpdir/mockbin_react"
@@ -1334,24 +1302,51 @@ cat > "$tmpdir/mockbin_react/gh" <<'MOCK'
 echo "mock-gh $*" >> "$MOCK_LOG"
 if [[ $1 == api && $2 == --include && $3 == --method && $4 == POST ]]
 then
-  if [[ ${MOCK_REACT_STATUS:-201} == 200 ]]
-  then
-    printf 'HTTP/2.0 200 OK\n'
-  else
-    printf 'HTTP/2.0 201 Created\n'
-  fi
+  case ${MOCK_POST_MODE:-201} in
+    200)
+      printf 'HTTP/2.0 200 OK\n'
+      ;;
+    fail)
+      echo 'gh: Forbidden (HTTP 403)' >&2
+      exit 1
+      ;;
+    garbage)
+      printf 'HTTP/2.0 201 Created\nContent-Type: application/json\r\n\r\nnull\n'
+      exit 0
+      ;;
+    *)
+      printf 'HTTP/2.0 201 Created\n'
+      ;;
+  esac
   printf 'Content-Type: application/json; charset=utf-8\r\n\r\n987654321\n'
 elif [[ $1 == api && $2 == --method && $3 == HEAD ]]
 then
-  exit "${MOCK_HEAD_RC:-0}"
+  case ${MOCK_HEAD_STATUS:-200} in
+    none)
+      exit 1
+      ;;
+    200)
+      printf 'HTTP/2.0 200 OK\r\n\r\n'
+      ;;
+    *)
+      printf 'HTTP/2.0 %s Error\r\n\r\n' "$MOCK_HEAD_STATUS"
+      exit 1
+      ;;
+  esac
 elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
 then
-  if [[ -n ${MOCK_DELETE_NOT_FOUND:-} ]]
-  then
-    echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
-    exit 1
-  fi
-  true
+  case ${MOCK_DELETE_STATUS:-204} in
+    none)
+      exit 1
+      ;;
+    204)
+      printf 'HTTP/2.0 204 No Content\r\n\r\n'
+      ;;
+    *)
+      printf 'HTTP/2.0 %s Error\r\n\r\n{"message":"mock %s","status":"%s"}' "$MOCK_DELETE_STATUS" "$MOCK_DELETE_STATUS" "$MOCK_DELETE_STATUS"
+      exit 1
+      ;;
+  esac
 fi
 MOCK
 chmod +x "$tmpdir/mockbin_react/gh"
@@ -1359,234 +1354,403 @@ react_path="$tmpdir/mockbin_react:$test_path"
 discussion_url=https://github.com/testuser/testrepo/pull/1#discussion_r111
 issuecomment_url=https://github.com/testuser/testrepo/pull/1#issuecomment-222
 discussion_reaction_url=https://api.github.com/repos/testuser/testrepo/pulls/comments/111/reactions/987654321
+issuecomment_reaction_url=https://api.github.com/repos/testuser/testrepo/issues/comments/222/reactions/987654321
 
-# Test: comment react exits if no arguments given
-run_test
-export MOCK_LOG="$tmpdir/log_comment_react_noarg"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react" 2>&1 || true)
-if [[ $result == *"requires a <comment-url> argument"* ]]
-then
-  pass "comment react exits if no arguments given"
-else
-  fail "comment react exits if no arguments given: got '${result}'"
-fi
-
-# Test: comment react exits if no file argument given
-run_test
-export MOCK_LOG="$tmpdir/log_comment_react_nofile"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url'" 2>&1 || true)
-if [[ $result == *"requires a <file> argument"* ]]
-then
-  pass "comment react exits if no file argument given"
-else
-  fail "comment react exits if no file argument given: got '${result}'"
-fi
-
-# Test: comment react posts to the pulls reactions endpoint for #discussion_r URLs
-run_test
-echo "+1" > "$tmpdir/repo/reaction.md"
-rm -f "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_react_discussion"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>/dev/null)
-if grep -q 'mock-gh api --include --method POST repos/testuser/testrepo/pulls/comments/111/reactions -f content=+1 ' "$MOCK_LOG"
-then
-  pass "comment react posts to pulls reactions endpoint for #discussion_r"
-else
-  fail "comment react posts to pulls reactions endpoint for #discussion_r: got $(cat "$MOCK_LOG")"
-fi
-
-# Test: comment react writes the reaction API URL to <file>.url and stdout
-run_test
-if [[ $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" && $result == "$discussion_reaction_url" ]]
-then
-  pass "comment react writes reaction API URL to <file>.url"
-else
-  fail "comment react writes reaction API URL to <file>.url: got url file '$(cat "$tmpdir/repo/reaction.md.url" 2>&1)', stdout '${result}'"
-fi
-rm -f "$tmpdir/repo/reaction.md.url"
-
-# Test: comment react posts to the issues reactions endpoint for #issuecomment- URLs
-run_test
-echo "heart" > "$tmpdir/repo/reaction.md"
-export MOCK_LOG="$tmpdir/log_comment_react_issuecomment"
-touch "$MOCK_LOG"
-PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$issuecomment_url' reaction.md" >/dev/null 2>&1 || true
-if grep -q 'mock-gh api --include --method POST repos/testuser/testrepo/issues/comments/222/reactions -f content=heart ' "$MOCK_LOG" &&
-   [[ $(< "$tmpdir/repo/reaction.md.url") == https://api.github.com/repos/testuser/testrepo/issues/comments/222/reactions/987654321 ]]
-then
-  pass "comment react posts to issues reactions endpoint for #issuecomment-"
-else
-  fail "comment react posts to issues reactions endpoint for #issuecomment-: got $(cat "$MOCK_LOG") / '$(cat "$tmpdir/repo/reaction.md.url" 2>&1)'"
-fi
-rm -f "$tmpdir/repo/reaction.md.url"
-
-# Test: comment react rejects a non-comment URL without calling the API
-run_test
-echo "+1" > "$tmpdir/repo/reaction.md"
-export MOCK_LOG="$tmpdir/log_comment_react_badurl"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react https://github.com/testuser/testrepo/pull/1 reaction.md" 2>&1 || true)
-if [[ $result == *"doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)"* ]] &&
-   ! grep -q 'mock-gh api' "$MOCK_LOG" &&
-   [[ ! -e "$tmpdir/repo/reaction.md.url" ]]
-then
-  pass "comment react rejects a non-comment URL"
-else
-  fail "comment react rejects a non-comment URL: got '${result}' / $(cat "$MOCK_LOG")"
-fi
-
-# Test: comment react rejects an invalid reaction without calling the API
-run_test
-echo "thumbsup" > "$tmpdir/repo/reaction.md"
-export MOCK_LOG="$tmpdir/log_comment_react_invalid"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>&1 || true)
-if [[ $result == *"doesn't hold a valid reaction: got 'thumbsup'"* ]] &&
-   ! grep -q 'mock-gh api' "$MOCK_LOG" &&
-   [[ ! -e "$tmpdir/repo/reaction.md.url" ]]
-then
-  pass "comment react rejects an invalid reaction"
-else
-  fail "comment react rejects an invalid reaction: got '${result}' / $(cat "$MOCK_LOG")"
-fi
-
-# Test: comment react rejects a file holding more than one reaction
-run_test
-printf '+1\nheart\n' > "$tmpdir/repo/reaction.md"
-export MOCK_LOG="$tmpdir/log_comment_react_multiple"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>&1 || true)
-if [[ $result == *"doesn't hold a valid reaction"* ]] && ! grep -q 'mock-gh api' "$MOCK_LOG"
-then
-  pass "comment react rejects more than one reaction"
-else
-  fail "comment react rejects more than one reaction: got '${result}' / $(cat "$MOCK_LOG")"
-fi
-
-# Test: comment react trims whitespace and maps emoji aliases to API names
-run_test
-emoji_ok=1
-for pair in '👍:+1' '👎:-1' '😄:laugh' '😕:confused' '❤️:heart' '❤:heart' '🎉:hooray' '🚀:rocket' '👀:eyes'
-do
-  printf '  %s \n\n' "${pair%%:*}" > "$tmpdir/repo/reaction.md"
-  rm -f "$tmpdir/repo/reaction.md.url"
-  export MOCK_LOG="$tmpdir/log_comment_react_emoji"
+react_run() {
+  local -a envs=()
+  while [[ ${1-} != -- ]]
+  do
+    envs+=("$1")
+    shift
+  done
+  shift
+  export MOCK_LOG="$tmpdir/log_react"
   : > "$MOCK_LOG"
-  PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" >/dev/null 2>&1 || true
-  if ! grep -q -- "-f content=${pair#*:} " "$MOCK_LOG"
+  react_out=$(
+    cd "$tmpdir/repo" &&
+      env "${envs[@]}" PATH="$react_path" timvisher_logging_log_level=INFO \
+        bash -c "source '${funcs_dir}/logging.bash'; \"\$0\" \"\$@\"" "$script" "$@" \
+        2>"$tmpdir/react_err" </dev/null
+  )
+  react_rc=$?
+  react_err=$(< "$tmpdir/react_err")
+}
+
+react_reset() {
+  rm -f "$tmpdir/repo/reaction.md" "$tmpdir/repo/reaction.md.url"
+  if (( 0 < $# ))
   then
-    emoji_ok=0
-    fail "comment react maps '${pair%%:*}' to '${pair#*:}': got $(cat "$MOCK_LOG")"
+    printf '%s\n' "$1" > "$tmpdir/repo/reaction.md"
+  fi
+}
+
+react_fails_cleanly() {
+  local name=$1 expected=$2
+  if (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"$expected"* ]] &&
+     ! grep -q 'mock-gh api' "$MOCK_LOG"
+  then
+    pass "$name"
+  else
+    fail "$name: rc=${react_rc} stdout='${react_out}' stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+  fi
+}
+
+run_test
+react_reset
+react_run -- comment react
+react_fails_cleanly "comment react exits if no arguments given" "requires a <comment-url> argument"
+
+run_test
+react_reset
+react_run -- comment react "$discussion_url"
+react_fails_cleanly "comment react exits if no file argument given" "requires a <file> argument"
+
+run_test
+react_reset
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react exits if the file is not readable" "'reaction.md' is not readable"
+
+run_test
+react_reset +1
+react_run -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) &&
+   grep -q '^mock-gh api --include --method POST repos/testuser/testrepo/pulls/comments/111/reactions -f content=+1 --jq .id --hostname github.com$' "$MOCK_LOG" &&
+   [[ $react_out == "$discussion_reaction_url" && $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]
+then
+  pass "comment react posts to the pulls reactions endpoint for #discussion_r and records the reaction URL"
+else
+  fail "comment react posts to the pulls reactions endpoint for #discussion_r: rc=${react_rc} stdout='${react_out}' stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset +1
+react_run -- comment react https://github.com/testuser/testrepo/pull/1/files#discussion_r111 reaction.md
+if (( react_rc == 0 )) && [[ $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]
+then
+  pass "comment react accepts a /files#discussion_r URL"
+else
+  fail "comment react accepts a /files#discussion_r URL: rc=${react_rc} stderr='${react_err}'"
+fi
+
+run_test
+react_reset heart
+react_run -- comment react "$issuecomment_url" reaction.md
+if (( react_rc == 0 )) &&
+   grep -q '^mock-gh api --include --method POST repos/testuser/testrepo/issues/comments/222/reactions -f content=heart --jq .id --hostname github.com$' "$MOCK_LOG" &&
+   [[ $react_out == "$issuecomment_reaction_url" && $(< "$tmpdir/repo/reaction.md.url") == "$issuecomment_reaction_url" ]]
+then
+  pass "comment react posts to the issues reactions endpoint for #issuecomment-"
+else
+  fail "comment react posts to the issues reactions endpoint for #issuecomment-: rc=${react_rc} stdout='${react_out}' stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+bad_url_failures=()
+for bad_url in \
+  https://github.com/testuser/testrepo/pull/1 \
+  https://notgithub.com/testuser/testrepo/pull/1#issuecomment-222 \
+  https://github.com.evil.example/testuser/testrepo/pull/1#issuecomment-222 \
+  https://github.com/testuser/testrepo/pull/1#issuecomment-222garbage \
+  http://github.com/testuser/testrepo/pull/1#discussion_r111 \
+  https://github.com/testuser/testrepo/issues/1#issuecomment-222
+do
+  react_reset +1
+  react_run -- comment react "$bad_url" reaction.md
+  if ! { (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)"* ]] &&
+         ! grep -q 'mock-gh api' "$MOCK_LOG" && [[ ! -e "$tmpdir/repo/reaction.md.url" ]]; }
+  then
+    bad_url_failures+=("${bad_url} (rc=${react_rc} stdout='${react_out}' stderr='${react_err}')")
   fi
 done
-if (( emoji_ok ))
+if (( ${#bad_url_failures[@]} == 0 ))
+then
+  pass "comment react rejects non-comment and lookalike URLs"
+else
+  fail "comment react rejects non-comment and lookalike URLs: ${bad_url_failures[*]}"
+fi
+
+run_test
+name_failures=()
+for name in +1 -1 laugh confused heart hooray rocket eyes
+do
+  react_reset "$name"
+  react_run -- comment react "$discussion_url" reaction.md
+  if ! { (( react_rc == 0 )) && grep -q -- " -f content=${name} " "$MOCK_LOG"; }
+  then
+    name_failures+=("${name}")
+  fi
+done
+if (( ${#name_failures[@]} == 0 ))
+then
+  pass "comment react accepts every reaction name"
+else
+  fail "comment react accepts every reaction name: failed for ${name_failures[*]}"
+fi
+
+run_test
+alias_failures=()
+for pair in '👍:+1' '👎:-1' '😄:laugh' '😕:confused' '❤️:heart' '❤:heart' '🎉:hooray' '🚀:rocket' '👀:eyes'
+do
+  react_reset
+  printf '  %s \n\n' "${pair%%:*}" > "$tmpdir/repo/reaction.md"
+  react_run -- comment react "$discussion_url" reaction.md
+  if ! { (( react_rc == 0 )) && grep -q -- " -f content=${pair#*:} " "$MOCK_LOG"; }
+  then
+    alias_failures+=("${pair}")
+  fi
+done
+if (( ${#alias_failures[@]} == 0 ))
 then
   pass "comment react trims whitespace and maps emoji aliases"
-fi
-rm -f "$tmpdir/repo/reaction.md.url"
-
-# Test: comment react prints an existing <file>.url without calling the API
-run_test
-echo "+1" > "$tmpdir/repo/reaction.md"
-echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_react_existing"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>/dev/null)
-if [[ $result == "$discussion_reaction_url" ]] && ! grep -q 'mock-gh api' "$MOCK_LOG"
-then
-  pass "comment react prints existing <file>.url without calling the API"
 else
-  fail "comment react prints existing <file>.url without calling the API: got '${result}' / $(cat "$MOCK_LOG")"
+  fail "comment react trims whitespace and maps emoji aliases: failed for ${alias_failures[*]}"
 fi
-rm -f "$tmpdir/repo/reaction.md.url"
 
-# Test: comment react reports an existing reaction (200) and still records it
 run_test
-echo "+1" > "$tmpdir/repo/reaction.md"
-export MOCK_LOG="$tmpdir/log_comment_react_already"
-touch "$MOCK_LOG"
-result=$(timvisher_logging_log_level=INFO MOCK_REACT_STATUS=200 PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>&1 >/dev/null)
-if [[ $result == *"Already reacted with '+1'"* ]] &&
+react_reset thumbsup
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react rejects an invalid reaction" "doesn't hold a valid reaction: got 'thumbsup'"
+
+run_test
+react_reset '👍🏽'
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react rejects a skin-tone emoji" "doesn't hold a valid reaction"
+
+run_test
+react_reset $'+1\nheart'
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react rejects more than one reaction" "doesn't hold a valid reaction"
+
+run_test
+react_reset
+: > "$tmpdir/repo/reaction.md"
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react rejects an empty file" "doesn't hold a valid reaction: got ''"
+
+run_test
+react_reset +1
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) && [[ $react_out == "$discussion_reaction_url" ]] && ! grep -q 'mock-gh api' "$MOCK_LOG"
+then
+  pass "comment react prints an existing <file>.url without calling the API"
+else
+  fail "comment react prints an existing <file>.url without calling the API: rc=${react_rc} stdout='${react_out}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset +1
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment react "$issuecomment_url" reaction.md
+if [[ $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]
+then
+  react_fails_cleanly "comment react refuses a <file>.url tracking another comment" "use a separate file per comment"
+else
+  fail "comment react refuses a <file>.url tracking another comment: sidecar changed to '$(cat "$tmpdir/repo/reaction.md.url")'"
+fi
+
+run_test
+react_reset +1
+react_run MOCK_POST_MODE=200 -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) && [[ $react_err == *"Already reacted with '+1'"* ]] &&
+   [[ $react_out == "$discussion_reaction_url" && $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]
+then
+  pass "comment react reports an existing reaction (200) and records it"
+else
+  fail "comment react reports an existing reaction (200) and records it: rc=${react_rc} stdout='${react_out}' stderr='${react_err}'"
+fi
+
+run_test
+react_reset +1
+react_run -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) && [[ $react_err != *"Already reacted"* ]] &&
    [[ $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]
 then
-  pass "comment react reports an existing reaction and records it"
+  pass "comment react records a new reaction (201) without reporting it as existing"
 else
-  fail "comment react reports an existing reaction and records it: got '${result}' / '$(cat "$tmpdir/repo/reaction.md.url" 2>&1)'"
+  fail "comment react records a new reaction (201) without reporting it as existing: rc=${react_rc} stderr='${react_err}'"
 fi
 
-# Test: comment react says nothing about an existing reaction on 201
 run_test
-rm -f "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_react_created"
-touch "$MOCK_LOG"
-result=$(timvisher_logging_log_level=INFO PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment react '$discussion_url' reaction.md" 2>&1 >/dev/null)
-if [[ $result != *"Already reacted"* ]]
+react_reset +1
+react_run MOCK_POST_MODE=fail -- comment react "$discussion_url" reaction.md
+if (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"Unable to post reaction"* && ! -e "$tmpdir/repo/reaction.md.url" ]]
 then
-  pass "comment react is quiet about new reactions"
+  pass "comment react fails without a sidecar when the POST fails"
 else
-  fail "comment react is quiet about new reactions: got '${result}'"
+  fail "comment react fails without a sidecar when the POST fails: rc=${react_rc} stdout='${react_out}' stderr='${react_err}'"
 fi
-rm -f "$tmpdir/repo/reaction.md.url"
 
-# Test: comment delete on a reaction checks the comment and deletes the reaction
 run_test
-echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_delete_reaction"
-touch "$MOCK_LOG"
-result=$(timvisher_logging_log_level=INFO PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete --force reaction.md" 2>&1)
-if grep -q 'mock-gh api --method HEAD /repos/testuser/testrepo/pulls/comments/111$' "$MOCK_LOG" &&
-   grep -q 'mock-gh api --method DELETE .* /repos/testuser/testrepo/pulls/comments/111/reactions/987654321$' "$MOCK_LOG" &&
-   [[ ! -e "$tmpdir/repo/reaction.md.url" ]] &&
-   [[ $result == *"Deleted reaction for reaction.md"* ]]
+react_reset +1
+react_run MOCK_POST_MODE=garbage -- comment react "$discussion_url" reaction.md
+if (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"Unexpected response posting reaction"* && ! -e "$tmpdir/repo/reaction.md.url" ]]
 then
-  pass "comment delete deletes a tracked reaction"
+  pass "comment react fails without a sidecar on an unexpected response"
 else
-  fail "comment delete deletes a tracked reaction: got '${result}' / $(cat "$MOCK_LOG")"
+  fail "comment react fails without a sidecar on an unexpected response: rc=${react_rc} stdout='${react_out}' stderr='${react_err}'"
 fi
 
-# Test: comment delete on an already-deleted reaction removes the sidecar
 run_test
+react_reset
+mkdir -p "$tmpdir/repo/x.readonly"
+echo +1 > "$tmpdir/repo/x.readonly/reaction.md"
+chmod 555 "$tmpdir/repo/x.readonly"
+react_run -- comment react "$discussion_url" x.readonly/reaction.md
+chmod 755 "$tmpdir/repo/x.readonly"
+if (( react_rc != 0 )) && [[ $react_err == *"Unable to write 'x.readonly/reaction.md.url'"* ]]
+then
+  pass "comment react fails when the sidecar can't be written"
+else
+  fail "comment react fails when the sidecar can't be written: rc=${react_rc} stderr='${react_err}'"
+fi
+rm -rf "$tmpdir/repo/x.readonly"
+
+run_test
+react_reset
 echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_delete_reaction_gone"
-touch "$MOCK_LOG"
-result=$(timvisher_logging_log_level=INFO MOCK_DELETE_NOT_FOUND=1 PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete --force reaction.md" 2>&1)
-if [[ ! -e "$tmpdir/repo/reaction.md.url" ]] && [[ $result == *"Reaction already gone"* ]]
+react_run -- comment delete --force reaction.md
+if (( react_rc == 0 )) &&
+   grep -q '^mock-gh api --method HEAD --include /repos/testuser/testrepo/pulls/comments/111 --hostname github.com$' "$MOCK_LOG" &&
+   grep -q '^mock-gh api --method DELETE --include .* /repos/testuser/testrepo/pulls/comments/111/reactions/987654321 --hostname github.com$' "$MOCK_LOG" &&
+   [[ ! -e "$tmpdir/repo/reaction.md.url" && $react_err == *"Deleted reaction for 'reaction.md'"* ]]
+then
+  pass "comment delete deletes a tracked pulls reaction"
+else
+  fail "comment delete deletes a tracked pulls reaction: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset
+echo "$issuecomment_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment delete --force reaction.md
+if (( react_rc == 0 )) &&
+   grep -q '^mock-gh api --method HEAD --include /repos/testuser/testrepo/issues/comments/222 --hostname github.com$' "$MOCK_LOG" &&
+   grep -q '^mock-gh api --method DELETE --include .* /repos/testuser/testrepo/issues/comments/222/reactions/987654321 --hostname github.com$' "$MOCK_LOG" &&
+   [[ ! -e "$tmpdir/repo/reaction.md.url" ]]
+then
+  pass "comment delete deletes a tracked issues reaction"
+else
+  fail "comment delete deletes a tracked issues reaction: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run MOCK_DELETE_STATUS=404 -- comment delete --force reaction.md
+if (( react_rc == 0 )) && [[ ! -e "$tmpdir/repo/reaction.md.url" && $react_err == *"Reaction already gone"* ]]
 then
   pass "comment delete handles an already-gone reaction"
 else
-  fail "comment delete handles an already-gone reaction: got '${result}' / $(cat "$MOCK_LOG")"
+  fail "comment delete handles an already-gone reaction: rc=${react_rc} stderr='${react_err}'"
 fi
 
-# Test: comment delete on a reaction whose comment is gone removes the stale sidecar
 run_test
+react_reset
 echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_delete_reaction_stale"
-touch "$MOCK_LOG"
-result=$(MOCK_HEAD_RC=1 PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete --force reaction.md" 2>&1)
-if [[ ! -e "$tmpdir/repo/reaction.md.url" ]] && ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
+react_run MOCK_HEAD_STATUS=404 -- comment delete --force reaction.md
+if (( react_rc == 0 )) && [[ ! -e "$tmpdir/repo/reaction.md.url" && $react_err == *"Removing stale reaction URL file 'reaction.md.url'"* ]] &&
+   ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
 then
-  pass "comment delete removes a stale reaction sidecar"
+  pass "comment delete removes a reaction sidecar whose comment is gone"
 else
-  fail "comment delete removes a stale reaction sidecar: got '${result}' / $(cat "$MOCK_LOG")"
+  fail "comment delete removes a reaction sidecar whose comment is gone: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
 fi
 
-# Test: comment edit refuses a reaction sidecar
 run_test
-echo "+1" > "$tmpdir/repo/reaction.md"
-echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
-export MOCK_LOG="$tmpdir/log_comment_edit_reaction"
-touch "$MOCK_LOG"
-result=$(PATH="$react_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit reaction.md" 2>&1 || true)
-if [[ $result == *"tracks a reaction"*"can't be edited"* ]] && ! grep -q 'mock-gh api' "$MOCK_LOG"
+head_failures=()
+for head_status in 500 401 none
+do
+  react_reset
+  echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+  react_run MOCK_HEAD_STATUS="$head_status" -- comment delete --force reaction.md
+  if ! { (( react_rc != 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" && $react_err == *"Unable to check whether"*"keeping 'reaction.md.url'"* ]] &&
+         ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"; }
+  then
+    head_failures+=("${head_status} (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#head_failures[@]} == 0 ))
 then
-  pass "comment edit refuses a reaction sidecar"
+  pass "comment delete keeps the sidecar when the existence check fails"
 else
-  fail "comment edit refuses a reaction sidecar: got '${result}' / $(cat "$MOCK_LOG")"
+  fail "comment delete keeps the sidecar when the existence check fails: ${head_failures[*]}"
 fi
-rm -f "$tmpdir/repo/reaction.md" "$tmpdir/repo/reaction.md.url"
+
+run_test
+delete_failures=()
+for delete_status in 403 500 none
+do
+  react_reset
+  echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+  react_run MOCK_DELETE_STATUS="$delete_status" -- comment delete --force reaction.md
+  if ! { (( react_rc != 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" && $react_err == *"Unexpected response deleting reaction for 'reaction.md' (HTTP status '"*"keeping 'reaction.md.url'"* ]]; }
+  then
+    delete_failures+=("${delete_status} (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#delete_failures[@]} == 0 ))
+then
+  pass "comment delete keeps the sidecar and fails when the DELETE fails"
+else
+  fail "comment delete keeps the sidecar and fails when the DELETE fails: ${delete_failures[*]}"
+fi
+
+run_test
+react_reset
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment delete reaction.md
+if (( react_rc == 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" ]] &&
+   [[ $react_err == *"Aborted at user's request."* ]] &&
+   ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
+then
+  pass "comment delete on a reaction honors a declined prompt"
+else
+  fail "comment delete on a reaction honors a declined prompt: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset
+echo "https://github.com/testuser/testrepo/pull/1#discussion_r555" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment delete --force reaction.md
+if (( react_rc == 0 )) &&
+   grep -q '^mock-gh api --method DELETE --include .* /repos/testuser/testrepo/pulls/comments/555 --hostname github.com$' "$MOCK_LOG" &&
+   [[ ! -e "$tmpdir/repo/reaction.md.url" ]]
+then
+  pass "comment delete still parses #discussion_r URLs"
+else
+  fail "comment delete still parses #discussion_r URLs: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+edit_failures=()
+for reaction_url in "$discussion_reaction_url" "$issuecomment_reaction_url"
+do
+  react_reset +1
+  echo "$reaction_url" > "$tmpdir/repo/reaction.md.url"
+  react_run -- comment edit reaction.md
+  if ! { (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"tracks a reaction"*"can't be edited"* ]] &&
+         ! grep -q 'mock-gh api' "$MOCK_LOG"; }
+  then
+    edit_failures+=("${reaction_url} (rc=${react_rc} stdout='${react_out}' stderr='${react_err}')")
+  fi
+done
+if (( ${#edit_failures[@]} == 0 ))
+then
+  pass "comment edit refuses reaction sidecars"
+else
+  fail "comment edit refuses reaction sidecars: ${edit_failures[*]}"
+fi
+
+run_test
+react_run -- --help
+if (( react_rc == 0 )) && [[ $react_out == *"timvisher_gh comment react <comment-url> <file>"* && $react_out == *"comment react subcommand:"* ]]
+then
+  pass "--help documents comment react"
+else
+  fail "--help documents comment react: rc=${react_rc}"
+fi
+react_reset
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
