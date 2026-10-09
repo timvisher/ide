@@ -10,8 +10,10 @@
 #   aictl_error - Same as die but returns instead of exits
 #   aictl_warn  - Blocking warning, exits unless NIRMI + REASON both set
 #   aictl_info  - Structured non-error instruction; returns 0
+#   aictl_listening - True when an agent is listening for instructions
+#   aictl_parse - Print a line back as compact JSON if it is an instruction
 #
-# Output is JSON to stderr:
+# Output is JSON to stderr, or to $TIMVISHER_AICTL_LOG when set:
 #   {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
 #
 # The warning emission deliberately omits any ready-to-paste bypass
@@ -21,7 +23,7 @@
 # chunk came from the agent copying the `command` field we used to emit.
 #
 # Both functions accept --flag arguments for rich fields:
-#   --code, --message, --reason, --doc, --suggestion, --command
+#   --code, --message, --reason, --doc, --suggestion, --command, --data
 #
 # Positional fallback: <code> <message> [suggestion...]
 #
@@ -29,6 +31,8 @@
 #   TIMVISHER_AGENT_NIRMI=1                 Required to bypass aictl_warn
 #   TIMVISHER_AGENT_NIRMI_REASON=<text>     Required; free-form explanation
 #                                           — NIRMI alone is no longer sufficient
+#   TIMVISHER_AICTL_LOG=<file>              Append instructions to <file>,
+#                                           one line per write, not stderr
 #
 # Every bypass is logged (ts, code, reason, cwd, command) to
 #   ${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/aictl-bypass/log.jsonl
@@ -48,13 +52,14 @@ aictl__json_escape() {
 }
 
 # Parse --flag args into variables. Sets: _code, _message, _reason,
-# _doc, _command, _suggestions array.
+# _doc, _command, _data, _suggestions array.
 aictl__parse_args() {
   _code=""
   _message=""
   _reason=""
   _doc=""
   _command=""
+  _data=""
   _suggestions=()
 
   while (( 0 < $# ))
@@ -65,6 +70,7 @@ aictl__parse_args() {
       --reason) _reason=$2; shift 2 ;;
       --doc) _doc=$2; shift 2 ;;
       --command) _command=$2; shift 2 ;;
+      --data) _data=$2; shift 2 ;;
       --suggestion) _suggestions+=("$2"); shift 2 ;;
       --)
         shift
@@ -86,22 +92,31 @@ aictl__parse_args() {
   done
 }
 
+aictl__write() {
+  local line=$1
+
+  if [[ -n ${TIMVISHER_AICTL_LOG:-} ]] &&
+    cat 2>/dev/null >> "$TIMVISHER_AICTL_LOG" <<<"$line"
+  then
+    return 0
+  fi
+
+  printf '%s\n' "$line" >&2
+}
+
 aictl__emit() {
   local level=$1
   shift
 
   aictl__parse_args "$@"
 
-  local escaped_code escaped_message
-  escaped_code=$(aictl__json_escape "$_code")
-  escaped_message=$(aictl__json_escape "$_message")
-
-  printf '{"type":"instruction","level":"%s","code":"%s","message":"%s"' \
-    "$level" "$escaped_code" "$escaped_message" >&2
+  local line
+  line=$(printf '{"type":"instruction","level":"%s","code":"%s","message":"%s"' \
+    "$level" "$(aictl__json_escape "$_code")" "$(aictl__json_escape "$_message")")
 
   if [[ -n $_reason ]]
   then
-    printf ',"reason":"%s"' "$(aictl__json_escape "$_reason")" >&2
+    line+=$(printf ',"reason":"%s"' "$(aictl__json_escape "$_reason")")
   fi
 
   # info (and any other unrecognized level) gets no retryable field —
@@ -111,32 +126,42 @@ aictl__emit() {
   # notice is informational rather than a failed-but-retryable action.
   if [[ $level == error ]]
   then
-    printf ',"retryable":false' >&2
+    line+=',"retryable":false'
   elif [[ $level == warning && -z ${_aictl_suppress_retryable:-} ]]
   then
-    printf ',"retryable":true' >&2
+    line+=',"retryable":true'
     # Intentionally no "bypass" object. If bypass is legitimately needed,
     # the agent must follow --doc to learn the mechanism.
   fi
 
+  if [[ -n $_data ]]
+  then
+    line+=",\"data\":${_data}"
+  fi
+
   if (( 0 < ${#_suggestions[@]} ))
   then
-    printf ',"suggestions":[' >&2
+    line+=',"suggestions":['
     local first=true s
     for s in "${_suggestions[@]}"
     do
-      if [[ $first == true ]]; then first=false; else printf ',' >&2; fi
-      printf '"%s"' "$(aictl__json_escape "$s")" >&2
+      if [[ $first == true ]]
+      then
+        first=false
+      else
+        line+=','
+      fi
+      line+=$(printf '"%s"' "$(aictl__json_escape "$s")")
     done
-    printf ']' >&2
+    line+=']'
   fi
 
   if [[ -n $_doc ]]
   then
-    printf ',"doc":"%s"' "$(aictl__json_escape "$_doc")" >&2
+    line+=$(printf ',"doc":"%s"' "$(aictl__json_escape "$_doc")")
   fi
 
-  printf '}\n' >&2
+  aictl__write "${line}}"
 }
 
 # Fatal error — always exits non-zero. Not bypassable.
@@ -241,11 +266,20 @@ aictl_warn() {
       printf '}\n'
     } >> "$_aictl__log_file" 2>/dev/null || true
 
-    printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail bypassed with logged reason. Be sure you know what you are doing."}\n' \
-      "$(aictl__json_escape "${_code:-}")" >&2
+    aictl__write "$(printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail bypassed with logged reason. Be sure you know what you are doing."}' \
+      "$(aictl__json_escape "${_code:-}")")"
     return 0
   fi
 
   aictl__emit warning "$@"
   exit 1
+}
+
+aictl_listening() {
+  [[ -n ${TIMVISHER_AGENT:-} || -n ${TIMVISHER_AICTL_LOG:-} ]]
+}
+
+aictl_parse() {
+  printf '%s\n' "${1-}" |
+    jq -ceR 'fromjson? | objects | select(.type == "instruction")' 2>/dev/null
 }
