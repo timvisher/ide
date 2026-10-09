@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Create and manage git worktrees via ntmux3, including detached (-d) mode for scripted/agent use.
+description: Create and manage git worktrees via ntmux3, including detached (-d) mode for scripted/agent use and terminal (-T) mode to open one in a window the human can watch.
 ---
 
 # Worktree management with ntmux3
@@ -8,13 +8,14 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ## When to use
 - Spinning up a new worktree for a branch or PR.
 - Creating a worktree from an agent without stealing the terminal.
+- Opening a worktree for the human in a new terminal window (`-T`).
 - Understanding the worktree directory layout under ~/git/.
 
 ## Usage
 
 ```
-ntmux3 [-d] [GitHub PR URL | org/repo[/branch] | path] [file]
-ntmux3 [-d] org/repo/branch branch-ish
+ntmux3 [-d | -T] [GitHub PR URL | org/repo[/branch] | path] [file]
+ntmux3 [-d | -T] org/repo/branch branch-ish
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -56,6 +57,40 @@ ntmux3 -d timvisher-dd agent-shell-plus timvisher/my-feature
   creating a new one.
 - `-d` skips the "inside tmux" guard, so it works from within an
   existing session.
+
+## Opening a worktree in a terminal window (-T)
+
+`-T` opens a new terminal window (Ghostty, via the `timvisher
+Terminal` AppleScript library) running plain `ntmux3 <args>`, so the
+human watches the clone and ends up attached to the tmux session.
+Use it when the human asked to see or use the worktree themselves.
+
+```bash
+source ~/.bashrc && session_name=$(ntmux3 -T org/repo/branch-name)
+```
+
+From an agent (`TIMVISHER_AGENT` set), `-T` gives you the same contract
+as `-d`:
+
+- It **blocks** until ntmux3 in the window has created the session
+  or failed. That spans the whole clone, so use `run_in_background`
+  or a long timeout.
+- **stdout**: the tmux session name.
+- **stderr**: the window's aictl instructions, streamed live —
+  `ntmux3_started`, `ntmux3_worktree_building`,
+  `ntmux3_worktree_ready`, `ntmux3_session_ready` (with
+  `data.session` and `data.path`), or `ntmux3_failed`.
+- **exit status**: 0 once the session is ready, 1 otherwise.
+  `ntmux3_terminal_closed` means the window exited without
+  reporting, `ntmux3_terminal_timeout` means it did not report within
+  `TIMVISHER_NTMUX3_TERMINAL_DEADLINE` seconds (default 3600; ntmux3
+  may still be running in the window), and
+  `ntmux3_terminal_open_failed` means no window opened.
+
+Without `TIMVISHER_AGENT`, `-T` just opens the window and returns.
+
+The first `-T` from a new process may trigger a macOS Automation
+permission prompt that the human has to approve.
 
 ## Stacked worktrees
 

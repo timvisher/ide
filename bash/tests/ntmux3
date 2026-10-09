@@ -76,6 +76,16 @@ else
   fail "expected non-zero exit, got 0"
 fi
 
+# Test: shim teaches -T and that it blocks
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *'ntmux3 -T org/repo/branch-name'* ]] && [[ $result == *'run_in_background'* ]]
+then
+  pass "mentions -T and that it blocks"
+else
+  fail "expected -T mention: got '${result}'"
+fi
+
 # ---------------------------------------------------------------------------
 # Fallback aictl_die stub tests
 # ---------------------------------------------------------------------------

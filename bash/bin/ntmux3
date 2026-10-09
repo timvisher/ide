@@ -54,6 +54,7 @@ then
   suggestions+=(--suggestion "To stack on an existing branch of the same repo, pass it as arg 2: source ~/.bashrc && ntmux3 -d ${org_repo}/your-branch-name base-branch-name")
 fi
 
+suggestions+=(--suggestion "To open the worktree in a new terminal window the human can watch: source ~/.bashrc && ntmux3 -T org/repo/branch-name — it blocks until the tmux session is ready (session name on stdout), so use run_in_background or a long timeout")
 suggestions+=(--suggestion "Use timvisher_git info .org and timvisher_git info .repo to derive the org/repo prefix")
 
 aictl_die \
