@@ -1300,7 +1300,24 @@ mkdir -p "$tmpdir/mockbin_react"
 cat > "$tmpdir/mockbin_react/gh" <<'MOCK'
 #!/usr/bin/env bash
 echo "mock-gh $*" >> "$MOCK_LOG"
-if [[ $1 == api && $2 == --include && $3 == --method && $4 == POST ]]
+if [[ $1 == api ]]
+then
+  echo "${GH_TOKEN-unset} $*" >> "${MOCK_LOG}.tokens"
+fi
+if [[ $1 == auth && $2 == token ]]
+then
+  [[ $6 == brokenacct ]] && exit 1
+  echo "token-$6"
+elif [[ $1 == api && $2 == --method && $3 == HEAD && $5 =~ ^/repos/[^/]+/[^/]+$ ]]
+then
+  if [[ ${MOCK_REPO_HEAD_STATUS:-200} == 200 ]]
+  then
+    printf 'HTTP/2.0 200 OK\r\n\r\n'
+  else
+    printf 'HTTP/2.0 %s Error\r\n\r\n' "$MOCK_REPO_HEAD_STATUS"
+    exit 1
+  fi
+elif [[ $1 == api && $2 == --include && $3 == --method && $4 == POST ]]
 then
   case ${MOCK_POST_MODE:-201} in
     200)
@@ -1351,6 +1368,7 @@ fi
 MOCK
 chmod +x "$tmpdir/mockbin_react/gh"
 react_path="$tmpdir/mockbin_react:$test_path"
+mkdir -p "$tmpdir/ghconfig/orgs"
 discussion_url=https://github.com/testuser/testrepo/pull/1#discussion_r111
 issuecomment_url=https://github.com/testuser/testrepo/pull/1#issuecomment-222
 discussion_reaction_url=https://api.github.com/repos/testuser/testrepo/pulls/comments/111/reactions/987654321
@@ -1366,11 +1384,13 @@ react_run() {
   shift
   export MOCK_LOG="$tmpdir/log_react"
   : > "$MOCK_LOG"
+  : > "${MOCK_LOG}.tokens"
   react_out=$(
     cd "$tmpdir/repo" &&
-      env "${envs[@]}" PATH="$react_path" timvisher_logging_log_level=INFO \
+      printf '%s' "${react_stdin-}" |
+      env -u GH_TOKEN TIMVISHER_GH_CONFIG_DIR="$tmpdir/ghconfig" "${envs[@]}" PATH="$react_path" timvisher_logging_log_level=INFO \
         bash -c "source '${funcs_dir}/logging.bash'; \"\$0\" \"\$@\"" "$script" "$@" \
-        2>"$tmpdir/react_err" </dev/null
+        2>"$tmpdir/react_err"
   )
   react_rc=$?
   react_err=$(< "$tmpdir/react_err")
@@ -1452,7 +1472,10 @@ for bad_url in \
   https://github.com.evil.example/testuser/testrepo/pull/1#issuecomment-222 \
   https://github.com/testuser/testrepo/pull/1#issuecomment-222garbage \
   http://github.com/testuser/testrepo/pull/1#discussion_r111 \
-  https://github.com/testuser/testrepo/issues/1#issuecomment-222
+  https://github.com/testuser/testrepo/issues/1#issuecomment-222 \
+  https://github.com/testuser/testrepo/pull/1/commits#issuecomment-222 \
+  https://github.com/testuser/../pull/1#issuecomment-222 \
+  'https://github.com/testuser/testrepo/pull/1#issuecomment-222?x=1'
 do
   react_reset +1
   react_run -- comment react "$bad_url" reaction.md
@@ -1598,7 +1621,7 @@ echo +1 > "$tmpdir/repo/x.readonly/reaction.md"
 chmod 555 "$tmpdir/repo/x.readonly"
 react_run -- comment react "$discussion_url" x.readonly/reaction.md
 chmod 755 "$tmpdir/repo/x.readonly"
-if (( react_rc != 0 )) && [[ $react_err == *"Unable to write 'x.readonly/reaction.md.url'"* ]]
+if (( react_rc != 0 )) && [[ -z $react_out && $react_err == *"Unable to write 'x.readonly/reaction.md.url'; the reaction is '${discussion_reaction_url}'"* ]]
 then
   pass "comment react fails when the sidecar can't be written"
 else
@@ -1741,6 +1764,218 @@ then
 else
   fail "comment edit refuses reaction sidecars: ${edit_failures[*]}"
 fi
+
+run_test
+url_failures=()
+for good_url in \
+  'https://github.com/testuser/testrepo/pull/1?notification_referrer_id=NT_abc#discussion_r111' \
+  https://github.com/testuser/testrepo/pull/1/changes#discussion_r111 \
+  'https://github.com/testuser/testrepo/pull/1/files?w=1#discussion_r111'
+do
+  react_reset +1
+  react_run -- comment react "$good_url" reaction.md
+  if ! { (( react_rc == 0 )) && [[ $(< "$tmpdir/repo/reaction.md.url") == "$discussion_reaction_url" ]]; }
+  then
+    url_failures+=("${good_url} (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#url_failures[@]} == 0 ))
+then
+  pass "comment react accepts query strings and /files or /changes URLs"
+else
+  fail "comment react accepts query strings and /files or /changes URLs: ${url_failures[*]}"
+fi
+
+run_test
+react_reset
+printf 'rocket\r\n' > "$tmpdir/repo/reaction.md"
+react_run -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) && grep -q -- ' -f content=rocket ' "$MOCK_LOG"
+then
+  pass "comment react accepts a CRLF reaction file"
+else
+  fail "comment react accepts a CRLF reaction file: rc=${react_rc} stderr='${react_err}' log=$(cat "$MOCK_LOG")"
+fi
+
+run_test
+react_reset thumbsup
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react validates the reaction even when <file>.url exists" "doesn't hold a valid reaction: got 'thumbsup'"
+
+run_test
+react_reset +1
+echo "https://api.github.com/repos/testuser/testrepo/pulls/comments/111/reactions/abc" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment react "$discussion_url" reaction.md
+react_fails_cleanly "comment react refuses a malformed <file>.url for the same comment" "doesn't hold a reaction API URL"
+
+run_test
+react_reset +1
+echo "https://api.github.com/repos/TestUser/TestRepo/pulls/comments/111/reactions/987654321" > "$tmpdir/repo/reaction.md.url"
+react_run -- comment react "$discussion_url" reaction.md
+if (( react_rc == 0 )) && [[ $react_out == https://api.github.com/repos/TestUser/TestRepo/* ]] && ! grep -q 'mock-gh api' "$MOCK_LOG"
+then
+  pass "comment react matches an existing <file>.url case-insensitively"
+else
+  fail "comment react matches an existing <file>.url case-insensitively: rc=${react_rc} stdout='${react_out}' stderr='${react_err}'"
+fi
+
+run_test
+react_reset
+echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+react_run MOCK_HEAD_STATUS=410 -- comment delete --force reaction.md
+if (( react_rc == 0 )) && [[ ! -e "$tmpdir/repo/reaction.md.url" ]] && ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
+then
+  pass "comment delete treats HEAD 410 as gone"
+else
+  fail "comment delete treats HEAD 410 as gone: rc=${react_rc} stderr='${react_err}'"
+fi
+
+run_test
+access_failures=()
+for mode in head delete
+do
+  react_reset
+  echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+  if [[ $mode == head ]]
+  then
+    react_run MOCK_HEAD_STATUS=404 MOCK_REPO_HEAD_STATUS=404 -- comment delete --force reaction.md
+  else
+    react_run MOCK_DELETE_STATUS=404 MOCK_REPO_HEAD_STATUS=404 -- comment delete --force reaction.md
+  fi
+  if ! { (( react_rc != 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" && $react_err == *"access may be the problem; keeping 'reaction.md.url'"* ]]; }
+  then
+    access_failures+=("${mode} (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#access_failures[@]} == 0 ))
+then
+  pass "comment delete keeps the sidecar when a 404 may mean lost access"
+else
+  fail "comment delete keeps the sidecar when a 404 may mean lost access: ${access_failures[*]}"
+fi
+
+run_test
+rm_failures=()
+for delete_status in 204 404
+do
+  react_reset
+  mkdir -p "$tmpdir/repo/x.readonly"
+  echo "$discussion_reaction_url" > "$tmpdir/repo/x.readonly/reaction.md.url"
+  chmod 555 "$tmpdir/repo/x.readonly"
+  react_run MOCK_DELETE_STATUS="$delete_status" -- comment delete --force x.readonly/reaction.md
+  chmod 755 "$tmpdir/repo/x.readonly"
+  if ! { (( react_rc != 0 )) && [[ $react_err == *"unable to remove 'x.readonly/reaction.md.url'"* && $react_err != *'"level":"INFO","caller":"gh_comment_delete","message":"Deleted'* && $react_err != *'"level":"INFO","caller":"gh_comment_delete","message":"Reaction already gone'* ]]; }
+  then
+    rm_failures+=("${delete_status} (rc=${react_rc} stderr='${react_err}')")
+  fi
+  rm -rf "$tmpdir/repo/x.readonly"
+done
+if (( ${#rm_failures[@]} == 0 ))
+then
+  pass "comment delete fails when the sidecar can't be removed after deleting"
+else
+  fail "comment delete fails when the sidecar can't be removed after deleting: ${rm_failures[*]}"
+fi
+
+run_test
+plain_failures=()
+for env_pair in MOCK_HEAD_STATUS=500 MOCK_DELETE_STATUS=500
+do
+  react_reset
+  echo "$issuecomment_url" > "$tmpdir/repo/reaction.md.url"
+  react_run "$env_pair" -- comment delete --force reaction.md
+  if ! { (( react_rc != 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" && $react_err == *"keeping 'reaction.md.url'"* ]]; }
+  then
+    plain_failures+=("${env_pair} (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#plain_failures[@]} == 0 ))
+then
+  pass "comment delete keeps a plain comment sidecar when HEAD or DELETE fails"
+else
+  fail "comment delete keeps a plain comment sidecar when HEAD or DELETE fails: ${plain_failures[*]}"
+fi
+
+run_test
+prompt_failures=()
+for answer in y n
+do
+  react_reset
+  echo "$discussion_reaction_url" > "$tmpdir/repo/reaction.md.url"
+  react_stdin=$answer$'\n'
+  react_run -- comment delete reaction.md
+  react_stdin=
+  if [[ $answer == y ]]
+  then
+    if ! { (( react_rc == 0 )) && [[ ! -e "$tmpdir/repo/reaction.md.url" ]] && grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"; }
+    then
+      prompt_failures+=("y (rc=${react_rc} stderr='${react_err}')")
+    fi
+  elif ! { (( react_rc == 0 )) && [[ -e "$tmpdir/repo/reaction.md.url" ]] && ! grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"; }
+  then
+    prompt_failures+=("n (rc=${react_rc} stderr='${react_err}')")
+  fi
+done
+if (( ${#prompt_failures[@]} == 0 ))
+then
+  pass "comment delete on a reaction follows y/n at the prompt"
+else
+  fail "comment delete on a reaction follows y/n at the prompt: ${prompt_failures[*]}"
+fi
+
+run_test
+mkdir -p "$tmpdir/ghconfig/orgs/testuser" "$tmpdir/ghconfig/orgs/otherorg" "$tmpdir/ghconfig/orgs/brokenorg"
+echo testacct > "$tmpdir/ghconfig/orgs/testuser/account"
+echo otheracct > "$tmpdir/ghconfig/orgs/otherorg/account"
+echo brokenacct > "$tmpdir/ghconfig/orgs/brokenorg/account"
+token_failures=()
+react_reset +1
+react_run -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 reaction.md
+grep -q '^token-otheracct api --include --method POST repos/otherorg/repo/' "${MOCK_LOG}.tokens" ||
+  token_failures+=("mapped owner: $(cat "${MOCK_LOG}.tokens")")
+react_reset +1
+react_run -- comment react https://github.com/unmappedorg/repo/pull/1#issuecomment-5 reaction.md
+grep -q '^unset api --include --method POST repos/unmappedorg/repo/' "${MOCK_LOG}.tokens" ||
+  token_failures+=("unmapped owner: $(cat "${MOCK_LOG}.tokens")")
+react_reset +1
+react_run -- comment react "$issuecomment_url" reaction.md
+grep -q '^token-testacct api --include --method POST repos/testuser/testrepo/' "${MOCK_LOG}.tokens" ||
+  token_failures+=("worktree owner: $(cat "${MOCK_LOG}.tokens")")
+react_reset
+echo https://api.github.com/repos/otherorg/repo/issues/comments/5/reactions/9 > "$tmpdir/repo/reaction.md.url"
+react_run -- comment delete --force reaction.md
+grep -q '^token-otheracct api --method DELETE ' "${MOCK_LOG}.tokens" ||
+  token_failures+=("delete mapped owner: $(cat "${MOCK_LOG}.tokens")")
+if (( ${#token_failures[@]} == 0 ))
+then
+  pass "comment react and delete use the gh token for the comment URL's owner"
+else
+  fail "comment react and delete use the gh token for the comment URL's owner: ${token_failures[*]}"
+fi
+
+run_test
+broken_failures=()
+react_reset +1
+react_run -- comment react https://github.com/brokenorg/repo/pull/1#issuecomment-5 reaction.md
+if ! { (( react_rc != 0 )) && [[ $react_err == *"No gh token for the account mapped to org 'brokenorg'"* && ! -s "${MOCK_LOG}.tokens" && ! -e "$tmpdir/repo/reaction.md.url" ]]; }
+then
+  broken_failures+=("react (rc=${react_rc} stderr='${react_err}')")
+fi
+react_reset
+echo https://api.github.com/repos/brokenorg/repo/issues/comments/5/reactions/9 > "$tmpdir/repo/reaction.md.url"
+react_run -- comment delete --force reaction.md
+if ! { (( react_rc != 0 )) && [[ $react_err == *"No gh token for the account mapped to org 'brokenorg'"* && ! -s "${MOCK_LOG}.tokens" && -e "$tmpdir/repo/reaction.md.url" ]]; }
+then
+  broken_failures+=("delete (rc=${react_rc} stderr='${react_err}')")
+fi
+if (( ${#broken_failures[@]} == 0 ))
+then
+  pass "comment react and delete fail when the URL owner's token can't be minted"
+else
+  fail "comment react and delete fail when the URL owner's token can't be minted: ${broken_failures[*]}"
+fi
+rm -rf "$tmpdir/ghconfig/orgs/testuser" "$tmpdir/ghconfig/orgs/otherorg" "$tmpdir/ghconfig/orgs/brokenorg"
 
 run_test
 react_run -- --help
