@@ -34,8 +34,10 @@ interactive profile automatically, so you **MUST** run
 source ~/.bashrc && session_name=$(ntmux3 -d org/repo/branch-name)
 ```
 
-Always use `-d` (detached) so the command returns immediately
-without attaching to the tmux session.
+Always use `-d` (detached) so the command returns without attaching
+to the tmux session. It still blocks until the worktree is built. The
+one exception is when the human wants to watch: then use `-T` (see
+below).
 
 **Critical**: The first positional argument is a **single
 slash-delimited path**, NOT separate arguments. The format is
@@ -80,14 +82,24 @@ as `-d`:
   `ntmux3_started`, `ntmux3_worktree_building`,
   `ntmux3_worktree_ready`, `ntmux3_session_ready` (with
   `data.session` and `data.path`), or `ntmux3_failed`.
-- **exit status**: 0 once the session is ready, 1 otherwise.
-  `ntmux3_failed` covers every way ntmux3 in the window can stop
-  before the session is ready: an error, returning early, or being
-  interrupted. `ntmux3_terminal_closed` means the window exited without
-  reporting, `ntmux3_terminal_timeout` means it did not report within
-  `TIMVISHER_NTMUX3_TERMINAL_DEADLINE` seconds (default 3600; ntmux3
-  may still be running in the window), and
-  `ntmux3_terminal_open_failed` means no window opened.
+- **exit status**: 0 once the session is ready, 1 otherwise. The
+  failure codes:
+  - `ntmux3_failed`: ntmux3 in the window stopped before the session
+    was ready — an error, an early return, or an interrupt.
+  - `ntmux3_terminal_closed`: ntmux3 in the window died without
+    reporting.
+  - `ntmux3_terminal_not_started`: ntmux3 never reported starting
+    within `TIMVISHER_NTMUX3_TERMINAL_STARTUP_DEADLINE` seconds
+    (default 60), e.g. the window did not open a bash shell.
+  - `ntmux3_terminal_timeout`: no outcome within
+    `TIMVISHER_NTMUX3_TERMINAL_DEADLINE` seconds (default 3600).
+    ntmux3 may still be running in the window.
+  - `ntmux3_terminal_log_lost`: the instruction stream from the
+    window ended unexpectedly.
+  - `ntmux3_terminal_open_failed`: no window opened.
+
+ntmux3 runs in the window from your current working directory, so
+relative paths mean the same thing they would with `-d`.
 
 Without `TIMVISHER_AGENT`, `-T` just opens the window and returns.
 `-T` cannot be combined with `-d`: the window has to attach to report
