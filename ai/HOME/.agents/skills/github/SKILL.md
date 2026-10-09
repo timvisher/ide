@@ -138,6 +138,20 @@ timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' re
 
 The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the specific review comment you are replying to. The reply URL is stored in `reply.md.url`. Running the same command again when `.url` exists opens it in the browser instead of posting a duplicate.
 
+## Workflow — reacting to a comment
+
+To put an emoji reaction on a PR comment, write the reaction to a file and pass the comment URL:
+
+```bash
+printf 'rocket\n' > reaction.md
+timvisher_gh comment react 'https://github.com/o/r/pull/1#discussion_r123456' reaction.md
+timvisher_gh comment react 'https://github.com/o/r/pull/1#issuecomment-123456' reaction.md
+```
+
+The file holds a single reaction: one of `+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`, or the matching emoji (👍 👎 😄 😕 ❤️ 🎉 🚀 👀). The `<comment-url>` must contain `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level PR comment); reactions on the PR itself or on review summaries are not supported. The reaction's API URL (`https://api.github.com/repos/o/r/.../comments/<ID>/reactions/<RID>`) is stored in `reaction.md.url`. Running the same command again when `.url` exists prints it instead of reacting again. GitHub treats a repeated reaction as a no-op, so a lost `.url` is recovered by re-running, which reports `already reacted`.
+
+Remove the reaction with `timvisher_gh comment delete reaction.md`. `comment edit` refuses a reaction `.url`; delete and react again instead.
+
 ## General GitHub interactions
 
 When interacting with GitHub (github.com), always use the `gh` CLI. This includes viewing PRs, checking CI status, browsing releases, and querying repo metadata.
