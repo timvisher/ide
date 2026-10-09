@@ -1925,57 +1925,39 @@ else
 fi
 
 run_test
-mkdir -p "$tmpdir/ghconfig/orgs/testuser" "$tmpdir/ghconfig/orgs/otherorg" "$tmpdir/ghconfig/orgs/brokenorg"
+mkdir -p "$tmpdir/ghconfig/orgs/testuser"
 echo testacct > "$tmpdir/ghconfig/orgs/testuser/account"
-echo otheracct > "$tmpdir/ghconfig/orgs/otherorg/account"
-echo brokenacct > "$tmpdir/ghconfig/orgs/brokenorg/account"
 token_failures=()
-react_reset +1
-react_run -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 reaction.md
-grep -q '^token-otheracct api --include --method POST repos/otherorg/repo/' "${MOCK_LOG}.tokens" ||
-  token_failures+=("mapped owner: $(cat "${MOCK_LOG}.tokens")")
-react_reset +1
-react_run -- comment react https://github.com/unmappedorg/repo/pull/1#issuecomment-5 reaction.md
-grep -q '^unset api --include --method POST repos/unmappedorg/repo/' "${MOCK_LOG}.tokens" ||
-  token_failures+=("unmapped owner: $(cat "${MOCK_LOG}.tokens")")
-react_reset +1
-react_run -- comment react "$issuecomment_url" reaction.md
-grep -q '^token-testacct api --include --method POST repos/testuser/testrepo/' "${MOCK_LOG}.tokens" ||
-  token_failures+=("worktree owner: $(cat "${MOCK_LOG}.tokens")")
+for url in https://github.com/otherorg/repo/pull/1#issuecomment-5 "$issuecomment_url"
+do
+  react_reset +1
+  react_run -- comment react "$url" reaction.md
+  if ! { (( react_rc == 0 )) && grep -q '^unset api --include --method POST ' "${MOCK_LOG}.tokens"; }
+  then
+    token_failures+=("react ${url}: $(cat "${MOCK_LOG}.tokens")")
+  fi
+done
 react_reset
 echo https://api.github.com/repos/otherorg/repo/issues/comments/5/reactions/9 > "$tmpdir/repo/reaction.md.url"
 react_run -- comment delete --force reaction.md
-grep -q '^token-otheracct api --method DELETE ' "${MOCK_LOG}.tokens" ||
-  token_failures+=("delete mapped owner: $(cat "${MOCK_LOG}.tokens")")
+if ! { (( react_rc == 0 )) && ! grep -qv '^unset ' "${MOCK_LOG}.tokens" && grep -q '^unset api --method DELETE ' "${MOCK_LOG}.tokens"; }
+then
+  token_failures+=("delete: $(cat "${MOCK_LOG}.tokens")")
+fi
+react_reset +1
+react_run GH_TOKEN=caller-token -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 reaction.md
+if ! grep -q '^caller-token api --include --method POST ' "${MOCK_LOG}.tokens"
+then
+  token_failures+=("caller token: $(cat "${MOCK_LOG}.tokens")")
+fi
 if (( ${#token_failures[@]} == 0 ))
 then
-  pass "comment react and delete use the gh token for the comment URL's owner"
+  pass "comment react and delete leave token selection to the gh shim"
 else
-  fail "comment react and delete use the gh token for the comment URL's owner: ${token_failures[*]}"
+  fail "comment react and delete leave token selection to the gh shim: ${token_failures[*]}"
 fi
+rm -rf "$tmpdir/ghconfig/orgs/testuser"
 
-run_test
-broken_failures=()
-react_reset +1
-react_run -- comment react https://github.com/brokenorg/repo/pull/1#issuecomment-5 reaction.md
-if ! { (( react_rc != 0 )) && [[ $react_err == *"No gh token for the account mapped to org 'brokenorg'"* && ! -s "${MOCK_LOG}.tokens" && ! -e "$tmpdir/repo/reaction.md.url" ]]; }
-then
-  broken_failures+=("react (rc=${react_rc} stderr='${react_err}')")
-fi
-react_reset
-echo https://api.github.com/repos/brokenorg/repo/issues/comments/5/reactions/9 > "$tmpdir/repo/reaction.md.url"
-react_run -- comment delete --force reaction.md
-if ! { (( react_rc != 0 )) && [[ $react_err == *"No gh token for the account mapped to org 'brokenorg'"* && ! -s "${MOCK_LOG}.tokens" && -e "$tmpdir/repo/reaction.md.url" ]]; }
-then
-  broken_failures+=("delete (rc=${react_rc} stderr='${react_err}')")
-fi
-if (( ${#broken_failures[@]} == 0 ))
-then
-  pass "comment react and delete fail when the URL owner's token can't be minted"
-else
-  fail "comment react and delete fail when the URL owner's token can't be minted: ${broken_failures[*]}"
-fi
-rm -rf "$tmpdir/ghconfig/orgs/testuser" "$tmpdir/ghconfig/orgs/otherorg" "$tmpdir/ghconfig/orgs/brokenorg"
 
 run_test
 react_run -- --help

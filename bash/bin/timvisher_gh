@@ -673,22 +673,13 @@ end run' "$issue_url"
 
 comment_reaction_api_url_re='^https://api\.github\.com((/repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+)/reactions/[0-9]+)$'
 
-gh_comment__use_token_for_owner() {
-  local owner=$1
-  local worktree_owner=${repo_spec%%/*}
-
-  if [[ ${owner,,} != "${worktree_owner,,}" ]]
+gh_comment__unpin_token() {
+  if (( startup_gh_token_set ))
   then
-    if (( startup_gh_token_set ))
-    then
-      export GH_TOKEN=$startup_gh_token
-    else
-      unset GH_TOKEN
-    fi
+    export GH_TOKEN=$startup_gh_token
+  else
+    unset GH_TOKEN
   fi
-
-  timvisher_gh__pin_token_for_owner "$owner" ||
-    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." "$owner"
 }
 
 gh_comment__http_status() {
@@ -880,7 +871,7 @@ gh_comment_react() {
     return
   fi
 
-  gh_comment__use_token_for_owner "${owner_repo%%/*}"
+  gh_comment__unpin_token
 
   local response
   response=$(
@@ -966,7 +957,7 @@ gh_comment_delete() {
   fi
   exists_path=${exists_path:-$comment_path}
 
-  gh_comment__use_token_for_owner "${owner_repo%%/*}"
+  gh_comment__unpin_token
 
   local head_response head_status
   head_response=$(gh api --method HEAD --include "${exists_path}" --hostname github.com 2>&1)
