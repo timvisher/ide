@@ -13,7 +13,7 @@
 #   aictl_listening - True when an agent is listening for instructions
 #   aictl_parse - Print a line back as compact JSON if it is an instruction
 #
-# Output is JSON to stderr, or to $TIMVISHER_AICTL_LOG when set:
+# Output is JSON to stderr, also appended to $TIMVISHER_AICTL_LOG when set:
 #   {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
 #
 # The warning emission deliberately omits any ready-to-paste bypass
@@ -31,8 +31,8 @@
 #   TIMVISHER_AGENT_NIRMI=1                 Required to bypass aictl_warn
 #   TIMVISHER_AGENT_NIRMI_REASON=<text>     Required; free-form explanation
 #                                           — NIRMI alone is no longer sufficient
-#   TIMVISHER_AICTL_LOG=<file>              Append instructions to <file>,
-#                                           one line per write, not stderr
+#   TIMVISHER_AICTL_LOG=<file>              Also append instructions to <file>,
+#                                           one line per write, if it exists
 #
 # Every bypass is logged (ts, code, reason, cwd, command) to
 #   ${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/aictl-bypass/log.jsonl
@@ -65,13 +65,13 @@ aictl__parse_args() {
   while (( 0 < $# ))
   do
     case "$1" in
-      --code) _code=$2; shift 2 ;;
-      --message) _message=$2; shift 2 ;;
-      --reason) _reason=$2; shift 2 ;;
-      --doc) _doc=$2; shift 2 ;;
-      --command) _command=$2; shift 2 ;;
-      --data) _data=$2; shift 2 ;;
-      --suggestion) _suggestions+=("$2"); shift 2 ;;
+      --code) _code=${2-}; shift 2 || shift ;;
+      --message) _message=${2-}; shift 2 || shift ;;
+      --reason) _reason=${2-}; shift 2 || shift ;;
+      --doc) _doc=${2-}; shift 2 || shift ;;
+      --command) _command=${2-}; shift 2 || shift ;;
+      --data) _data=${2-}; shift 2 || shift ;;
+      --suggestion) _suggestions+=("${2-}"); shift 2 || shift ;;
       --)
         shift
         _suggestions+=("$@")
@@ -95,10 +95,9 @@ aictl__parse_args() {
 aictl__write() {
   local line=$1
 
-  if [[ -n ${TIMVISHER_AICTL_LOG:-} ]] &&
-    cat 2>/dev/null >> "$TIMVISHER_AICTL_LOG" <<<"$line"
+  if [[ -n ${TIMVISHER_AICTL_LOG:-} && -f $TIMVISHER_AICTL_LOG ]]
   then
-    return 0
+    cat 2>/dev/null >> "$TIMVISHER_AICTL_LOG" <<<"$line"
   fi
 
   printf '%s\n' "$line" >&2
@@ -136,7 +135,10 @@ aictl__emit() {
 
   if [[ -n $_data ]]
   then
-    line+=",\"data\":${_data}"
+    local data
+    data=$(jq -cn --arg data "$_data" '$data | try fromjson catch $data' 2>/dev/null) ||
+      data="\"$(aictl__json_escape "$_data")\""
+    line+=",\"data\":${data}"
   fi
 
   if (( 0 < ${#_suggestions[@]} ))

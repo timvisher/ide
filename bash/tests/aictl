@@ -504,49 +504,51 @@ fi
 # TIMVISHER_AICTL_LOG routing tests
 # ---------------------------------------------------------------------------
 
-log_dir=$(mktemp -d)
+log_dir=
 trap 'rm -rf "$tmp_state" "$log_dir"' EXIT
+log_dir=$(mktemp -d)
 
-# assert_logged <desc> <level> <snippet>: run <snippet> with the log set
-# and check the instruction went to the log, not stderr.
 assert_logged() {
-  local desc=$1 level=$2 snippet=$3
+  local desc=$1 level=$2 want_rc=$3 snippet=$4
   local log="${log_dir}/${desc// /_}.jsonl"
-  local err
+  local rc=0 out err
   run_test
-  err=$(TIMVISHER_AICTL_LOG="$log" XDG_STATE_HOME="$log_dir/state" \
-    bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>&1 >/dev/null) || true
-  if [[ -z $err ]] &&
-    [[ -f $log ]] &&
+  : > "$log"
+  out=$(TIMVISHER_AICTL_LOG="$log" XDG_STATE_HOME="$log_dir/state" \
+    bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>"${log_dir}/err") || rc=$?
+  err=$(cat "${log_dir}/err")
+  if (( rc == want_rc )) &&
+    [[ -z $out ]] &&
     (( $(wc -l < "$log") == 1 )) &&
-    [[ $(jq -r .level "$log") == "$level" ]]
+    [[ $(jq -r .level "$log") == "$level" ]] &&
+    [[ $err == "$(cat "$log")" ]]
   then
-    pass "TIMVISHER_AICTL_LOG routes ${desc}"
+    pass "TIMVISHER_AICTL_LOG gets ${desc} as well as stderr"
   else
-    fail "TIMVISHER_AICTL_LOG ${desc}: stderr='${err}' log='$(cat "$log" 2>/dev/null)'"
+    fail "TIMVISHER_AICTL_LOG ${desc}: rc=${rc} stdout='${out}' stderr='${err}' log='$(cat "$log")'"
   fi
 }
 
-assert_logged "aictl_die" error "aictl_die tc 'msg'"
-assert_logged "aictl_error" error "aictl_error tc 'msg'"
-assert_logged "aictl_warn" warning "aictl_warn tc 'msg'"
-assert_logged "aictl_info" info "aictl_info tc 'msg'"
-assert_logged "aictl_notice" warning "aictl_notice tc 'msg'"
-assert_logged "aictl_warn missing reason" error \
+assert_logged "aictl_die" error 1 "aictl_die tc 'msg'"
+assert_logged "aictl_error" error 1 "aictl_error tc 'msg'"
+assert_logged "aictl_warn" warning 1 "aictl_warn tc 'msg'"
+assert_logged "aictl_info" info 0 "aictl_info tc 'msg'"
+assert_logged "aictl_notice" warning 0 "aictl_notice tc 'msg'"
+assert_logged "aictl_warn missing reason" error 1 \
   "TIMVISHER_AGENT_NIRMI=1 aictl_warn tc 'msg'"
-assert_logged "aictl_warn bypass" bypass \
+assert_logged "aictl_warn bypass" bypass 0 \
   "TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON=r aictl_warn tc 'msg'"
 
 run_test
 rc=0
-TIMVISHER_AICTL_LOG="${log_dir}/warn-blocks.jsonl" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn tc 'msg'; echo continued" \
-  >"${log_dir}/warn-blocks.out" 2>&1 || rc=$?
-if (( 0 < rc )) && [[ ! -s ${log_dir}/warn-blocks.out ]]
+: > "${log_dir}/warn-blocks.jsonl"
+out=$(TIMVISHER_AICTL_LOG="${log_dir}/warn-blocks.jsonl" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn tc 'msg'; echo continued" 2>/dev/null) || rc=$?
+if (( 0 < rc )) && [[ -z $out ]]
 then
-  pass "aictl_warn still blocks when routed to the log"
+  pass "aictl_warn still blocks when a log is set"
 else
-  fail "aictl_warn routed: rc=$rc out='$(cat "${log_dir}/warn-blocks.out")'"
+  fail "aictl_warn with log: rc=$rc out='${out}'"
 fi
 
 run_test
@@ -559,17 +561,20 @@ else
 fi
 
 run_test
-result=$(TIMVISHER_AICTL_LOG="${log_dir}/missing/dir/log.jsonl" \
+missing_log="${log_dir}/never-created.jsonl"
+result=$(TIMVISHER_AICTL_LOG="$missing_log" \
   bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
-if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]]
+if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]] &&
+  [[ ! -e $missing_log ]]
 then
-  pass "unwritable TIMVISHER_AICTL_LOG falls back to stderr"
+  pass "a missing TIMVISHER_AICTL_LOG is never created; stderr still gets the line"
 else
-  fail "unwritable TIMVISHER_AICTL_LOG: got '${result}'"
+  fail "missing TIMVISHER_AICTL_LOG: stderr='${result}' exists=$([[ -e $missing_log ]] && echo yes)"
 fi
 
 run_test
 log="${log_dir}/multiline.jsonl"
+: > "$log"
 TIMVISHER_AICTL_LOG="$log" bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message \$'line one\nline two' --suggestion \$'a\nb'" 2>/dev/null
 if (( $(wc -l < "$log") == 1 )) && [[ $(jq -r .message "$log") == $'line one\nline two' ]]
 then
@@ -580,7 +585,8 @@ fi
 
 run_test
 log="${log_dir}/concurrent.jsonl"
-long_message=$(printf 'x%.0s' {1..2000})
+: > "$log"
+long_message=$(head -c 65000 /dev/zero | tr '\0' x)
 writers=()
 for w in {1..8}
 do
@@ -590,7 +596,7 @@ do
     do
       aictl_info --code w${w} --message '${long_message}' --suggestion 's' --doc 'd'
     done
-  " &
+  " 2>/dev/null &
   writers+=($!)
 done
 wait "${writers[@]}"
@@ -602,6 +608,30 @@ then
 else
   fail "concurrent writes: lines=${lines} parsed=${parsed}"
 fi
+
+# ---------------------------------------------------------------------------
+# Argument parsing tests
+# ---------------------------------------------------------------------------
+
+for flag in --code --message --reason --doc --suggestion --command --data
+do
+  run_test
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc ${flag}" >/dev/null 2>&1 &
+  parse_pid=$!
+  for _ in {1..50}
+  do
+    kill -0 "$parse_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$parse_pid" 2>/dev/null
+  then
+    kill "$parse_pid" 2>/dev/null || true
+    fail "a trailing ${flag} with no value hangs"
+  else
+    pass "a trailing ${flag} with no value terminates"
+  fi
+  wait "$parse_pid" 2>/dev/null || true
+done
 
 # ---------------------------------------------------------------------------
 # aictl_listening tests
@@ -631,15 +661,25 @@ assert_listening 1 "${log_dir}/l.jsonl" 0
 # --data tests
 # ---------------------------------------------------------------------------
 
-run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --data '{\"session\":\"a/b\",\"n\":1}'" 2>&1)
-if [[ $result == *'"data":{"session":"a/b","n":1}'* ]] &&
-  [[ $(jq -r .data.session <<<"$result") == a/b ]]
-then
-  pass "--data is emitted as raw JSON"
-else
-  fail "--data: got '${result}'"
-fi
+assert_data() {
+  local desc=$1 data=$2 want=$3
+  local result
+  run_test
+  result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --data \"\$1\"" _ "$data" 2>&1)
+  if [[ $result == *",\"data\":${want}}" ]] &&
+    (( $(wc -l <<<"$result") == 1 )) &&
+    [[ -n $(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$result") ]]
+  then
+    pass "--data ${desc}"
+  else
+    fail "--data ${desc}: got '${result}'"
+  fi
+}
+
+assert_data "is emitted as raw JSON" '{"session":"a/b","n":1}' '{"session":"a/b","n":1}'
+assert_data "compacts multi-line JSON onto the one line" $'{\n  "session": "a/b",\n  "n": [1, 2]\n}' '{"session":"a/b","n":[1,2]}'
+assert_data "emits malformed JSON as a string" '{"session":' '"{\"session\":"'
+assert_data "emits a multi-line non-JSON value as an escaped string" $'not\njson' '"not\njson"'
 
 run_test
 result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc m" 2>&1)
