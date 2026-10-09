@@ -500,6 +500,233 @@ else
   fail "aictl_notice stdout should be empty, got '${out}'"
 fi
 
+# ---------------------------------------------------------------------------
+# TIMVISHER_AICTL_LOG routing tests
+# ---------------------------------------------------------------------------
+
+log_dir=
+trap 'rm -rf "$tmp_state" "$log_dir"' EXIT
+log_dir=$(mktemp -d)
+
+assert_logged() {
+  local desc=$1 level=$2 want_rc=$3 snippet=$4
+  local log="${log_dir}/${desc// /_}.jsonl"
+  local rc=0 out err
+  run_test
+  : > "$log"
+  out=$(TIMVISHER_AICTL_LOG="$log" XDG_STATE_HOME="$log_dir/state" \
+    bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>"${log_dir}/err") || rc=$?
+  err=$(cat "${log_dir}/err")
+  if (( rc == want_rc )) &&
+    [[ -z $out ]] &&
+    (( $(wc -l < "$log") == 1 )) &&
+    [[ $(jq -r .level "$log") == "$level" ]] &&
+    [[ $err == "$(cat "$log")" ]]
+  then
+    pass "TIMVISHER_AICTL_LOG gets ${desc} as well as stderr"
+  else
+    fail "TIMVISHER_AICTL_LOG ${desc}: rc=${rc} stdout='${out}' stderr='${err}' log='$(cat "$log")'"
+  fi
+}
+
+assert_logged "aictl_die" error 1 "aictl_die tc 'msg'"
+assert_logged "aictl_error" error 1 "aictl_error tc 'msg'"
+assert_logged "aictl_warn" warning 1 "aictl_warn tc 'msg'"
+assert_logged "aictl_info" info 0 "aictl_info tc 'msg'"
+assert_logged "aictl_notice" warning 0 "aictl_notice tc 'msg'"
+assert_logged "aictl_warn missing reason" error 1 \
+  "TIMVISHER_AGENT_NIRMI=1 aictl_warn tc 'msg'"
+assert_logged "aictl_warn bypass" bypass 0 \
+  "TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON=r aictl_warn tc 'msg'"
+
+run_test
+rc=0
+: > "${log_dir}/warn-blocks.jsonl"
+out=$(TIMVISHER_AICTL_LOG="${log_dir}/warn-blocks.jsonl" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn tc 'msg'; echo continued" 2>/dev/null) || rc=$?
+if (( 0 < rc )) && [[ -z $out ]]
+then
+  pass "aictl_warn still blocks when a log is set"
+else
+  fail "aictl_warn with log: rc=$rc out='${out}'"
+fi
+
+run_test
+result=$(bash -c "unset TIMVISHER_AICTL_LOG; source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]]
+then
+  pass "unset TIMVISHER_AICTL_LOG leaves stderr output unchanged"
+else
+  fail "unset TIMVISHER_AICTL_LOG stderr: got '${result}'"
+fi
+
+run_test
+missing_log="${log_dir}/never-created.jsonl"
+result=$(TIMVISHER_AICTL_LOG="$missing_log" \
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]] &&
+  [[ ! -e $missing_log ]]
+then
+  pass "a missing TIMVISHER_AICTL_LOG is never created; stderr still gets the line"
+else
+  fail "missing TIMVISHER_AICTL_LOG: stderr='${result}' exists=$([[ -e $missing_log ]] && echo yes)"
+fi
+
+run_test
+log="${log_dir}/multiline.jsonl"
+: > "$log"
+TIMVISHER_AICTL_LOG="$log" bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message \$'line one\nline two' --suggestion \$'a\nb'" 2>/dev/null
+if (( $(wc -l < "$log") == 1 )) && [[ $(jq -r .message "$log") == $'line one\nline two' ]]
+then
+  pass "multi-line fields are written as a single log line"
+else
+  fail "multi-line log: '$(cat "$log")'"
+fi
+
+run_test
+log="${log_dir}/concurrent.jsonl"
+: > "$log"
+long_message=$(head -c 65000 /dev/zero | tr '\0' x)
+writers=()
+for w in {1..8}
+do
+  TIMVISHER_AICTL_LOG="$log" bash -c "
+    source '${funcs_dir}/aictl.bash'
+    for i in {1..25}
+    do
+      aictl_info --code w${w} --message '${long_message}' --suggestion 's' --doc 'd'
+    done
+  " 2>/dev/null &
+  writers+=($!)
+done
+wait "${writers[@]}"
+lines=$(wc -l < "$log")
+parsed=$(jq -R 'fromjson? | select(.type == "instruction")' "$log" | jq -s length)
+if (( lines == 200 && parsed == 200 ))
+then
+  pass "concurrent writers never interleave partial lines"
+else
+  fail "concurrent writes: lines=${lines} parsed=${parsed}"
+fi
+
+# ---------------------------------------------------------------------------
+# Argument parsing tests
+# ---------------------------------------------------------------------------
+
+for flag in --code --message --reason --doc --suggestion --command --data
+do
+  run_test
+  bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc ${flag}" >/dev/null 2>&1 &
+  parse_pid=$!
+  for _ in {1..50}
+  do
+    kill -0 "$parse_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$parse_pid" 2>/dev/null
+  then
+    kill "$parse_pid" 2>/dev/null || true
+    fail "a trailing ${flag} with no value hangs"
+  else
+    pass "a trailing ${flag} with no value terminates"
+  fi
+  wait "$parse_pid" 2>/dev/null || true
+done
+
+# ---------------------------------------------------------------------------
+# aictl_listening tests
+# ---------------------------------------------------------------------------
+
+assert_listening() {
+  local agent=$1 log=$2 want=$3
+  local rc=0
+  run_test
+  env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG \
+    ${agent:+TIMVISHER_AGENT="$agent"} ${log:+TIMVISHER_AICTL_LOG="$log"} \
+    bash -c "source '${funcs_dir}/aictl.bash'; aictl_listening" || rc=$?
+  if (( rc == want ))
+  then
+    pass "aictl_listening agent='${agent}' log='${log}' -> ${want}"
+  else
+    fail "aictl_listening agent='${agent}' log='${log}': want ${want}, got ${rc}"
+  fi
+}
+
+assert_listening '' '' 1
+assert_listening 1 '' 0
+assert_listening '' "${log_dir}/l.jsonl" 0
+assert_listening 1 "${log_dir}/l.jsonl" 0
+
+# ---------------------------------------------------------------------------
+# --data tests
+# ---------------------------------------------------------------------------
+
+assert_data() {
+  local desc=$1 data=$2 want=$3
+  local result
+  run_test
+  result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --data \"\$1\"" _ "$data" 2>&1)
+  if [[ $result == *",\"data\":${want}}" ]] &&
+    (( $(wc -l <<<"$result") == 1 )) &&
+    [[ -n $(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$result") ]]
+  then
+    pass "--data ${desc}"
+  else
+    fail "--data ${desc}: got '${result}'"
+  fi
+}
+
+assert_data "is emitted as raw JSON" '{"session":"a/b","n":1}' '{"session":"a/b","n":1}'
+assert_data "compacts multi-line JSON onto the one line" $'{\n  "session": "a/b",\n  "n": [1, 2]\n}' '{"session":"a/b","n":[1,2]}'
+assert_data "emits malformed JSON as a string" '{"session":' '"{\"session\":"'
+assert_data "emits a multi-line non-JSON value as an escaped string" $'not\njson' '"not\njson"'
+
+run_test
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc m" 2>&1)
+if [[ $result != *'"data"'* ]]
+then
+  pass "no --data omits the data field"
+else
+  fail "no --data: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# aictl_parse tests
+# ---------------------------------------------------------------------------
+
+run_test
+line=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message 'm' --data '{\"k\": [1, 2]}'" 2>&1)
+rc=0
+result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$line" 2>&1) || rc=$?
+if (( rc == 0 )) && [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"m","data":{"k":[1,2]}}' ]]
+then
+  pass "aictl_parse prints an instruction back as compact JSON"
+else
+  fail "aictl_parse instruction: rc=$rc got '${result}'"
+fi
+
+assert_parse_rejects() {
+  local desc=$1 input=$2
+  local rc=0 result
+  run_test
+  result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$input" 2>&1) || rc=$?
+  if (( rc != 0 )) && [[ -z $result ]]
+  then
+    pass "aictl_parse rejects ${desc}"
+  else
+    fail "aictl_parse ${desc}: rc=$rc got '${result}'"
+  fi
+}
+
+assert_parse_rejects "plain text" 'Cloning into foo...'
+assert_parse_rejects "an empty line" ''
+assert_parse_rejects "truncated JSON" '{"type":"instruction","level":"info"'
+assert_parse_rejects "non-instruction JSON object" '{"type":"other","code":"tc"}'
+assert_parse_rejects "an object without type" '{"code":"tc"}'
+assert_parse_rejects "a JSON string" '"instruction"'
+assert_parse_rejects "a JSON array" '[{"type":"instruction"}]'
+assert_parse_rejects "a JSON number" '42'
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

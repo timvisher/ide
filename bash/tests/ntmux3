@@ -76,6 +76,16 @@ else
   fail "expected non-zero exit, got 0"
 fi
 
+# Test: shim teaches -T and that it blocks
+run_test
+result=$("$script" 2>&1 || true)
+if [[ $result == *'ntmux3 -T org/repo/branch-name'* ]] && [[ $result == *'run_in_background'* ]]
+then
+  pass "mentions -T and that it blocks"
+else
+  fail "expected -T mention: got '${result}'"
+fi
+
 # ---------------------------------------------------------------------------
 # Fallback aictl_die stub tests
 # ---------------------------------------------------------------------------
@@ -100,6 +110,726 @@ then
 else
   fail "fallback stub message: got '${result}'"
 fi
+
+# ---------------------------------------------------------------------------
+# ntmux3 -T and instruction streaming (bash/functions/tmux.bash)
+# ---------------------------------------------------------------------------
+
+# shellcheck disable=SC2317
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+kill_tree() {
+  local pid child
+  for child in $(pgrep -P "$1")
+  do
+    kill_tree "$child"
+  done
+  kill -KILL "$1" 2>/dev/null || true
+}
+
+t_dir=
+cleanup() {
+  local pid
+  if [[ -n $t_dir && -f ${t_dir}/pids ]]
+  then
+    while read -r pid
+    do
+      kill_tree "$pid"
+    done < "${t_dir}/pids"
+  fi
+  if [[ -n $t_dir ]]
+  then
+    pkill -KILL -f "${t_dir}/" 2>/dev/null || true
+    rm -rf "$t_dir"
+  fi
+}
+trap cleanup EXIT
+t_dir=$(mktemp -d)
+
+stub_bin="${t_dir}/bin"
+mkdir -p "$stub_bin" "${t_dir}/tmp" "${t_dir}/sessions"
+
+preamble="
+  source '${funcs_dir}/logging.bash'
+  source '${funcs_dir}/aictl.bash'
+  source '${funcs_dir}/tmux.bash'
+"
+
+emit() {
+  env -u TIMVISHER_AICTL_LOG bash -c "${preamble}"' aictl_info "$@"' _ "$@" 2>&1
+}
+
+classify() {
+  local rc=0 out
+  out=$(bash -c "${preamble}"' ntmux3__classify_instruction "$1"' _ "$1" 2>&1) || rc=$?
+  if (( rc == 0 ))
+  then
+    printf '%s' "$out"
+  else
+    printf 'rc=%s%s' "$rc" "${out:+ out=${out}}"
+  fi
+}
+
+assert_eq() {
+  local desc=$1 want=$2 got=$3
+  run_test
+  if [[ $got == "$want" ]]
+  then
+    pass "$desc"
+  else
+    fail "${desc}: want '${want}', got '${got}'"
+  fi
+}
+
+assert_eq "classifier: started carries the pid" \
+  '{"state":"started","pid":4242}' \
+  "$(classify "$(emit --code ntmux3_started --message m --data '{"pid":4242}')")"
+assert_eq "classifier: started without data has a null pid" \
+  '{"state":"started","pid":null}' \
+  "$(classify "$(emit --code ntmux3_started --message m)")"
+assert_eq "classifier: started with a non-numeric pid has a null pid" \
+  '{"state":"started","pid":null}' \
+  "$(classify "$(emit --code ntmux3_started --message m --data '{"pid":"x"}')")"
+assert_eq "classifier: started with non-object data has a null pid" \
+  '{"state":"started","pid":null}' \
+  "$(classify "$(emit --code ntmux3_started --message m --data '"x"')")"
+assert_eq "classifier: session_ready is ready with session and path" \
+  '{"state":"ready","session":"o/r/b","path":"/p"}' \
+  "$(classify "$(emit --code ntmux3_session_ready --message m --data '{"session":"o/r/b","path":"/p"}')")"
+assert_eq "classifier: session_ready without data is failed" \
+  '{"state":"failed","code":"ntmux3_session_ready","message":"ntmux3_session_ready carried no session name"}' \
+  "$(classify "$(emit --code ntmux3_session_ready --message m)")"
+assert_eq "classifier: session_ready with an empty session is failed" \
+  '{"state":"failed","code":"ntmux3_session_ready","message":"ntmux3_session_ready carried no session name"}' \
+  "$(classify "$(emit --code ntmux3_session_ready --message m --data '{"session":""}')")"
+assert_eq "classifier: ntmux3_failed is failed with its message" \
+  '{"state":"failed","code":"ntmux3_failed","message":"Unable to clone x"}' \
+  "$(classify "$(emit --code ntmux3_failed --message 'Unable to clone x')")"
+assert_eq "classifier: worktree_building is progress" \
+  '{"state":"progress","code":"ntmux3_worktree_building"}' \
+  "$(classify "$(emit --code ntmux3_worktree_building --message m)")"
+assert_eq "classifier: an unknown code is progress" \
+  '{"state":"progress","code":"timvisher_git_stack_base_inherited"}' \
+  "$(classify "$(emit --code timvisher_git_stack_base_inherited --message m)")"
+assert_eq "classifier: non-JSON noise is rejected" \
+  'rc=1' "$(classify 'Cloning into foo...')"
+assert_eq "classifier: non-instruction JSON is rejected" \
+  'rc=1' "$(classify '{"code":"ntmux3_session_ready","data":{"session":"s"}}')"
+
+terminal_number() {
+  bash -c "${preamble}"' ntmux3__terminal_number "$1" 5' _ "$1"
+}
+
+assert_eq "terminal numbers: 10 is 10" 10 "$(terminal_number 10)"
+assert_eq "terminal numbers: 010 is decimal 10" 10 "$(terminal_number 010)"
+assert_eq "terminal numbers: 08 is decimal 8" 8 "$(terminal_number 08)"
+assert_eq "terminal numbers: 0 falls back to the default" 5 "$(terminal_number 0)"
+assert_eq "terminal numbers: 00 falls back to the default" 5 "$(terminal_number 00)"
+assert_eq "terminal numbers: non-numeric falls back to the default" 5 "$(terminal_number 1x)"
+
+# ---------------------------------------------------------------------------
+# Emitters
+# ---------------------------------------------------------------------------
+
+new_log() {
+  local log="${t_dir}/${1}.jsonl"
+  : > "$log"
+  printf '%s' "$log"
+}
+
+run_test
+log=$(new_log fail)
+err=$(TIMVISHER_AICTL_LOG="$log" bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
+if [[ $err == "boom"$'\n'"$(cat "$log")" ]] &&
+  [[ $(jq -r '.code + " " + .message' "$log") == "ntmux3_failed boom" ]]
+then
+  pass "ntmux3__fail echoes for the human and emits ntmux3_failed"
+else
+  fail "ntmux3__fail: stderr='${err}' log='$(cat "$log" 2>/dev/null)'"
+fi
+
+run_test
+err=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
+if [[ $err == boom ]]
+then
+  pass "ntmux3__fail emits no instruction when nobody is listening"
+else
+  fail "ntmux3__fail unlistened: stderr='${err}'"
+fi
+
+cat > "${stub_bin}/tmux" <<STUB
+#!/usr/bin/env bash
+printf '%s %s\n' "\$1" "\${TIMVISHER_AICTL_LOG-<unset>}" >> '${t_dir}/tmux.calls'
+target=
+for arg in "\$@"
+do
+  case \$arg in
+    -t=*) target=\${arg#-t=} ;;
+  esac
+done
+case \$1 in
+  new-session)
+    if [[ -n \${NTMUX3_TEST_TMUX_NEW_SESSION_FAILS:-} ]]
+    then
+      exit 1
+    fi
+    while (( 0 < \$# ))
+    do
+      if [[ \$1 == -s ]]
+      then
+        printf '%s\n' "\$2" >> '${t_dir}/sessions/list'
+      fi
+      shift
+    done
+    ;;
+  has-session)
+    grep -qxF -- "\$target" '${t_dir}/sessions/list' 2>/dev/null
+    exit
+    ;;
+  display-message) printf '/fake/session/path\n' ;;
+  attach)
+    if grep -q '"code":"ntmux3_session_ready"' "\${TIMVISHER_AICTL_LOG:-/dev/null}"
+    then
+      printf 'attach after ready\n' >> '${t_dir}/tmux.calls'
+    fi
+    ;;
+esac
+exit 0
+STUB
+chmod +x "${stub_bin}/tmux"
+
+reset_tmux() {
+  : > "${t_dir}/tmux.calls"
+  : > "${t_dir}/sessions/list"
+  local session
+  for session in "$@"
+  do
+    printf '%s\n' "$session" >> "${t_dir}/sessions/list"
+  done
+}
+
+run_test
+log=$(new_log attach)
+reset_tmux o/r/b
+PATH="${stub_bin}:${PATH}" TIMVISHER_AICTL_LOG="$log" bash -c "${preamble} ntmux3__attach 'o/r/b'" 2>/dev/null || true
+line=$(cat "$log")
+if [[ $(classify "$line") == '{"state":"ready","session":"o/r/b","path":"/fake/session/path"}' ]] &&
+  grep -q '^attach after ready$' "${t_dir}/tmux.calls"
+then
+  pass "ntmux3__attach emits ntmux3_session_ready before attaching"
+else
+  fail "ntmux3__attach: log='${line}' calls='$(cat "${t_dir}/tmux.calls")'"
+fi
+
+run_test
+log=$(new_log attach-missing)
+reset_tmux
+rc=0
+PATH="${stub_bin}:${PATH}" TIMVISHER_AICTL_LOG="$log" bash -c "${preamble} ntmux3__attach 'o/r/b'" 2>/dev/null || rc=$?
+codes=$(jq -r .code "$log" | paste -sd, -) || true
+if (( rc == 1 )) && [[ $codes == ntmux3_failed ]] && ! grep -q '^attach' "${t_dir}/tmux.calls"
+then
+  pass "ntmux3__attach fails instead of reporting a session that does not exist"
+else
+  fail "ntmux3__attach missing session: rc=${rc} codes='${codes}' calls='$(cat "${t_dir}/tmux.calls")'"
+fi
+
+session_dir="${t_dir}/session"
+mkdir -p "$session_dir"
+
+run_test
+log=$(new_log scrub)
+reset_tmux
+PATH="${stub_bin}:${PATH}" TIMVISHER_AICTL_LOG="$log" \
+  bash -c "${preamble} new_tmux_session scrubbed '${session_dir}' '' ''" >/dev/null 2>&1 || true
+if grep -q '^new-session <unset>$' "${t_dir}/tmux.calls" &&
+  grep -q "^attach ${log}$" "${t_dir}/tmux.calls"
+then
+  pass "TIMVISHER_AICTL_LOG is scrubbed from the environment that creates the tmux session"
+else
+  fail "tmux env scrub: calls='$(cat "${t_dir}/tmux.calls")'"
+fi
+
+run_test
+log=$(new_log new-session-fails)
+reset_tmux
+rc=0
+NTMUX3_TEST_TMUX_NEW_SESSION_FAILS=1 PATH="${stub_bin}:${PATH}" TIMVISHER_AICTL_LOG="$log" \
+  bash -c "${preamble} new_tmux_session broken '${session_dir}' '' ''" >/dev/null 2>&1 || rc=$?
+if (( rc == 1 )) && [[ ! -s $log ]] && ! grep -q '^attach' "${t_dir}/tmux.calls"
+then
+  pass "new_tmux_session fails, without attaching or reporting, when tmux cannot create the session"
+else
+  fail "new_tmux_session failure: rc=${rc} log='$(cat "$log")' calls='$(cat "${t_dir}/tmux.calls")'"
+fi
+
+run_test
+log=$(new_log detached)
+reset_tmux
+out=$(PATH="${stub_bin}:${PATH}" TIMVISHER_AICTL_LOG="$log" \
+  bash -c "${preamble} new_tmux_session detached '${session_dir}' '' true" 2>/dev/null) || true
+if [[ $out == detached ]] &&
+  [[ $(classify "$(cat "$log")") == '{"state":"ready","session":"detached","path":"/fake/session/path"}' ]]
+then
+  pass "a detached new session is reported as ready"
+else
+  fail "detached session: out='${out}' log='$(cat "$log")'"
+fi
+
+run_ntmux3() {
+  local log=$1 clone=$2 ntmux=$3
+  shift 3
+  local ntmux_stub="ntmux() { ${ntmux}; }"
+  if [[ $ntmux == REAL ]]
+  then
+    ntmux_stub=
+  fi
+  # shellcheck disable=SC2016
+  env -u TMUX -u TIMVISHER_AGENT TIMVISHER_AICTL_LOG="$log" PATH="${stub_bin}:${PATH}" \
+    TMPDIR="${ntmux3_tmpdir:-${t_dir}/tmp}" \
+    perl -e '$SIG{INT} = $SIG{HUP} = $SIG{TERM} = "DEFAULT"; exec @ARGV' \
+    bash -c "${preamble}
+      info() { :; }
+      maybe_set_beads_topic() { :; }
+      ${ntmux_stub}
+      timvisher_git() {
+        case \$1 in
+          clone) ${clone} ;;
+          *) return 1 ;;
+        esac
+      }
+      cd '${session_dir}'
+      ntmux3 \"\$@\"
+    " _ "$@" >/dev/null 2>&1 || true
+}
+
+state_dirs() {
+  find "${t_dir}/tmp" -name 'ntmux3-state.*' | wc -l | tr -d ' '
+}
+
+run_test
+log=$(new_log real-fail)
+reset_tmux
+run_ntmux3 "$log" 'return 1' 'return 0' someorg/somerepo
+codes=$(jq -r .code "$log" | paste -sd, -) || true
+started_pid=$(jq -r 'select(.code == "ntmux3_started") | .data.pid' "$log") || true
+if [[ $codes == ntmux3_started,ntmux3_worktree_building,ntmux3_failed ]] &&
+  [[ $started_pid =~ ^[0-9]+$ ]] && ! kill -0 "$started_pid" 2>/dev/null
+then
+  pass "ntmux3 with the log set emits started (with its process), building, failed"
+else
+  fail "ntmux3 log on failure: codes='${codes}' started_pid='${started_pid}'"
+fi
+
+run_test
+log=$(new_log real-ready)
+reset_tmux
+# shellcheck disable=SC2016
+run_ntmux3 "$log" "printf '%s' '${session_dir}'" 'ntmux3__attach sess' someorg/somerepo
+reset_tmux sess
+run_ntmux3 "$log" "printf '%s' '${session_dir}'" 'ntmux3__attach sess' someorg/somerepo
+codes=$(jq -r .code "$log" | paste -sd, -) || true
+if [[ $codes == *,ntmux3_started,ntmux3_worktree_building,ntmux3_worktree_ready,ntmux3_session_ready ]]
+then
+  pass "ntmux3 with the log set emits building/ready/session_ready and nothing after the attach"
+else
+  fail "ntmux3 log on success: codes='${codes}'"
+fi
+
+run_test
+log=$(new_log real-detached)
+reset_tmux
+run_ntmux3 "$log" "printf '%s' '${session_dir}'" REAL -d someorg/somerepo
+codes=$(jq -r .code "$log" | paste -sd, -) || true
+if [[ $codes == ntmux3_started,ntmux3_worktree_building,ntmux3_worktree_ready,ntmux3_session_ready ]]
+then
+  pass "a successful ntmux3 -d with the log set reports the session, not a failure"
+else
+  fail "ntmux3 -d with log: codes='${codes}'"
+fi
+
+assert_exit_reported() {
+  local desc=$1 clone=$2 ntmux=$3 message=$4
+  local log
+  log=$(new_log "exit-${RANDOM}")
+  run_test
+  reset_tmux
+  run_ntmux3 "$log" "$clone" "$ntmux" someorg/somerepo
+  local last
+  last=$(tail -n 1 "$log" | jq -r '.code + ": " + .message') || true
+  if [[ $last == "ntmux3_failed: ${message}" ]] &&
+    (( $(jq -r 'select(.code == "ntmux3_failed") | .code' "$log" | wc -l) == 1 )) &&
+    [[ $(state_dirs) == 0 ]]
+  then
+    pass "$desc"
+  else
+    fail "${desc}: last='${last}' log='$(cat "$log")' state_dirs=$(state_dirs)"
+  fi
+}
+
+assert_exit_reported "a failure that bypasses ntmux3__fail is reported as ntmux3_failed" \
+  "printf '%s' '${session_dir}'" 'return 1' \
+  'ntmux3 exited with status 1 before a tmux session was ready.'
+assert_exit_reported "returning 0 without a session is reported as ntmux3_failed" \
+  "printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 exited with status 0 before a tmux session was ready.'
+assert_exit_reported "being interrupted mid-run is reported as ntmux3_failed" \
+  "self=\$BASHPID; kill -INT \$(ps -o ppid= -p \$self); printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 was interrupted before a tmux session was ready.'
+assert_exit_reported "being hung up mid-run is reported as ntmux3_failed" \
+  "self=\$BASHPID; kill -HUP \$(ps -o ppid= -p \$self); printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 was hung up before a tmux session was ready.'
+assert_exit_reported "being terminated mid-run is reported as ntmux3_failed" \
+  "self=\$BASHPID; kill -TERM \$(ps -o ppid= -p \$self); printf '%s' '${session_dir}'" 'return 0' \
+  'ntmux3 was terminated before a tmux session was ready.'
+assert_exit_reported "ntmux3__fail is the only verdict when it already reported" \
+  'return 1' 'return 0' \
+  "Unable to clone 'someorg/somerepo'"
+
+run_test
+log=$(new_log no-state-dir)
+reset_tmux
+ntmux3_tmpdir="${t_dir}/does-not-exist" run_ntmux3 "$log" "printf '%s' '${session_dir}'" 'return 0' someorg/somerepo
+codes=$(jq -r .code "$log" | paste -sd, -) || true
+if [[ $codes == ntmux3_started,ntmux3_failed ]]
+then
+  pass "ntmux3 fails promptly when it cannot create its state directory"
+else
+  fail "no state dir: codes='${codes}'"
+fi
+
+run_test
+log=$(new_log history)
+result=$(TIMVISHER_AICTL_LOG="$log" TMPDIR="${t_dir}/tmp" bash -c "${preamble}
+  set -o history
+  ntmux3__main() { ntmux3__history someorg/fromhistory; ntmux3__fail boom; }
+  ntmux3
+  history 1
+" 2>/dev/null) || true
+if [[ $result == *'ntmux3 someorg/fromhistory' ]] && [[ $(state_dirs) == 0 ]]
+then
+  pass "ntmux3 records its resolved target in the shell history under the log"
+else
+  fail "history under log: got '${result}' state_dirs=$(state_dirs)"
+fi
+
+# ---------------------------------------------------------------------------
+# ntmux3 -T end to end
+# ---------------------------------------------------------------------------
+
+cat > "${stub_bin}/osascript" <<STUB
+#!/usr/bin/env bash
+printf '%s' "\$2" > '${t_dir}/osascript.arg'
+if [[ -n \${NTMUX3_TEST_OSASCRIPT_FAIL:-} ]]
+then
+  exit 1
+fi
+prefix='tell script "timvisher Terminal" to runCommandInteractively("'
+suffix='")'
+script=\$2
+if [[ \$script != "\$prefix"*"\$suffix" ]]
+then
+  exit 2
+fi
+literal=\${script#"\$prefix"}
+literal=\${literal%"\$suffix"}
+command=
+while [[ -n \$literal ]]
+do
+  if [[ \$literal == \\\\* ]]
+  then
+    command+=\${literal:1:1}
+    literal=\${literal:2}
+  elif [[ \$literal == \"* ]]
+  then
+    exit 3
+  else
+    command+=\${literal:0:1}
+    literal=\${literal:1}
+  fi
+done
+printf '%s' "\$command" > '${t_dir}/command'
+cd /
+nohup bash '${t_dir}/window' "\$command" </dev/null >>'${t_dir}/window.out' 2>&1 &
+printf '%s\n' \$! >> '${t_dir}/pids'
+STUB
+chmod +x "${stub_bin}/osascript"
+
+cat > "${t_dir}/window" <<STUB
+${preamble}
+tmux() {
+  case \$1 in
+    has-session) return 0 ;;
+    display-message) printf '/fake/window/path\n' ;;
+    attach) sleep 30 ;;
+  esac
+}
+ntmux3__main() {
+  printf '%s\0' "\$@" > '${t_dir}/args'
+  printf '%s' "\$PWD" > '${t_dir}/window.pwd'
+  case \${NTMUX3_TEST_SCENARIO:-} in
+    ready)
+      aictl_notice --code "\$NTMUX3_CODE_WORKTREE_BUILDING" --message building
+      printf 'Cloning into somerepo...\n' >> "\${TIMVISHER_AICTL_LOG:-/dev/null}"
+      ntmux3__attach fake/session
+      ;;
+    split)
+      local line
+      line=\$(TIMVISHER_AGENT=1 TIMVISHER_AICTL_LOG= ntmux3__emit_session_ready fake/session ready 2>&1)
+      printf '%s' "\${line:0:20}" >> "\$TIMVISHER_AICTL_LOG"
+      sleep 3
+      printf '%s\n' "\${line:20}" >> "\$TIMVISHER_AICTL_LOG"
+      ntmux3__mark_verdict
+      sleep 30
+      ;;
+    failed)
+      ntmux3__fail boom
+      sleep 30
+      ;;
+    closed)
+      exit 0
+      ;;
+    killed)
+      kill -KILL "\$BASHPID"
+      ;;
+    returned)
+      return 1
+      ;;
+    deadline)
+      sleep 30
+      ;;
+  esac
+}
+if [[ \${NTMUX3_TEST_SCENARIO:-} == silent ]]
+then
+  sleep 30
+  exit 0
+fi
+eval "\$1"
+if [[ \${NTMUX3_TEST_SCENARIO:-} == killed ]]
+then
+  sleep 30
+fi
+STUB
+
+run_terminal() {
+  local scenario=$1
+  shift
+  rm -f "${t_dir}/args" "${t_dir}/command" "${t_dir}/osascript.arg" "${t_dir}/window.pwd"
+  rc=0
+  out=$(cd "${caller_dir:-${t_dir}}" &&
+    TIMVISHER_AGENT=1 NTMUX3_TEST_SCENARIO="$scenario" TMPDIR="${t_dir}/tmp" \
+    TIMVISHER_NTMUX3_TERMINAL_POLL=1 TIMVISHER_NTMUX3_TERMINAL_DEADLINE="${deadline:-20}" \
+    TIMVISHER_NTMUX3_TERMINAL_STARTUP_DEADLINE="${startup_deadline:-20}" \
+    PATH="${extra_path:+${extra_path}:}${stub_bin}:${PATH}" \
+    bash -c "${preamble} ntmux3 -T \"\$@\"" _ "$@" 2>"${t_dir}/err") || rc=$?
+  err=$(cat "${t_dir}/err")
+}
+
+leftover_logs() {
+  find "${t_dir}/tmp" -name 'ntmux3-terminal.*' | wc -l | tr -d ' '
+}
+
+# shellcheck disable=SC2016
+awkward=('a b' "it's" 'say "hi"' 'back\slash' '$HOME' $'line\nbreak' '*' '' '-d')
+caller_dir="${t_dir}/caller dir with 'quotes' and \"more\""
+mkdir -p "$caller_dir"
+
+run_test
+caller_dir=$caller_dir run_terminal ready "${awkward[@]}"
+got_args=()
+if [[ -f ${t_dir}/args ]]
+then
+  while IFS= read -r -d '' a
+  do
+    got_args+=("$a")
+  done < "${t_dir}/args"
+fi
+if (( rc == 0 )) && [[ $out == fake/session ]] &&
+  [[ $err == *'"code":"ntmux3_started"'* ]] &&
+  [[ $err == *'"code":"ntmux3_worktree_building"'* ]] &&
+  [[ $err == *'"code":"ntmux3_session_ready"'* ]] &&
+  [[ $err != *'Cloning into'* ]] &&
+  [[ $(leftover_logs) == 0 ]]
+then
+  pass "-T ready: forwards instructions, prints the session, exits 0, removes its log"
+else
+  fail "-T ready: rc=${rc} out='${out}' err='${err}' leftover=$(leftover_logs)"
+fi
+
+run_test
+if [[ $(declare -p got_args) == "$(declare -p awkward | sed 's/awkward/got_args/')" ]]
+then
+  pass "-T passes awkward args through AppleScript and the shell intact"
+else
+  fail "-T quoting: got $(declare -p got_args) command='$(cat "${t_dir}/command" 2>/dev/null)'"
+fi
+
+run_test
+if [[ $(cat "${t_dir}/window.pwd" 2>/dev/null) == "$caller_dir" ]]
+then
+  pass "-T runs ntmux3 in the caller's working directory"
+else
+  fail "-T cwd: got '$(cat "${t_dir}/window.pwd" 2>/dev/null)' want '${caller_dir}'"
+fi
+
+run_test
+run_terminal split someorg/somerepo
+if (( rc == 0 )) && [[ $out == fake/session ]]
+then
+  pass "-T reassembles an instruction split across read timeouts"
+else
+  fail "-T split line: rc=${rc} out='${out}' err='${err}'"
+fi
+
+run_test
+run_terminal failed someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"code":"ntmux3_failed"'* ]] &&
+  [[ $err == *'"message":"boom"'* ]]
+then
+  pass "-T failed: forwards ntmux3_failed and exits 1"
+else
+  fail "-T failed: rc=${rc} out='${out}' err='${err}'"
+fi
+
+for scenario in closed killed
+do
+  run_test
+  SECONDS=0
+  run_terminal "$scenario" someorg/somerepo
+  if (( rc == 1 )) && [[ -z $out ]] &&
+    [[ $err == *'"code":"ntmux3_terminal_closed"'* ]] &&
+    (( SECONDS < 10 ))
+  then
+    pass "-T ${scenario}: ntmux3 dying without a verdict fails with ntmux3_terminal_closed"
+  else
+    fail "-T ${scenario}: rc=${rc} out='${out}' err='${err}' seconds=${SECONDS}"
+  fi
+done
+
+run_test
+SECONDS=0
+run_terminal returned someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"message":"ntmux3 exited with status 1 before a tmux session was ready."'* ]] &&
+  (( SECONDS < 10 ))
+then
+  pass "-T returned: an early return without a verdict fails promptly with ntmux3_failed"
+else
+  fail "-T returned: rc=${rc} out='${out}' err='${err}' seconds=${SECONDS}"
+fi
+
+run_test
+SECONDS=0
+startup_deadline=2 run_terminal silent someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"code":"ntmux3_terminal_not_started"'* ]] &&
+  (( SECONDS < 10 ))
+then
+  pass "-T fails with ntmux3_terminal_not_started when ntmux3 never starts"
+else
+  fail "-T silent: rc=${rc} out='${out}' err='${err}' seconds=${SECONDS}"
+fi
+
+run_test
+SECONDS=0
+deadline=2 run_terminal deadline someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"code":"ntmux3_terminal_timeout"'* ]] &&
+  (( SECONDS < 10 ))
+then
+  pass "-T deadline: fails with ntmux3_terminal_timeout"
+else
+  fail "-T deadline: rc=${rc} out='${out}' err='${err}' seconds=${SECONDS}"
+fi
+
+run_test
+lost_bin="${t_dir}/lost-bin"
+mkdir -p "$lost_bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${lost_bin}/tail"
+chmod +x "${lost_bin}/tail"
+extra_path=$lost_bin run_terminal deadline someorg/somerepo
+if (( rc == 1 )) && [[ $err == *'"code":"ntmux3_terminal_log_lost"'* ]]
+then
+  pass "-T fails with ntmux3_terminal_log_lost when the log stream ends"
+else
+  fail "-T log lost: rc=${rc} err='${err}'"
+fi
+
+run_test
+NTMUX3_TEST_OSASCRIPT_FAIL=1 run_terminal ready someorg/somerepo
+if (( rc == 1 )) && [[ -z $out ]] &&
+  [[ $err == *'"code":"ntmux3_terminal_open_failed"'* ]] &&
+  [[ $(leftover_logs) == 0 ]]
+then
+  pass "-T fails with ntmux3_terminal_open_failed when osascript fails"
+else
+  fail "-T osascript failure: rc=${rc} out='${out}' err='${err}' leftover=$(leftover_logs)"
+fi
+
+run_test
+rm -f "${t_dir}/err"
+(
+  cd "$t_dir" &&
+    TIMVISHER_AGENT=1 NTMUX3_TEST_SCENARIO=deadline TMPDIR="${t_dir}/tmp" \
+    PATH="${stub_bin}:${PATH}" \
+    exec bash -c "${preamble} ntmux3 -T someorg/somerepo" 2>"${t_dir}/err" >/dev/null
+) &
+outer=$!
+tail_pid=
+for _ in {1..100}
+do
+  tail_pid=$(pgrep -f "tail -n \+1 -F ${t_dir}/tmp/ntmux3-terminal" | head -n 1) || true
+  if [[ -n $tail_pid ]] && grep -q '"code":"ntmux3_started"' "${t_dir}/err" 2>/dev/null
+  then
+    break
+  fi
+  sleep 0.1
+done
+if [[ -n $tail_pid ]]
+then
+  kill -TERM "$(ps -o ppid= -p "$tail_pid" | tr -d ' ')" 2>/dev/null || true
+fi
+wait "$outer" 2>/dev/null || true
+sleep 0.5
+if [[ -n $tail_pid ]] && ! kill -0 "$tail_pid" 2>/dev/null && [[ $(leftover_logs) == 0 ]]
+then
+  pass "-T stops its tail and removes its log when the waiter is terminated"
+else
+  fail "-T interrupted waiter: tail_pid='${tail_pid}' alive=$(kill -0 "${tail_pid:-0}" 2>/dev/null && echo yes) leftover=$(leftover_logs)"
+fi
+
+run_test
+rc=0
+out=$(cd "$t_dir" && env -u TIMVISHER_AGENT PATH="${stub_bin}:${PATH}" \
+  bash -c "${preamble} ntmux3 -T someorg/somerepo" 2>"${t_dir}/err") || rc=$?
+want_arg=$(printf 'tell script "timvisher Terminal" to runCommandInteractively("cd %s && ntmux3 someorg/somerepo")' "$t_dir")
+if (( rc == 0 )) && [[ -z $out ]] && [[ $(cat "${t_dir}/osascript.arg") == "$want_arg" ]]
+then
+  pass "-T without TIMVISHER_AGENT just opens the window"
+else
+  fail "-T without agent: rc=${rc} out='${out}' arg='$(cat "${t_dir}/osascript.arg")'"
+fi
+
+for combo in '-T -d' '-d -T'
+do
+  run_test
+  read -ra combo_args <<<"$combo"
+  rm -f "${t_dir}/osascript.arg"
+  combo_err=$(TIMVISHER_AGENT=1 PATH="${stub_bin}:${PATH}" \
+    bash -c "${preamble} ntmux3 \"\$@\"" _ "${combo_args[@]}" someorg/somerepo 2>&1 >/dev/null) &&
+    combo_rc=0 || combo_rc=$?
+  if (( combo_rc == 1 )) &&
+    [[ $combo_err == *'"code":"ntmux3_failed"'* ]] &&
+    [[ ! -e ${t_dir}/osascript.arg ]]
+  then
+    pass "ntmux3 ${combo} is rejected"
+  else
+    fail "ntmux3 ${combo}: rc=${combo_rc} err='${combo_err}'"
+  fi
+done
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
