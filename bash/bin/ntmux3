@@ -18,9 +18,9 @@ then
     _sc="" _sm=""
     while (( 0 < $# )); do
       case "$1" in
-        --code) _sc=$2; shift 2 ;;
-        --message) _sm=$2; shift 2 ;;
-        --*) shift 2 ;;
+        --code) _sc=${2-}; shift 2 || shift ;;
+        --message) _sm=${2-}; shift 2 || shift ;;
+        --*) shift 2 || shift ;;
         *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
       esac
     done
