@@ -143,14 +143,16 @@ The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the 
 To put an emoji reaction on a PR comment, write the reaction to a file and pass the comment URL:
 
 ```bash
-printf 'rocket\n' > reaction.md
-timvisher_gh comment react 'https://github.com/o/r/pull/1#discussion_r123456' reaction.md
-timvisher_gh comment react 'https://github.com/o/r/pull/1#issuecomment-123456' reaction.md
+printf 'rocket\n' > review-reaction.md
+timvisher_gh comment react 'https://github.com/o/r/pull/1#discussion_r123456' review-reaction.md
+
+printf 'eyes\n' > top-level-reaction.md
+timvisher_gh comment react 'https://github.com/o/r/pull/1#issuecomment-123456' top-level-reaction.md
 ```
 
-The file holds a single reaction: one of `+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`, or the matching emoji (👍 👎 😄 😕 ❤️ 🎉 🚀 👀). The `<comment-url>` must contain `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level PR comment); reactions on the PR itself or on review summaries are not supported. The reaction's API URL (`https://api.github.com/repos/o/r/.../comments/<ID>/reactions/<RID>`) is stored in `reaction.md.url`. Running the same command again when `.url` exists prints it instead of reacting again. GitHub treats a repeated reaction as a no-op, so a lost `.url` is recovered by re-running, which reports `already reacted`.
+Use one file per comment: the `.url` records which comment the reaction is on, and reacting to a different comment with the same file is refused. The file holds a single reaction: one of `+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`, or the matching emoji (👍 👎 😄 😕 ❤️ 🎉 🚀 👀, without skin tones). The `<comment-url>` must be a `https://github.com/` PR URL ending in `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level PR comment); reactions on the PR itself or on review summaries are not supported. The reaction's API URL (`https://api.github.com/repos/o/r/.../comments/<ID>/reactions/<RID>`) is stored in the `.url`. Running the same command again when `.url` exists prints it instead of reacting again. GitHub treats a repeated reaction as a no-op, so a lost `.url` is recovered by re-running, which logs `already reacted` at INFO level (hidden at the agent default of ERROR).
 
-Remove the reaction with `timvisher_gh comment delete reaction.md`. `comment edit` refuses a reaction `.url`; delete and react again instead.
+Remove the reaction with `timvisher_gh comment delete review-reaction.md`. `comment edit` refuses a reaction `.url`; delete and react again instead.
 
 ## General GitHub interactions
 
