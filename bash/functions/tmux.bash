@@ -13,6 +13,7 @@ ntmux3__define_code NTMUX3_CODE_TERMINAL_OPEN_FAILED ntmux3_terminal_open_failed
 ntmux3__define_code NTMUX3_CODE_TERMINAL_CLOSED ntmux3_terminal_closed
 ntmux3__define_code NTMUX3_CODE_TERMINAL_LOG_LOST ntmux3_terminal_log_lost
 ntmux3__define_code NTMUX3_CODE_TERMINAL_TIMEOUT ntmux3_terminal_timeout
+ntmux3__define_code NTMUX3_CODE_TERMINAL_NOT_STARTED ntmux3_terminal_not_started
 
 function ntmux3__aictl_listening() {
     declare -F aictl_listening &>/dev/null && aictl_listening
@@ -23,28 +24,45 @@ function ntmux3__emit_started() {
     then
         aictl_info \
             --code "$NTMUX3_CODE_STARTED" \
-            --message "ntmux3 started in shell $$." \
-            --data "{\"pid\":$$}" \
+            --message "ntmux3 started in process ${BASHPID}." \
+            --data "{\"pid\":${BASHPID}}" \
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
     fi
+}
+
+function ntmux3__emit_session_ready() {
+    local session_name=$1 message=$2
+
+    ntmux3__aictl_listening || return 0
+
+    if ! tmux has-session -t="$session_name" >/dev/null 2>&1
+    then
+        ntmux3__fail "tmux session '${session_name}' does not exist, so it cannot be reported as ready."
+        return 1
+    fi
+
+    local session_path data
+    session_path=$(tmux display-message -p -t="$session_name" '#{session_path}' 2>/dev/null) || true
+    data=$(jq -nc --arg session "$session_name" --arg path "$session_path" \
+        '{session: $session, path: $path}') ||
+        {
+            ntmux3__fail "jq is required to report tmux session '${session_name}' as ready."
+            return 1
+        }
+    aictl_info \
+        --code "$NTMUX3_CODE_SESSION_READY" \
+        --message "$message" \
+        --data "$data" \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+    ntmux3__mark_verdict
 }
 
 function ntmux3__attach() {
     local session_name=$1
 
-    if ntmux3__aictl_listening
-    then
-        local session_path data
-        session_path=$(tmux display-message -p -t="$session_name" '#{session_path}' 2>/dev/null) || true
-        data=$(jq -nc --arg session "$session_name" --arg path "$session_path" \
-            '{session: $session, path: $path}')
-        aictl_info \
-            --code "$NTMUX3_CODE_SESSION_READY" \
-            --message "tmux session '${session_name}' is ready; attaching." \
-            --data "$data" \
-            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
-        ntmux3__mark_verdict
-    fi
+    ntmux3__emit_session_ready "$session_name" \
+        "tmux session '${session_name}' is ready; attaching." ||
+        return 1
 
     tmux attach -t="$session_name"
 }
@@ -115,7 +133,11 @@ function new_tmux_session {
         fi
 
         # tmux -vvvv new-session -d -s "$session_name" -n editor "$default_command" # for debugging
-        env -u TIMVISHER_AICTL_LOG tmux new-session -d -s "$session_name" -n editor "$default_command"
+        if ! env -u TIMVISHER_AICTL_LOG tmux new-session -d -s "$session_name" -n editor "$default_command"
+        then
+            echo "# Unable to create tmux session $session_name." >&2
+            return 1
+        fi
         if [[ Darwin = $(uname) ]]
         then
             tmux send-keys -t="$session_name":editor 'emacs'
@@ -136,12 +158,14 @@ function new_tmux_session {
         tmux new-window -t="$session_name" -n tests
         tmux select-window -t "$session_name":1
         tmux select-window -t "$session_name":0
-    )
+    ) || return 1
 
     if [[ -z $detached ]]
     then
         ntmux3__attach "$session_name"
     else
+        ntmux3__emit_session_ready "$session_name" "tmux session '${session_name}' is ready." ||
+            return 1
         printf '%s\n' "$session_name"
         info 'attach with: ntmux %q' "$session_name"
     fi
@@ -243,6 +267,8 @@ function ntmux {
             # Attach to Existing Session
             ntmux3__attach "$session_name"
         else
+            ntmux3__emit_session_ready "$session_name" "tmux session '${session_name}' is ready." ||
+                return 1
             printf '%s\n' "$session_name"
             info 'attach with: ntmux '\''%s'\''' "$session_name"
         fi
@@ -269,7 +295,8 @@ alias nt=ntmux
 function ntmux3__usage() {
     echo 'Usage: ntmux3 [-d | -T] [GitHub PR URL | org/repo[/branch] | path] [file]' >&2
     echo '       ntmux3 [-d | -T] org/repo/branch branch-ish' >&2
-    echo '  -d creates the session detached.  -T runs ntmux3 in a new terminal window and waits for it.' >&2
+    echo '  -d creates the session detached.  -T runs ntmux3 in a new terminal window; under an agent it' >&2
+    echo '  waits for the session and reports it like -d.' >&2
     echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
     echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must be a' >&2
     echo '  new branch.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
@@ -316,9 +343,9 @@ function ntmux3__classify_instruction() {
 function ntmux3__terminal_number() {
     local value=$1 default=$2
 
-    if [[ $value =~ ^[0-9]+$ ]] && (( 0 < value ))
+    if [[ $value =~ ^[0-9]+$ ]] && (( 0 < 10#$value ))
     then
-        printf '%s' "$value"
+        printf '%s' "$(( 10#$value ))"
     else
         printf '%s' "$default"
     fi
@@ -326,16 +353,18 @@ function ntmux3__terminal_number() {
 
 function ntmux3__wait_for_terminal() {
     local log=$1
-    local poll deadline
+    local poll deadline startup_deadline
     poll=$(ntmux3__terminal_number "${TIMVISHER_NTMUX3_TERMINAL_POLL:-}" 5)
     deadline=$(ntmux3__terminal_number "${TIMVISHER_NTMUX3_TERMINAL_DEADLINE:-}" 3600)
+    startup_deadline=$(ntmux3__terminal_number "${TIMVISHER_NTMUX3_TERMINAL_STARTUP_DEADLINE:-}" 60)
     (( deadline += SECONDS ))
+    (( startup_deadline += SECONDS ))
 
-    local tail_fd tail_pid
+    local tail_fd
     exec {tail_fd}< <(exec tail -n +1 -F "$log" 2>/dev/null)
-    tail_pid=$!
+    ntmux3__tail_pid=$!
 
-    local started_pid='' line instruction verdict timeout rc result=''
+    local started='' started_pid='' partial='' line instruction verdict timeout rc result=''
     while [[ -z $result ]]
     do
         if (( deadline <= SECONDS ))
@@ -348,21 +377,42 @@ function ntmux3__wait_for_terminal() {
             break
         fi
 
+        if [[ -z $started ]] && (( startup_deadline <= SECONDS ))
+        then
+            aictl_error \
+                --code "$NTMUX3_CODE_TERMINAL_NOT_STARTED" \
+                --message "ntmux3 never reported starting in the terminal window. The window may not have opened a bash shell with ntmux3 loaded; check it." \
+                --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+            result=1
+            break
+        fi
+
         timeout=$(( deadline - SECONDS ))
+        if [[ -z $started ]] && (( startup_deadline - SECONDS < timeout ))
+        then
+            timeout=$(( startup_deadline - SECONDS ))
+        fi
         if (( poll < timeout ))
         then
             timeout=$poll
+        fi
+        if (( timeout < 1 ))
+        then
+            timeout=1
         fi
 
         rc=0
         IFS= read -r -t "$timeout" -u "$tail_fd" line || rc=$?
         if (( rc == 0 ))
         then
+            line=$partial$line
+            partial=''
             instruction=$(aictl_parse "$line") || continue
             printf '%s\n' "$instruction" >&2
             verdict=$(ntmux3__classify_instruction "$instruction") || continue
             case $(jq -r .state <<<"$verdict") in
                 started)
+                    started=true
                     started_pid=$(jq -r '.pid // empty' <<<"$verdict")
                     ;;
                 ready)
@@ -373,46 +423,59 @@ function ntmux3__wait_for_terminal() {
                     result=1
                     ;;
             esac
-        elif (( rc <= 128 ))
+        elif (( 128 < rc ))
         then
+            partial+=$line
+            if [[ -n $started_pid ]] && ! kill -0 "$started_pid" 2>/dev/null
+            then
+                aictl_error \
+                    --code "$NTMUX3_CODE_TERMINAL_CLOSED" \
+                    --message "ntmux3 in the terminal window (process ${started_pid}) exited before reporting a session or a failure." \
+                    --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+                result=1
+            fi
+        else
             aictl_error \
                 --code "$NTMUX3_CODE_TERMINAL_LOG_LOST" \
                 --message "Lost the instruction log '${log}' before ntmux3 in the terminal window reported a session or a failure." \
                 --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
             result=1
-        elif [[ -n $started_pid ]] && ! kill -0 "$started_pid" 2>/dev/null
-        then
-            aictl_error \
-                --code "$NTMUX3_CODE_TERMINAL_CLOSED" \
-                --message "The terminal window running ntmux3 (shell ${started_pid}) exited before reporting a session or a failure." \
-                --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
-            result=1
         fi
     done
 
-    kill "$tail_pid" 2>/dev/null
     exec {tail_fd}<&-
     return "$result"
 }
 
 function ntmux3__terminal() (
-    local log=
-    trap '[[ -n $log ]] && rm -f -- "$log"' EXIT
+    local log='' ntmux3__tail_pid=''
+    trap '[[ -n $ntmux3__tail_pid ]] && kill "$ntmux3__tail_pid" 2>/dev/null; [[ -n $log ]] && rm -f -- "$log"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
 
-    local command=ntmux3
-    if (( 0 < $# ))
-    then
-        command+=$(printf ' %q' "$@")
-    fi
+    local command
+    command="cd $(printf '%q' "$PWD") && "
 
     if [[ -n ${TIMVISHER_AGENT:-} ]]
     then
+        if ! declare -F aictl_parse &>/dev/null || ! declare -F aictl_error &>/dev/null
+        then
+            echo 'ntmux3 -T needs the aictl functions (~/.functions/aictl.bash) to report back to an agent.' >&2
+            return 1
+        fi
         log=$(mktemp "${TMPDIR:-/tmp}/ntmux3-terminal.XXXXXX") ||
             {
                 ntmux3__fail 'Unable to create the instruction log for ntmux3 -T'
                 return 1
             }
-        command="TIMVISHER_AICTL_LOG=$(printf '%q' "$log") ${command}"
+        command+="TIMVISHER_AICTL_LOG=$(printf '%q' "$log") "
+    fi
+
+    command+=ntmux3
+    if (( 0 < $# ))
+    then
+        command+=$(printf ' %q' "$@")
     fi
 
     local applescript_command=${command//\\/\\\\}
@@ -675,21 +738,27 @@ function ntmux3__resolve_session_name() {
     printf '%s' "$name"
 }
 
+function ntmux3__history() {
+    if [[ -n ${ntmux3__state_dir:-} ]]
+    then
+        printf '%s' "$1" > "${ntmux3__state_dir}/history"
+    else
+        history -s ntmux3 "$1"
+    fi
+}
+
 function ntmux3__report_exit() {
     local status=$1 why=$2
 
-    if [[ -n $ntmux3__verdict_marker && ! -s $ntmux3__verdict_marker ]]
+    if [[ ! -s $ntmux3__verdict_marker ]]
     then
         ntmux3__fail "ntmux3 ${why} before a tmux session was ready."
     fi
     return "$status"
 }
 
-function ntmux3__reporting() (
-    local ntmux3__verdict_marker=
-    trap '[[ -n $ntmux3__verdict_marker ]] && rm -f -- "$ntmux3__verdict_marker"' EXIT
-    ntmux3__verdict_marker=$(mktemp "${TMPDIR:-/tmp}/ntmux3-verdict.XXXXXX") ||
-        ntmux3__verdict_marker=
+function ntmux3__reporting_run() (
+    local ntmux3__verdict_marker="${ntmux3__state_dir}/verdict"
 
     ntmux3__emit_started
 
@@ -701,6 +770,26 @@ function ntmux3__reporting() (
     ntmux3__main "$@" || status=$?
     ntmux3__report_exit "$status" "exited with status ${status}"
 )
+
+function ntmux3__reporting() {
+    local ntmux3__state_dir
+    if ! ntmux3__state_dir=$(mktemp -d "${TMPDIR:-/tmp}/ntmux3-state.XXXXXX")
+    then
+        ntmux3__emit_started
+        ntmux3__fail 'Unable to create the state directory ntmux3 needs to report its outcome.'
+        return 1
+    fi
+
+    local status=0
+    ntmux3__reporting_run "$@" || status=$?
+
+    if [[ -s ${ntmux3__state_dir}/history ]]
+    then
+        history -s ntmux3 "$(< "${ntmux3__state_dir}/history")"
+    fi
+    rm -rf -- "$ntmux3__state_dir"
+    return "$status"
+}
 
 function ntmux3() {
     if [[ ${1-} == -T ]]
@@ -796,7 +885,7 @@ function ntmux3__main() {
                 ntmux3__fail "'${clone_target}' does not look like a PR or repo URL"
                 return
             fi
-            history -s ntmux3 "$clone_target"
+            ntmux3__history "$clone_target"
         fi
     else
         clone_target="$1"
@@ -849,7 +938,7 @@ function ntmux3__main() {
             info 'arg 2 is a branch-ish; stacking %s on %s' \
                 "$clone_target" "$base_dir_or_target_file"
             stack_on_base="$base_dir_or_target_file"
-        elif [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_notice &>/dev/null
+        elif ntmux3__aictl_listening
         then
             aictl_notice \
                 --code "ntmux3_arg2_ignored" \
@@ -863,7 +952,7 @@ function ntmux3__main() {
 
     if [[ -z $detached && -n $TMUX ]]
     then
-        if [[ -n ${TIMVISHER_AGENT:-} ]] && declare -F aictl_error &>/dev/null
+        if ntmux3__aictl_listening
         then
             aictl_error \
                 --code "ntmux3_inside_tmux" \
@@ -914,6 +1003,9 @@ function ntmux3__main() {
                 then
                     ntmux3__attach "$sanitized_session_name"
                 else
+                    ntmux3__emit_session_ready "$sanitized_session_name" \
+                        "tmux session '${sanitized_session_name}' is ready." ||
+                        return 1
                     printf '%s\n' "$sanitized_session_name"
                     info 'attach with: ntmux3 '\''%s'\''' "$session_name"
                 fi
@@ -1094,6 +1186,9 @@ function ntmux3__main() {
                 # Attach to Existing Session
                 ntmux3__attach "$sanitized_session_name"
             else
+                ntmux3__emit_session_ready "$sanitized_session_name" \
+                    "tmux session '${sanitized_session_name}' is ready." ||
+                    return 1
                 printf '%s\n' "$sanitized_session_name"
                 info 'attach with: ntmux3 '\''%s'\''' "$session_name"
             fi
