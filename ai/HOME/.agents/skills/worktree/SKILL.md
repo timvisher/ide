@@ -81,13 +81,17 @@ as `-d`:
   `ntmux3_worktree_ready`, `ntmux3_session_ready` (with
   `data.session` and `data.path`), or `ntmux3_failed`.
 - **exit status**: 0 once the session is ready, 1 otherwise.
-  `ntmux3_terminal_closed` means the window exited without
+  `ntmux3_failed` covers every way ntmux3 in the window can stop
+  before the session is ready: an error, returning early, or being
+  interrupted. `ntmux3_terminal_closed` means the window exited without
   reporting, `ntmux3_terminal_timeout` means it did not report within
   `TIMVISHER_NTMUX3_TERMINAL_DEADLINE` seconds (default 3600; ntmux3
   may still be running in the window), and
   `ntmux3_terminal_open_failed` means no window opened.
 
 Without `TIMVISHER_AGENT`, `-T` just opens the window and returns.
+`-T` cannot be combined with `-d`: the window has to attach to report
+that its session is ready.
 
 The first `-T` from a new process may trigger a macOS Automation
 permission prompt that the human has to approve.
