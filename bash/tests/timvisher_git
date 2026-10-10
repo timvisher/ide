@@ -848,6 +848,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# pr_url_file tests (.timvisher_gh/pr/pr.url, then legacy pr.md.url)
+# ---------------------------------------------------------------------------
+
+pu_dir="$tmpdir/pr_url_file"
+mkdir -p "$pu_dir/.timvisher_gh/pr"
+
+run_test
+if ! pr_url_file "$pu_dir" >/dev/null
+then
+  pass "pr_url_file fails when no PR URL is recorded"
+else
+  fail "pr_url_file found a URL in an empty worktree"
+fi
+
+run_test
+echo 'https://github.com/o/r/pull/1' > "$pu_dir/pr.md.url"
+if [[ $(pr_url_file "$pu_dir") == "$pu_dir/pr.md.url" ]]
+then
+  pass "pr_url_file falls back to a legacy root pr.md.url"
+else
+  fail "pr_url_file legacy: got '$(pr_url_file "$pu_dir")'"
+fi
+
+run_test
+echo 'https://github.com/o/r/pull/2' > "$pu_dir/.timvisher_gh/pr/pr.url"
+if [[ $(pr_url_file "$pu_dir") == "$pu_dir/.timvisher_gh/pr/pr.url" ]]
+then
+  pass "pr_url_file prefers .timvisher_gh/pr/pr.url"
+else
+  fail "pr_url_file state: got '$(pr_url_file "$pu_dir")'"
+fi
+
+run_test
+if worktree_gc__should_archive .timvisher_gh/pr/pr.md &&
+   worktree_gc__should_archive .timvisher_gh/pr/comments/2026-10-10T10-00-00+0000-alice/comment.md
+then
+  pass "worktree gc archives .timvisher_gh/ state"
+else
+  fail "worktree gc does not archive .timvisher_gh/ state"
+fi
+
+# ---------------------------------------------------------------------------
 # pr_owner_from_url tests (drives per-owner gh account pinning)
 # ---------------------------------------------------------------------------
 

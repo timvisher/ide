@@ -31,6 +31,7 @@ mkdir -p "$tmpdir/repo"
 cd "$tmpdir/repo" ||
   { echo "cannot cd to the fixture repo" >&2; exit 1; }
 "$real_git" init -q .
+printf '%s\n' .timvisher_gh/ pr.md pr.md.url x.merged issue.md issue.md.url >> .git/info/exclude
 "$real_git" config user.email "test@test.com"
 "$real_git" config user.name "Test"
 "$real_git" remote add origin https://github.com/testuser/testrepo.git
@@ -49,6 +50,17 @@ then
 elif [[ \$1 == push ]]
 then
   echo "mock-git-push \$*" >> "\$MOCK_LOG"
+  [[ -z \${MOCK_GIT_PUSH_FAIL-} ]]
+elif [[ \$1 == -C && \$3 == pull ]]
+then
+  echo "mock-git-pull \$*" >> "\$MOCK_LOG"
+elif [[ \$1 == ls-remote ]]
+then
+  echo "mock-git-ls-remote \$*" >> "\$MOCK_LOG"
+  if [[ -n \${MOCK_REMOTE_SHA-} ]]
+  then
+    printf '%s\\t%s\\n' "\$MOCK_REMOTE_SHA" "\$3"
+  fi
 else
   "$real_git" "\$@"
 fi
@@ -163,6 +175,22 @@ MOCK
 chmod +x "$tmpdir/mockbin/timvisher_git"
 
 test_path="$tmpdir/mockbin:$PATH"
+
+rm_state() {
+  local name
+  for name in "$@"
+  do
+    rm -f "$tmpdir/repo/$name"
+    case $name in
+      pr.md)        rm -f "$tmpdir/repo/.timvisher_gh/pr/pr.md" ;;
+      pr.md.url)    rm -f "$tmpdir/repo/.timvisher_gh/pr/pr.json" "$tmpdir/repo/.timvisher_gh/pr/pr.url" ;;
+      x.merged)     rm -f "$tmpdir/repo/.timvisher_gh/pr/merged" ;;
+      issue.md)     rm -f "$tmpdir/repo/.timvisher_gh/issue/issue.md" ;;
+      issue.md.url) rm -f "$tmpdir/repo/.timvisher_gh/issue/issue.json" "$tmpdir/repo/.timvisher_gh/issue/issue.url" ;;
+    esac
+  done
+}
+
 
 # --- dispatch tests ---
 
@@ -503,20 +531,6 @@ else
   fail "pr exits if pr.md doesn't exist: got '${result}'"
 fi
 
-# Test: pr opens existing pr.md.url if present
-run_test
-echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
-export MOCK_LOG="$tmpdir/log_pr_existing"
-touch "$MOCK_LOG"
-PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true
-if grep -q 'mock-open.*https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
-then
-  pass "pr opens existing pr.md.url"
-else
-  fail "pr opens existing pr.md.url: got $(cat "$MOCK_LOG")"
-fi
-rm -f "$tmpdir/repo/pr.md.url"
-
 # Test: pr creates PR from pr.md when git status is clean
 run_test
 cat > "$tmpdir/repo/pr.md" <<'PR'
@@ -533,7 +547,7 @@ then
 else
   fail "pr creates PR from pr.md: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 
 # Test: pr exits if git status is dirty
 run_test
@@ -550,7 +564,7 @@ else
 fi
 "$real_git" reset -q HEAD "$tmpdir/repo/untracked.txt"
 rm -f "$tmpdir/repo/untracked.txt"
-rm -f "$tmpdir/repo/pr.md"
+rm_state pr.md
 
 # --- issue tests ---
 
@@ -578,7 +592,7 @@ then
 else
   fail "issue opens existing issue.md.url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/issue.md.url"
+rm_state issue.md.url
 
 # Test: issue creates issue from issue.md
 run_test
@@ -604,18 +618,18 @@ else
   pass "issue does not git push"
   ((tests++)) || true
 fi
-rm -f "$tmpdir/repo/issue.md.url"
-rm -f "$tmpdir/repo/issue.md"
+rm_state issue.md.url
+rm_state issue.md
 
 # --- pr edit tests ---
 
 # Test: pr edit exits if pr.md.url doesn't exist
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_edit_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
-if [[ $result == *"does not exist"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr edit exits if pr.md.url doesn't exist"
 else
@@ -625,7 +639,7 @@ fi
 # Test: pr edit exits if pr.md doesn't exist
 run_test
 echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
-rm -f "$tmpdir/repo/pr.md"
+rm_state pr.md
 export MOCK_LOG="$tmpdir/log_pr_edit_nomd"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
@@ -653,17 +667,17 @@ then
 else
   fail "pr edit calls gh pr edit with correct url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/pr.md"
+rm_state pr.md.url pr.md
 
 # --- issue edit tests ---
 
 # Test: issue edit exits if issue.md.url doesn't exist
 run_test
-rm -f "$tmpdir/repo/issue.md.url"
+rm_state issue.md.url
 export MOCK_LOG="$tmpdir/log_issue_edit_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
-if [[ $result == *"does not exist"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "issue edit exits if issue.md.url doesn't exist"
 else
@@ -673,7 +687,7 @@ fi
 # Test: issue edit exits if issue.md doesn't exist
 run_test
 echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
-rm -f "$tmpdir/repo/issue.md"
+rm_state issue.md
 export MOCK_LOG="$tmpdir/log_issue_edit_nomd"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
@@ -701,7 +715,7 @@ then
 else
   fail "issue edit calls gh issue edit with correct url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/issue.md.url" "$tmpdir/repo/issue.md"
+rm_state issue.md.url issue.md
 
 # --- pr merge tests ---
 
@@ -762,26 +776,1527 @@ rm -rf "$config_tmpdir"
 
 # Test: pr merge - exits if pr.md.url is missing
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_merge_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr merge" 2>&1 || true)
-if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr merge: exits if pr.md.url is missing"
 else
   fail "pr merge: exits if pr.md.url missing: got '${result}'"
 fi
 
+# --- handler-driven gh mock ---
+
+mkdir -p "$tmpdir/mockbin_v2"
+cat > "$tmpdir/mockbin_v2/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "mock-gh $*" >> "$MOCK_LOG"
+mock_jq=
+mock_prev=
+for mock_arg in "$@"
+do
+  if [[ $mock_prev == --jq ]]
+  then
+    mock_jq=$mock_arg
+  fi
+  mock_prev=$mock_arg
+done
+respond() {
+  if [[ -n $mock_jq ]]
+  then
+    jq -r "$mock_jq"
+  else
+    cat
+  fi
+}
+if [[ -r ${MOCK_GH_HANDLER-} ]]
+then
+  source "$MOCK_GH_HANDLER"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin_v2/gh"
+
+v2_path="$tmpdir/mockbin_v2:$tmpdir/mockbin:$PATH"
+v2_home="$tmpdir/home_v2"
+mkdir -p "$v2_home/.config/timvisher/ide"
+ln -s "$funcs_dir" "$v2_home/.functions"
+
+run_v2() {
+  (
+    cd "$tmpdir/repo" &&
+      HOME="$v2_home" \
+      PATH="$v2_path" \
+      TIMVISHER_AGENT='' \
+      timvisher_logging_log_level=INFO \
+      TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config" \
+      TIMVISHER_GH_CORE_CONFIG_DIR="$v2_home/core" \
+      TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
+      TIMVISHER_GH_PR_MERGE_TIMEOUT=2 \
+      TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 \
+      "$script" "$@"
+  )
+}
+
+v2_reset() {
+  export MOCK_LOG="$tmpdir/log_$1"
+  : > "$MOCK_LOG"
+  export MOCK_GH_HANDLER="$tmpdir/handler_$1"
+  : > "$MOCK_GH_HANDLER"
+}
+
+# --- pr merge idempotency tests ---
+
+merge_graphql() {
+  local state=$1 extra=${2-}
+  jq -n --arg state "$state" --argjson extra "${extra:-{\}}" '
+    {data: {viewer: {login: "testuser"},
+            repository: {pullRequest: ({
+              state: $state,
+              isInMergeQueue: false,
+              autoMergeRequest: null,
+              mergeCommit: (if $state == "MERGED" then {oid: "abc123"} else null end),
+              commits: {nodes: [{commit: {committedDate: "2026-10-10T10:00:00Z"}}]},
+              timelineItems: {nodes: []}
+            } + $extra)}}}'
+}
+
+write_merge_handler() {
+  local graphql=$1
+  printf '%s\n' "$graphql" > "$MOCK_GH_HANDLER.graphql"
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$1 \$2" in
+  'api graphql') respond < '$MOCK_GH_HANDLER.graphql' ;;
+  'pr view') echo '{"state":"MERGED","mergeCommit":{"oid":"def456"}}' ;;
+  'repo view') echo '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false,"defaultBranchRef":{"name":"main"}}' | respond ;;
+  'pr comment') echo 'https://github.com/testuser/testrepo/pull/42#issuecomment-1' ;;
+  'pr merge') true ;;
+esac
+HANDLER
+}
+
+merge_comment_repos() {
+  if [[ -n ${1-} ]]
+  then
+    printf '%s\n' "$1" > "$v2_home/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  else
+    rm -f "$v2_home/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  fi
+}
+
+# Test: pr merge on an already-merged PR reports it and drops the cookie
+run_test
+v2_reset merge_already
+write_merge_handler "$(merge_graphql MERGED)"
+merge_comment_repos
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+rm_state x.merged
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"already merged in abc123"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr comment' "$MOCK_LOG" &&
+   grep -qx 'merge_commit=abc123' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: already merged reports it, no prompt, cookie dropped"
+else
+  fail "pr merge already merged: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: rerunning pr merge on a merged PR keeps the existing cookie
+run_test
+v2_reset merge_already_rerun
+write_merge_handler "$(merge_graphql MERGED)"
+printf 'merged_at=original\n' > "$tmpdir/repo/x.merged"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Merged cookie already present"* ]] &&
+   [[ $(< "$tmpdir/repo/x.merged") == 'merged_at=original' ]]
+then
+  pass "pr merge: rerun on merged PR leaves the cookie alone"
+else
+  fail "pr merge rerun: rc=${rc} cookie=$(cat "$tmpdir/repo/x.merged") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: pr merge with auto-merge already enabled waits without re-requesting
+run_test
+v2_reset merge_auto
+write_merge_handler "$(merge_graphql OPEN '{"autoMergeRequest":{"enabledAt":"2026-10-10T11:00:00Z"}}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Merge already requested (auto-merge is enabled)"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   grep -qx 'merge_commit=def456' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: auto-merge already enabled skips straight to waiting"
+else
+  fail "pr merge auto-merge: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: pr merge with the PR already in the merge queue waits
+run_test
+v2_reset merge_queue
+write_merge_handler "$(merge_graphql OPEN '{"isInMergeQueue":true}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"in the merge queue"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "pr merge: PR already in the merge queue skips straight to waiting"
+else
+  fail "pr merge queue: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: comment-merge repo with my /merge since the last push: no duplicate
+run_test
+v2_reset merge_comment_dup
+merge_comment_repos testuser/testrepo
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"HeadRefForcePushedEvent","createdAt":"2026-10-10T11:00:00Z"},
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:05:00Z","body":" /merge\n","author":{"login":"testuser"}}]}}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"already commented '/merge' since the last push"* ]] &&
+   ! grep -q 'mock-gh pr comment' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo does not post a duplicate /merge"
+else
+  fail "pr merge comment dup: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: comment-merge repo with /merge only before the last push re-requests
+run_test
+v2_reset merge_comment_stale
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T10:30:00Z","body":"/merge","author":{"login":"testuser"}},
+  {"__typename":"HeadRefForcePushedEvent","createdAt":"2026-10-10T11:00:00Z"}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/42 --body /merge' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo re-requests when /merge predates the last push"
+else
+  fail "pr merge comment stale: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: comment-merge repo ignores someone else's /merge
+run_test
+v2_reset merge_comment_other
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:30:00Z","body":"/merge","author":{"login":"someoneelse"}}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q 'mock-gh pr comment' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo ignores another user's /merge"
+else
+  fail "pr merge comment other: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+merge_comment_repos
+
+# Test: a /merge comment in a gh-merge repo does not count as requested
+run_test
+v2_reset merge_gh_ignores_comment
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:30:00Z","body":"/merge","author":{"login":"testuser"}}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "pr merge: gh-merge repo merges with gh even after a /merge comment"
+else
+  fail "pr merge gh ignores comment: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: open PR, nothing requested: prompts, merges, waits, drops cookie
+run_test
+v2_reset merge_open
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   grep -qx 'strategy=merge' "$tmpdir/repo/x.merged" &&
+   grep -qx 'merge_commit=def456' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: open PR merges, waits, and drops the cookie"
+else
+  fail "pr merge open: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state x.merged
+
+# Test: declining the prompt exits non-zero without merging
+run_test
+v2_reset merge_decline
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo n | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   [[ ! -e $tmpdir/repo/x.merged ]]
+then
+  pass "pr merge: declining the prompt exits non-zero without merging"
+else
+  fail "pr merge decline: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a closed PR fails without merging
+run_test
+v2_reset merge_closed
+write_merge_handler "$(merge_graphql CLOSED)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"closed without merging"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "pr merge: closed PR fails without merging"
+else
+  fail "pr merge closed: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm_state pr.md.url x.merged
+unset MOCK_GH_HANDLER
+
+# --- state migration tests ---
+
+write_edit_handler() {
+  local remote=${MOCK_REMOTE_DESC:-$MOCK_GH_HANDLER.remote}
+  if [[ ! -e $remote ]]
+  then
+    echo '{"title":"","body":""}' > "$remote"
+  fi
+  cat > "$MOCK_GH_HANDLER" <<'HANDLER'
+mock_remote=${MOCK_REMOTE_DESC:-$MOCK_GH_HANDLER.remote}
+case "$1 $2" in
+  'pr view'|'issue view')
+    respond < "$mock_remote"
+    ;;
+  'pr edit'|'issue edit')
+    mock_title=
+    mock_body=
+    mock_prev=
+    for mock_arg in "$@"
+    do
+      case $mock_prev in
+        --title) mock_title=$mock_arg ;;
+        --body-file) mock_body=$(< "$mock_arg") ;;
+      esac
+      mock_prev=$mock_arg
+    done
+    jq -n --arg title "$mock_title" --arg body "$mock_body" '{title: $title, body: $body}' > "$mock_remote"
+    echo "mock-$1-edit"
+    ;;
+  'pr list')
+    if [[ -n ${MOCK_EXISTING_PR-} ]]
+    then
+      jq -n --arg url "$MOCK_EXISTING_PR" '[{url: $url}]' | respond
+    else
+      echo '[]' | respond
+    fi
+    ;;
+  'repo view')
+    echo '{"defaultBranchRef":{"name":"main"}}' | respond
+    ;;
+  'pr create')
+    printf '%s\n' "$*" >> "$MOCK_GH_HANDLER.created"
+    echo 'https://github.com/testuser/testrepo/pull/50'
+    ;;
+  'pr ready')
+    jq '.isDraft = false' "$mock_remote" > "$mock_remote.new" && mv "$mock_remote.new" "$mock_remote"
+    ;;
+  'pr checks')
+    echo '[]'
+    ;;
+  'pr diff')
+    if [[ -r ${MOCK_PR_DIFF_FILE-} ]]
+    then
+      cat "$MOCK_PR_DIFF_FILE"
+    fi
+    ;;
+  'pr comment')
+    echo 'https://github.com/testuser/testrepo/pull/50#issuecomment-7'
+    ;;
+esac
+HANDLER
+}
+
+# Test: root pr.md, pr.md.url and x.merged move into .timvisher_gh/ with compat links
+run_test
+v2_reset migrate_root
+export MOCK_REMOTE_DESC="$tmpdir/remote_migrate.json"
+rm -f "$MOCK_REMOTE_DESC"
+write_edit_handler
+rm -rf "$tmpdir/repo/.timvisher_gh"
+printf 'Title\n\nBody\n' > "$tmpdir/repo/pr.md"
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+printf 'merged_at=old\n' > "$tmpdir/repo/x.merged"
+touch -t 202601010000 "$tmpdir/repo/x.merged"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+st="$tmpdir/repo/.timvisher_gh/pr"
+if (( rc == 0 )) &&
+   [[ $(< "$st/pr.md") == $'Title\n\nBody' ]] &&
+   [[ $(jq -r .url "$st/pr.json") == https://github.com/testuser/testrepo/pull/42 ]] &&
+   [[ $(< "$st/pr.url") == https://github.com/testuser/testrepo/pull/42 ]] &&
+   [[ $(< "$st/merged") == 'merged_at=old' ]] &&
+   [[ $(gdate -r "$st/merged" +%Y) == 2026 && $(gdate -r "$st/merged" +%m%d) == 0101 ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md") == .timvisher_gh/pr/pr.md ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md.url") == .timvisher_gh/pr/pr.url ]] &&
+   [[ $(readlink "$tmpdir/repo/x.merged") == .timvisher_gh/pr/merged ]] &&
+   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "state: root pr.md, pr.md.url, x.merged migrate with compat symlinks"
+else
+  fail "state migrate: rc=${rc} tree=$(ls -la "$tmpdir/repo" "$st" 2>&1) got '${result: -400}'"
+fi
+
+# Test: migration is idempotent
+run_test
+v2_reset migrate_rerun
+write_edit_handler
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result != *Moved* ]] &&
+   [[ -L $tmpdir/repo/pr.md && -L $tmpdir/repo/pr.md.url && -L $tmpdir/repo/x.merged ]] &&
+   [[ $(< "$tmpdir/repo/pr.md.url") == https://github.com/testuser/testrepo/pull/42 ]]
+then
+  pass "state: rerunning the migration changes nothing"
+else
+  fail "state migrate rerun: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: a rename-save that replaced the pr.md symlink with a file migrates again
+run_test
+v2_reset migrate_rename_save
+write_edit_handler
+rm -f "$tmpdir/repo/pr.md"
+printf 'New title\n\nNew body\n' > "$tmpdir/repo/pr.md"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ -L $tmpdir/repo/pr.md ]] &&
+   [[ $(< "$st/pr.md") == $'New title\n\nNew body' ]] &&
+   grep -q 'mock-gh pr edit .* --title New title' "$MOCK_LOG"
+then
+  pass "state: regular root pr.md after a rename-save migrates again"
+else
+  fail "state rename-save: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a URL written through the pr.md.url compat link is adopted into pr.json
+run_test
+v2_reset migrate_url_drift
+write_edit_handler
+echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r .url "$st/pr.json") == https://github.com/testuser/testrepo/pull/77 ]] &&
+   [[ $result == *"adopting GitHub's as the baseline"* ]] &&
+   grep -q 'mock-gh pr view https://github.com/testuser/testrepo/pull/77' "$MOCK_LOG"
+then
+  pass "state: URL rewritten through pr.md.url is adopted, dropping the old lease"
+else
+  fail "state url drift: rc=${rc} json=$(cat "$st/pr.json") got '${result: -400}'"
+fi
+
+# Test: re-migrating a root pr.md.url with the same URL keeps the posted lease
+run_test
+v2_reset migrate_same_url
+write_edit_handler
+rm -f "$tmpdir/repo/pr.md.url"
+echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result != *"adopting GitHub's as the baseline"* ]] &&
+   [[ $result == *"description already current"* ]] &&
+   [[ $(jq -r .posted.title "$st/pr.json") == 'New title' ]] &&
+   [[ -L $tmpdir/repo/pr.md.url ]]
+then
+  pass "state: same-URL root pr.md.url re-migrates without dropping the lease"
+else
+  fail "state same url: rc=${rc} json=$(cat "$st/pr.json") got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+unset MOCK_REMOTE_DESC
+
+# Test: root issue.md and issue.md.url move into .timvisher_gh/issue/
+run_test
+v2_reset migrate_issue
+write_edit_handler
+printf 'Issue title\n\nIssue body\n' > "$tmpdir/repo/issue.md"
+echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
+result=$(run_v2 issue edit 2>&1) && rc=0 || rc=$?
+issue_st="$tmpdir/repo/.timvisher_gh/issue"
+if (( rc == 0 )) &&
+   [[ ! -e $tmpdir/repo/issue.md && ! -e $tmpdir/repo/issue.md.url ]] &&
+   [[ $(< "$issue_st/issue.md") == $'Issue title\n\nIssue body' ]] &&
+   [[ $(jq -r .url "$issue_st/issue.json") == https://github.com/testuser/testrepo/issues/42 ]] &&
+   [[ $(< "$issue_st/issue.url") == https://github.com/testuser/testrepo/issues/42 ]] &&
+   grep -q 'mock-gh issue edit https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
+then
+  pass "state: root issue.md and issue.md.url migrate into .timvisher_gh/issue/"
+else
+  fail "state issue migrate: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+
+# Test: info does not create a state directory
+run_test
+v2_reset info_no_state
+cat > "$MOCK_GH_HANDLER" <<'HANDLER'
+[[ "$1 $2" == 'api user' ]] && echo testuser
+HANDLER
+result=$(run_v2 info .me 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ ! -e $tmpdir/repo/.timvisher_gh ]]
+then
+  pass "state: info leaves no .timvisher_gh behind"
+else
+  fail "state info: rc=${rc} got '${result: -400}'"
+fi
+unset MOCK_GH_HANDLER
+
+# --- pr push tests ---
+
+fixture_branch=$("$real_git" -C "$tmpdir/repo" symbolic-ref --short HEAD)
+fixture_head=$("$real_git" -C "$tmpdir/repo" rev-parse HEAD)
+push_st="$tmpdir/repo/.timvisher_gh/pr"
+export MOCK_REMOTE_DESC="$tmpdir/remote_push.json"
+rm -f "$MOCK_REMOTE_DESC"
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+
+# Test: pr push with no PR pushes the branch and creates a draft PR
+run_test
+v2_reset push_create
+write_edit_handler
+printf 'Push title\n\nPush body\n' > "$tmpdir/repo/pr.md"
+result=$(run_v2 pr push 2>"$tmpdir/push_create.err") && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   grep -q "mock-git-push push -v origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG" &&
+   grep -q -- '--draft --base main --title Push title' "$MOCK_GH_HANDLER.created" &&
+   [[ $(jq -r .url "$push_st/pr.json") == https://github.com/testuser/testrepo/pull/50 ]] &&
+   [[ $(jq -r .posted.title "$push_st/pr.json") == 'Push title' ]] &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body' ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md.url") == .timvisher_gh/pr/pr.url ]] &&
+   ! grep -q mock-open "$MOCK_LOG"
+then
+  pass "pr push: pushes, creates a draft PR, records url + posted lease"
+else
+  fail "pr push create: rc=${rc} log=$(cat "$MOCK_LOG") err=$(tail -5 "$tmpdir/push_create.err") got '${result}'"
+fi
+jq -n '{title: "Push title", body: "Push body"}' > "$MOCK_REMOTE_DESC"
+
+# Test: rerunning pr push converges with nothing to do
+run_test
+v2_reset push_rerun
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Branch already pushed"* ]] &&
+   [[ $result == *"description already current"* ]] &&
+   ! grep -q mock-git-push "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr create' "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG"
+then
+  pass "pr push: bare pr rerun reports already pushed / already current"
+else
+  fail "pr push rerun: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a local pr.md change is pushed under the lease
+run_test
+v2_reset push_edit
+write_edit_handler
+printf 'Push title v2\n\nPush body v2\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/50 --repo testuser/testrepo --title Push title v2' "$MOCK_LOG" &&
+   [[ $(jq -r .title "$MOCK_REMOTE_DESC") == 'Push title v2' ]] &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body v2' ]]
+then
+  pass "pr push: edits the description when only pr.md changed"
+else
+  fail "pr push edit: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a description edited on GitHub since the last push is not overwritten
+run_test
+v2_reset push_lease_refuse
+write_edit_handler
+jq -n '{title: "Push title v2", body: "Edited on GitHub"}' > "$MOCK_REMOTE_DESC"
+printf 'Push title v3\n\nPush body v3\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"changed since timvisher_gh last pushed it"* ]] &&
+   [[ $result == *"+Edited on GitHub"* ]] &&
+   [[ $result == *"-Push body v2"* ]] &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG" &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body v2' ]]
+then
+  pass "pr push: refuses and shows a diff when GitHub's description moved"
+else
+  fail "pr push lease refuse: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -600}'"
+fi
+
+# Test: folding GitHub's edits into pr.md makes it the new baseline
+run_test
+v2_reset push_lease_reconcile
+write_edit_handler
+printf 'Push title v2\n\nEdited on GitHub\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"description already current"* ]] &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG" &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Edited on GitHub' ]]
+then
+  pass "pr push: a pr.md matching GitHub becomes the new lease baseline"
+else
+  fail "pr push lease reconcile: rc=${rc} json=$(cat "$push_st/pr.json") got '${result: -400}'"
+fi
+
+# Test: --force-with-lease passes through with --force-if-includes
+run_test
+v2_reset push_force
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push --force-with-lease 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-git-push push -v --force-with-lease --force-if-includes origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG"
+then
+  pass "pr push: --force-with-lease adds --force-if-includes"
+else
+  fail "pr push force: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: --force-with-lease=<sha> leases the branch against that sha
+run_test
+v2_reset push_force_sha
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=1111111111111111111111111111111111111111 run_v2 pr push --force-with-lease=1111111 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-git-push push -v --force-with-lease=refs/heads/${fixture_branch}:1111111 --force-if-includes origin" "$MOCK_LOG"
+then
+  pass "pr push: --force-with-lease=<sha> expands to the branch ref"
+else
+  fail "pr push force sha: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a failed git push stops before touching the PR
+run_test
+v2_reset push_fail
+write_edit_handler
+result=$(MOCK_GIT_PUSH_FAIL=1 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"rerun with --force-with-lease"* ]] &&
+   ! grep -q 'mock-gh pr' "$MOCK_LOG"
+then
+  pass "pr push: a failed git push stops before the PR steps"
+else
+  fail "pr push fail: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: --open opens the PR
+run_test
+v2_reset push_open
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push --open 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q 'mock-open https://github.com/testuser/testrepo/pull/50' "$MOCK_LOG"
+then
+  pass "pr push: --open opens the PR"
+else
+  fail "pr push open: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: an unknown option is an error
+run_test
+v2_reset push_bad_opt
+write_edit_handler
+result=$(run_v2 pr push --bogus 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ $result == *"unknown argument '--bogus'"* ]] && ! grep -q mock-git-push "$MOCK_LOG"
+then
+  pass "pr push: unknown option is an error"
+else
+  fail "pr push bad opt: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: with no recorded URL, an open PR for the branch is adopted, not duplicated
+run_test
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+printf 'Push title v2\n\nEdited on GitHub\n' > "$tmpdir/repo/pr.md"
+v2_reset push_adopt
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head MOCK_EXISTING_PR=https://github.com/testuser/testrepo/pull/61 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"adopting it"* ]] &&
+   ! grep -q 'mock-gh pr create' "$MOCK_LOG" &&
+   [[ $(jq -r .url "$push_st/pr.json") == https://github.com/testuser/testrepo/pull/61 ]] &&
+   [[ $result == *"description already current"* ]]
+then
+  pass "pr push: adopts an existing open PR for the branch"
+else
+  fail "pr push adopt: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a detached HEAD is refused
+run_test
+v2_reset push_detached
+write_edit_handler
+"$real_git" -C "$tmpdir/repo" checkout -q --detach
+result=$(run_v2 pr push 2>&1) && rc=0 || rc=$?
+"$real_git" -C "$tmpdir/repo" checkout -q "$fixture_branch"
+if (( rc != 0 )) && [[ $result == *"HEAD is detached"* ]] && ! grep -q mock-git-push "$MOCK_LOG"
+then
+  pass "pr push: refuses a detached HEAD"
+else
+  fail "pr push detached: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
+
+# --- hook tests ---
+
+core_root="$v2_home/core"
+ext_root="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config"
+hook_log="$tmpdir/hook.log"
+export MOCK_REMOTE_DESC="$tmpdir/remote_hooks.json"
+
+make_hook() {
+  local path=$1 rc=${2:-0}
+  mkdir -p "${path%/*}"
+  cat > "$path" <<HOOK
+#!/usr/bin/env bash
+printf '%s phase=%s hook=%s url=%s head=%s scope=%s open=%s merge=%s title=%s\\n' \\
+  "\${0#$v2_home/}" "\$TIMVISHER_GH_PHASE" "\$TIMVISHER_GH_HOOK" "\$TIMVISHER_GH_PR_URL" \\
+  "\$TIMVISHER_GH_HEAD_SHA" "\$TIMVISHER_GH_PATH_SCOPE" "\$TIMVISHER_GH_OPEN" \\
+  "\$TIMVISHER_GH_MERGE_COMMIT" "\$TIMVISHER_GH_NOTIFY_TITLE" >> '$hook_log'
+echo hook-stdout
+exit $rc
+HOOK
+  chmod +x "$path"
+}
+
+reset_hooks() {
+  rm -rf "$core_root" "$ext_root" "$hook_log"
+  : > "$hook_log"
+}
+
+hooks_fixture() {
+  rm -rf "$tmpdir/repo/.timvisher_gh"
+  rm_state pr.md pr.md.url x.merged
+  mkdir -p "$push_st"
+  printf 'Hook title\n\nHook body\n' > "$push_st/pr.md"
+  jq -n '{url: "https://github.com/testuser/testrepo/pull/50", posted: {title: "Hook title", body: "Hook body"}}' > "$push_st/pr.json"
+  jq -n '{title: "Hook title", body: "Hook body", isDraft: true}' > "$MOCK_REMOTE_DESC"
+}
+
+# Test: push pre- and post-hooks from both roots and both scopes run in order
+run_test
+reset_hooks
+hooks_fixture
+v2_reset hooks_push
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/10-core-org"
+make_hook "$ext_root/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo"
+make_hook "$core_root/repos/testuser/testrepo/pr/push/post.d/20-core-repo"
+make_hook "$ext_root/orgs/testuser/pr/push/post.d/10-ext-org"
+printf 'not a hook\n' > "$ext_root/orgs/testuser/pr/push/post.d/README"
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>"$tmpdir/hooks_push.err") && rc=0 || rc=$?
+expected_order='core/orgs/testuser/pr/push/pre.d/10-core-org
+.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo
+core/repos/testuser/testrepo/pr/push/post.d/20-core-repo
+.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/testuser/pr/push/post.d/10-ext-org'
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   [[ $(cut -d' ' -f1 "$hook_log") == "$expected_order" ]] &&
+   grep -q "post.d/10-ext-org phase=push hook=post url=https://github.com/testuser/testrepo/pull/50 head=${fixture_head} scope= open=false merge= title=testuser/testrepo#50: Hook title" "$hook_log" &&
+   grep -q hook-stdout "$tmpdir/hooks_push.err"
+then
+  pass "hooks: push pre/post hooks run from both roots and scopes, stdout kept off stdout"
+else
+  fail "hooks push: rc=${rc} result='${result}' hooks=$(cat "$hook_log") err=$(tail -5 "$tmpdir/hooks_push.err")"
+fi
+
+# Test: push pre-hooks are skipped when the branch is already pushed; post-hooks still run
+run_test
+: > "$hook_log"
+v2_reset hooks_push_already
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push --open 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   ! grep -q 'pre.d' "$hook_log" &&
+   grep -q 'post.d/20-core-repo .* open=true' "$hook_log" &&
+   grep -q 'post.d/10-ext-org' "$hook_log"
+then
+  pass "hooks: push pre-hooks skipped when already pushed, post-hooks always run"
+else
+  fail "hooks push already: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing push pre-hook stops before git push
+run_test
+reset_hooks
+v2_reset hooks_push_pre_fail
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/10-gate" 1
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/20-after"
+make_hook "$core_root/orgs/testuser/pr/push/post.d/10-post"
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"push pre-hook failed; not proceeding"* ]] &&
+   ! grep -q mock-git-push "$MOCK_LOG" &&
+   ! grep -q '20-after\|10-post' "$hook_log"
+then
+  pass "hooks: failing pre-hook gates the push"
+else
+  fail "hooks pre fail: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing post-hook still lets the others run, then exits non-zero
+run_test
+reset_hooks
+v2_reset hooks_push_post_fail
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/post.d/10-broken" 1
+make_hook "$core_root/orgs/testuser/pr/push/post.d/20-fine"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>"$tmpdir/hooks_post_fail.err") && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   grep -q '20-fine' "$hook_log" &&
+   grep -q 'post-hook(s) failed' "$tmpdir/hooks_post_fail.err"
+then
+  pass "hooks: failing post-hook runs the rest and exits non-zero"
+else
+  fail "hooks post fail: rc=${rc} hooks=$(cat "$hook_log") err=$(tail -3 "$tmpdir/hooks_post_fail.err")"
+fi
+
+# Test: path-scoped hooks fire only when the PR diff touches the directory
+run_test
+reset_hooks
+v2_reset hooks_paths
+write_edit_handler
+make_hook "$ext_root/repos/testuser/testrepo/paths/apps/cfctl/pr/push/post.d/10-cfctl"
+make_hook "$ext_root/repos/testuser/testrepo/paths/apps/other/pr/push/post.d/10-other"
+export MOCK_PR_DIFF_FILE="$tmpdir/pr_diff.txt"
+printf 'apps/cfctl/main.go\nREADME.md\n' > "$MOCK_PR_DIFF_FILE"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q '10-cfctl .* scope=apps/cfctl ' "$hook_log" &&
+   ! grep -q '10-other' "$hook_log"
+then
+  pass "hooks: path scope fires only for directories the PR touches"
+else
+  fail "hooks paths: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+unset MOCK_PR_DIFF_FILE
+
+# Test: ready on a draft runs pre-hooks, marks it ready, runs post-hooks
+run_test
+reset_hooks
+v2_reset hooks_ready
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/ready/pre.d/10-gate"
+make_hook "$core_root/orgs/testuser/pr/ready/post.d/10-after"
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr ready' "$MOCK_LOG" &&
+   [[ $(cut -d' ' -f1 "$hook_log") == $'core/orgs/testuser/pr/ready/pre.d/10-gate\ncore/orgs/testuser/pr/ready/post.d/10-after' ]]
+then
+  pass "hooks: ready runs pre-hooks then gh pr ready then post-hooks"
+else
+  fail "hooks ready: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: ready on an already-ready PR skips the gate and the checks, runs post-hooks
+run_test
+: > "$hook_log"
+v2_reset hooks_ready_already
+write_edit_handler
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"PR already ready for review"* ]] &&
+   ! grep -q 'mock-gh pr ready\|mock-gh pr checks' "$MOCK_LOG" &&
+   [[ $(cut -d' ' -f1 "$hook_log") == 'core/orgs/testuser/pr/ready/post.d/10-after' ]]
+then
+  pass "hooks: already-ready PR skips pre-hooks and checks, runs post-hooks"
+else
+  fail "hooks ready already: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing ready pre-hook keeps the PR a draft
+run_test
+reset_hooks
+jq '.isDraft = true' "$MOCK_REMOTE_DESC" > "$MOCK_REMOTE_DESC.new" && mv "$MOCK_REMOTE_DESC.new" "$MOCK_REMOTE_DESC"
+v2_reset hooks_ready_gate
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/ready/pre.d/10-gate" 1
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && ! grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "hooks: failing ready pre-hook keeps the PR a draft"
+else
+  fail "hooks ready gate: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: merge pre-hooks run before a merge request, not when already merged
+run_test
+reset_hooks
+v2_reset hooks_merge_pre
+make_hook "$core_root/orgs/testuser/pr/merge/pre.d/10-gate"
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+first_rc=$rc
+first_hooks=$(cat "$hook_log")
+: > "$hook_log"
+rm_state x.merged
+v2_reset hooks_merge_pre_already
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( first_rc == 0 && rc == 0 )) &&
+   [[ $first_hooks == *"merge/pre.d/10-gate phase=merge hook=pre"* ]] &&
+   [[ ! -s $hook_log ]]
+then
+  pass "hooks: merge pre-hooks gate a request and are skipped once merged"
+else
+  fail "hooks merge pre: rc=${first_rc}/${rc} first=${first_hooks} second=$(cat "$hook_log")"
+fi
+
+# Test: a failing merge pre-hook stops before any merge request
+run_test
+reset_hooks
+v2_reset hooks_merge_gate
+make_hook "$core_root/orgs/testuser/pr/merge/pre.d/10-gate" 1
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "hooks: failing merge pre-hook blocks the merge request"
+else
+  fail "hooks merge gate: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+reset_hooks
+
+# Test: comment <name> falls back to canned comments in either config root
+run_test
+v2_reset canned_comment
+write_edit_handler
+mkdir -p "$ext_root/comments"
+printf '@arp review\n' > "$ext_root/comments/arp-review.md"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-gh pr comment https://github.com/testuser/testrepo/pull/50 --body-file $ext_root/comments/arp-review.md" "$MOCK_LOG" &&
+   [[ ! -e $tmpdir/repo/arp-review.url && ! -e $tmpdir/repo/arp-review.md.url ]]
+then
+  pass "canned: comment <name> posts timvisher_gh.config/comments/<name>.md"
+else
+  fail "canned: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: the core root's canned comment wins over the extension root's
+run_test
+v2_reset canned_core_first
+write_edit_handler
+mkdir -p "$core_root/comments"
+printf 'core\n' > "$core_root/comments/arp-review.md"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q -- "--body-file $core_root/comments/arp-review.md" "$MOCK_LOG"
+then
+  pass "canned: core root is searched before the extension root"
+else
+  fail "canned core first: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+
+# Test: a readable file wins over a canned comment of the same name
+run_test
+v2_reset canned_file_wins
+write_edit_handler
+printf 'from file\n' > "$tmpdir/repo/arp-review"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q -- '--body-file arp-review' "$MOCK_LOG"
+then
+  pass "canned: a readable file of the same name is posted instead"
+else
+  fail "canned file wins: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/arp-review" "$tmpdir/repo/arp-review.url"
+reset_hooks
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
+
+# --- pr pull tests ---
+
+conv_dir="$tmpdir/conv"
+mkdir -p "$conv_dir"
+pull_comments="$tmpdir/repo/.timvisher_gh/pr/comments"
+
+write_conv_handler() {
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$1 \$2" in
+  'api user')
+    echo testuser
+    ;;
+  'api graphql')
+    case "\$*" in
+      *'reviewThreads(first'*) mock_conn=reviewThreads ;;
+      *'reviews(first'*) mock_conn=reviews ;;
+      *'comments(first'*) mock_conn=comments ;;
+    esac
+    jq --arg c "\$mock_conn" '{data: {repository: {pullRequest: {(\$c): {nodes: .}}}}}' "$conv_dir/\$mock_conn.json" | respond
+    ;;
+esac
+HANDLER
+}
+
+write_conv() {
+  local alice_body=${1:-Looks good} my_body=${2:-my note}
+  jq -n --arg alice "$alice_body" --arg mine "$my_body" '[
+    {id: "IC_1", databaseId: 11, url: "https://github.com/testuser/testrepo/pull/50#issuecomment-11",
+     body: $alice, createdAt: "2026-10-10T10:00:00Z", author: {login: "alice"},
+     reactionGroups: [{content: "THUMBS_UP", viewerHasReacted: true}, {content: "EYES", viewerHasReacted: false}]},
+    {id: "IC_2", databaseId: 12, url: "https://github.com/testuser/testrepo/pull/50#issuecomment-12",
+     body: $mine, createdAt: "2026-10-10T10:03:00Z", author: {login: "testuser"}, reactionGroups: []}
+  ]' > "$conv_dir/comments.json"
+  jq -n '[
+    {id: "PRR_1", databaseId: 21, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-21",
+     body: "", state: "COMMENTED", createdAt: "2026-10-10T10:01:00Z", submittedAt: "2026-10-10T10:01:00Z",
+     author: {login: "dd-agentic-review-platform-14301c"}, reactionGroups: []},
+    {id: "PRR_2", databaseId: 22, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-22",
+     body: "Please fix", state: "CHANGES_REQUESTED", createdAt: "2026-10-10T10:04:00Z", submittedAt: "2026-10-10T10:05:00Z",
+     author: {login: "bob"}, reactionGroups: []},
+    {id: "PRR_3", databaseId: 23, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-23",
+     body: "draft", state: "PENDING", createdAt: "2026-10-10T10:06:00Z", submittedAt: null,
+     author: {login: "testuser"}, reactionGroups: []}
+  ]' > "$conv_dir/reviews.json"
+  jq -n '[
+    {id: "PRRT_1", isResolved: false, isOutdated: false, path: "bash/bin/timvisher_gh",
+     line: 42, startLine: null, originalLine: 40, diffSide: "RIGHT",
+     comments: {nodes: [
+       {id: "PRRC_1", databaseId: 31, url: "https://github.com/testuser/testrepo/pull/50#discussion_r31",
+        body: "Nit here", createdAt: "2026-10-10T10:01:00Z",
+        author: {login: "dd-agentic-review-platform-14301c"},
+        pullRequestReview: {id: "PRR_1", databaseId: 21, state: "COMMENTED",
+                            author: {login: "dd-agentic-review-platform-14301c"}},
+        reactionGroups: []},
+       {id: "PRRC_2", databaseId: 32, url: "https://github.com/testuser/testrepo/pull/50#discussion_r32",
+        body: "Fixed", createdAt: "2026-10-10T10:02:00Z", author: {login: "testuser"},
+        pullRequestReview: {id: "PRR_9", databaseId: 29, state: "COMMENTED", author: {login: "testuser"}},
+        reactionGroups: [{content: "HEART", viewerHasReacted: true}]}
+     ]}}
+  ]' > "$conv_dir/reviewThreads.json"
+}
+
+pull_fixture() {
+  rm -rf "$tmpdir/repo/.timvisher_gh"
+  rm_state pr.md pr.md.url x.merged
+  mkdir -p "$push_st"
+  jq -n '{url: "https://github.com/testuser/testrepo/pull/50"}' > "$push_st/pr.json"
+}
+
+tree_digest() {
+  (cd "$pull_comments" && find . -type f | LC_ALL=C sort | xargs shasum)
+}
+
+alice_dir="$pull_comments/2026-10-10T10-00-00+0000-alice"
+mine_dir="$pull_comments/2026-10-10T10-03-00+0000-testuser"
+thread_dir="$pull_comments/2026-10-10T10-01-00+0000-bash-bin-timvisher-gh-L42-thread"
+reply_dir="$thread_dir/2026-10-10T10-02-00+0000-testuser"
+
+# Test: pr pull mirrors issue comments, reviews with bodies, and threads
+run_test
+pull_fixture
+write_conv
+v2_reset pull_first
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good' ]] &&
+   [[ $(jq -r '.kind + " " + .author + " " + .id + " " + (.posted.reactions | join(","))' "$alice_dir/comment.json") == 'issue_comment alice IC_1 +1' ]] &&
+   [[ $(< "$pull_comments/2026-10-10T10-05-00+0000-bob-review/comment.md") == 'Please fix' ]] &&
+   [[ $(jq -r '.kind + " " + .state' "$pull_comments/2026-10-10T10-05-00+0000-bob-review/comment.json") == 'review CHANGES_REQUESTED' ]] &&
+   [[ $(< "$thread_dir/thread.md") == 'Nit here' ]] &&
+   [[ $(jq -r '[.kind, .thread_id, .path, (.line | tostring), .review.author, (.posted.resolved | tostring)] | join(" ")' "$thread_dir/thread.json") == 'thread PRRT_1 bash/bin/timvisher_gh 42 dd-agentic-review-platform-14301c false' ]] &&
+   [[ $(< "$reply_dir/comment.md") == 'Fixed' ]] &&
+   [[ $(jq -r '.kind + " " + (.posted.reactions | join(","))' "$reply_dir/comment.json") == 'review_comment heart' ]] &&
+   [[ $(find "$pull_comments" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') == 4 ]] &&
+   [[ $result == *"5 new, 0 updated, 0 unchanged"* ]]
+then
+  pass "pr pull: mirrors comments, non-empty reviews, threads and replies"
+else
+  fail "pr pull first: rc=${rc} tree=$(cd "$pull_comments" 2>/dev/null && find . | sort) got '${result: -600}'"
+fi
+
+# Test: rerunning pr pull changes nothing
+run_test
+before=$(tree_digest)
+v2_reset pull_rerun
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $(tree_digest) == "$before" ]] && [[ $result == *"0 new, 0 updated, 5 unchanged"* ]]
+then
+  pass "pr pull: rerun is a no-op"
+else
+  fail "pr pull rerun: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: intent keys survive a pull
+run_test
+jq '.reactions = ["heart"]' "$alice_dir/comment.json" > "$alice_dir/c.new" && mv "$alice_dir/c.new" "$alice_dir/comment.json"
+jq '.resolved = true' "$thread_dir/thread.json" > "$thread_dir/t.new" && mv "$thread_dir/t.new" "$thread_dir/thread.json"
+mkdir -p "$thread_dir/2026-10-10T11-00-00+0000-reply"
+printf 'Unposted reply\n' > "$thread_dir/2026-10-10T11-00-00+0000-reply/comment.md"
+v2_reset pull_intent
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.reactions | join(",")' "$alice_dir/comment.json") == heart ]] &&
+   [[ $(jq -r .resolved "$thread_dir/thread.json") == true ]] &&
+   [[ $(< "$thread_dir/2026-10-10T11-00-00+0000-reply/comment.md") == 'Unposted reply' ]] &&
+   [[ ! -e $thread_dir/2026-10-10T11-00-00+0000-reply/comment.json ]]
+then
+  pass "pr pull: preserves reactions/resolved intent and unposted drafts"
+else
+  fail "pr pull intent: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: remote edits flow down; an unpushed edit of my own comment is kept
+run_test
+printf 'my note, edited locally\n' > "$mine_dir/comment.md"
+write_conv 'Looks good, edited' 'my note, edited on GitHub'
+v2_reset pull_edits
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good, edited' ]] &&
+   [[ $(jq -r .posted.body "$alice_dir/comment.json") == 'Looks good, edited' ]] &&
+   [[ $(< "$mine_dir/comment.md") == 'my note, edited locally' ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note' ]] &&
+   [[ $result == *"Kept your unpushed edit"* ]]
+then
+  pass "pr pull: remote edits flow down, my unpushed edits and their lease are kept"
+else
+  fail "pr pull edits: rc=${rc} got '${result: -600}'"
+fi
+
+# Test: local changes to someone else's comment are discarded
+run_test
+printf 'tampered\n' > "$alice_dir/comment.md"
+v2_reset pull_readonly
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good, edited' ]] &&
+   [[ $result == *"read-only"* ]]
+then
+  pass "pr pull: someone else's comment body is read-only"
+else
+  fail "pr pull readonly: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
+# --- pr push conversation tests ---
+
+write_push_conv_handler() {
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$*" in
+  'api user'*)
+    echo testuser
+    ;;
+  *addReaction*|*resolveReviewThread*)
+    echo '{"data":{}}'
+    ;;
+  'api graphql'*)
+    case "\$*" in
+      *'reviewThreads(first'*) mock_conn=reviewThreads ;;
+      *'reviews(first'*) mock_conn=reviews ;;
+      *'comments(first'*) mock_conn=comments ;;
+    esac
+    jq --arg c "\$mock_conn" '{data: {repository: {pullRequest: {(\$c): {nodes: .}}}}}' "$conv_dir/\$mock_conn.json" | respond
+    ;;
+  'api --method POST repos/testuser/testrepo/issues/50/comments'*)
+    echo '{"id":101,"node_id":"IC_new","html_url":"https://github.com/testuser/testrepo/pull/50#issuecomment-101","created_at":"2026-10-10T12:00:00Z"}'
+    ;;
+  'api --method POST repos/testuser/testrepo/pulls/50/comments'*)
+    echo '{"id":102,"node_id":"PRRC_new","html_url":"https://github.com/testuser/testrepo/pull/50#discussion_r102","created_at":"2026-10-10T12:01:00Z"}'
+    ;;
+  'api --method PATCH '*|'api --method PUT '*)
+    mock_id=\${4##*/}
+    for mock_arg in "\$@"
+    do
+      if [[ \$mock_arg == body=* ]]
+      then
+        jq -n --arg b "\${mock_arg#body=}" '{body: \$b}' > "$conv_dir/remote_\$mock_id.json"
+      fi
+    done
+    echo '{}'
+    ;;
+  'api repos/'*)
+    mock_id=\${2##*/}
+    respond < "$conv_dir/remote_\$mock_id.json"
+    ;;
+  'pr view'*)
+    echo '{"title":"","body":""}' | respond
+    ;;
+esac
+HANDLER
+}
+
+# Test: pr push posts new comments and replies, edits, reacts and resolves in filename order
+run_test
+pull_fixture
+write_conv
+v2_reset push_conv_setup
+write_push_conv_handler
+run_v2 pr pull >/dev/null 2>&1
+jq -n '{body: "my note"}' > "$conv_dir/remote_12.json"
+mkdir -p "$pull_comments/2026-10-10T12-00-00+0000-thanks"
+printf 'Thanks all\n' > "$pull_comments/2026-10-10T12-00-00+0000-thanks/comment.md"
+mkdir -p "$thread_dir/2026-10-10T12-01-00+0000-fix"
+printf '@arp fixed in abc\n' > "$thread_dir/2026-10-10T12-01-00+0000-fix/comment.md"
+jq '.reactions = ["👍", "EYES", "❤"]' "$alice_dir/comment.json" > "$alice_dir/c.new" && mv "$alice_dir/c.new" "$alice_dir/comment.json"
+jq '.resolved = true' "$thread_dir/thread.json" > "$thread_dir/t.new" && mv "$thread_dir/t.new" "$thread_dir/thread.json"
+printf 'my note, revised\n' > "$mine_dir/comment.md"
+v2_reset push_conv
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+reply_line=$(grep -n 'POST repos/testuser/testrepo/pulls/50/comments -F in_reply_to=31 -f body=@arp fixed in abc' "$MOCK_LOG" | cut -d: -f1)
+resolve_line=$(grep -n 'resolveReviewThread' "$MOCK_LOG" | cut -d: -f1)
+patch_line=$(grep -n 'PATCH repos/testuser/testrepo/issues/comments/12 -f body=my note, revised' "$MOCK_LOG" | cut -d: -f1)
+post_line=$(grep -n 'POST repos/testuser/testrepo/issues/50/comments -f body=Thanks all' "$MOCK_LOG" | cut -d: -f1)
+if (( rc == 0 )) &&
+   [[ -n $reply_line && -n $resolve_line && -n $patch_line && -n $post_line ]] &&
+   (( reply_line < resolve_line && resolve_line < patch_line && patch_line < post_line )) &&
+   grep -q -- '-f id=PRRT_1$' "$MOCK_LOG" &&
+   [[ $(grep -c addReaction "$MOCK_LOG") == 2 ]] &&
+   grep -q -- '-f id=IC_1 -f content=EYES$' "$MOCK_LOG" &&
+   grep -q -- '-f id=IC_1 -f content=HEART$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$alice_dir/comment.json") == '["+1","eyes","heart"]' ]] &&
+   [[ $(jq -c '.posted.reactions | sort' "$alice_dir/comment.json") == '["+1","eyes","heart"]' ]] &&
+   [[ $(jq -r .posted.resolved "$thread_dir/thread.json") == true ]] &&
+   [[ $(jq -r '.id + " " + .kind + " " + .posted.body' "$thread_dir/2026-10-10T12-01-00+0000-fix/comment.json") == 'PRRC_new review_comment @arp fixed in abc' ]] &&
+   [[ $(jq -r '.id + " " + .url' "$pull_comments/2026-10-10T12-00-00+0000-thanks/comment.json") == 'IC_new https://github.com/testuser/testrepo/pull/50#issuecomment-101' ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note, revised' ]]
+then
+  pass "pr push: posts, replies, edits, reacts and resolves in filename order"
+else
+  fail "pr push conv: rc=${rc} lines=${reply_line}/${resolve_line}/${patch_line}/${post_line} log=$(grep -v 'api graphql -f query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -600}'"
+fi
+
+# Test: rerunning pr push sends nothing more
+run_test
+v2_reset push_conv_rerun
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   ! grep -q -- '--method POST\|--method PATCH\|addReaction\|resolveReviewThread' "$MOCK_LOG" &&
+   [[ $result == *"Conversation converged"* ]]
+then
+  pass "pr push: rerun posts nothing (comments, reactions and resolves already done)"
+else
+  fail "pr push conv rerun: rc=${rc} log=$(cut -c1-160 "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: an edit to my comment is refused when GitHub's copy moved
+run_test
+printf 'my note, third\n' > "$mine_dir/comment.md"
+jq -n '{body: "edited on the web"}' > "$conv_dir/remote_12.json"
+v2_reset push_conv_lease
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   ! grep -q -- '--method PATCH' "$MOCK_LOG" &&
+   [[ $result == *"+edited on the web"* ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note, revised' ]]
+then
+  pass "pr push: refuses to overwrite a comment edited on GitHub"
+else
+  fail "pr push conv lease: rc=${rc} log=$(cut -c1-160 "$MOCK_LOG") got '${result: -400}'"
+fi
+printf 'edited on the web\n' > "$mine_dir/comment.md"
+
+# Test: an unknown reaction is reported and fails the push
+run_test
+jq '.reactions = ["sparkles"]' "$reply_dir/comment.json" > "$reply_dir/c.new" && mv "$reply_dir/c.new" "$reply_dir/comment.json"
+v2_reset push_conv_bad_reaction
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ $result == *"Unknown reaction 'sparkles'"* ]] && ! grep -q addReaction "$MOCK_LOG"
+then
+  pass "pr push: unknown reaction names fail loudly"
+else
+  fail "pr push bad reaction: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
+# --- comment reply / react tests ---
+
+reply_setup() {
+  pull_fixture
+  write_conv
+  v2_reset reply_setup
+  write_push_conv_handler
+  run_v2 pr pull >/dev/null 2>&1
+}
+
+# Test: comment reply drafts into the thread, posts it, and reacts on the parent
+run_test
+reply_setup
+printf 'Done, thanks\n' > "$tmpdir/repo/x.reply.md"
+v2_reset reply_post
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md --reaction 👍 2>"$tmpdir/reply.err") && rc=0 || rc=$?
+new_reply=$(cd "$thread_dir" && find . -mindepth 2 -name comment.json -exec jq -r 'select(.source == "x.reply.md") | input_filename' {} +)
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50#discussion_r102 ]] &&
+   [[ -n $new_reply && $new_reply == ./*-x-reply/comment.json ]] &&
+   [[ $(< "$thread_dir/${new_reply%.json}.md") == 'Done, thanks' ]] &&
+   grep -q 'POST repos/testuser/testrepo/pulls/50/comments -F in_reply_to=31 -f body=Done, thanks' "$MOCK_LOG" &&
+   grep -q -- '-f id=PRRC_1 -f content=THUMBS_UP$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$thread_dir/thread.json") == '["+1"]' ]]
+then
+  pass "comment reply: drafts into the thread dir, posts, reacts on the replied-to comment"
+else
+  fail "comment reply: rc=${rc} new=${new_reply} err=$(tail -5 "$tmpdir/reply.err") log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result}'"
+fi
+
+# Test: rerunning the same reply posts nothing
+run_test
+v2_reset reply_rerun
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md --reaction +1 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Already drafted from 'x.reply.md'"* ]] &&
+   [[ $result == *"#discussion_r102" ]] &&
+   ! grep -q -- '--method POST\|addReaction' "$MOCK_LOG"
+then
+  pass "comment reply: rerun is a no-op"
+else
+  fail "comment reply rerun: rc=${rc} log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -300}'"
+fi
+
+# Test: replying to a reply lands in the same thread, against the thread root
+run_test
+printf 'Another\n' > "$tmpdir/repo/x.reply2.md"
+v2_reset reply_to_reply
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r32' x.reply2.md 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'in_reply_to=31 -f body=Another' "$MOCK_LOG" &&
+   [[ -n $(cd "$thread_dir" && find . -mindepth 2 -name comment.json -exec jq -r 'select(.source == "x.reply2.md") | input_filename' {} +) ]]
+then
+  pass "comment reply: a reply URL resolves to its thread"
+else
+  fail "comment reply to reply: rc=${rc} got '${result: -300}'"
+fi
+
+# Test: comment react adds reactions in any spelling, skipping ones already there
+run_test
+v2_reset react
+write_push_conv_handler
+result=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' --reaction heart --reaction=THUMBS_DOWN --reaction 👍 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(grep -c addReaction "$MOCK_LOG") == 2 ]] &&
+   grep -q -- '-f id=IC_1 -f content=HEART$' "$MOCK_LOG" &&
+   grep -q -- '-f id=IC_1 -f content=THUMBS_DOWN$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$alice_dir/comment.json") == '["+1","-1","heart"]' ]]
+then
+  pass "comment react: normalizes reactions and adds only the missing ones"
+else
+  fail "comment react: rc=${rc} log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -300}'"
+fi
+
+# Test: comment react needs a reaction, and unknown reactions fail before any call
+run_test
+v2_reset react_errors
+write_push_conv_handler
+result1=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' 2>&1) && rc1=0 || rc1=$?
+result2=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' --reaction sparkles 2>&1) && rc2=0 || rc2=$?
+if (( rc1 != 0 && rc2 != 0 )) &&
+   [[ $result1 == *"at least one --reaction"* ]] &&
+   [[ $result2 == *"Unknown reaction 'sparkles'"* ]] &&
+   ! grep -q 'mock-gh api' "$MOCK_LOG"
+then
+  pass "comment react: missing or unknown reactions are errors"
+else
+  fail "comment react errors: rc=${rc1}/${rc2} got '${result1: -200}' '${result2: -200}'"
+fi
+
+# Test: comment reply rejects non-review-comment URLs and other PRs
+run_test
+v2_reset reply_errors
+write_push_conv_handler
+result1=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' x.reply.md 2>&1) && rc1=0 || rc1=$?
+result2=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/99#discussion_r31' x.reply.md 2>&1) && rc2=0 || rc2=$?
+if (( rc1 != 0 && rc2 != 0 )) &&
+   [[ $result1 == *"only #discussion_r<ID> comments take replies"* ]] &&
+   [[ $result2 == *"this worktree's PR is"* ]] &&
+   ! grep -q -- '--method POST' "$MOCK_LOG"
+then
+  pass "comment reply: rejects issue comments and other PRs"
+else
+  fail "comment reply errors: rc=${rc1}/${rc2} got '${result1: -200}' '${result2: -200}'"
+fi
+
+# Test: replying before the conversation is mirrored pulls it first
+run_test
+rm -rf "$pull_comments"
+v2_reset reply_pulls_first
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"pulling the conversation"* ]] &&
+   [[ -f $thread_dir/thread.json ]] &&
+   grep -q 'in_reply_to=31 -f body=Done, thanks' "$MOCK_LOG"
+then
+  pass "comment reply: pulls the conversation when the target is not mirrored"
+else
+  fail "comment reply pull first: rc=${rc} got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.reply.md" "$tmpdir/repo/x.reply2.md"
+
+# Test: pr pull moves root x.*.md + .url pairs into the tree
+run_test
+reply_setup
+printf 'Fixed, revised locally\n' > "$tmpdir/repo/x.arp-reply-1.md"
+echo 'https://github.com/testuser/testrepo/pull/50#discussion_r32' > "$tmpdir/repo/x.arp-reply-1.md.url"
+printf 'unrelated\n' > "$tmpdir/repo/x.notes.md"
+v2_reset migrate_pairs
+write_push_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ ! -e $tmpdir/repo/x.arp-reply-1.md && ! -e $tmpdir/repo/x.arp-reply-1.md.url ]] &&
+   [[ -e $tmpdir/repo/x.notes.md ]] &&
+   [[ $(< "$reply_dir/comment.md") == 'Fixed, revised locally' ]] &&
+   [[ $(jq -r .source "$reply_dir/comment.json") == x.arp-reply-1.md ]] &&
+   [[ $(jq -r .posted.body "$reply_dir/comment.json") == Fixed ]]
+then
+  pass "pr pull: migrates root x.*.md reply pairs into the mirrored tree"
+else
+  fail "pr pull migrate pairs: rc=${rc} got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.notes.md"
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
+# --- pr release tests ---
+
+# Test: release on a merged PR runs the merge post-hooks with the merge commit
+run_test
+reset_hooks
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+mkdir -p "$push_st"
+jq -n '{url: "https://github.com/testuser/testrepo/pull/42"}' > "$push_st/pr.json"
+make_hook "$ext_root/orgs/testuser/pr/merge/post.d/10-watch"
+v2_reset release_merged
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr release --open 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'merge/post.d/10-watch phase=merge hook=post url=https://github.com/testuser/testrepo/pull/42 .* open=true merge=abc123 ' "$hook_log" &&
+   grep -q 'mock-open https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   [[ -f $push_st/merged ]] &&
+   [[ $result == *"Release converged"* ]]
+then
+  pass "pr release: merged PR runs merge post-hooks with the merge commit"
+else
+  fail "pr release merged: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release --no-watch stops after the merge
+run_test
+: > "$hook_log"
+v2_reset release_no_watch
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr release --no-watch 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ ! -s $hook_log ]] && [[ $result == *"not watching the release"* ]] &&
+   ! grep -q mock-open "$MOCK_LOG"
+then
+  pass "pr release: --no-watch skips the merge post-hooks"
+else
+  fail "pr release no-watch: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release of an open PR merges first, then watches
+run_test
+: > "$hook_log"
+rm_state x.merged
+v2_reset release_open_pr
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr release 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   grep -q '10-watch .* merge=def456 ' "$hook_log"
+then
+  pass "pr release: open PR is merged, then post-hooks get the new merge commit"
+else
+  fail "pr release open: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release that declines the merge does not watch
+run_test
+: > "$hook_log"
+rm_state x.merged
+v2_reset release_decline
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo n | run_v2 pr release 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ ! -s $hook_log ]]
+then
+  pass "pr release: declining the merge skips the watch"
+else
+  fail "pr release decline: rc=${rc} hooks=$(cat "$hook_log")"
+fi
+reset_hooks
+
+# Test: a confirmed merge pulls the trunk worktree in the background
+run_test
+git_home=$(cd "$tmpdir" && pwd -P)/githome
+mkdir -p "$git_home/testuser/testrepo"
+"$real_git" -C "$tmpdir" clone -q "$tmpdir/repo" "$git_home/testuser/testrepo/feature"
+"$real_git" -C "$git_home/testuser/testrepo/feature" remote set-url origin https://github.com/testuser/testrepo.git
+"$real_git" init -q "$git_home/testuser/testrepo/main"
+mkdir -p "$git_home/testuser/testrepo/feature/.timvisher_gh/pr"
+jq -n '{url: "https://github.com/testuser/testrepo/pull/42"}' > "$git_home/testuser/testrepo/feature/.timvisher_gh/pr/pr.json"
+v2_reset trunk_pull
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(
+  cd "$git_home/testuser/testrepo/feature" &&
+    HOME="$v2_home" PATH="$v2_path" TIMVISHER_AGENT='' timvisher_logging_log_level=INFO \
+    TIMVISHER_GH_CONFIG_DIR="$ext_root" TIMVISHER_GH_CORE_CONFIG_DIR="$core_root" \
+    TIMVISHER_GIT_HOME="$git_home" \
+    "$script" pr merge 2>&1 </dev/null
+) && rc=0 || rc=$?
+for _ in {1..50}
+do
+  grep -q mock-git-pull "$MOCK_LOG" && break
+  sleep 0.1
+done
+if (( rc == 0 )) &&
+   grep -q "mock-git-pull -C $git_home/testuser/testrepo/main pull --ff-only" "$MOCK_LOG" &&
+   [[ -f $git_home/testuser/testrepo/main/.timvisher_gh/trunk-pull.log ]]
+then
+  pass "pr merge: pulls the trunk worktree in the background after the merge"
+else
+  fail "trunk pull: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -rf "$git_home" "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+unset MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_ready_nourl"
 touch "$MOCK_LOG"
 result=$(TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true)
-if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr ready: exits if pr.md.url is missing"
 else
@@ -804,7 +2319,7 @@ then
 else
   fail "pr ready: calls gh pr ready when all checks pass: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 unset MOCK_CHECKS_FILE
 
 # Test: pr ready - fails fast on failed checks
@@ -831,7 +2346,7 @@ else
   pass "pr ready: does not call gh pr ready on failure"
   ((tests++)) || true
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 unset MOCK_CHECKS_FILE
 
 # Test: pr ready - exclude patterns filter out matching checks
@@ -856,7 +2371,7 @@ then
 else
   fail "pr ready: exclude patterns allow ignoring pending checks: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
@@ -886,17 +2401,17 @@ then
 else
   fail "pr ready: exclude file skips comments and blank lines: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
 # Test: pr ready - uses configurable exclude-checks config path
 run_test
-if grep -q 'timvisher_gh.config/repos' "$script"
+if grep -qF '/pr/ready/exclude-checks.txt' "$script"
 then
   pass "pr ready: uses configurable exclude-checks config path"
 else
-  fail "pr ready: does not reference timvisher_gh.config/repos config path"
+  fail "pr ready: does not reference the repos/OWNER/REPO exclude-checks path"
 fi
 
 # Test: pr ready - non-JSON output from gh pr checks retries (does not infinite loop)
@@ -1016,7 +2531,7 @@ then
 else
   fail "pr ready: all checks excluded proceeds immediately: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
@@ -1074,7 +2589,8 @@ then
 else
   fail "comment posts new comment using pr.md.url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
+rm -f "$tmpdir/repo/comment.md.url"
 
 # Test: comment posts new comment using --pull-request flag
 run_test
@@ -1104,7 +2620,8 @@ then
 else
   fail "comment stores URL in comment.md.url"
 fi
-rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
+rm -f "$tmpdir/repo/comment.md.url"
 
 # --- comment edit tests ---
 

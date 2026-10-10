@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
@@ -14,6 +15,8 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
+
 show_help() {
   cat <<'USAGE'
   timvisher_gh - GitHub workflow commands
@@ -24,9 +27,17 @@ show_help() {
 
     timvisher_gh info <field>    Query repository metadata
     timvisher_gh info --json     Query the whole context blob
-    timvisher_gh pr              Create a PR from pr.md (or open existing)
-    timvisher_gh pr edit         Edit an existing PR from pr.md
-    timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
+    timvisher_gh pr [push] [--force-with-lease[=<sha>]] [--{no-}open]
+                                 Converge GitHub to the worktree: push the
+                                 branch, create the PR or update its
+                                 title/body from pr.md
+    timvisher_gh pr edit         Only the title/body step of pr push
+    timvisher_gh pr pull         Mirror the PR conversation into
+                                 .timvisher_gh/pr/comments/
+    timvisher_gh pr merge [gh-opts]  Merge the PR recorded in pr.json
+    timvisher_gh pr release [--{no-}watch] [--{no-}open] [gh-opts]
+                                 Merge, then watch the release through
+                                 the merge post-hooks
     timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
     timvisher_gh issue edit      Edit an existing issue from issue.md
@@ -34,38 +45,142 @@ show_help() {
                                  Post a comment on a PR from <file>
     timvisher_gh comment edit [--pull-request=URL] <file>
                                  Update an existing comment from <file>
-    timvisher_gh comment reply <comment-url> <file>
-                                 Reply to a review comment from <file>
+    timvisher_gh comment reply <comment-url> <file> [--reaction R]...
+                                 Reply to a review comment from <file>;
+                                 each --reaction goes on <comment-url>
+    timvisher_gh comment react <comment-url> --reaction R...
+                                 React to any PR comment or review
     timvisher_gh comment delete [--force] <file>
                                  Delete the comment tracked by <file>.url
 
-  pr subcommand:
-    - Requires a clean git status
-    - Pushes the current branch before creating
-    - Reads title from line 1 and body from line 3+ of pr.md
+  pr push subcommand (bare 'pr' is the same):
+    - Idempotent: every step checks GitHub first and reports when there
+      is nothing to do, so rerunning after any failure converges
+    - Requires a clean git status and a checked-out branch
+    - Branch: pushes HEAD to origin, or reports 'already pushed' when
+      origin's branch is already at HEAD.  A rewritten branch needs
+      --force-with-lease, which runs 'git push --force-with-lease
+      --force-if-includes' (a fetch in another worktree sharing the
+      ref store cannot satisfy the lease behind your back).
+      --force-with-lease=<sha> leases the branch against <sha>;
+      --force-with-lease=<ref>:<sha> passes through as is
+    - PR: with no recorded PR, adopts an open PR for the branch or
+      creates a draft from pr.md (title line 1, body line 3+)
+    - Title/body: updated from pr.md under the description lease (see
+      pr edit)
+    - Conversation: walks .timvisher_gh/pr/comments/ in filename order
+      (see pr pull) and sends local intent:
+        a directory with comment.md but no id      posted: a top-level
+                                                   comment, or a reply
+                                                   when inside a thread
+        your posted comment whose .md changed      edited, under a lease
+                                                   on posted.body (refused
+                                                   with a diff if GitHub's
+                                                   copy moved)
+        "reactions": [...] in any json             added; REST names
+                                                   (+1, heart), emoji, or
+                                                   GraphQL enums
+                                                   (THUMBS_UP); stored as
+                                                   REST names
+        "resolved": true in thread.json            resolved after the
+                                                   thread's replies
+      What was sent is recorded in each json, so reruns send nothing
+      twice.  Starting new review threads is not supported
+    - Prints the PR URL on stdout.  --open also opens it in the
+      browser (default: --no-open)
 
   pr edit subcommand:
-    - Requires pr.md.url to exist
-    - Updates the PR title and body from pr.md
+    - Requires a recorded PR (pr.json) and pr.md
+    - Converges the PR title and body to pr.md under a lease on what
+      timvisher_gh last posted (pr.json .posted):
+        GitHub == pr.md            'already current'
+        GitHub == posted           pushes pr.md
+        GitHub != posted           refuses and shows the diff; fold the
+                                   GitHub edits into pr.md (a pr.md that
+                                   matches GitHub becomes the new
+                                   baseline) or delete .posted to
+                                   overwrite GitHub
+        nothing posted yet         adopts GitHub's as the baseline
+
+  pr pull subcommand:
+    - Mirrors the conversation (GitHub -> worktree); safe to rerun
+    - One directory per item under .timvisher_gh/pr/comments/, named
+      <UTC +%FT%H-%M-%S%z>-<slug> so lexical order is chronological:
+        <ts>-<author>/comment.{md,json}         issue comment
+        <ts>-<author>-review/comment.{md,json}  review with a body
+                                                (empty-body reviews and
+                                                your pending review are
+                                                not mirrored)
+        <ts>-<path>-L<line>-thread/thread.{md,json}
+                                                review thread root
+        <ts>-...-thread/<ts>-<author>/comment.{md,json}
+                                                thread reply
+    - Items are matched to existing directories by node id, so renamed
+      directories and rerunning are fine
+    - Root x.*.md files whose x.*.md.url points at a comment on this PR
+      (the old reply workflow) move into that comment's directory
+    - Remote edits flow down.  Your own comment with an unpushed local
+      edit keeps the edit and its lease; anyone else's comment is
+      read-only and is overwritten from GitHub
+    - Intent keys you add are never touched: "reactions" (REST names)
+      in any json, "resolved" in thread.json.  Directories without an
+      id (new, unposted comments) are left alone
 
   pr merge subcommand:
-    - Requires pr.md.url to exist
-    - Tries rebase, then squash, then merge (based on repo settings)
+    - Requires a recorded PR (pr.json)
+    - Idempotent: observes the PR before acting, so rerunning it after
+      any partial failure converges and never requests a merge twice:
+        already MERGED       reports 'already merged in <commit>' and
+                             makes sure the cookie exists
+        already requested    auto-merge is on, the PR is in the merge
+                             queue, or (comment-merge repos) you
+                             commented '/merge' since the last push;
+                             reports it and goes straight to waiting
+        CLOSED               fails
+      It prompts only when a merge request is about to be made, and
+      exits non-zero if you decline
+    - Tries merge, then squash, then rebase (whichever the repo allows)
     - Repos listed in ~/.config/timvisher/ide/gh-pr-merge-comment-repos
-      are merged by posting a '/merge' comment instead
+      are merged by posting a '/merge' comment instead.  If the queue
+      rejects that request, push again (or comment '/merge' yourself)
+      before rerunning: a '/merge' since the last push counts as
+      already requested
     - Extra arguments are passed to 'gh pr merge'
+    - Runs the merge pre-hooks just before requesting the merge
     - Blocks until the PR is actually merged (polls past any merge
-      queue); on confirmed merge, drops an 'x.merged' cookie at the
-      worktree top level so worktree gc can eagerly reap it
+      queue); on confirmed merge, drops the '.timvisher_gh/pr/merged'
+      cookie so worktree gc can eagerly reap it.  An
+      existing cookie is left alone, keeping its original mtime
+    - Then starts 'git pull --ff-only' in the background in the trunk
+      worktree, $TIMVISHER_GIT_HOME/<org>/<repo>/<default branch>
+      (default ~/git), logging to its .timvisher_gh/trunk-pull.log and
+      sending timvisher_notify only if the pull fails.  It does not
+      wait for the pull
+
+  pr release subcommand:
+    - The end-of-life command for a PR: pr merge (above), then the
+      merge post-hooks, which watch the release (CI, deploys, package
+      channels) and must be idempotent.  Every step reports 'already'
+      when done, so rerun it after any failure
+    - --watch (default) runs the merge post-hooks; --no-watch stops
+      after the merge
+    - --open opens the PR (and the merge queue, when it is queued);
+      hooks see TIMVISHER_GH_OPEN=true and open what they find.
+      Default --no-open
+    - Other arguments are passed to pr merge
     - Override poll/timeout with TIMVISHER_GH_PR_MERGE_POLL_INTERVAL
       (default 10s) and TIMVISHER_GH_PR_MERGE_TIMEOUT (default 7200s)
 
   pr ready subcommand:
-    - Requires pr.md.url to exist
-    - Polls CI checks until all pass, then runs 'gh pr ready'
-    - Exclude patterns are loaded from org-level then repo-level files:
-        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/OWNER/pr/ready/exclude-checks.txt
-        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt
+    - Requires a recorded PR (pr.json)
+    - A PR that is already ready reports 'already ready' and only runs
+      the ready post-hooks
+    - Otherwise polls CI checks until all pass, runs the ready
+      pre-hooks, then runs 'gh pr ready'
+    - Exclude patterns are loaded from org-level then repo-level files
+      under each config root (see Hooks):
+        <root>/orgs/OWNER/pr/ready/exclude-checks.txt
+        <root>/repos/OWNER/REPO/pr/ready/exclude-checks.txt
       Org-level patterns apply to every repo in the org; repo-level
       patterns add to them. One regex pattern per line; matching check
       names are ignored. Lines starting with '#' and blank lines are
@@ -77,12 +192,16 @@ show_help() {
     - Reads title from line 1 and body from line 3+ of issue.md
 
   issue edit subcommand:
-    - Requires issue.md.url to exist
-    - Updates the issue title and body from issue.md
+    - Requires a recorded issue (issue.json)
+    - Converges the issue title and body to issue.md under the same
+      lease as pr edit
 
   comment subcommand:
     - Posts the contents of <file> as a PR comment
-    - PR URL comes from --pull-request=URL, or pr.md.url, or Chrome active tab
+    - When <file> is not a readable file, posts the canned comment
+      <root>/comments/<file>.md from the first config root that has
+      it (e.g. 'timvisher_gh comment arp-review'); nothing is recorded
+    - PR URL comes from --pull-request=URL, or pr.json, or Chrome active tab
     - Stores the comment URL in <file>.url
     - If <file>.url already exists, prints the URL to stdout
 
@@ -94,9 +213,25 @@ show_help() {
 
   comment reply subcommand:
     - Replies to a PR review comment (inline discussion thread)
-    - <comment-url> is the full GitHub URL with #discussion_r<ID>
-    - Stores the reply URL in <file>.url
-    - If <file>.url already exists, prints the URL to stdout
+    - <comment-url> is the full GitHub URL with #discussion_r<ID>, of
+      the thread's first comment or any reply in it
+    - Copies <file> into the thread's directory in
+      .timvisher_gh/pr/comments/ (pulling the conversation first if
+      the thread is not mirrored yet) and posts it right away with the
+      same code as pr push; prints the reply URL
+    - --reaction R (repeatable) reacts to <comment-url>, the comment
+      being replied to, not to your reply
+    - Idempotent: the draft remembers <file>, so rerunning the same
+      command posts and reacts nothing twice.  A legacy <file>.url
+      also counts as already replied
+  comment react subcommand:
+    - Adds each --reaction R to the comment at <comment-url>
+      (#discussion_r, #issuecomment- or #pullrequestreview-), recording
+      it in that item's json and posting it right away; reactions
+      already there are skipped
+    - R may be a REST name (+1, -1, laugh, hooray, confused, heart,
+      rocket, eyes), an emoji (a bare heart without VS16 works), or a
+      GraphQL enum (THUMBS_UP); it is stored as the REST name
 
   comment delete subcommand:
     - Deletes the PR comment tracked by <file>.url
@@ -133,8 +268,66 @@ show_help() {
       never process-wide.
 
   Both pr/issue create subcommands:
-    - Store the resulting URL in <file>.url
+    - Record the resulting URL in pr.json / issue.json
     - Open the URL in the browser on subsequent runs
+
+  State:
+    Per-worktree state lives in <worktree root>/.timvisher_gh/ (ignored
+    by the global gitignore):
+      pr/pr.md        title on line 1, body from line 3
+      pr/pr.json      {url, posted: {title, body}}
+      pr/pr.url       generated from pr.json on every write
+      pr/merged       merged cookie, read by worktree gc
+      pr/comments/    the conversation (see pr pull)
+      issue/issue.md, issue/issue.json, issue/issue.url
+    The pr, issue, and comment subcommands migrate legacy files at the
+    worktree root first, idempotently: a regular pr.md, pr.md.url,
+    x.merged, issue.md, or issue.md.url moves in (a regular pr.md left
+    by an editor's rename-save moves in again, replacing the old one).
+    Compatibility symlinks pr.md, pr.md.url, and x.merged are left at
+    the root.  A URL written through the pr.md.url symlink is adopted
+    into pr.json.
+
+  Hooks:
+    Executables in
+      <root>/<scope>/pr/<phase>/{pre,post}.d/*
+    run in name order, core root before extension root and org before
+    repo before path scope.  Config roots:
+      core       timvisher_gh.config/ beside this script
+                 (TIMVISHER_GH_CORE_CONFIG_DIR overrides)
+      extension  ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/
+                 (TIMVISHER_GH_CONFIG_DIR overrides)
+    Scopes:
+      orgs/OWNER
+      repos/OWNER/REPO
+      repos/OWNER/REPO/paths/<dir>   only when the PR diff touches <dir>
+    Phases:
+      push   pre: before the branch is pushed (skipped when already
+             pushed); post: after the PR is converged, every run
+      ready  pre: after checks pass, before 'gh pr ready' (skipped when
+             already ready); post: every run
+      merge  pre: before the merge request (skipped when already merged
+             or requested); post: from pr release after a confirmed
+             merge, every run (skipped by --no-watch)
+    A failing pre-hook stops the command before its transition.  Post-
+    hooks always run, so they must check their own end state first; a
+    failing one does not stop the rest, but the command exits non-zero.
+    Hooks run from the worktree root with stdout sent to stderr and
+    this environment:
+      TIMVISHER_GH_PHASE         push | ready | merge
+      TIMVISHER_GH_HOOK          pre | post
+      TIMVISHER_GH_REPO          OWNER/REPO
+      TIMVISHER_GH_PR_URL        PR URL (empty before the PR exists)
+      TIMVISHER_GH_PR_NUMBER     PR number
+      TIMVISHER_GH_HEAD_SHA      local HEAD
+      TIMVISHER_GH_WORKTREE      worktree root
+      TIMVISHER_GH_STATE_DIR     <worktree root>/.timvisher_gh/pr
+      TIMVISHER_GH_MERGE_COMMIT  merge commit, once merged
+      TIMVISHER_GH_NOTIFY_TITLE  'OWNER/REPO#N: <pr.md title>', for
+                                 timvisher_notify
+      TIMVISHER_GH_OPEN          true when --open was given; hooks open
+                                 their own URLs
+      TIMVISHER_GH_PATH_SCOPE    <dir> for path-scoped hooks
 
   Options:
     -C <path>           Resolve context from <path> instead of the
@@ -257,30 +450,370 @@ timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
   die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
     "${repo_spec%%/*}"
 
+# --- state ---
+
+state__write_file() {
+  local path=$1 tmp
+  mkdir -p -- "${path%/*}" ||
+    return 1
+  tmp=$(mktemp "${path}.XXXXXX") ||
+    return 1
+  if cat > "$tmp" && mv -f -- "$tmp" "$path"
+  then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+state__dir() {
+  printf '%s/.timvisher_gh/%s\n' "$toplevel" "$1"
+}
+
+state__md() {
+  printf '%s/%s.md\n' "$(state__dir "$1")" "$1"
+}
+
+state__json() {
+  local file
+  file="$(state__dir "$1")/$1.json"
+  if [[ -r $file ]]
+  then
+    cat -- "$file"
+  else
+    printf '{}\n'
+  fi
+}
+
+state__url() {
+  state__json "$1" | jq -r '.url // empty'
+}
+
+state__regen_url() {
+  local kind=$1 dir url url_file
+  dir=$(state__dir "$kind")
+  url_file="${dir}/${kind}.url"
+  url=$(state__url "$kind")
+  if [[ -z $url ]]
+  then
+    rm -f -- "$url_file"
+    return 0
+  fi
+  if [[ -r $url_file && $(< "$url_file") == "$url" ]]
+  then
+    return 0
+  fi
+  printf '%s\n' "$url" | state__write_file "$url_file" ||
+    die "Couldn't write '%s'" "$url_file"
+}
+
+state__write_json() {
+  local kind=$1 json=$2 file
+  file="$(state__dir "$kind")/${kind}.json"
+  jq . <<<"$json" | state__write_file "$file" ||
+    die "Couldn't write '%s'" "$file"
+  state__regen_url "$kind"
+}
+
+state__set_url() {
+  local kind=$1 url=$2 json old_url
+  json=$(state__json "$kind")
+  old_url=$(jq -r '.url // empty' <<<"$json")
+  if [[ $old_url == "$url" && -n $url ]]
+  then
+    state__regen_url "$kind"
+    return 0
+  fi
+  if [[ -n $old_url ]]
+  then
+    warn "Replacing %s URL '%s' with '%s'; its posted state no longer applies" "$kind" "$old_url" "$url"
+  fi
+  state__write_json "$kind" "$(jq -n --arg url "$url" '{url: $url}')"
+}
+
+state__migrate_file() {
+  local src=$1 dst=$2
+  [[ -f $src && ! -L $src ]] ||
+    return 0
+  mkdir -p -- "${dst%/*}" ||
+    die "Couldn't create '%s'" "${dst%/*}"
+  mv -f -- "$src" "$dst" ||
+    die "Couldn't move '%s' to '%s'" "$src" "$dst"
+  info "Moved '%s' to '%s'" "${src#"$toplevel"/}" "${dst#"$toplevel"/}"
+}
+
+state__migrate_url() {
+  local src=$1 kind=$2 url
+  [[ -f $src && ! -L $src ]] ||
+    return 0
+  url=$(< "$src")
+  url=${url//[[:space:]]/}
+  if [[ -n $url ]]
+  then
+    state__set_url "$kind" "$url"
+  fi
+  rm -f -- "$src" ||
+    die "Couldn't remove '%s'" "$src"
+  info "Moved '%s' into '%s'" "${src#"$toplevel"/}" ".timvisher_gh/${kind}/${kind}.json"
+}
+
+state__adopt_url_drift() {
+  local kind=$1 url_file url
+  url_file="$(state__dir "$kind")/${kind}.url"
+  [[ -f $url_file ]] ||
+    return 0
+  url=$(< "$url_file")
+  url=${url//[[:space:]]/}
+  [[ -n $url && $url != "$(state__url "$kind")" ]] ||
+    return 0
+  info "'%s' was rewritten to '%s'; adopting it" "${url_file#"$toplevel"/}" "$url"
+  state__set_url "$kind" "$url"
+}
+
+state__link_compat() {
+  local name=$1 target=$2 link="${toplevel}/$1"
+  [[ -e ${toplevel}/${target} ]] ||
+    return 0
+  [[ -L $link || -e $link ]] &&
+    return 0
+  ln -s -- "$target" "$link" ||
+    warn "Couldn't link '%s' to '%s'" "$name" "$target"
+}
+
+state__migrate() {
+  local pr_dir issue_dir
+  pr_dir=$(state__dir pr)
+  issue_dir=$(state__dir issue)
+
+  state__migrate_file "${toplevel}/pr.md" "${pr_dir}/pr.md"
+  state__migrate_url "${toplevel}/pr.md.url" pr
+  state__migrate_file "${toplevel}/x.merged" "${pr_dir}/merged"
+  state__migrate_file "${toplevel}/issue.md" "${issue_dir}/issue.md"
+  state__migrate_url "${toplevel}/issue.md.url" issue
+
+  state__adopt_url_drift pr
+  state__adopt_url_drift issue
+
+  state__link_compat pr.md .timvisher_gh/pr/pr.md
+  state__link_compat pr.md.url .timvisher_gh/pr/pr.url
+  state__link_compat x.merged .timvisher_gh/pr/merged
+}
+
+state__require_url() {
+  local kind=$1 url
+  url=$(state__url "$kind")
+  [[ -n $url ]] ||
+    die "No %s recorded: '.timvisher_gh/%s/%s.json' has no url; create one first" "$kind" "$kind" "$kind"
+  printf '%s\n' "$url"
+}
+
+state__require_md() {
+  local kind=$1 md
+  md=$(state__md "$kind")
+  [[ -r $md ]] ||
+    die "Expected %s file '%s' (or '%s.md' at the top level) not readable" "$kind" "$md" "$kind"
+  printf '%s\n' "$md"
+}
+
+# --- config and hooks ---
+
+config_roots() {
+  local core=${TIMVISHER_GH_CORE_CONFIG_DIR:-${SELF_DIR}/timvisher_gh.config}
+  local ext=${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}
+  printf '%s\n' "$core"
+  if [[ $ext != "$core" ]]
+  then
+    printf '%s\n' "$ext"
+  fi
+}
+
+hooks__changed_loaded=false
+hooks__changed=()
+
+hooks__load_changed() {
+  [[ $hooks__changed_loaded == true ]] &&
+    return 0
+
+  local pr_url
+  pr_url=$(state__url pr)
+  if [[ -n $pr_url ]]
+  then
+    mapfile -t hooks__changed < <(command gh pr diff "$pr_url" --repo "$repo_spec" --name-only)
+  else
+    local base merge_base
+    base=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+      die "Could not determine default branch for repository '%s'" "$repo_spec"
+    merge_base=$(command git merge-base "refs/remotes/origin/${base}" HEAD) ||
+      die "Couldn't find the merge base of HEAD and origin/%s for path-scoped hooks" "$base"
+    mapfile -t hooks__changed < <(command git diff --name-only "$merge_base" HEAD)
+  fi
+  hooks__changed_loaded=true
+}
+
+hooks__touches() {
+  local dir=${1%/} file
+  hooks__load_changed
+  for file in "${hooks__changed[@]}"
+  do
+    if [[ $file == "$dir"/* ]]
+    then
+      return 0
+    fi
+  done
+  return 1
+}
+
+hooks__found=()
+
+hooks__emit() {
+  local dir=$1 scope=$2 hook name
+  [[ -d $dir ]] ||
+    return 0
+  for hook in "$dir"/*
+  do
+    name=${hook##*/}
+    [[ -f $hook && -x $hook && $name != .* && $name != *~ ]] ||
+      continue
+    hooks__found+=("${hook}"$'\t'"${scope}")
+  done
+}
+
+hooks__collect() {
+  local phase=$1 when=$2 owner=${repo_spec%%/*}
+  local root paths_dir dir rel
+  local -a roots scoped
+  hooks__found=()
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    hooks__emit "${root}/orgs/${owner}/pr/${phase}/${when}.d" ''
+    hooks__emit "${root}/repos/${repo_spec}/pr/${phase}/${when}.d" ''
+    paths_dir="${root}/repos/${repo_spec}/paths"
+    [[ -d $paths_dir ]] ||
+      continue
+    mapfile -t scoped < <(find "$paths_dir" -type d -path "*/pr/${phase}/${when}.d" | LC_ALL=C sort)
+    for dir in "${scoped[@]}"
+    do
+      rel=${dir#"${paths_dir}/"}
+      rel=${rel%"/pr/${phase}/${when}.d"}
+      if hooks__touches "$rel"
+      then
+        hooks__emit "$dir" "$rel"
+      fi
+    done
+  done
+}
+
+hooks__run() {
+  local phase=$1 when=$2
+  local entry hook scope failures=0 pr_url pr_number title
+  hooks__collect "$phase" "$when"
+  (( ${#hooks__found[@]} )) ||
+    return 0
+
+  pr_url=$(state__url pr)
+  pr_number=
+  if [[ $pr_url =~ /pull/([0-9]+) ]]
+  then
+    pr_number=${BASH_REMATCH[1]}
+  fi
+  title=$repo_spec${pr_number:+#${pr_number}}
+  if [[ -r $(state__md pr) ]]
+  then
+    title+=": $(head -n1 "$(state__md pr)")"
+  fi
+
+  for entry in "${hooks__found[@]}"
+  do
+    hook=${entry%%$'\t'*}
+    scope=${entry#*$'\t'}
+    info 'Running %s %s-hook %s' "$phase" "$when" "$hook"
+    if ! (
+        cd "$toplevel" &&
+          TIMVISHER_GH_PHASE=$phase \
+          TIMVISHER_GH_HOOK=$when \
+          TIMVISHER_GH_REPO=$repo_spec \
+          TIMVISHER_GH_PR_URL=$pr_url \
+          TIMVISHER_GH_PR_NUMBER=$pr_number \
+          TIMVISHER_GH_HEAD_SHA=$(command git rev-parse HEAD) \
+          TIMVISHER_GH_WORKTREE=$toplevel \
+          TIMVISHER_GH_STATE_DIR=$(state__dir pr) \
+          TIMVISHER_GH_MERGE_COMMIT=${merge_commit-} \
+          TIMVISHER_GH_NOTIFY_TITLE=$title \
+          TIMVISHER_GH_OPEN=${hooks__open:-false} \
+          TIMVISHER_GH_PATH_SCOPE=$scope \
+          "$hook"
+      ) >&2
+    then
+      error '%s %s-hook failed: %s' "$phase" "$when" "$hook"
+      (( failures += 1 ))
+      if [[ $when == pre ]]
+      then
+        break
+      fi
+    fi
+  done
+
+  (( failures == 0 ))
+}
+
+hooks__run_pre() {
+  hooks__run "$1" pre ||
+    die '%s pre-hook failed; not proceeding (rerun once it passes)' "$1"
+}
+
+hooks__post_failed=false
+
+hooks__run_post() {
+  hooks__run "$1" post ||
+    hooks__post_failed=true
+}
+
+hooks__finish() {
+  if [[ $hooks__post_failed == true ]]
+  then
+    die '%s post-hook(s) failed; rerun once fixed (completed steps report "already")' "$1"
+  fi
+}
+
 # --- subcommand: pr ---
 
 gh_pr_ready() {
   local pr_url
-  pr_url=$(< "${toplevel}/pr.md.url") ||
-    die 'pr.md.url unreadable'
+  pr_url=$(state__require_url pr) ||
+    exit 1
 
-  [[ -n $pr_url ]] ||
-    die 'pr_url unset. Does pr.md.url exist at top level?'
+  local is_draft
+  is_draft=$(command gh pr view "$pr_url" --repo "$repo_spec" --json isDraft --jq .isDraft) ||
+    die "Couldn't read the draft state of '%s'" "$pr_url"
+
+  if [[ $is_draft == false ]]
+  then
+    info 'PR already ready for review: %s' "$pr_url"
+    hooks__run_post ready
+    hooks__finish ready
+    return 0
+  fi
 
   # Load exclude patterns for checks that should be ignored (e.g.
   # mergegate, which never completes until all others pass). Org-level
   # patterns apply to every repo in the org; repo-level patterns add to
   # them.
-  local config_dir="${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config"
   local repo_slug_from_url=${pr_url#https://github.com/}
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
   local owner_from_url=${repo_slug_from_url%%/*}
 
-  local -a exclude_patterns=()
-  local exclude_file
-  for exclude_file in \
-    "${config_dir}/orgs/${owner_from_url}/pr/ready/exclude-checks.txt" \
-    "${config_dir}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
+  local -a exclude_patterns=() exclude_files=() roots=()
+  local exclude_file root
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    exclude_files+=(
+      "${root}/orgs/${owner_from_url}/pr/ready/exclude-checks.txt"
+      "${root}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
+    )
+  done
+  for exclude_file in "${exclude_files[@]}"
   do
     [[ -r $exclude_file ]] ||
       continue
@@ -345,51 +878,192 @@ gh_pr_ready() {
     sleep "$poll_interval"
   done
 
+  hooks__run_pre ready
+
   command gh pr ready "$pr_url" --repo "$repo_spec" ||
     die 'Unable to mark PR as ready'
 
   info 'PR marked as ready for review: %s' "$pr_url"
+  hooks__run_post ready
+  hooks__finish ready
+}
+
+open_url() {
+  osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$1"
+}
+
+desc__normalize() {
+  local text=${1//$'\r'/}
+  text=${text%"${text##*[!$'\n']}"}
+  printf '%s' "$text"
+}
+
+desc__record_posted() {
+  local kind=$1 title=$2 body=$3 json
+  json=$(state__json "$kind" |
+           jq --arg title "$title" --arg body "$body" '.posted = {title: $title, body: $body}') ||
+    die "Couldn't record the posted %s description" "$kind"
+  state__write_json "$kind" "$json"
+}
+
+desc__converge() {
+  local kind=$1 url=$2 md=$3
+  local local_title local_body
+  local_title=$(desc__normalize "$(head -n1 "$md")")
+  local_body=$(desc__normalize "$(tail -n+3 "$md")")
+
+  local remote_json remote_title remote_body
+  remote_json=$(command gh "$kind" view "$url" --repo "$repo_spec" --json title,body) ||
+    die "Couldn't read the %s description from '%s'" "$kind" "$url"
+  remote_title=$(desc__normalize "$(jq -r '.title // ""' <<<"$remote_json")")
+  remote_body=$(desc__normalize "$(jq -r '.body // ""' <<<"$remote_json")")
+
+  local json posted_title posted_body have_posted=false
+  json=$(state__json "$kind")
+  if jq -e '.posted | type == "object"' >/dev/null <<<"$json"
+  then
+    have_posted=true
+    posted_title=$(jq -r '.posted.title // ""' <<<"$json")
+    posted_body=$(jq -r '.posted.body // ""' <<<"$json")
+  else
+    info "No posted %s description recorded; adopting GitHub's as the baseline" "$kind"
+    posted_title=$remote_title
+    posted_body=$remote_body
+  fi
+
+  if [[ $local_title == "$remote_title" && $local_body == "$remote_body" ]]
+  then
+    if [[ $have_posted == false || $posted_title != "$local_title" || $posted_body != "$local_body" ]]
+    then
+      desc__record_posted "$kind" "$local_title" "$local_body"
+    fi
+    info '%s description already current: %s' "$kind" "$url"
+    return 0
+  fi
+
+  if [[ $remote_title != "$posted_title" || $remote_body != "$posted_body" ]]
+  then
+    error 'The %s description on GitHub changed since timvisher_gh last pushed it:' "$kind"
+    diff -u \
+         --label 'last pushed' \
+         --label 'GitHub now' \
+         <(printf '%s\n\n%s\n' "$posted_title" "$posted_body") \
+         <(printf '%s\n\n%s\n' "$remote_title" "$remote_body") >&2
+    die "Refusing to overwrite it. Fold those edits into '%s' (a file that matches GitHub becomes the new baseline), or delete .posted from '%s' to overwrite GitHub with the file." \
+        "${md#"$toplevel"/}" ".timvisher_gh/${kind}/${kind}.json"
+  fi
+
+  command gh "$kind" edit "$url" \
+          --repo "$repo_spec" \
+          --title "$local_title" \
+          --body-file <(printf '%s\n' "$local_body") >/dev/null ||
+    die "Unable to edit the %s description of '%s'" "$kind" "$url"
+
+  desc__record_posted "$kind" "$local_title" "$local_body"
+  info '%s description updated: %s' "$kind" "$url"
 }
 
 gh_pr_edit() {
-  [[ -r pr.md.url ]] ||
-    die ''pr.md.url' does not exist; create a PR first'
+  local pr_url pr_md
+  pr_url=$(state__require_url pr) ||
+    exit 1
+  pr_md=$(state__require_md pr) ||
+    exit 1
 
-  [[ -r pr.md ]] ||
-    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
-
-  command gh pr edit \
-          "$(< pr.md.url)" \
-          --repo "$repo_spec" \
-          --title "$(head -n1 pr.md)" \
-          -F <(tail -n+3 pr.md) ||
-    die 'Unable to edit PR'
-
-  info 'PR updated'
+  desc__converge pr "$pr_url" "$pr_md"
 }
 
-# Block until the PR is genuinely merged. Both merge paths (gh pr merge
-# and the /merge comment) can return before the merge actually lands —
-# gh pr merge may only enqueue, and the comment is processed
-# asynchronously by a bot / merge queue. Poll PR state until MERGED so
-# callers can act on a confirmed merge (e.g. drop the cookie).
+gh_pr__url_parts() {
+  local pr_url=$1
+  if [[ $pr_url =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]
+  then
+    printf '%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+}
+
+gh_pr__merge_state() {
+  local pr_url=$1
+  local -a parts
+  mapfile -t parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+
+  # shellcheck disable=SC2016
+  local query='query($owner: String!, $repo: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      state
+      baseRefName
+      isInMergeQueue
+      autoMergeRequest { enabledAt }
+      mergeCommit { oid }
+      commits(last: 1) { nodes { commit { committedDate } } }
+      timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT]) {
+        nodes {
+          __typename
+          ... on HeadRefForcePushedEvent { createdAt }
+          ... on IssueComment { createdAt body author { login } }
+        }
+      }
+    }
+  }
+}'
+
+  command gh api graphql \
+          -f query="$query" \
+          -f owner="${parts[0]}" \
+          -f repo="${parts[1]}" \
+          -F number="${parts[2]}" \
+          --jq '.data.repository.pullRequest + {viewer: .data.viewer.login}'
+}
+
+gh_pr__merge_requested_reason() {
+  local state_json=$1 comment_merge=$2
+  jq -r --argjson comment_merge "$comment_merge" '
+    ([.commits.nodes[0].commit.committedDate]
+     + [.timelineItems.nodes[]
+        | select(.__typename == "HeadRefForcePushedEvent")
+        | .createdAt]
+     | map(select(. != null)) | max) as $last_push
+    | .viewer as $me
+    | if .autoMergeRequest != null then "auto-merge is enabled"
+      elif .isInMergeQueue then "the PR is in the merge queue"
+      elif $comment_merge
+           and any(.timelineItems.nodes[];
+                   .__typename == "IssueComment"
+                   and .author.login == $me
+                   and (.body | gsub("^\\s+|\\s+$"; "")) == "/merge"
+                   and ($last_push == null or $last_push < .createdAt))
+        then "you already commented '\''/merge'\'' since the last push"
+      else empty
+      end' <<<"$state_json"
+}
+
 gh_pr_wait_until_merged() {
   local pr_url=$1
   local poll_interval=${TIMVISHER_GH_PR_MERGE_POLL_INTERVAL:-10}
   local timeout=${TIMVISHER_GH_PR_MERGE_TIMEOUT:-7200}
   local waited=0
-  local state
+  local view state
 
   while true
   do
-    # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
-    state=$(command gh pr view "$pr_url" --json state -q .state 2>/dev/null) || true
+    view=$(command gh pr view "$pr_url" --json state,mergeCommit 2>/dev/null) || true
+    state=$(jq -r '.state // empty' <<<"$view" 2>/dev/null) || true
 
     case $state in
       MERGED)
-        return 0 ;;
+        jq -r '.mergeCommit.oid // empty' <<<"$view"
+        return 0
+        ;;
       CLOSED)
-        die 'PR was closed without merging: %s' "$pr_url" ;;
+        die 'PR was closed without merging: %s' "$pr_url"
+        ;;
     esac
 
     if (( timeout <= waited ))
@@ -400,68 +1074,61 @@ gh_pr_wait_until_merged() {
 
     info 'Waiting for merge to complete (state=%s); retrying in %ds' "${state:-unknown}" "$poll_interval"
     sleep "$poll_interval"
-    (( waited += poll_interval )) || true
+    (( waited += poll_interval ))
   done
 }
 
-# Record an authoritative "this worktree was merged" marker that the gc
-# eager-reap tier keys on. Written only after a CONFIRMED merge. The x.
-# prefix keeps it gitignored; the gc reads its mtime for the 4-day window.
 gh_pr__drop_merged_cookie() {
-  local pr_url=$1 strategy=$2
-  local cookie="${toplevel}/x.merged"
+  local pr_url=$1 strategy=$2 merge_oid=$3
+  local cookie
+  cookie="$(state__dir pr)/merged"
+
+  if [[ -f $cookie ]]
+  then
+    info 'Merged cookie already present: %s' "$cookie"
+    return 0
+  fi
 
   if {
-    printf 'merged_at=%s\n' "$(date -u '+%FT%TZ')"
-    printf 'pr_url=%s\n'    "$pr_url"
-    printf 'strategy=%s\n'  "$strategy"
-  } > "$cookie"
+    printf 'merged_at=%s\n'    "$(date -u '+%FT%TZ')"
+    printf 'pr_url=%s\n'       "$pr_url"
+    printf 'strategy=%s\n'     "$strategy"
+    printf 'merge_commit=%s\n' "$merge_oid"
+  } | state__write_file "$cookie"
   then
     info 'Wrote merged cookie %s' "$cookie"
+    state__link_compat x.merged .timvisher_gh/pr/merged
   else
     warn 'Could not write merged cookie %s' "$cookie"
   fi
 }
 
-gh_pr_merge() {
-  display_script "$0"
+gh_pr__request_merge_by_comment() {
+  local pr_url=$1
 
-  local pr_url
-  pr_url=$(< "${toplevel}/pr.md.url") ||
-    die 'pr.md.url unreadable'
-
-  [[ -n $pr_url ]] ||
-    die 'pr_url unset. Does pr.md.url exist at top level?'
-
-  local repo_slug_from_url=${pr_url#https://github.com/}
-  repo_slug_from_url=${repo_slug_from_url%%/pull/*}
-  local repo_slug_lc=${repo_slug_from_url,,}
-
-  # Repos that merge via comment (e.g. /merge) instead of gh pr merge.
-  local comment_merge_config="${HOME}/.config/timvisher/ide/gh-pr-merge-comment-repos"
-  if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
+  read -rp "Request merge for ${pr_url} by commenting '/merge'? y/N " r
+  if [[ $r != y ]]
   then
-    read -rp "Request merge for ${pr_url} by commenting '/merge'? y/N " r
-    if [[ $r != y ]]
-    then
-      info "Exiting at user's request."
-      return
-    fi
-
-    gh pr comment "$pr_url" --body "/merge" ||
-      die "Couldn't post /merge comment to '%s'" "$pr_url"
-
-    info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
-    gh_pr_wait_until_merged "$pr_url"
-    gh_pr__drop_merged_cookie "$pr_url" comment
-    info 'PR merged: %s' "$pr_url"
-    return 0
+    info "Exiting at user's request."
+    return 1
   fi
+
+  gh pr comment "$pr_url" --body "/merge" ||
+    die "Couldn't post /merge comment to '%s'" "$pr_url"
+
+  info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
+  merge_strategy=comment
+}
+
+gh_pr__request_merge_by_gh() {
+  local pr_url=$1
+  shift
 
   local capabilities_json
   capabilities_json=$(
-    gh repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
-  )
+    gh repo view "$repo_spec" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+  ) ||
+    die "Could not read merge settings for '%s'" "$repo_spec"
 
   local strategies=()
   jq -e '.mergeCommitAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(merge)
@@ -476,21 +1143,22 @@ gh_pr_merge() {
   if [[ $r != y ]]
   then
     info "Exiting at user's request."
-    return
+    return 1
   fi
 
-  local merged=
+  local i strat next
   for ((i = 0; i < ${#strategies[@]}; i++))
   do
-    local strat=${strategies[i]}
+    strat=${strategies[i]}
 
     if gh pr merge "$@" "--${strat}" "$pr_url"
     then
-      merged=$strat
-      break
+      merge_strategy=$strat
+      info 'Merge requested via %s; waiting for it to complete' "$strat"
+      return 0
     fi
 
-    local next=${strategies[i+1]:-}
+    next=${strategies[i+1]:-}
     if [[ -n $next ]]
     then
       read -rp "Merge with '${strat}' failed. Try '${next}'? Y/n " ans
@@ -498,97 +1166,1068 @@ gh_pr_merge() {
     fi
   done
 
-  [[ -n ${merged-} ]] ||
-    die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
-        "$pr_url" "${strategies[*]}"
-
-  info 'Merge requested via %s; waiting for it to complete' "$merged"
-  gh_pr_wait_until_merged "$pr_url"
-  gh_pr__drop_merged_cookie "$pr_url" "$merged"
-  info 'PR merged via %s' "$merged"
+  die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
+      "$pr_url" "${strategies[*]}"
 }
 
-gh_pr() {
-  case ${1-} in
-    edit)
-      shift
-      gh_pr_edit "$@"
-      return
+gh_pr_merge() {
+  display_script "$0"
+
+  local pr_url
+  pr_url=$(state__require_url pr) ||
+    exit 1
+
+  local repo_slug_from_url=${pr_url#https://github.com/}
+  repo_slug_from_url=${repo_slug_from_url%%/pull/*}
+  local repo_slug_lc=${repo_slug_from_url,,}
+
+  local comment_merge=false
+  local comment_merge_config="${HOME}/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
+  then
+    comment_merge=true
+  fi
+
+  local state_json state
+  state_json=$(gh_pr__merge_state "$pr_url") ||
+    die "Couldn't read the state of '%s'" "$pr_url"
+  state=$(jq -r '.state // empty' <<<"$state_json")
+
+  merge_strategy=unknown
+  merge_commit=
+  case $state in
+    MERGED)
+      merge_commit=$(jq -r '.mergeCommit.oid // empty' <<<"$state_json")
+      info 'PR already merged in %s: %s' "${merge_commit:-<unknown commit>}" "$pr_url"
+      gh_pr__after_merged "$pr_url"
+      return 0
       ;;
-    merge)
-      shift
-      gh_pr_merge "$@"
-      return
+    CLOSED)
+      die 'PR is closed without merging: %s' "$pr_url"
       ;;
-    ready)
-      shift
-      gh_pr_ready "$@"
-      return
+    OPEN)
+      ;;
+    *)
+      die "Unexpected PR state '%s' for '%s'" "$state" "$pr_url"
       ;;
   esac
 
-  if [[ -r pr.md.url ]]
+  local requested
+  requested=$(gh_pr__merge_requested_reason "$state_json" "$comment_merge") ||
+    die "Couldn't interpret the state of '%s'" "$pr_url"
+
+  if [[ -n $requested ]]
   then
-    info ''pr.md.url' already exists. Opening'
-    osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$(< pr.md.url)"
-    return
+    info 'Merge already requested (%s); waiting for it to complete' "$requested"
+  elif [[ $comment_merge == true ]]
+  then
+    hooks__run_pre merge
+    gh_pr__request_merge_by_comment "$pr_url" ||
+      return 1
+  else
+    hooks__run_pre merge
+    gh_pr__request_merge_by_gh "$pr_url" "$@" ||
+      return 1
+  fi
+
+  if [[ ${hooks__open-} == true ]]
+  then
+    gh_pr__open_merge_queue "$pr_url"
+  fi
+
+  merge_commit=$(gh_pr_wait_until_merged "$pr_url") ||
+    exit 1
+  info 'PR merged in %s via %s' "${merge_commit:-<unknown commit>}" "$merge_strategy"
+  gh_pr__after_merged "$pr_url"
+}
+
+gh_pr__open_merge_queue() {
+  local pr_url=$1 state_json base
+  state_json=$(gh_pr__merge_state "$pr_url") ||
+    return 0
+  jq -e '.isInMergeQueue == true' >/dev/null <<<"$state_json" ||
+    return 0
+  base=$(jq -r '.baseRefName // empty' <<<"$state_json")
+  [[ -n $base ]] ||
+    return 0
+  open_url "https://github.com/${repo_spec}/queue/${base}"
+}
+
+gh_pr__trunk_pull() {
+  local pr_url=$1
+  local git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  git_home=$(cd -- "$git_home" 2>/dev/null && pwd -P) ||
+    git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  if [[ $toplevel != "$git_home"/*/*/* ]]
+  then
+    info "Worktree is not under '%s'; not pulling a trunk worktree" "$git_home"
+    return 0
+  fi
+
+  local rel org repo default trunk
+  rel=${toplevel#"$git_home"/}
+  org=${rel%%/*}
+  rel=${rel#*/}
+  repo=${rel%%/*}
+  default=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+    {
+      warn "Couldn't read the default branch of '%s'; not pulling a trunk worktree" "$repo_spec"
+      return 0
+    }
+  trunk="${git_home}/${org}/${repo}/${default}"
+  if ! [[ -d $trunk ]] || ! command git -C "$trunk" rev-parse --is-inside-work-tree >/dev/null 2>&1
+  then
+    info "No trunk worktree at '%s'; not pulling it" "$trunk"
+    return 0
+  fi
+
+  local log="${trunk}/.timvisher_gh/trunk-pull.log"
+  mkdir -p -- "${log%/*}" ||
+    {
+      warn "Couldn't create '%s'; not pulling the trunk worktree" "${log%/*}"
+      return 0
+    }
+  info "Pulling trunk worktree '%s' in the background (log: %s)" "$trunk" "$log"
+  (
+    printf '%s git pull --ff-only after %s\n' "$(date -u '+%FT%TZ')" "$pr_url" >> "$log"
+    if ! command git -C "$trunk" pull --ff-only >> "$log" 2>&1
+    then
+      timvisher_notify 'timvisher_gh: trunk pull failed' \
+                       "git pull --ff-only failed in ${trunk}; see ${log}" >> "$log" 2>&1
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  disown
+}
+
+gh_pr__after_merged() {
+  local pr_url=$1
+  gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
+  gh_pr__trunk_pull "$pr_url"
+}
+
+gh_pr_release() {
+  local watch=true open=false
+  local -a merge_args=()
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --watch)
+        watch=true
+        ;;
+      --no-watch)
+        watch=false
+        ;;
+      --open)
+        open=true
+        ;;
+      --no-open)
+        open=false
+        ;;
+      *)
+        merge_args+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  local pr_url
+  pr_url=$(state__require_url pr) ||
+    exit 1
+
+  hooks__open=$open
+  if [[ $open == true ]]
+  then
+    open_url "$pr_url"
+  fi
+
+  gh_pr_merge "${merge_args[@]}" ||
+    exit 1
+
+  if [[ $watch == false ]]
+  then
+    info 'Merged; not watching the release (--no-watch)'
+    return 0
+  fi
+
+  hooks__run_post merge
+  hooks__finish merge
+  info 'Release converged: %s' "$pr_url"
+}
+
+gh_pr__branch_pushed() {
+  local branch=$1 head remote_sha
+  head=$(command git rev-parse HEAD) ||
+    die "Couldn't resolve HEAD"
+
+  remote_sha=$(command git ls-remote origin "refs/heads/${branch}") ||
+    die "Couldn't read '%s' from origin" "$branch"
+  remote_sha=${remote_sha%%[[:space:]]*}
+
+  if [[ $remote_sha == "$head" ]]
+  then
+    info "Branch already pushed: origin '%s' is at %s" "$branch" "${head:0:12}"
+    return 0
+  fi
+  return 1
+}
+
+gh_pr__push_branch() {
+  local force=$1 lease=$2 branch=$3
+  local head
+  head=$(command git rev-parse HEAD) ||
+    die "Couldn't resolve HEAD"
+
+  local -a push_args=(push -v)
+  if [[ $force == true ]]
+  then
+    if [[ -z $lease ]]
+    then
+      push_args+=(--force-with-lease)
+    elif [[ $lease == *:* ]]
+    then
+      push_args+=("--force-with-lease=${lease}")
+    else
+      push_args+=("--force-with-lease=refs/heads/${branch}:${lease}")
+    fi
+    push_args+=(--force-if-includes)
+  fi
+  push_args+=(origin "HEAD:refs/heads/${branch}")
+
+  if ! command git "${push_args[@]}"
+  then
+    if [[ $force == true ]]
+    then
+      die "Unable to git push '%s'; the lease no longer holds (someone else pushed?)" "$branch"
+    fi
+    die "Unable to git push '%s'; if you rewrote it, rerun with --force-with-lease" "$branch"
+  fi
+  info "Pushed '%s' at %s" "$branch" "${head:0:12}"
+}
+
+gh_pr__create() {
+  local branch=$1 pr_md=$2
+
+  local existing
+  existing=$(command gh pr list --repo "$repo_spec" --head "$branch" --state open --json url --jq '.[0].url // empty') ||
+    die "Couldn't look for an existing PR for '%s'" "$branch"
+  if [[ -n $existing ]]
+  then
+    info "Found an open PR for '%s'; adopting it: %s" "$branch" "$existing"
+    state__set_url pr "$existing"
+    return 1
   fi
 
   local base_branch
-  base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+  base_branch=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
-  [[ -r pr.md ]] ||
-    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
-
-  local status
-  status=$(command git status --porcelain)
-
-  [[ -z $status ]] ||
-    die '%s\ngit status is not clean' "$status"
-
-  command git push -v origin HEAD ||
-    die 'Unable to git push'
-
-  osascript -e 'tell script "timvisher Browser" to activate()'
-
-  local pr_url
+  local title body pr_url
+  title=$(desc__normalize "$(head -n1 "$pr_md")")
+  body=$(desc__normalize "$(tail -n+3 "$pr_md")")
   pr_url=$(
     command gh pr create \
             --repo "$repo_spec" \
             --draft \
             --base "$base_branch" \
-            --title "$(head -n1 pr.md)" \
-            -F <(tail -n+3 pr.md)
+            --title "$title" \
+            --body-file <(printf '%s\n' "$body")
         ) ||
     die 'Unable to create PR'
 
-  tee <<<"$pr_url" pr.md.url
+  state__set_url pr "$pr_url"
+  desc__record_posted pr "$title" "$body"
+  info 'Created draft PR: %s' "$pr_url"
+}
 
-  osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$pr_url"
+gh_pr_push() {
+  local open=false force=false lease=
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --force-with-lease)
+        force=true
+        lease=
+        shift
+        ;;
+      --force-with-lease=*)
+        force=true
+        lease=${1#--force-with-lease=}
+        [[ -n $lease ]] ||
+          die 'Option --force-with-lease= requires a value'
+        shift
+        ;;
+      --open)
+        open=true
+        shift
+        ;;
+      --no-open)
+        open=false
+        shift
+        ;;
+      *)
+        die "pr push: unknown argument '%s'" "$1"
+        ;;
+    esac
+  done
+
+  local status
+  status=$(command git status --porcelain) ||
+    die "Couldn't read git status"
+  [[ -z $status ]] ||
+    die '%s\ngit status is not clean' "$status"
+
+  local branch
+  branch=$(command git symbolic-ref --quiet --short HEAD) ||
+    die 'HEAD is detached; check out a branch to push'
+
+  local pr_md pr_url
+  pr_md=$(state__md pr)
+  pr_url=$(state__url pr)
+
+  if [[ -z $pr_url ]]
+  then
+    pr_md=$(state__require_md pr) ||
+      exit 1
+  fi
+
+  hooks__open=$open
+  if ! gh_pr__branch_pushed "$branch"
+  then
+    hooks__run_pre push
+    gh_pr__push_branch "$force" "$lease" "$branch"
+  fi
+
+  local created=false
+  if [[ -z $pr_url ]]
+  then
+    if gh_pr__create "$branch" "$pr_md"
+    then
+      created=true
+    fi
+    pr_url=$(state__require_url pr) ||
+      exit 1
+  fi
+  state__link_compat pr.md.url .timvisher_gh/pr/pr.url
+
+  if [[ $created == false ]]
+  then
+    if [[ -r $pr_md ]]
+    then
+      desc__converge pr "$pr_url" "$pr_md"
+    else
+      warn "No '%s'; leaving the PR description alone" "${pr_md#"$toplevel"/}"
+    fi
+  fi
+
+  local comments_failed=false
+  conv__push_all "$pr_url" ||
+    comments_failed=true
+
+  hooks__run_post push
+
+  printf '%s\n' "$pr_url"
+
+  if [[ $open == true ]]
+  then
+    open_url "$pr_url"
+  fi
+
+  hooks__finish push
+
+  if [[ $comments_failed == true ]]
+  then
+    die 'Some comments, edits, reactions or resolutions did not push; rerun once fixed'
+  fi
+}
+
+# --- conversation ---
+
+conv__reaction_rest_jq='
+  def rest_reaction:
+    {THUMBS_UP: "+1", THUMBS_DOWN: "-1", LAUGH: "laugh", HOORAY: "hooray",
+     CONFUSED: "confused", HEART: "heart", ROCKET: "rocket", EYES: "eyes"}[.] // ascii_downcase;
+'
+
+conv__query() {
+  local connection=$1 owner=$2 repo=$3 number=$4 nodes
+  case $connection in
+    comments)
+      nodes='id databaseId url body createdAt author { login }
+             reactionGroups { content viewerHasReacted }'
+      ;;
+    reviews)
+      nodes='id databaseId url body state createdAt submittedAt author { login }
+             reactionGroups { content viewerHasReacted }'
+      ;;
+    reviewThreads)
+      nodes='id isResolved isOutdated path line startLine originalLine diffSide
+             comments(first: 100) {
+               nodes {
+                 id databaseId url body createdAt author { login }
+                 pullRequestReview { id databaseId state author { login } }
+                 reactionGroups { content viewerHasReacted }
+               }
+             }'
+      ;;
+  esac
+
+  local query="query(\$owner: String!, \$repo: String!, \$number: Int!, \$endCursor: String) {
+  repository(owner: \$owner, name: \$repo) {
+    pullRequest(number: \$number) {
+      ${connection}(first: 100, after: \$endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ${nodes} }
+      }
+    }
+  }
+}"
+
+  command gh api graphql --paginate \
+          -f query="$query" \
+          -f owner="$owner" \
+          -f repo="$repo" \
+          -F number="$number" \
+          --jq ".data.repository.pullRequest.${connection}.nodes[]" |
+    jq -s .
+}
+
+conv__items() {
+  local me=$1 comments=$2 reviews=$3 threads=$4
+  jq -n -c \
+     --arg me "$me" \
+     --argjson comments "$comments" \
+     --argjson reviews "$reviews" \
+     --argjson threads "$threads" \
+     "${conv__reaction_rest_jq}"'
+     def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") | .[0:60];
+     def ts: sub(":"; "-"; "g") | sub("Z$"; "+0000");
+     def login: .author.login // "ghost";
+     def viewer_reactions: [.reactionGroups[]? | select(.viewerHasReacted) | .content | rest_reaction];
+     def review_of: .pullRequestReview
+       | if . == null then null
+         else {id, database_id: .databaseId, state, author: (.author.login // "ghost")}
+         end;
+     [
+       ($threads[] | . as $t | (.comments.nodes[0] // empty) as $root |
+        {key: ("thread:" + $t.id), parent: null, file: "thread",
+         name: (($root.createdAt | ts) + "-" + ($t.path | slug) + "-L"
+                + (($t.line // $t.originalLine // 0) | tostring) + "-thread"),
+         mine: (($root | login) == $me),
+         body: ($root.body // ""),
+         fields: {kind: "thread", thread_id: $t.id, path: $t.path,
+                  line: $t.line, start_line: $t.startLine,
+                  original_line: $t.originalLine, side: $t.diffSide,
+                  outdated: $t.isOutdated,
+                  id: $root.id, database_id: $root.databaseId, url: $root.url,
+                  author: ($root | login), created_at: $root.createdAt,
+                  review: ($root | review_of)},
+         posted: {url: $root.url, resolved: $t.isResolved,
+                  reactions: ($root | viewer_reactions)}}),
+       ($threads[] | . as $t | (.comments.nodes[1:][]) |
+        {key: .id, parent: ("thread:" + $t.id), file: "comment",
+         name: ((.createdAt | ts) + "-" + (login | slug)),
+         mine: (login == $me),
+         body: (.body // ""),
+         fields: {kind: "review_comment", id, database_id: .databaseId, url,
+                  author: login, created_at: .createdAt, review: review_of},
+         posted: {url, reactions: viewer_reactions}}),
+       ($comments[] |
+        {key: .id, parent: null, file: "comment",
+         name: ((.createdAt | ts) + "-" + (login | slug)),
+         mine: (login == $me),
+         body: (.body // ""),
+         fields: {kind: "issue_comment", id, database_id: .databaseId, url,
+                  author: login, created_at: .createdAt},
+         posted: {url, reactions: viewer_reactions}}),
+       ($reviews[] | select(.state != "PENDING" and ((.body // "") | test("\\S"))) |
+        (.submittedAt // .createdAt) as $at |
+        {key: .id, parent: null, file: "comment",
+         name: (($at | ts) + "-" + (login | slug) + "-review"),
+         mine: (login == $me),
+         body: .body,
+         fields: {kind: "review", state, id, database_id: .databaseId, url,
+                  author: login, created_at: $at},
+         posted: {url, reactions: viewer_reactions}})
+     ][]'
+}
+
+declare -A conv__idx=()
+conv__status=
+
+conv__index() {
+  local comments_dir=$1
+  local file key
+  conv__idx=()
+  [[ -d $comments_dir ]] ||
+    return 0
+  while IFS=$'\t' read -r file key
+  do
+    [[ -n $key ]] &&
+      conv__idx["$key"]=${file%/*}
+  done < <(
+    find "$comments_dir" -name '*.json' -type f -exec \
+         jq -r '[input_filename, (if .kind == "thread" and .thread_id then "thread:" + .thread_id else (.id // "") end)] | @tsv' {} +
+  )
+}
+
+conv__unique_dir() {
+  local base=$1 candidate=$1 n=2
+  while [[ -e $candidate ]]
+  do
+    candidate="${base}-${n}"
+    (( n += 1 ))
+  done
+  printf '%s\n' "$candidate"
+}
+
+conv__apply_item() {
+  local comments_dir=$1 item=$2
+  local key parent name file mine body
+  key=$(jq -r .key <<<"$item")
+  parent=$(jq -r '.parent // empty' <<<"$item")
+  name=$(jq -r .name <<<"$item")
+  file=$(jq -r .file <<<"$item")
+  mine=$(jq -r .mine <<<"$item")
+  body=$(desc__normalize "$(jq -r .body <<<"$item")")
+
+  local dir=${conv__idx["$key"]-} status=unchanged
+  if [[ -z $dir ]]
+  then
+    local parent_dir=$comments_dir
+    if [[ -n $parent ]]
+    then
+      parent_dir=${conv__idx["$parent"]-}
+      [[ -n $parent_dir ]] ||
+        die "Couldn't place reply '%s': its thread was not mirrored" "$key"
+    fi
+    dir=$(conv__unique_dir "${parent_dir}/${name}")
+    mkdir -p -- "$dir" ||
+      die "Couldn't create '%s'" "$dir"
+    conv__idx["$key"]=$dir
+    status=new
+  fi
+
+  local md="${dir}/${file}.md" json_file="${dir}/${file}.json"
+  local existing='{}'
+  [[ -r $json_file ]] &&
+    existing=$(< "$json_file")
+
+  local local_body have_md=false keep_local=false
+  if [[ -f $md ]]
+  then
+    have_md=true
+    local_body=$(desc__normalize "$(< "$md")")
+  fi
+
+  if [[ $have_md == true && $local_body != "$body" ]]
+  then
+    local posted_body has_posted_body
+    has_posted_body=$(jq -r '.posted | has("body")? // false' <<<"$existing")
+    posted_body=$(jq -r '.posted.body // ""' <<<"$existing")
+    if [[ $has_posted_body == true && $local_body == "$posted_body" ]]
+    then
+      status=updated
+    elif [[ $mine == true ]]
+    then
+      keep_local=true
+      status=kept
+    else
+      warn "Discarding local changes to %s's comment in '%s'; it is read-only" \
+           "$(jq -r .fields.author <<<"$item")" "${md#"$toplevel"/}"
+      status=updated
+    fi
+  fi
+
+  if [[ $keep_local == false ]]
+  then
+    if [[ $have_md == false || $local_body != "$body" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "$md" ||
+        die "Couldn't write '%s'" "$md"
+    fi
+  fi
+
+  local merged
+  merged=$(jq --argjson item "$item" --argjson keep "$keep_local" '
+    . as $old
+    | $old + $item.fields
+    | .posted = (($old.posted // {}) + $item.posted
+                 + (if $keep then {} else {body: $item.body} end))' <<<"$existing") ||
+    die "Couldn't merge state for '%s'" "$dir"
+  if [[ $merged != "$existing" ]] && ! jq -e --argjson old "$existing" '. == $old' >/dev/null <<<"$merged"
+  then
+    [[ $status == unchanged ]] &&
+      status=updated
+    jq . <<<"$merged" | state__write_file "$json_file" ||
+      die "Couldn't write '%s'" "$json_file"
+  fi
+
+  case $status in
+    kept)
+      info "Kept your unpushed edit in '%s'" "${md#"$toplevel"/}"
+      ;;
+    new|updated)
+      info '%s %s' "${status^}" "${dir#"$toplevel"/}"
+      ;;
+  esac
+  conv__status=$status
+}
+
+conv__reaction_rest() {
+  case ${1,,} in
+    +1|thumbs_up|thumbsup|👍)
+      echo +1
+      ;;
+    -1|thumbs_down|thumbsdown|👎)
+      echo -1
+      ;;
+    laugh|😄)
+      echo laugh
+      ;;
+    hooray|tada|🎉)
+      echo hooray
+      ;;
+    confused|😕)
+      echo confused
+      ;;
+    heart|❤️|❤)
+      echo heart
+      ;;
+    rocket|🚀)
+      echo rocket
+      ;;
+    eyes|👀)
+      echo eyes
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+conv__reaction_enum() {
+  case $1 in
+    +1) echo THUMBS_UP ;;
+    -1) echo THUMBS_DOWN ;;
+    *) echo "${1^^}" ;;
+  esac
+}
+
+conv__me_login=
+
+conv__me() {
+  if [[ -z $conv__me_login ]]
+  then
+    conv__me_login=$(command gh api user --jq .login) ||
+      die 'Unable to query authenticated user'
+  fi
+}
+
+conv__pr_parts=()
+
+conv__load_pr() {
+  local pr_url=$1
+  mapfile -t conv__pr_parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#conv__pr_parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+}
+
+conv__endpoint() {
+  local kind=$1 database_id=$2
+  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}"
+  case $kind in
+    issue_comment)
+      printf 'repos/%s/issues/comments/%s\n' "$repo" "$database_id"
+      ;;
+    review_comment|thread)
+      printf 'repos/%s/pulls/comments/%s\n' "$repo" "$database_id"
+      ;;
+    review)
+      printf 'repos/%s/pulls/%s/reviews/%s\n' "$repo" "${conv__pr_parts[2]}" "$database_id"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+conv__item_file() {
+  if [[ -e $1/thread.md || -e $1/thread.json ]]
+  then
+    echo thread
+  else
+    echo comment
+  fi
+}
+
+conv__write() {
+  local json_file=$1 json=$2
+  jq . <<<"$json" | state__write_file "$json_file" ||
+    die "Couldn't write '%s'" "$json_file"
+}
+
+conv__post_new() {
+  local dir=$1 thread_dir=$2 md=$3 json_file=$4 json=$5
+  local body resp kind
+  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}" number=${conv__pr_parts[2]}
+  body=$(desc__normalize "$(< "$md")")
+  [[ -n $body ]] ||
+    {
+      error "Not posting empty comment '%s'" "${md#"$toplevel"/}"
+      return 1
+    }
+
+  if [[ -n $thread_dir ]]
+  then
+    local parent_id
+    parent_id=$(jq -r '.database_id // empty' "${thread_dir}/thread.json" 2>/dev/null)
+    [[ -n $parent_id ]] ||
+      {
+        error "Can't reply in '%s': its thread has no database_id (run pr pull)" "${thread_dir#"$toplevel"/}"
+        return 1
+      }
+    resp=$(command gh api --method POST "repos/${repo}/pulls/${number}/comments" \
+                   -F "in_reply_to=${parent_id}" \
+                   -f "body=${body}") ||
+      {
+        error "Couldn't post reply '%s'" "${md#"$toplevel"/}"
+        return 1
+      }
+    kind=review_comment
+  else
+    resp=$(command gh api --method POST "repos/${repo}/issues/${number}/comments" \
+                   -f "body=${body}") ||
+      {
+        error "Couldn't post comment '%s'" "${md#"$toplevel"/}"
+        return 1
+      }
+    kind=issue_comment
+  fi
+
+  json=$(jq --argjson resp "$resp" --arg kind "$kind" --arg me "$conv__me_login" --arg body "$body" '
+    . + {kind: $kind, id: $resp.node_id, database_id: $resp.id, url: $resp.html_url,
+         author: $me, created_at: $resp.created_at}
+    | .posted = ((.posted // {}) + {body: $body, url: $resp.html_url})' <<<"$json") ||
+    die "Couldn't record the post of '%s'; it IS on GitHub: %s" "${md#"$toplevel"/}" "$resp"
+  conv__write "$json_file" "$json"
+  info 'Posted %s: %s' "${dir#"$toplevel"/}" "$(jq -r .url <<<"$json")"
+}
+
+conv__edit() {
+  local dir=$1 md=$2 json_file=$3 json=$4
+  local kind database_id endpoint local_body posted_body remote_body
+  kind=$(jq -r .kind <<<"$json")
+  database_id=$(jq -r '.database_id // empty' <<<"$json")
+  endpoint=$(conv__endpoint "$kind" "$database_id") ||
+    {
+      error "Don't know how to edit a '%s' (%s)" "$kind" "${dir#"$toplevel"/}"
+      return 1
+    }
+  local_body=$(desc__normalize "$(< "$md")")
+  posted_body=$(jq -r '.posted.body // ""' <<<"$json")
+
+  remote_body=$(command gh api "$endpoint" --jq '.body // ""') ||
+    {
+      error "Couldn't read the current body of '%s'" "${dir#"$toplevel"/}"
+      return 1
+    }
+  remote_body=$(desc__normalize "$remote_body")
+
+  if [[ $remote_body == "$local_body" ]]
+  then
+    info "Comment already current: '%s'" "${dir#"$toplevel"/}"
+  elif [[ $remote_body != "$posted_body" ]]
+  then
+    error "Comment '%s' changed on GitHub since it was last pushed or pulled:" "${dir#"$toplevel"/}"
+    diff -u --label 'last pushed' --label 'GitHub now' \
+         <(printf '%s\n' "$posted_body") <(printf '%s\n' "$remote_body") >&2
+    error "Not overwriting it. Fold those edits into '%s' to continue." "${md#"$toplevel"/}"
+    return 1
+  else
+    local method=PATCH
+    [[ $kind == review ]] &&
+      method=PUT
+    command gh api --method "$method" "$endpoint" -f "body=${local_body}" >/dev/null ||
+      {
+        error "Couldn't edit '%s'" "${dir#"$toplevel"/}"
+        return 1
+      }
+    info 'Edited %s' "${dir#"$toplevel"/}"
+  fi
+
+  json=$(jq --arg body "$local_body" '.posted = ((.posted // {}) + {body: $body})' <<<"$json")
+  conv__write "$json_file" "$json"
+}
+
+conv__react() {
+  local dir=$1 json_file=$2 json=$3
+  local id raw rest enum failures=0 changed=false
+  local -a wanted=()
+  id=$(jq -r '.id // empty' <<<"$json")
+  mapfile -t wanted < <(jq -r '.reactions // [] | .[]' <<<"$json")
+  (( ${#wanted[@]} )) ||
+    return 0
+
+  local -a normalized=()
+  for raw in "${wanted[@]}"
+  do
+    if ! rest=$(conv__reaction_rest "$raw")
+    then
+      error "Unknown reaction '%s' in '%s'" "$raw" "${json_file#"$toplevel"/}"
+      (( failures += 1 ))
+      continue
+    fi
+    normalized+=("$rest")
+  done
+
+  json=$(jq '.reactions = ($ARGS.positional | unique)' --args "${normalized[@]}" <<<"$json")
+  [[ $json == "$(jq . "$json_file" 2>/dev/null)" ]] ||
+    changed=true
+
+  # shellcheck disable=SC2016
+  local mutation='mutation($id: ID!, $content: ReactionContent!) {
+  addReaction(input: {subjectId: $id, content: $content}) { reaction { content } }
+}'
+  local -a to_add
+  mapfile -t to_add < <(jq -r '.reactions[]' <<<"$json")
+  for rest in "${to_add[@]}"
+  do
+    if jq -e --arg r "$rest" '(.posted.reactions // []) | index($r)' >/dev/null <<<"$json"
+    then
+      continue
+    fi
+    enum=$(conv__reaction_enum "$rest")
+    if command gh api graphql -f query="$mutation" -f id="$id" -f content="$enum" >/dev/null
+    then
+      info "Reacted %s on '%s'" "$rest" "${dir#"$toplevel"/}"
+      json=$(jq --arg r "$rest" '.posted = ((.posted // {}) | .reactions = ((.reactions // []) + [$r] | unique))' <<<"$json")
+      changed=true
+    else
+      error "Couldn't react %s on '%s'" "$rest" "${dir#"$toplevel"/}"
+      (( failures += 1 ))
+    fi
+  done
+
+  if [[ $changed == true ]]
+  then
+    conv__write "$json_file" "$json"
+  fi
+  (( failures == 0 ))
+}
+
+conv__resolve() {
+  local dir=$1 json_file="$1/thread.json" json thread_id
+  [[ -r $json_file ]] ||
+    return 0
+  json=$(< "$json_file")
+  jq -e '.resolved == true' >/dev/null <<<"$json" ||
+    return 0
+  if jq -e '.posted.resolved == true' >/dev/null <<<"$json"
+  then
+    return 0
+  fi
+  thread_id=$(jq -r '.thread_id // empty' <<<"$json")
+  [[ -n $thread_id ]] ||
+    {
+      error "Can't resolve '%s': no thread_id (run pr pull)" "${dir#"$toplevel"/}"
+      return 1
+    }
+
+  # shellcheck disable=SC2016
+  local mutation='mutation($id: ID!) {
+  resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+}'
+  command gh api graphql -f query="$mutation" -f id="$thread_id" >/dev/null ||
+    {
+      error "Couldn't resolve '%s'" "${dir#"$toplevel"/}"
+      return 1
+    }
+  info "Resolved '%s'" "${dir#"$toplevel"/}"
+  conv__write "$json_file" "$(jq '.posted = ((.posted // {}) + {resolved: true})' <<<"$json")"
+}
+
+conv__push_item() {
+  local dir=${1%/} thread_dir=${2-}
+  local file md json_file json='{}' failures=0
+  file=$(conv__item_file "$dir")
+  md="${dir}/${file}.md"
+  json_file="${dir}/${file}.json"
+  [[ -e $md || -e $json_file ]] ||
+    return 0
+  [[ -r $json_file ]] &&
+    json=$(< "$json_file")
+
+  if [[ -z $(jq -r '.id // empty' <<<"$json") ]]
+  then
+    if [[ $file == thread ]]
+    then
+      error "Starting new review threads is not supported: '%s'" "${dir#"$toplevel"/}"
+      return 1
+    fi
+    if [[ ! -r $md ]]
+    then
+      error "'%s' has no %s.md to post" "${dir#"$toplevel"/}" "$file"
+      return 1
+    fi
+    conv__post_new "$dir" "$thread_dir" "$md" "$json_file" "$json" ||
+      return 1
+    json=$(< "$json_file")
+  elif [[ -r $md ]] && jq -e --arg me "$conv__me_login" '.author == $me' >/dev/null <<<"$json"
+  then
+    if [[ $(desc__normalize "$(< "$md")") != "$(jq -r '.posted.body // ""' <<<"$json")" ]]
+    then
+      conv__edit "$dir" "$md" "$json_file" "$json" ||
+        (( failures += 1 ))
+      json=$(< "$json_file")
+    fi
+  fi
+
+  conv__react "$dir" "$json_file" "$json" ||
+    (( failures += 1 ))
+
+  (( failures == 0 ))
+}
+
+conv__subdirs() {
+  find "$1" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort
+}
+
+conv__push_thread() {
+  local dir=$1 failures=0 reply
+  local -a replies
+  conv__push_item "$dir" ||
+    (( failures += 1 ))
+  mapfile -t replies < <(conv__subdirs "$dir")
+  for reply in "${replies[@]}"
+  do
+    conv__push_item "$reply" "$dir" ||
+      (( failures += 1 ))
+  done
+  conv__resolve "$dir" ||
+    (( failures += 1 ))
+  (( failures == 0 ))
+}
+
+conv__push_all() {
+  local pr_url=$1 comments_dir dir failures=0
+  local -a dirs
+  comments_dir="$(state__dir pr)/comments"
+  [[ -d $comments_dir ]] ||
+    return 0
+  conv__load_pr "$pr_url"
+  conv__me
+
+  mapfile -t dirs < <(conv__subdirs "$comments_dir")
+  for dir in "${dirs[@]}"
+  do
+    if [[ $(conv__item_file "$dir") == thread ]]
+    then
+      conv__push_thread "$dir" ||
+        (( failures += 1 ))
+    else
+      conv__push_item "$dir" ||
+        (( failures += 1 ))
+    fi
+  done
+
+  if (( failures == 0 ))
+  then
+    info 'Conversation converged: %s' "$pr_url"
+    return 0
+  fi
+  error '%d comment item(s) failed to push; fix them and rerun' "$failures"
+  return 1
+}
+
+gh_pr_pull() {
+  (( $# == 0 )) ||
+    die "pr pull: unexpected argument '%s'" "$1"
+
+  local pr_url
+  pr_url=$(state__require_url pr) ||
+    exit 1
+  local -a parts
+  mapfile -t parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+
+  local me comments reviews threads
+  me=$(command gh api user --jq .login) ||
+    die 'Unable to query authenticated user'
+  comments=$(conv__query comments "${parts[@]}") ||
+    die "Couldn't read the comments on '%s'" "$pr_url"
+  reviews=$(conv__query reviews "${parts[@]}") ||
+    die "Couldn't read the reviews on '%s'" "$pr_url"
+  threads=$(conv__query reviewThreads "${parts[@]}") ||
+    die "Couldn't read the review threads on '%s'" "$pr_url"
+
+  local comments_dir
+  comments_dir="$(state__dir pr)/comments"
+  mkdir -p -- "$comments_dir" ||
+    die "Couldn't create '%s'" "$comments_dir"
+
+  conv__index "$comments_dir"
+
+  local item items
+  local -A counts=([new]=0 [updated]=0 [unchanged]=0 [kept]=0)
+  items=$(conv__items "$me" "$comments" "$reviews" "$threads") ||
+    die "Couldn't interpret the conversation on '%s'" "$pr_url"
+  while IFS= read -r item
+  do
+    [[ -n $item ]] ||
+      continue
+    conv__apply_item "$comments_dir" "$item"
+    (( counts[$conv__status] += 1 ))
+  done <<<"$items"
+
+  conv__migrate_root_pairs
+
+  info 'Pulled %s: %d new, %d updated, %d unchanged, %d unpushed edits kept' \
+       "$pr_url" "${counts[new]}" "${counts[updated]}" "${counts[unchanged]}" "${counts[kept]}"
+}
+
+gh_pr() {
+  case ${1-} in
+    push)
+      shift
+      gh_pr_push "$@"
+      ;;
+    pull)
+      shift
+      gh_pr_pull "$@"
+      ;;
+    edit)
+      shift
+      gh_pr_edit "$@"
+      ;;
+    merge)
+      shift
+      gh_pr_merge "$@"
+      ;;
+    release)
+      shift
+      gh_pr_release "$@"
+      ;;
+    ready)
+      shift
+      gh_pr_ready "$@"
+      ;;
+    *)
+      gh_pr_push "$@"
+      ;;
+  esac
 }
 
 # --- subcommand: issue ---
 
 gh_issue_edit() {
-  [[ -r issue.md.url ]] ||
-    die ''issue.md.url' does not exist; create an issue first'
+  local issue_url issue_md
+  issue_url=$(state__require_url issue) ||
+    exit 1
+  issue_md=$(state__require_md issue) ||
+    exit 1
 
-  [[ -r issue.md ]] ||
-    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
-
-  command gh issue edit \
-          "$(< issue.md.url)" \
-          --repo "$repo_spec" \
-          --title "$(head -n1 issue.md)" \
-          -F <(tail -n+3 issue.md) ||
-    die 'Unable to edit issue'
-
-  info 'Issue updated'
+  desc__converge issue "$issue_url" "$issue_md"
 }
 
 gh_issue() {
@@ -600,46 +2239,49 @@ gh_issue() {
       ;;
   esac
 
-  if [[ -r issue.md.url ]]
+  local existing_url
+  existing_url=$(state__url issue)
+  if [[ -n $existing_url ]]
   then
-    info ''issue.md.url' already exists. Opening'
-    osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$(< issue.md.url)"
+    info 'Issue already exists. Opening %s' "$existing_url"
+    open_url "$existing_url"
     return
   fi
 
-  [[ -r issue.md ]] ||
-    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
+  local issue_md
+  issue_md=$(state__require_md issue) ||
+    exit 1
 
   osascript -e 'tell script "timvisher Browser" to activate()'
 
-  local issue_url
+  local title body issue_url
+  title=$(desc__normalize "$(head -n1 "$issue_md")")
+  body=$(desc__normalize "$(tail -n+3 "$issue_md")")
   issue_url=$(
     command gh issue create \
             --repo "$repo_spec" \
-            --title "$(head -n1 issue.md)" \
-            -F <(tail -n+3 issue.md)
+            --title "$title" \
+            --body-file <(printf '%s\n' "$body")
         ) ||
     die 'Unable to create issue'
 
-  tee <<<"$issue_url" issue.md.url
+  state__set_url issue "$issue_url"
+  desc__record_posted issue "$title" "$body"
+  printf '%s\n' "$issue_url"
 
-  osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$issue_url"
+  open_url "$issue_url"
 }
 
 # --- subcommand: comment ---
 
 # Resolve the PR URL for comment operations.
-# Checks (in order): --pull-request= flag, pr.md.url, Chrome active tab.
+# Checks (in order): --pull-request= flag, .timvisher_gh/pr/pr.json, Chrome active tab.
 resolve_pr_url() {
   local url=${comment_pr_url:-}
 
-  if [[ -z $url ]] && [[ -r pr.md.url ]]
+  if [[ -z $url ]]
   then
-    url=$(< pr.md.url)
+    url=$(state__url pr)
   fi
 
   if [[ -z $url ]]
@@ -653,6 +2295,24 @@ resolve_pr_url() {
   fi
 
   printf '%s' "$url"
+}
+
+comment__canned() {
+  local name=$1 root file
+  local -a roots
+  [[ -n $name && $name != */* ]] ||
+    return 1
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    file="${root}/comments/${name}.md"
+    if [[ -r $file ]]
+    then
+      printf '%s\n' "$file"
+      return 0
+    fi
+  done
+  return 1
 }
 
 gh_comment_edit() {
@@ -692,9 +2352,146 @@ gh_comment_edit() {
   info 'Comment updated'
 }
 
+conv__slug() {
+  local text=${1,,}
+  text=${text//[^a-z0-9]/-}
+  while [[ $text == *--* ]]
+  do
+    text=${text//--/-}
+  done
+  text=${text#-}
+  text=${text%-}
+  printf '%s\n' "${text:0:60}"
+}
+
+conv__target_pr_url=
+conv__target_kinds=
+conv__target_db=
+
+conv__parse_comment_url() {
+  local url=$1
+  if ! [[ $url =~ ^(https://github\.com/[^/]+/[^/]+/pull/[0-9]+)[^#]*#(discussion_r|issuecomment-|pullrequestreview-)([0-9]+)$ ]]
+  then
+    die "'%s' doesn't look like a PR comment URL (#discussion_r<ID>, #issuecomment-<ID> or #pullrequestreview-<ID>)" "$url"
+  fi
+  conv__target_pr_url=${BASH_REMATCH[1]}
+  conv__target_db=${BASH_REMATCH[3]}
+  case ${BASH_REMATCH[2]} in
+    discussion_r)
+      conv__target_kinds=thread,review_comment
+      ;;
+    issuecomment-)
+      conv__target_kinds=issue_comment
+      ;;
+    pullrequestreview-)
+      conv__target_kinds=review
+      ;;
+  esac
+}
+
+conv__find_target() {
+  local comments_dir
+  comments_dir="$(state__dir pr)/comments"
+  [[ -d $comments_dir ]] ||
+    return 1
+  find "$comments_dir" -name '*.json' -type f -exec \
+       jq -r --arg db "$conv__target_db" --arg kinds "$conv__target_kinds" '
+         select((.database_id | tostring) == $db and (.kind as $k | $kinds | split(",") | index($k)))
+         | input_filename' {} + |
+    head -n1 |
+    grep .
+}
+
+conv__ensure_target() {
+  local recorded
+  recorded=$(state__url pr)
+  if [[ -z $recorded ]]
+  then
+    info "No PR recorded; adopting '%s' from the comment URL" "$conv__target_pr_url"
+    state__set_url pr "$conv__target_pr_url"
+  elif [[ $recorded != "$conv__target_pr_url" ]]
+  then
+    die "Comment is on '%s', but this worktree's PR is '%s'" "$conv__target_pr_url" "$recorded"
+  fi
+
+  local found
+  if ! found=$(conv__find_target)
+  then
+    info 'Comment not mirrored yet; pulling the conversation'
+    gh_pr_pull
+    found=$(conv__find_target) ||
+      die "Couldn't find the comment %s on '%s'" "$conv__target_db" "$conv__target_pr_url"
+  fi
+  printf '%s\n' "$found"
+}
+
+conv__add_reactions() {
+  local json_file=$1
+  shift
+  local json
+  json=$(jq '.reactions = (((.reactions // []) + $ARGS.positional) | unique)' "$json_file" --args "$@") ||
+    die "Couldn't read '%s'" "$json_file"
+  conv__write "$json_file" "$json"
+}
+
+conv__parse_reactions() {
+  local -n reactions_out=$1
+  shift
+  local rest
+  conv__rest_args=()
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --reaction)
+        (( 2 <= $# )) ||
+          die 'Option --reaction requires a value'
+        rest=$(conv__reaction_rest "$2") ||
+          die "Unknown reaction '%s' (use a REST name like +1 or heart, an emoji, or a GraphQL enum like THUMBS_UP)" "$2"
+        reactions_out+=("$rest")
+        shift 2
+        ;;
+      --reaction=*)
+        rest=$(conv__reaction_rest "${1#--reaction=}") ||
+          die "Unknown reaction '%s' (use a REST name like +1 or heart, an emoji, or a GraphQL enum like THUMBS_UP)" "${1#--reaction=}"
+        reactions_out+=("$rest")
+        shift
+        ;;
+      *)
+        conv__rest_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+conv__source_key() {
+  local file=$1 abs
+  abs=$(cd "$(dirname -- "$file")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename -- "$file")") ||
+    abs=$file
+  printf '%s\n' "${abs#"$toplevel"/}"
+}
+
+conv__push_target_reactions() {
+  local target_json=$1
+  shift
+  (( $# )) ||
+    return 0
+  local target_dir=${target_json%/*} parent_thread=
+  conv__add_reactions "$target_json" "$@"
+  if [[ ${target_json##*/} == comment.json && -e ${target_dir%/*}/thread.json ]]
+  then
+    parent_thread=${target_dir%/*}
+  fi
+  conv__push_item "$target_dir" "$parent_thread"
+}
+
 gh_comment_reply() {
-  local comment_url=${1-}
-  local comment_file=${2-}
+  local -a reactions=()
+  local -a conv__rest_args=()
+  conv__parse_reactions reactions "$@"
+  set -- "${conv__rest_args[@]}"
+
+  local comment_url=${1-} comment_file=${2-}
 
   [[ -n $comment_url ]] ||
     die 'comment reply requires a <comment-url> argument'
@@ -702,39 +2499,144 @@ gh_comment_reply() {
   [[ -n $comment_file ]] ||
     die 'comment reply requires a <file> argument'
 
-  [[ -r $comment_file ]] ||
-    die "'%s' is not readable" "$comment_file"
+  (( $# <= 2 )) ||
+    die "comment reply: unexpected argument '%s'" "$3"
 
-  if [[ -r "${comment_file}.url" ]]
+  conv__parse_comment_url "$comment_url"
+  [[ $conv__target_kinds == thread,review_comment ]] ||
+    die "'%s' isn't a review comment; only #discussion_r<ID> comments take replies (use 'comment react' to react)" "$comment_url"
+
+  if [[ -r ${comment_file}.url ]]
   then
-    info "'%s.url' already exists" "$comment_file"
-    cat "${comment_file}.url"
+    info "'%s.url' already exists; already replied" "$comment_file"
+    if (( ${#reactions[@]} ))
+    then
+      local legacy_target
+      legacy_target=$(conv__ensure_target) ||
+        exit 1
+      conv__load_pr "$conv__target_pr_url"
+      conv__me
+      conv__push_target_reactions "$legacy_target" "${reactions[@]}" ||
+        die 'comment reply did not fully converge; rerun the same command'
+    fi
+    cat -- "${comment_file}.url"
     return
   fi
 
-  # Parse: https://github.com/OWNER/REPO/pull/N#discussion_rID
-  local owner_repo pr_number comment_id
-  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/([0-9]+)#discussion_r([0-9]+) ]]
+  local target_json thread_dir
+  target_json=$(conv__ensure_target) ||
+    exit 1
+  if [[ ${target_json##*/} == thread.json ]]
   then
-    owner_repo=${BASH_REMATCH[1]}
-    pr_number=${BASH_REMATCH[2]}
-    comment_id=${BASH_REMATCH[3]}
+    thread_dir=${target_json%/*}
   else
-    die "'%s' doesn't look like a review comment URL (expected #discussion_r<ID>)" "$comment_url"
+    thread_dir=${target_json%/*}
+    thread_dir=${thread_dir%/*}
   fi
 
-  local reply_url
-  reply_url=$(
-    gh api \
-       --method POST \
-       "repos/${owner_repo}/pulls/${pr_number}/comments" \
-       -F "in_reply_to=${comment_id}" \
-       -f "body=$(< "$comment_file")" \
-       --jq '.html_url'
-  ) ||
-    die 'Unable to post reply'
+  local source dir
+  source=$(conv__source_key "$comment_file")
+  dir=$(
+    find "$thread_dir" -mindepth 2 -maxdepth 2 -name comment.json -type f -exec \
+         jq -r --arg source "$source" 'select(.source == $source) | input_filename' {} + |
+      head -n1
+  )
+  dir=${dir%/comment.json}
 
-  tee <<<"$reply_url" "${comment_file}.url"
+  if [[ -n $dir ]]
+  then
+    info "Already drafted from '%s' in '%s'" "$comment_file" "${dir#"$toplevel"/}"
+  else
+    [[ -r $comment_file ]] ||
+      die "'%s' is not readable" "$comment_file"
+    local name
+    name=$(conv__slug "$(basename -- "${comment_file%.md}")")
+    dir=$(conv__unique_dir "${thread_dir}/$(date -u +%FT%H-%M-%S%z)-${name:-reply}")
+    mkdir -p -- "$dir" ||
+      die "Couldn't create '%s'" "$dir"
+    state__write_file "${dir}/comment.md" < "$comment_file" ||
+      die "Couldn't write '%s'" "${dir}/comment.md"
+    conv__write "${dir}/comment.json" "$(jq -n --arg source "$source" '{source: $source}')"
+  fi
+
+  conv__load_pr "$conv__target_pr_url"
+  conv__me
+
+  local failed=false
+  conv__push_item "$dir" "$thread_dir" ||
+    failed=true
+  conv__push_target_reactions "$target_json" "${reactions[@]}" ||
+    failed=true
+
+  local reply_url
+  reply_url=$(jq -r '.url // empty' "${dir}/comment.json")
+  [[ -n $reply_url ]] &&
+    printf '%s\n' "$reply_url"
+
+  [[ $failed == false ]] ||
+    die 'comment reply did not fully converge; rerun the same command'
+}
+
+gh_comment_react() {
+  local -a reactions=()
+  local -a conv__rest_args=()
+  conv__parse_reactions reactions "$@"
+  set -- "${conv__rest_args[@]}"
+
+  local comment_url=${1-}
+  [[ -n $comment_url ]] ||
+    die 'comment react requires a <comment-url> argument'
+  (( $# <= 1 )) ||
+    die "comment react: unexpected argument '%s'" "$2"
+  (( ${#reactions[@]} )) ||
+    die 'comment react requires at least one --reaction'
+
+  conv__parse_comment_url "$comment_url"
+  local target_json
+  target_json=$(conv__ensure_target) ||
+    exit 1
+
+  conv__load_pr "$conv__target_pr_url"
+  conv__me
+  conv__push_target_reactions "$target_json" "${reactions[@]}" ||
+    die 'comment react did not fully converge; rerun the same command'
+  info "Reactions converged on '%s'" "${target_json%/*}"
+}
+
+conv__migrate_root_pairs() {
+  local md url db kind target_json target_dir file body
+  for md in "${toplevel}"/x.*.md
+  do
+    [[ -f $md && -r ${md}.url ]] ||
+      continue
+    url=$(< "${md}.url")
+    url=${url//[[:space:]]/}
+    [[ $url =~ ^(https://github\.com/[^/]+/[^/]+/pull/[0-9]+)[^#]*#(discussion_r|issuecomment-)([0-9]+)$ ]] ||
+      continue
+    [[ ${BASH_REMATCH[1]} == "$(state__url pr)" ]] ||
+      continue
+    db=${BASH_REMATCH[3]}
+    kind=thread,review_comment
+    [[ ${BASH_REMATCH[2]} == issuecomment- ]] &&
+      kind=issue_comment
+    conv__target_db=$db
+    conv__target_kinds=$kind
+    target_json=$(conv__find_target) ||
+      continue
+    target_dir=${target_json%/*}
+    file=${target_json##*/}
+    file=${file%.json}
+    body=$(desc__normalize "$(< "$md")")
+    if [[ $body != "$(desc__normalize "$(< "${target_dir}/${file}.md")")" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "${target_dir}/${file}.md" ||
+        die "Couldn't write '%s'" "${target_dir}/${file}.md"
+    fi
+    conv__write "$target_json" "$(jq --arg source "${md#"$toplevel"/}" '.source = $source' "$target_json")"
+    rm -f -- "$md" "${md}.url" ||
+      die "Couldn't remove '%s'" "$md"
+    info "Moved '%s' into '%s'" "${md#"$toplevel"/}" "${target_dir#"$toplevel"/}"
+  done
 }
 
 gh_comment_delete() {
@@ -862,6 +2764,11 @@ gh_comment() {
       gh_comment_reply "$@"
       return
       ;;
+    react)
+      shift
+      gh_comment_react "$@"
+      return
+      ;;
     delete)
       shift
       gh_comment_delete "$@"
@@ -873,6 +2780,18 @@ gh_comment() {
 
   [[ -n $comment_file ]] ||
     die 'comment requires a <file> argument'
+
+  local canned
+  if [[ ! -r $comment_file ]] && canned=$(comment__canned "$comment_file")
+  then
+    local pr_url
+    pr_url=$(resolve_pr_url) ||
+      exit $?
+    info "Posting canned comment '%s' from %s" "$comment_file" "$canned"
+    command gh pr comment "$pr_url" --body-file "$canned" ||
+      die "Unable to post canned comment '%s'" "$comment_file"
+    return
+  fi
 
   [[ -r $comment_file ]] ||
     die "'%s' is not readable" "$comment_file"
@@ -1016,12 +2935,15 @@ case $cmd in
     gh_info "$@"
     ;;
   pr)
+    state__migrate
     gh_pr "$@"
     ;;
   issue)
+    state__migrate
     gh_issue "$@"
     ;;
   comment)
+    state__migrate
     gh_comment "$@"
     ;;
   *)

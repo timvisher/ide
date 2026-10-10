@@ -218,6 +218,25 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 8b: review inlines the timvisher_gh PR draft at .timvisher_gh/pr/pr.md
+# once, even with a root pr.md compatibility symlink pointing at it.
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+mkdir -p "$repo/.timvisher_gh/pr"
+printf 'STATE DRAFT TITLE\n\nSTATE DRAFT BODY\n' > "$repo/.timvisher_gh/pr/pr.md"
+ln -s .timvisher_gh/pr/pr.md "$repo/pr.md"
+out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
+drafts=$(grep -c 'PR DESCRIPTION DRAFT' <<<"$out")
+if [[ $out == *'STATE DRAFT BODY'* ]] && (( drafts == 1 ))
+then
+  pass "review inlines .timvisher_gh/pr/pr.md once as the PR draft"
+else
+  fail "review should inline .timvisher_gh/pr/pr.md exactly once (got ${drafts})"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
 # Case 9: global --with= BEFORE the subcommand routes to the subcommand
 # (not the bare-prompt path). Regression guard: `aishot --with=x git diff
 # describe ...` must reach describe, not be parsed as a oneshot prompt.
