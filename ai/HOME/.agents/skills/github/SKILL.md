@@ -69,12 +69,17 @@ If `.github/PULL_REQUEST_TEMPLATE.md` exists, append its contents after your sum
 - Ensure line 2 is blank (the PR body starts on line 3).
 - Ensure the title and summary reflect all commits when `1 < commit_count`.
 
-### 5) Create the PR
+### 5) Create or update the PR
+Agents do not push. Hand the human the one-line invocation instead:
+
 ```bash
-timvisher_gh pr
+timvisher_gh pr push                      # same as bare `timvisher_gh pr`
+timvisher_gh pr push --force-with-lease   # after a rebase or other rewrite
 ```
 
-This pushes the branch and creates the PR, recording the URL in `.timvisher_gh/pr/pr.json`.
+`pr push` converges GitHub to the worktree and is safe to rerun after any failure: it pushes the branch (or reports "already pushed"), creates a draft PR from `pr.md` if none is recorded (adopting an existing open PR for the branch instead of duplicating it), and otherwise updates the title and body from `pr.md`. The URL is recorded in `.timvisher_gh/pr/pr.json`. `--force-with-lease` runs `git push --force-with-lease --force-if-includes`; `--force-with-lease=<sha>` leases against a specific remote SHA. `--open` opens the PR afterwards.
+
+The title/body update is guarded by a lease on what `timvisher_gh` last posted (`.posted` in `pr.json`). If someone edited the description on GitHub since then, `pr push` refuses and prints the diff: fold their edits into `pr.md` (a `pr.md` that matches GitHub becomes the new baseline) or delete `.posted` from `pr.json` to overwrite GitHub. Never write ad hoc `y.*.sh` push scripts; everything they did is a `pr push` rerun.
 
 ## State directory
 
@@ -111,10 +116,10 @@ timvisher_gh pr ready
 
 ## Workflow — editing an existing PR or issue
 
-After modifying `pr.md` or `issue.md`, push the updates to GitHub:
+After modifying `pr.md` or `issue.md`, push the updates to GitHub (both use the description lease described above):
 
 ```bash
-timvisher_gh pr edit     # reads URL from .timvisher_gh/pr/pr.json
+timvisher_gh pr push     # or `pr edit` for only the title/body step
 timvisher_gh issue edit  # reads URL from .timvisher_gh/issue/issue.json
 ```
 
