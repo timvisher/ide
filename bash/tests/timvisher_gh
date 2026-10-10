@@ -31,6 +31,7 @@ mkdir -p "$tmpdir/repo"
 cd "$tmpdir/repo" ||
   { echo "cannot cd to the fixture repo" >&2; exit 1; }
 "$real_git" init -q .
+printf '%s\n' .timvisher_gh/ pr.md pr.md.url x.merged issue.md issue.md.url >> .git/info/exclude
 "$real_git" config user.email "test@test.com"
 "$real_git" config user.name "Test"
 "$real_git" remote add origin https://github.com/testuser/testrepo.git
@@ -163,6 +164,22 @@ MOCK
 chmod +x "$tmpdir/mockbin/timvisher_git"
 
 test_path="$tmpdir/mockbin:$PATH"
+
+rm_state() {
+  local name
+  for name in "$@"
+  do
+    rm -f "$tmpdir/repo/$name"
+    case $name in
+      pr.md)        rm -f "$tmpdir/repo/.timvisher_gh/pr/pr.md" ;;
+      pr.md.url)    rm -f "$tmpdir/repo/.timvisher_gh/pr/pr.json" "$tmpdir/repo/.timvisher_gh/pr/pr.url" ;;
+      x.merged)     rm -f "$tmpdir/repo/.timvisher_gh/pr/merged" ;;
+      issue.md)     rm -f "$tmpdir/repo/.timvisher_gh/issue/issue.md" ;;
+      issue.md.url) rm -f "$tmpdir/repo/.timvisher_gh/issue/issue.json" "$tmpdir/repo/.timvisher_gh/issue/issue.url" ;;
+    esac
+  done
+}
+
 
 # --- dispatch tests ---
 
@@ -515,7 +532,7 @@ then
 else
   fail "pr opens existing pr.md.url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 
 # Test: pr creates PR from pr.md when git status is clean
 run_test
@@ -533,7 +550,7 @@ then
 else
   fail "pr creates PR from pr.md: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 
 # Test: pr exits if git status is dirty
 run_test
@@ -550,7 +567,7 @@ else
 fi
 "$real_git" reset -q HEAD "$tmpdir/repo/untracked.txt"
 rm -f "$tmpdir/repo/untracked.txt"
-rm -f "$tmpdir/repo/pr.md"
+rm_state pr.md
 
 # --- issue tests ---
 
@@ -578,7 +595,7 @@ then
 else
   fail "issue opens existing issue.md.url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/issue.md.url"
+rm_state issue.md.url
 
 # Test: issue creates issue from issue.md
 run_test
@@ -604,18 +621,18 @@ else
   pass "issue does not git push"
   ((tests++)) || true
 fi
-rm -f "$tmpdir/repo/issue.md.url"
-rm -f "$tmpdir/repo/issue.md"
+rm_state issue.md.url
+rm_state issue.md
 
 # --- pr edit tests ---
 
 # Test: pr edit exits if pr.md.url doesn't exist
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_edit_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
-if [[ $result == *"does not exist"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr edit exits if pr.md.url doesn't exist"
 else
@@ -625,7 +642,7 @@ fi
 # Test: pr edit exits if pr.md doesn't exist
 run_test
 echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
-rm -f "$tmpdir/repo/pr.md"
+rm_state pr.md
 export MOCK_LOG="$tmpdir/log_pr_edit_nomd"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true)
@@ -653,17 +670,17 @@ then
 else
   fail "pr edit calls gh pr edit with correct url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/pr.md"
+rm_state pr.md.url pr.md
 
 # --- issue edit tests ---
 
 # Test: issue edit exits if issue.md.url doesn't exist
 run_test
-rm -f "$tmpdir/repo/issue.md.url"
+rm_state issue.md.url
 export MOCK_LOG="$tmpdir/log_issue_edit_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
-if [[ $result == *"does not exist"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "issue edit exits if issue.md.url doesn't exist"
 else
@@ -673,7 +690,7 @@ fi
 # Test: issue edit exits if issue.md doesn't exist
 run_test
 echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
-rm -f "$tmpdir/repo/issue.md"
+rm_state issue.md
 export MOCK_LOG="$tmpdir/log_issue_edit_nomd"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true)
@@ -701,7 +718,7 @@ then
 else
   fail "issue edit calls gh issue edit with correct url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/issue.md.url" "$tmpdir/repo/issue.md"
+rm_state issue.md.url issue.md
 
 # --- pr merge tests ---
 
@@ -762,11 +779,11 @@ rm -rf "$config_tmpdir"
 
 # Test: pr merge - exits if pr.md.url is missing
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_merge_nourl"
 touch "$MOCK_LOG"
 result=$(PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr merge" 2>&1 || true)
-if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr merge: exits if pr.md.url is missing"
 else
@@ -818,6 +835,7 @@ run_v2() {
       timvisher_logging_log_level=INFO \
       TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config" \
       TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
+      TIMVISHER_GH_PR_MERGE_TIMEOUT=2 \
       TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 \
       "$script" "$@"
   )
@@ -875,7 +893,7 @@ v2_reset merge_already
 write_merge_handler "$(merge_graphql MERGED)"
 merge_comment_repos
 echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
 if (( rc == 0 )) &&
    [[ $result == *"already merged in abc123"* ]] &&
@@ -902,7 +920,7 @@ then
 else
   fail "pr merge rerun: rc=${rc} cookie=$(cat "$tmpdir/repo/x.merged") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: pr merge with auto-merge already enabled waits without re-requesting
 run_test
@@ -918,7 +936,7 @@ then
 else
   fail "pr merge auto-merge: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: pr merge with the PR already in the merge queue waits
 run_test
@@ -933,7 +951,7 @@ then
 else
   fail "pr merge queue: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: comment-merge repo with my /merge since the last push: no duplicate
 run_test
@@ -951,7 +969,7 @@ then
 else
   fail "pr merge comment dup: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: comment-merge repo with /merge only before the last push re-requests
 run_test
@@ -967,7 +985,7 @@ then
 else
   fail "pr merge comment stale: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: comment-merge repo ignores someone else's /merge
 run_test
@@ -981,7 +999,7 @@ then
 else
   fail "pr merge comment other: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 merge_comment_repos
 
 # Test: a /merge comment in a gh-merge repo does not count as requested
@@ -997,7 +1015,7 @@ then
 else
   fail "pr merge gh ignores comment: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: open PR, nothing requested: prompts, merges, waits, drops cookie
 run_test
@@ -1013,7 +1031,7 @@ then
 else
   fail "pr merge open: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/x.merged"
+rm_state x.merged
 
 # Test: declining the prompt exits non-zero without merging
 run_test
@@ -1042,18 +1060,160 @@ then
 else
   fail "pr merge closed: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
-rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/x.merged"
+rm_state pr.md.url x.merged
+unset MOCK_GH_HANDLER
+
+# --- state migration tests ---
+
+write_edit_handler() {
+  cat > "$MOCK_GH_HANDLER" <<'HANDLER'
+case "$1 $2" in
+  'pr edit') echo mock-pr-edit ;;
+  'issue edit') echo mock-issue-edit ;;
+esac
+HANDLER
+}
+
+# Test: root pr.md, pr.md.url and x.merged move into .timvisher_gh/ with compat links
+run_test
+v2_reset migrate_root
+write_edit_handler
+rm -rf "$tmpdir/repo/.timvisher_gh"
+printf 'Title\n\nBody\n' > "$tmpdir/repo/pr.md"
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+printf 'merged_at=old\n' > "$tmpdir/repo/x.merged"
+touch -t 202601010000 "$tmpdir/repo/x.merged"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+st="$tmpdir/repo/.timvisher_gh/pr"
+if (( rc == 0 )) &&
+   [[ $(< "$st/pr.md") == $'Title\n\nBody' ]] &&
+   [[ $(jq -r .url "$st/pr.json") == https://github.com/testuser/testrepo/pull/42 ]] &&
+   [[ $(< "$st/pr.url") == https://github.com/testuser/testrepo/pull/42 ]] &&
+   [[ $(< "$st/merged") == 'merged_at=old' ]] &&
+   [[ $(gdate -r "$st/merged" +%Y) == 2026 && $(gdate -r "$st/merged" +%m%d) == 0101 ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md") == .timvisher_gh/pr/pr.md ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md.url") == .timvisher_gh/pr/pr.url ]] &&
+   [[ $(readlink "$tmpdir/repo/x.merged") == .timvisher_gh/pr/merged ]] &&
+   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "state: root pr.md, pr.md.url, x.merged migrate with compat symlinks"
+else
+  fail "state migrate: rc=${rc} tree=$(ls -la "$tmpdir/repo" "$st" 2>&1) got '${result: -400}'"
+fi
+
+# Test: migration is idempotent
+run_test
+v2_reset migrate_rerun
+write_edit_handler
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result != *Moved* ]] &&
+   [[ -L $tmpdir/repo/pr.md && -L $tmpdir/repo/pr.md.url && -L $tmpdir/repo/x.merged ]] &&
+   [[ $(< "$tmpdir/repo/pr.md.url") == https://github.com/testuser/testrepo/pull/42 ]]
+then
+  pass "state: rerunning the migration changes nothing"
+else
+  fail "state migrate rerun: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: a rename-save that replaced the pr.md symlink with a file migrates again
+run_test
+v2_reset migrate_rename_save
+write_edit_handler
+rm -f "$tmpdir/repo/pr.md"
+printf 'New title\n\nNew body\n' > "$tmpdir/repo/pr.md"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ -L $tmpdir/repo/pr.md ]] &&
+   [[ $(< "$st/pr.md") == $'New title\n\nNew body' ]] &&
+   grep -q 'mock-gh pr edit .* --title New title' "$MOCK_LOG"
+then
+  pass "state: regular root pr.md after a rename-save migrates again"
+else
+  fail "state rename-save: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a URL written through the pr.md.url compat link is adopted into pr.json
+run_test
+v2_reset migrate_url_drift
+write_edit_handler
+jq '. + {posted: {title: "t", body: "b"}}' "$st/pr.json" > "$st/pr.json.new" && mv "$st/pr.json.new" "$st/pr.json"
+echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r .url "$st/pr.json") == https://github.com/testuser/testrepo/pull/77 ]] &&
+   [[ $(jq -r '.posted // "none"' "$st/pr.json") == none ]] &&
+   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/77' "$MOCK_LOG"
+then
+  pass "state: URL rewritten through pr.md.url is adopted, dropping the old lease"
+else
+  fail "state url drift: rc=${rc} json=$(cat "$st/pr.json") got '${result: -400}'"
+fi
+
+# Test: re-migrating a root pr.md.url with the same URL keeps the posted lease
+run_test
+v2_reset migrate_same_url
+write_edit_handler
+jq '. + {posted: {title: "t", body: "b"}}' "$st/pr.json" > "$st/pr.json.new" && mv "$st/pr.json.new" "$st/pr.json"
+rm -f "$tmpdir/repo/pr.md.url"
+echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
+result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r .posted.title "$st/pr.json") == t ]] &&
+   [[ -L $tmpdir/repo/pr.md.url ]]
+then
+  pass "state: same-URL root pr.md.url re-migrates without dropping the lease"
+else
+  fail "state same url: rc=${rc} json=$(cat "$st/pr.json") got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+
+# Test: root issue.md and issue.md.url move into .timvisher_gh/issue/
+run_test
+v2_reset migrate_issue
+write_edit_handler
+printf 'Issue title\n\nIssue body\n' > "$tmpdir/repo/issue.md"
+echo "https://github.com/testuser/testrepo/issues/42" > "$tmpdir/repo/issue.md.url"
+result=$(run_v2 issue edit 2>&1) && rc=0 || rc=$?
+issue_st="$tmpdir/repo/.timvisher_gh/issue"
+if (( rc == 0 )) &&
+   [[ ! -e $tmpdir/repo/issue.md && ! -e $tmpdir/repo/issue.md.url ]] &&
+   [[ $(< "$issue_st/issue.md") == $'Issue title\n\nIssue body' ]] &&
+   [[ $(jq -r .url "$issue_st/issue.json") == https://github.com/testuser/testrepo/issues/42 ]] &&
+   [[ $(< "$issue_st/issue.url") == https://github.com/testuser/testrepo/issues/42 ]] &&
+   grep -q 'mock-gh issue edit https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
+then
+  pass "state: root issue.md and issue.md.url migrate into .timvisher_gh/issue/"
+else
+  fail "state issue migrate: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+
+# Test: info does not create a state directory
+run_test
+v2_reset info_no_state
+cat > "$MOCK_GH_HANDLER" <<'HANDLER'
+[[ "$1 $2" == 'api user' ]] && echo testuser
+HANDLER
+result=$(run_v2 info .me 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ ! -e $tmpdir/repo/.timvisher_gh ]]
+then
+  pass "state: info leaves no .timvisher_gh behind"
+else
+  fail "state info: rc=${rc} got '${result: -400}'"
+fi
 unset MOCK_GH_HANDLER
 
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing
 run_test
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 export MOCK_LOG="$tmpdir/log_pr_ready_nourl"
 touch "$MOCK_LOG"
 result=$(TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true)
-if [[ $result == *"pr_url unset"* || $result == *"pr.md.url"* ]]
+if [[ $result == *"has no url"* ]]
 then
   pass "pr ready: exits if pr.md.url is missing"
 else
@@ -1076,7 +1236,7 @@ then
 else
   fail "pr ready: calls gh pr ready when all checks pass: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 unset MOCK_CHECKS_FILE
 
 # Test: pr ready - fails fast on failed checks
@@ -1103,7 +1263,7 @@ else
   pass "pr ready: does not call gh pr ready on failure"
   ((tests++)) || true
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 unset MOCK_CHECKS_FILE
 
 # Test: pr ready - exclude patterns filter out matching checks
@@ -1128,7 +1288,7 @@ then
 else
   fail "pr ready: exclude patterns allow ignoring pending checks: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
@@ -1158,7 +1318,7 @@ then
 else
   fail "pr ready: exclude file skips comments and blank lines: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
@@ -1288,7 +1448,7 @@ then
 else
   fail "pr ready: all checks excluded proceeds immediately: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
@@ -1346,7 +1506,8 @@ then
 else
   fail "comment posts new comment using pr.md.url: got $(cat "$MOCK_LOG")"
 fi
-rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
+rm -f "$tmpdir/repo/comment.md.url"
 
 # Test: comment posts new comment using --pull-request flag
 run_test
@@ -1376,7 +1537,8 @@ then
 else
   fail "comment stores URL in comment.md.url"
 fi
-rm -f "$tmpdir/repo/comment.md.url" "$tmpdir/repo/pr.md.url"
+rm_state pr.md.url
+rm -f "$tmpdir/repo/comment.md.url"
 
 # --- comment edit tests ---
 

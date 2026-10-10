@@ -65,7 +65,7 @@ Recommended structure (adapt to any repo template):
 If `.github/PULL_REQUEST_TEMPLATE.md` exists, append its contents after your summary and fill all placeholders. Do not leave TODOs or empty checklists.
 
 ### 4) Quick checks
-- Ensure `pr.md` lives at repo root.
+- Ensure `pr.md` lives at repo root (or at `.timvisher_gh/pr/pr.md`).
 - Ensure line 2 is blank (the PR body starts on line 3).
 - Ensure the title and summary reflect all commits when `1 < commit_count`.
 
@@ -74,7 +74,16 @@ If `.github/PULL_REQUEST_TEMPLATE.md` exists, append its contents after your sum
 timvisher_gh pr
 ```
 
-This pushes the branch and creates the PR, storing the URL in `pr.md.url`.
+This pushes the branch and creates the PR, recording the URL in `.timvisher_gh/pr/pr.json`.
+
+## State directory
+
+`timvisher_gh` keeps per-worktree state in `.timvisher_gh/` at the worktree root (ignored by the global gitignore):
+
+- `pr/pr.md`, `pr/pr.json` (`url` plus the `posted` title/body), `pr/pr.url` (generated from `pr.json`; `cat` or open it), `pr/merged` (merged cookie)
+- `issue/issue.md`, `issue/issue.json`, `issue/issue.url`
+
+A `pr.md` or `issue.md` drafted at the worktree root is moved into `.timvisher_gh/` the next time a `pr`, `issue`, or `comment` subcommand runs. Root `pr.md`, `pr.md.url` and `x.merged` symlinks are left behind for older callers; read the PR URL from `.timvisher_gh/pr/pr.url` in new code.
 
 ## Workflow — creating an issue
 
@@ -84,7 +93,7 @@ Draft `issue.md` using the same format (title on line 1, blank line 2, body from
 timvisher_gh issue
 ```
 
-The URL is stored in `issue.md.url`.
+The URL is recorded in `.timvisher_gh/issue/issue.json`.
 
 ## Workflow — marking a PR ready for review
 
@@ -105,8 +114,8 @@ timvisher_gh pr ready
 After modifying `pr.md` or `issue.md`, push the updates to GitHub:
 
 ```bash
-timvisher_gh pr edit     # reads URL from pr.md.url
-timvisher_gh issue edit  # reads URL from issue.md.url
+timvisher_gh pr edit     # reads URL from .timvisher_gh/pr/pr.json
+timvisher_gh issue edit  # reads URL from .timvisher_gh/issue/issue.json
 ```
 
 ## Workflow — posting a PR comment
@@ -114,7 +123,7 @@ timvisher_gh issue edit  # reads URL from issue.md.url
 Write the comment body to a file (e.g. `comment.md`), then post it:
 
 ```bash
-timvisher_gh comment comment.md                                    # PR URL from pr.md.url or Chrome
+timvisher_gh comment comment.md                                    # PR URL from .timvisher_gh/pr/pr.json or Chrome
 timvisher_gh comment --pull-request=https://github.com/o/r/pull/1 comment.md  # explicit PR URL
 ```
 

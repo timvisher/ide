@@ -27,7 +27,7 @@ show_help() {
     timvisher_gh info --json     Query the whole context blob
     timvisher_gh pr              Create a PR from pr.md (or open existing)
     timvisher_gh pr edit         Edit an existing PR from pr.md
-    timvisher_gh pr merge [gh-opts]  Merge the PR referenced by pr.md.url
+    timvisher_gh pr merge [gh-opts]  Merge the PR recorded in pr.json
     timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
     timvisher_gh issue edit      Edit an existing issue from issue.md
@@ -46,11 +46,11 @@ show_help() {
     - Reads title from line 1 and body from line 3+ of pr.md
 
   pr edit subcommand:
-    - Requires pr.md.url to exist
+    - Requires a recorded PR (pr.json)
     - Updates the PR title and body from pr.md
 
   pr merge subcommand:
-    - Requires pr.md.url to exist
+    - Requires a recorded PR (pr.json)
     - Idempotent: observes the PR before acting, so rerunning it after
       any partial failure converges and never requests a merge twice:
         already MERGED       reports 'already merged in <commit>' and
@@ -70,14 +70,14 @@ show_help() {
       already requested
     - Extra arguments are passed to 'gh pr merge'
     - Blocks until the PR is actually merged (polls past any merge
-      queue); on confirmed merge, drops an 'x.merged' cookie at the
-      worktree top level so worktree gc can eagerly reap it.  An
+      queue); on confirmed merge, drops the '.timvisher_gh/pr/merged'
+      cookie so worktree gc can eagerly reap it.  An
       existing cookie is left alone, keeping its original mtime
     - Override poll/timeout with TIMVISHER_GH_PR_MERGE_POLL_INTERVAL
       (default 10s) and TIMVISHER_GH_PR_MERGE_TIMEOUT (default 7200s)
 
   pr ready subcommand:
-    - Requires pr.md.url to exist
+    - Requires a recorded PR (pr.json)
     - Polls CI checks until all pass, then runs 'gh pr ready'
     - Exclude patterns are loaded from org-level then repo-level files:
         ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/OWNER/pr/ready/exclude-checks.txt
@@ -93,12 +93,12 @@ show_help() {
     - Reads title from line 1 and body from line 3+ of issue.md
 
   issue edit subcommand:
-    - Requires issue.md.url to exist
+    - Requires a recorded issue (issue.json)
     - Updates the issue title and body from issue.md
 
   comment subcommand:
     - Posts the contents of <file> as a PR comment
-    - PR URL comes from --pull-request=URL, or pr.md.url, or Chrome active tab
+    - PR URL comes from --pull-request=URL, or pr.json, or Chrome active tab
     - Stores the comment URL in <file>.url
     - If <file>.url already exists, prints the URL to stdout
 
@@ -149,8 +149,24 @@ show_help() {
       never process-wide.
 
   Both pr/issue create subcommands:
-    - Store the resulting URL in <file>.url
+    - Record the resulting URL in pr.json / issue.json
     - Open the URL in the browser on subsequent runs
+
+  State:
+    Per-worktree state lives in <worktree root>/.timvisher_gh/ (ignored
+    by the global gitignore):
+      pr/pr.md        title on line 1, body from line 3
+      pr/pr.json      {url, posted: {title, body}}
+      pr/pr.url       generated from pr.json on every write
+      pr/merged       merged cookie, read by worktree gc
+      issue/issue.md, issue/issue.json, issue/issue.url
+    The pr, issue, and comment subcommands migrate legacy files at the
+    worktree root first, idempotently: a regular pr.md, pr.md.url,
+    x.merged, issue.md, or issue.md.url moves in (a regular pr.md left
+    by an editor's rename-save moves in again, replacing the old one).
+    Compatibility symlinks pr.md, pr.md.url, and x.merged are left at
+    the root.  A URL written through the pr.md.url symlink is adopted
+    into pr.json.
 
   Options:
     -C <path>           Resolve context from <path> instead of the
@@ -273,15 +289,177 @@ timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
   die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
     "${repo_spec%%/*}"
 
+# --- state ---
+
+state__write_file() {
+  local path=$1 tmp
+  mkdir -p -- "${path%/*}" ||
+    return 1
+  tmp=$(mktemp "${path}.XXXXXX") ||
+    return 1
+  if cat > "$tmp" && mv -f -- "$tmp" "$path"
+  then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+state__dir() {
+  printf '%s/.timvisher_gh/%s\n' "$toplevel" "$1"
+}
+
+state__md() {
+  printf '%s/%s.md\n' "$(state__dir "$1")" "$1"
+}
+
+state__json() {
+  local file
+  file="$(state__dir "$1")/$1.json"
+  if [[ -r $file ]]
+  then
+    cat -- "$file"
+  else
+    printf '{}\n'
+  fi
+}
+
+state__url() {
+  state__json "$1" | jq -r '.url // empty'
+}
+
+state__regen_url() {
+  local kind=$1 dir url url_file
+  dir=$(state__dir "$kind")
+  url_file="${dir}/${kind}.url"
+  url=$(state__url "$kind")
+  if [[ -z $url ]]
+  then
+    rm -f -- "$url_file"
+    return 0
+  fi
+  if [[ -r $url_file && $(< "$url_file") == "$url" ]]
+  then
+    return 0
+  fi
+  printf '%s\n' "$url" | state__write_file "$url_file" ||
+    die "Couldn't write '%s'" "$url_file"
+}
+
+state__write_json() {
+  local kind=$1 json=$2 file
+  file="$(state__dir "$kind")/${kind}.json"
+  jq . <<<"$json" | state__write_file "$file" ||
+    die "Couldn't write '%s'" "$file"
+  state__regen_url "$kind"
+}
+
+state__set_url() {
+  local kind=$1 url=$2 json old_url
+  json=$(state__json "$kind")
+  old_url=$(jq -r '.url // empty' <<<"$json")
+  if [[ $old_url == "$url" && -n $url ]]
+  then
+    state__regen_url "$kind"
+    return 0
+  fi
+  if [[ -n $old_url ]]
+  then
+    warn "Replacing %s URL '%s' with '%s'; its posted state no longer applies" "$kind" "$old_url" "$url"
+  fi
+  state__write_json "$kind" "$(jq -n --arg url "$url" '{url: $url}')"
+}
+
+state__migrate_file() {
+  local src=$1 dst=$2
+  [[ -f $src && ! -L $src ]] ||
+    return 0
+  mkdir -p -- "${dst%/*}" ||
+    die "Couldn't create '%s'" "${dst%/*}"
+  mv -f -- "$src" "$dst" ||
+    die "Couldn't move '%s' to '%s'" "$src" "$dst"
+  info "Moved '%s' to '%s'" "${src#"$toplevel"/}" "${dst#"$toplevel"/}"
+}
+
+state__migrate_url() {
+  local src=$1 kind=$2 url
+  [[ -f $src && ! -L $src ]] ||
+    return 0
+  url=$(< "$src")
+  url=${url//[[:space:]]/}
+  if [[ -n $url ]]
+  then
+    state__set_url "$kind" "$url"
+  fi
+  rm -f -- "$src" ||
+    die "Couldn't remove '%s'" "$src"
+  info "Moved '%s' into '%s'" "${src#"$toplevel"/}" ".timvisher_gh/${kind}/${kind}.json"
+}
+
+state__adopt_url_drift() {
+  local kind=$1 url_file url
+  url_file="$(state__dir "$kind")/${kind}.url"
+  [[ -f $url_file ]] ||
+    return 0
+  url=$(< "$url_file")
+  url=${url//[[:space:]]/}
+  [[ -n $url && $url != "$(state__url "$kind")" ]] ||
+    return 0
+  info "'%s' was rewritten to '%s'; adopting it" "${url_file#"$toplevel"/}" "$url"
+  state__set_url "$kind" "$url"
+}
+
+state__link_compat() {
+  local name=$1 target=$2 link="${toplevel}/$1"
+  [[ -e ${toplevel}/${target} ]] ||
+    return 0
+  [[ -L $link || -e $link ]] &&
+    return 0
+  ln -s -- "$target" "$link" ||
+    warn "Couldn't link '%s' to '%s'" "$name" "$target"
+}
+
+state__migrate() {
+  local pr_dir issue_dir
+  pr_dir=$(state__dir pr)
+  issue_dir=$(state__dir issue)
+
+  state__migrate_file "${toplevel}/pr.md" "${pr_dir}/pr.md"
+  state__migrate_url "${toplevel}/pr.md.url" pr
+  state__migrate_file "${toplevel}/x.merged" "${pr_dir}/merged"
+  state__migrate_file "${toplevel}/issue.md" "${issue_dir}/issue.md"
+  state__migrate_url "${toplevel}/issue.md.url" issue
+
+  state__adopt_url_drift pr
+  state__adopt_url_drift issue
+
+  state__link_compat pr.md .timvisher_gh/pr/pr.md
+  state__link_compat pr.md.url .timvisher_gh/pr/pr.url
+  state__link_compat x.merged .timvisher_gh/pr/merged
+}
+
+state__require_url() {
+  local kind=$1 url
+  url=$(state__url "$kind")
+  [[ -n $url ]] ||
+    die "No %s recorded: '.timvisher_gh/%s/%s.json' has no url; create one first" "$kind" "$kind" "$kind"
+  printf '%s\n' "$url"
+}
+
+state__require_md() {
+  local kind=$1 md
+  md=$(state__md "$kind")
+  [[ -r $md ]] ||
+    die "Expected %s file '%s' (or '%s.md' at the top level) not readable" "$kind" "$md" "$kind"
+  printf '%s\n' "$md"
+}
+
 # --- subcommand: pr ---
 
 gh_pr_ready() {
   local pr_url
-  pr_url=$(< "${toplevel}/pr.md.url") ||
-    die 'pr.md.url unreadable'
-
-  [[ -n $pr_url ]] ||
-    die 'pr_url unset. Does pr.md.url exist at top level?'
+  pr_url=$(state__require_url pr) ||
+    exit 1
 
   # Load exclude patterns for checks that should be ignored (e.g.
   # mergegate, which never completes until all others pass). Org-level
@@ -368,17 +546,17 @@ gh_pr_ready() {
 }
 
 gh_pr_edit() {
-  [[ -r pr.md.url ]] ||
-    die ''pr.md.url' does not exist; create a PR first'
-
-  [[ -r pr.md ]] ||
-    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
+  local pr_url pr_md
+  pr_url=$(state__require_url pr) ||
+    exit 1
+  pr_md=$(state__require_md pr) ||
+    exit 1
 
   command gh pr edit \
-          "$(< pr.md.url)" \
+          "$pr_url" \
           --repo "$repo_spec" \
-          --title "$(head -n1 pr.md)" \
-          -F <(tail -n+3 pr.md) ||
+          --title "$(head -n1 "$pr_md")" \
+          -F <(tail -n+3 "$pr_md") ||
     die 'Unable to edit PR'
 
   info 'PR updated'
@@ -488,7 +666,8 @@ gh_pr_wait_until_merged() {
 
 gh_pr__drop_merged_cookie() {
   local pr_url=$1 strategy=$2 merge_oid=$3
-  local cookie="${toplevel}/x.merged"
+  local cookie
+  cookie="$(state__dir pr)/merged"
 
   if [[ -f $cookie ]]
   then
@@ -501,9 +680,10 @@ gh_pr__drop_merged_cookie() {
     printf 'pr_url=%s\n'       "$pr_url"
     printf 'strategy=%s\n'     "$strategy"
     printf 'merge_commit=%s\n' "$merge_oid"
-  } > "$cookie"
+  } | state__write_file "$cookie"
   then
     info 'Wrote merged cookie %s' "$cookie"
+    state__link_compat x.merged .timvisher_gh/pr/merged
   else
     warn 'Could not write merged cookie %s' "$cookie"
   fi
@@ -580,11 +760,8 @@ gh_pr_merge() {
   display_script "$0"
 
   local pr_url
-  pr_url=$(< "${toplevel}/pr.md.url") ||
-    die 'pr.md.url unreadable'
-
-  [[ -n $pr_url ]] ||
-    die 'pr_url unset. Does pr.md.url exist at top level?'
+  pr_url=$(state__require_url pr) ||
+    exit 1
 
   local repo_slug_from_url=${pr_url#https://github.com/}
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
@@ -662,12 +839,14 @@ gh_pr() {
       ;;
   esac
 
-  if [[ -r pr.md.url ]]
+  local existing_url
+  existing_url=$(state__url pr)
+  if [[ -n $existing_url ]]
   then
-    info ''pr.md.url' already exists. Opening'
+    info 'PR already exists. Opening %s' "$existing_url"
     osascript -e 'on run argv
   tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$(< pr.md.url)"
+end run' "$existing_url"
     return
   fi
 
@@ -675,8 +854,9 @@ end run' "$(< pr.md.url)"
   base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
-  [[ -r pr.md ]] ||
-    die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
+  local pr_md
+  pr_md=$(state__require_md pr) ||
+    exit 1
 
   local status
   status=$(command git status --porcelain)
@@ -695,12 +875,14 @@ end run' "$(< pr.md.url)"
             --repo "$repo_spec" \
             --draft \
             --base "$base_branch" \
-            --title "$(head -n1 pr.md)" \
-            -F <(tail -n+3 pr.md)
+            --title "$(head -n1 "$pr_md")" \
+            -F <(tail -n+3 "$pr_md")
         ) ||
     die 'Unable to create PR'
 
-  tee <<<"$pr_url" pr.md.url
+  state__set_url pr "$pr_url"
+  state__link_compat pr.md.url .timvisher_gh/pr/pr.url
+  printf '%s\n' "$pr_url"
 
   osascript -e 'on run argv
   tell script "timvisher Browser" to openUrl(item 1 of argv)
@@ -710,17 +892,17 @@ end run' "$pr_url"
 # --- subcommand: issue ---
 
 gh_issue_edit() {
-  [[ -r issue.md.url ]] ||
-    die ''issue.md.url' does not exist; create an issue first'
-
-  [[ -r issue.md ]] ||
-    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
+  local issue_url issue_md
+  issue_url=$(state__require_url issue) ||
+    exit 1
+  issue_md=$(state__require_md issue) ||
+    exit 1
 
   command gh issue edit \
-          "$(< issue.md.url)" \
+          "$issue_url" \
           --repo "$repo_spec" \
-          --title "$(head -n1 issue.md)" \
-          -F <(tail -n+3 issue.md) ||
+          --title "$(head -n1 "$issue_md")" \
+          -F <(tail -n+3 "$issue_md") ||
     die 'Unable to edit issue'
 
   info 'Issue updated'
@@ -735,17 +917,20 @@ gh_issue() {
       ;;
   esac
 
-  if [[ -r issue.md.url ]]
+  local existing_url
+  existing_url=$(state__url issue)
+  if [[ -n $existing_url ]]
   then
-    info ''issue.md.url' already exists. Opening'
+    info 'Issue already exists. Opening %s' "$existing_url"
     osascript -e 'on run argv
   tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$(< issue.md.url)"
+end run' "$existing_url"
     return
   fi
 
-  [[ -r issue.md ]] ||
-    die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
+  local issue_md
+  issue_md=$(state__require_md issue) ||
+    exit 1
 
   osascript -e 'tell script "timvisher Browser" to activate()'
 
@@ -753,12 +938,13 @@ end run' "$(< issue.md.url)"
   issue_url=$(
     command gh issue create \
             --repo "$repo_spec" \
-            --title "$(head -n1 issue.md)" \
-            -F <(tail -n+3 issue.md)
+            --title "$(head -n1 "$issue_md")" \
+            -F <(tail -n+3 "$issue_md")
         ) ||
     die 'Unable to create issue'
 
-  tee <<<"$issue_url" issue.md.url
+  state__set_url issue "$issue_url"
+  printf '%s\n' "$issue_url"
 
   osascript -e 'on run argv
   tell script "timvisher Browser" to openUrl(item 1 of argv)
@@ -768,13 +954,13 @@ end run' "$issue_url"
 # --- subcommand: comment ---
 
 # Resolve the PR URL for comment operations.
-# Checks (in order): --pull-request= flag, pr.md.url, Chrome active tab.
+# Checks (in order): --pull-request= flag, .timvisher_gh/pr/pr.json, Chrome active tab.
 resolve_pr_url() {
   local url=${comment_pr_url:-}
 
-  if [[ -z $url ]] && [[ -r pr.md.url ]]
+  if [[ -z $url ]]
   then
-    url=$(< pr.md.url)
+    url=$(state__url pr)
   fi
 
   if [[ -z $url ]]
@@ -1151,12 +1337,15 @@ case $cmd in
     gh_info "$@"
     ;;
   pr)
+    state__migrate
     gh_pr "$@"
     ;;
   issue)
+    state__migrate
     gh_issue "$@"
     ;;
   comment)
+    state__migrate
     gh_comment "$@"
     ;;
   *)
