@@ -1725,6 +1725,177 @@ rm -rf "$tmpdir/repo/.timvisher_gh"
 rm_state pr.md pr.md.url x.merged
 unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
 
+# --- pr pull tests ---
+
+conv_dir="$tmpdir/conv"
+mkdir -p "$conv_dir"
+pull_comments="$tmpdir/repo/.timvisher_gh/pr/comments"
+
+write_conv_handler() {
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$1 \$2" in
+  'api user')
+    echo testuser
+    ;;
+  'api graphql')
+    case "\$*" in
+      *'reviewThreads(first'*) mock_conn=reviewThreads ;;
+      *'reviews(first'*) mock_conn=reviews ;;
+      *'comments(first'*) mock_conn=comments ;;
+    esac
+    jq --arg c "\$mock_conn" '{data: {repository: {pullRequest: {(\$c): {nodes: .}}}}}' "$conv_dir/\$mock_conn.json" | respond
+    ;;
+esac
+HANDLER
+}
+
+write_conv() {
+  local alice_body=${1:-Looks good} my_body=${2:-my note}
+  jq -n --arg alice "$alice_body" --arg mine "$my_body" '[
+    {id: "IC_1", databaseId: 11, url: "https://github.com/testuser/testrepo/pull/50#issuecomment-11",
+     body: $alice, createdAt: "2026-10-10T10:00:00Z", author: {login: "alice"},
+     reactionGroups: [{content: "THUMBS_UP", viewerHasReacted: true}, {content: "EYES", viewerHasReacted: false}]},
+    {id: "IC_2", databaseId: 12, url: "https://github.com/testuser/testrepo/pull/50#issuecomment-12",
+     body: $mine, createdAt: "2026-10-10T10:03:00Z", author: {login: "testuser"}, reactionGroups: []}
+  ]' > "$conv_dir/comments.json"
+  jq -n '[
+    {id: "PRR_1", databaseId: 21, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-21",
+     body: "", state: "COMMENTED", createdAt: "2026-10-10T10:01:00Z", submittedAt: "2026-10-10T10:01:00Z",
+     author: {login: "dd-agentic-review-platform-14301c"}, reactionGroups: []},
+    {id: "PRR_2", databaseId: 22, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-22",
+     body: "Please fix", state: "CHANGES_REQUESTED", createdAt: "2026-10-10T10:04:00Z", submittedAt: "2026-10-10T10:05:00Z",
+     author: {login: "bob"}, reactionGroups: []},
+    {id: "PRR_3", databaseId: 23, url: "https://github.com/testuser/testrepo/pull/50#pullrequestreview-23",
+     body: "draft", state: "PENDING", createdAt: "2026-10-10T10:06:00Z", submittedAt: null,
+     author: {login: "testuser"}, reactionGroups: []}
+  ]' > "$conv_dir/reviews.json"
+  jq -n '[
+    {id: "PRRT_1", isResolved: false, isOutdated: false, path: "bash/bin/timvisher_gh",
+     line: 42, startLine: null, originalLine: 40, diffSide: "RIGHT",
+     comments: {nodes: [
+       {id: "PRRC_1", databaseId: 31, url: "https://github.com/testuser/testrepo/pull/50#discussion_r31",
+        body: "Nit here", createdAt: "2026-10-10T10:01:00Z",
+        author: {login: "dd-agentic-review-platform-14301c"},
+        pullRequestReview: {id: "PRR_1", databaseId: 21, state: "COMMENTED",
+                            author: {login: "dd-agentic-review-platform-14301c"}},
+        reactionGroups: []},
+       {id: "PRRC_2", databaseId: 32, url: "https://github.com/testuser/testrepo/pull/50#discussion_r32",
+        body: "Fixed", createdAt: "2026-10-10T10:02:00Z", author: {login: "testuser"},
+        pullRequestReview: {id: "PRR_9", databaseId: 29, state: "COMMENTED", author: {login: "testuser"}},
+        reactionGroups: [{content: "HEART", viewerHasReacted: true}]}
+     ]}}
+  ]' > "$conv_dir/reviewThreads.json"
+}
+
+pull_fixture() {
+  rm -rf "$tmpdir/repo/.timvisher_gh"
+  rm_state pr.md pr.md.url x.merged
+  mkdir -p "$push_st"
+  jq -n '{url: "https://github.com/testuser/testrepo/pull/50"}' > "$push_st/pr.json"
+}
+
+tree_digest() {
+  (cd "$pull_comments" && find . -type f | LC_ALL=C sort | xargs shasum)
+}
+
+alice_dir="$pull_comments/2026-10-10T10-00-00+0000-alice"
+mine_dir="$pull_comments/2026-10-10T10-03-00+0000-testuser"
+thread_dir="$pull_comments/2026-10-10T10-01-00+0000-bash-bin-timvisher-gh-L42-thread"
+reply_dir="$thread_dir/2026-10-10T10-02-00+0000-testuser"
+
+# Test: pr pull mirrors issue comments, reviews with bodies, and threads
+run_test
+pull_fixture
+write_conv
+v2_reset pull_first
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good' ]] &&
+   [[ $(jq -r '.kind + " " + .author + " " + .id + " " + (.posted.reactions | join(","))' "$alice_dir/comment.json") == 'issue_comment alice IC_1 +1' ]] &&
+   [[ $(< "$pull_comments/2026-10-10T10-05-00+0000-bob-review/comment.md") == 'Please fix' ]] &&
+   [[ $(jq -r '.kind + " " + .state' "$pull_comments/2026-10-10T10-05-00+0000-bob-review/comment.json") == 'review CHANGES_REQUESTED' ]] &&
+   [[ $(< "$thread_dir/thread.md") == 'Nit here' ]] &&
+   [[ $(jq -r '[.kind, .thread_id, .path, (.line | tostring), .review.author, (.posted.resolved | tostring)] | join(" ")' "$thread_dir/thread.json") == 'thread PRRT_1 bash/bin/timvisher_gh 42 dd-agentic-review-platform-14301c false' ]] &&
+   [[ $(< "$reply_dir/comment.md") == 'Fixed' ]] &&
+   [[ $(jq -r '.kind + " " + (.posted.reactions | join(","))' "$reply_dir/comment.json") == 'review_comment heart' ]] &&
+   [[ $(find "$pull_comments" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') == 4 ]] &&
+   [[ $result == *"5 new, 0 updated, 0 unchanged"* ]]
+then
+  pass "pr pull: mirrors comments, non-empty reviews, threads and replies"
+else
+  fail "pr pull first: rc=${rc} tree=$(cd "$pull_comments" 2>/dev/null && find . | sort) got '${result: -600}'"
+fi
+
+# Test: rerunning pr pull changes nothing
+run_test
+before=$(tree_digest)
+v2_reset pull_rerun
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ $(tree_digest) == "$before" ]] && [[ $result == *"0 new, 0 updated, 5 unchanged"* ]]
+then
+  pass "pr pull: rerun is a no-op"
+else
+  fail "pr pull rerun: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: intent keys survive a pull
+run_test
+jq '.reactions = ["heart"]' "$alice_dir/comment.json" > "$alice_dir/c.new" && mv "$alice_dir/c.new" "$alice_dir/comment.json"
+jq '.resolved = true' "$thread_dir/thread.json" > "$thread_dir/t.new" && mv "$thread_dir/t.new" "$thread_dir/thread.json"
+mkdir -p "$thread_dir/2026-10-10T11-00-00+0000-reply"
+printf 'Unposted reply\n' > "$thread_dir/2026-10-10T11-00-00+0000-reply/comment.md"
+v2_reset pull_intent
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(jq -r '.reactions | join(",")' "$alice_dir/comment.json") == heart ]] &&
+   [[ $(jq -r .resolved "$thread_dir/thread.json") == true ]] &&
+   [[ $(< "$thread_dir/2026-10-10T11-00-00+0000-reply/comment.md") == 'Unposted reply' ]] &&
+   [[ ! -e $thread_dir/2026-10-10T11-00-00+0000-reply/comment.json ]]
+then
+  pass "pr pull: preserves reactions/resolved intent and unposted drafts"
+else
+  fail "pr pull intent: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: remote edits flow down; an unpushed edit of my own comment is kept
+run_test
+printf 'my note, edited locally\n' > "$mine_dir/comment.md"
+write_conv 'Looks good, edited' 'my note, edited on GitHub'
+v2_reset pull_edits
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good, edited' ]] &&
+   [[ $(jq -r .posted.body "$alice_dir/comment.json") == 'Looks good, edited' ]] &&
+   [[ $(< "$mine_dir/comment.md") == 'my note, edited locally' ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note' ]] &&
+   [[ $result == *"Kept your unpushed edit"* ]]
+then
+  pass "pr pull: remote edits flow down, my unpushed edits and their lease are kept"
+else
+  fail "pr pull edits: rc=${rc} got '${result: -600}'"
+fi
+
+# Test: local changes to someone else's comment are discarded
+run_test
+printf 'tampered\n' > "$alice_dir/comment.md"
+v2_reset pull_readonly
+write_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(< "$alice_dir/comment.md") == 'Looks good, edited' ]] &&
+   [[ $result == *"read-only"* ]]
+then
+  pass "pr pull: someone else's comment body is read-only"
+else
+  fail "pr pull readonly: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing

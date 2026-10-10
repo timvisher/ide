@@ -32,6 +32,8 @@ show_help() {
                                  branch, create the PR or update its
                                  title/body from pr.md
     timvisher_gh pr edit         Only the title/body step of pr push
+    timvisher_gh pr pull         Mirror the PR conversation into
+                                 .timvisher_gh/pr/comments/
     timvisher_gh pr merge [gh-opts]  Merge the PR recorded in pr.json
     timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
@@ -75,6 +77,28 @@ show_help() {
                                    baseline) or delete .posted to
                                    overwrite GitHub
         nothing posted yet         adopts GitHub's as the baseline
+
+  pr pull subcommand:
+    - Mirrors the conversation (GitHub -> worktree); safe to rerun
+    - One directory per item under .timvisher_gh/pr/comments/, named
+      <UTC +%FT%H-%M-%S%z>-<slug> so lexical order is chronological:
+        <ts>-<author>/comment.{md,json}         issue comment
+        <ts>-<author>-review/comment.{md,json}  review with a body
+                                                (empty-body reviews and
+                                                your pending review are
+                                                not mirrored)
+        <ts>-<path>-L<line>-thread/thread.{md,json}
+                                                review thread root
+        <ts>-...-thread/<ts>-<author>/comment.{md,json}
+                                                thread reply
+    - Items are matched to existing directories by node id, so renamed
+      directories and rerunning are fine
+    - Remote edits flow down.  Your own comment with an unpushed local
+      edit keeps the edit and its lease; anyone else's comment is
+      read-only and is overwritten from GitHub
+    - Intent keys you add are never touched: "reactions" (REST names)
+      in any json, "resolved" in thread.json.  Directories without an
+      id (new, unposted comments) are left alone
 
   pr merge subcommand:
     - Requires a recorded PR (pr.json)
@@ -194,6 +218,7 @@ show_help() {
       pr/pr.json      {url, posted: {title, body}}
       pr/pr.url       generated from pr.json on every write
       pr/merged       merged cookie, read by worktree gc
+      pr/comments/    the conversation (see pr pull)
       issue/issue.md, issue/issue.json, issue/issue.url
     The pr, issue, and comment subcommands migrate legacy files at the
     worktree root first, idempotently: a regular pr.md, pr.md.url,
@@ -1326,11 +1351,293 @@ gh_pr_push() {
   hooks__finish push
 }
 
+# --- conversation ---
+
+conv__reaction_rest_jq='
+  def rest_reaction:
+    {THUMBS_UP: "+1", THUMBS_DOWN: "-1", LAUGH: "laugh", HOORAY: "hooray",
+     CONFUSED: "confused", HEART: "heart", ROCKET: "rocket", EYES: "eyes"}[.] // ascii_downcase;
+'
+
+conv__query() {
+  local connection=$1 owner=$2 repo=$3 number=$4 nodes
+  case $connection in
+    comments)
+      nodes='id databaseId url body createdAt author { login }
+             reactionGroups { content viewerHasReacted }'
+      ;;
+    reviews)
+      nodes='id databaseId url body state createdAt submittedAt author { login }
+             reactionGroups { content viewerHasReacted }'
+      ;;
+    reviewThreads)
+      nodes='id isResolved isOutdated path line startLine originalLine diffSide
+             comments(first: 100) {
+               nodes {
+                 id databaseId url body createdAt author { login }
+                 pullRequestReview { id databaseId state author { login } }
+                 reactionGroups { content viewerHasReacted }
+               }
+             }'
+      ;;
+  esac
+
+  local query="query(\$owner: String!, \$repo: String!, \$number: Int!, \$endCursor: String) {
+  repository(owner: \$owner, name: \$repo) {
+    pullRequest(number: \$number) {
+      ${connection}(first: 100, after: \$endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ${nodes} }
+      }
+    }
+  }
+}"
+
+  command gh api graphql --paginate \
+          -f query="$query" \
+          -f owner="$owner" \
+          -f repo="$repo" \
+          -F number="$number" \
+          --jq ".data.repository.pullRequest.${connection}.nodes[]" |
+    jq -s .
+}
+
+conv__items() {
+  local me=$1 comments=$2 reviews=$3 threads=$4
+  jq -n -c \
+     --arg me "$me" \
+     --argjson comments "$comments" \
+     --argjson reviews "$reviews" \
+     --argjson threads "$threads" \
+     "${conv__reaction_rest_jq}"'
+     def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") | .[0:60];
+     def ts: sub(":"; "-"; "g") | sub("Z$"; "+0000");
+     def login: .author.login // "ghost";
+     def viewer_reactions: [.reactionGroups[]? | select(.viewerHasReacted) | .content | rest_reaction];
+     def review_of: .pullRequestReview
+       | if . == null then null
+         else {id, database_id: .databaseId, state, author: (.author.login // "ghost")}
+         end;
+     [
+       ($threads[] | . as $t | (.comments.nodes[0] // empty) as $root |
+        {key: ("thread:" + $t.id), parent: null, file: "thread",
+         name: (($root.createdAt | ts) + "-" + ($t.path | slug) + "-L"
+                + (($t.line // $t.originalLine // 0) | tostring) + "-thread"),
+         mine: (($root | login) == $me),
+         body: ($root.body // ""),
+         fields: {kind: "thread", thread_id: $t.id, path: $t.path,
+                  line: $t.line, start_line: $t.startLine,
+                  original_line: $t.originalLine, side: $t.diffSide,
+                  outdated: $t.isOutdated,
+                  id: $root.id, database_id: $root.databaseId, url: $root.url,
+                  author: ($root | login), created_at: $root.createdAt,
+                  review: ($root | review_of)},
+         posted: {url: $root.url, resolved: $t.isResolved,
+                  reactions: ($root | viewer_reactions)}}),
+       ($threads[] | . as $t | (.comments.nodes[1:][]) |
+        {key: .id, parent: ("thread:" + $t.id), file: "comment",
+         name: ((.createdAt | ts) + "-" + (login | slug)),
+         mine: (login == $me),
+         body: (.body // ""),
+         fields: {kind: "review_comment", id, database_id: .databaseId, url,
+                  author: login, created_at: .createdAt, review: review_of},
+         posted: {url, reactions: viewer_reactions}}),
+       ($comments[] |
+        {key: .id, parent: null, file: "comment",
+         name: ((.createdAt | ts) + "-" + (login | slug)),
+         mine: (login == $me),
+         body: (.body // ""),
+         fields: {kind: "issue_comment", id, database_id: .databaseId, url,
+                  author: login, created_at: .createdAt},
+         posted: {url, reactions: viewer_reactions}}),
+       ($reviews[] | select(.state != "PENDING" and ((.body // "") | test("\\S"))) |
+        (.submittedAt // .createdAt) as $at |
+        {key: .id, parent: null, file: "comment",
+         name: (($at | ts) + "-" + (login | slug) + "-review"),
+         mine: (login == $me),
+         body: .body,
+         fields: {kind: "review", state, id, database_id: .databaseId, url,
+                  author: login, created_at: $at},
+         posted: {url, reactions: viewer_reactions}})
+     ][]'
+}
+
+declare -A conv__idx=()
+conv__status=
+
+conv__index() {
+  local comments_dir=$1
+  local file key
+  conv__idx=()
+  [[ -d $comments_dir ]] ||
+    return 0
+  while IFS=$'\t' read -r file key
+  do
+    [[ -n $key ]] &&
+      conv__idx["$key"]=${file%/*}
+  done < <(
+    find "$comments_dir" -name '*.json' -type f -exec \
+         jq -r '[input_filename, (if .kind == "thread" and .thread_id then "thread:" + .thread_id else (.id // "") end)] | @tsv' {} +
+  )
+}
+
+conv__unique_dir() {
+  local base=$1 candidate=$1 n=2
+  while [[ -e $candidate ]]
+  do
+    candidate="${base}-${n}"
+    (( n += 1 ))
+  done
+  printf '%s\n' "$candidate"
+}
+
+conv__apply_item() {
+  local comments_dir=$1 item=$2
+  local key parent name file mine body
+  key=$(jq -r .key <<<"$item")
+  parent=$(jq -r '.parent // empty' <<<"$item")
+  name=$(jq -r .name <<<"$item")
+  file=$(jq -r .file <<<"$item")
+  mine=$(jq -r .mine <<<"$item")
+  body=$(desc__normalize "$(jq -r .body <<<"$item")")
+
+  local dir=${conv__idx["$key"]-} status=unchanged
+  if [[ -z $dir ]]
+  then
+    local parent_dir=$comments_dir
+    if [[ -n $parent ]]
+    then
+      parent_dir=${conv__idx["$parent"]-}
+      [[ -n $parent_dir ]] ||
+        die "Couldn't place reply '%s': its thread was not mirrored" "$key"
+    fi
+    dir=$(conv__unique_dir "${parent_dir}/${name}")
+    mkdir -p -- "$dir" ||
+      die "Couldn't create '%s'" "$dir"
+    conv__idx["$key"]=$dir
+    status=new
+  fi
+
+  local md="${dir}/${file}.md" json_file="${dir}/${file}.json"
+  local existing='{}'
+  [[ -r $json_file ]] &&
+    existing=$(< "$json_file")
+
+  local local_body have_md=false keep_local=false
+  if [[ -f $md ]]
+  then
+    have_md=true
+    local_body=$(desc__normalize "$(< "$md")")
+  fi
+
+  if [[ $have_md == true && $local_body != "$body" ]]
+  then
+    local posted_body has_posted_body
+    has_posted_body=$(jq -r '.posted | has("body")? // false' <<<"$existing")
+    posted_body=$(jq -r '.posted.body // ""' <<<"$existing")
+    if [[ $has_posted_body == true && $local_body == "$posted_body" ]]
+    then
+      status=updated
+    elif [[ $mine == true ]]
+    then
+      keep_local=true
+      status=kept
+    else
+      warn "Discarding local changes to %s's comment in '%s'; it is read-only" \
+           "$(jq -r .fields.author <<<"$item")" "${md#"$toplevel"/}"
+      status=updated
+    fi
+  fi
+
+  if [[ $keep_local == false ]]
+  then
+    if [[ $have_md == false || $local_body != "$body" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "$md" ||
+        die "Couldn't write '%s'" "$md"
+    fi
+  fi
+
+  local merged
+  merged=$(jq --argjson item "$item" --argjson keep "$keep_local" '
+    . as $old
+    | $old + $item.fields
+    | .posted = (($old.posted // {}) + $item.posted
+                 + (if $keep then {} else {body: $item.body} end))' <<<"$existing") ||
+    die "Couldn't merge state for '%s'" "$dir"
+  if [[ $merged != "$existing" ]] && ! jq -e --argjson old "$existing" '. == $old' >/dev/null <<<"$merged"
+  then
+    [[ $status == unchanged ]] &&
+      status=updated
+    jq . <<<"$merged" | state__write_file "$json_file" ||
+      die "Couldn't write '%s'" "$json_file"
+  fi
+
+  case $status in
+    kept)
+      info "Kept your unpushed edit in '%s'" "${md#"$toplevel"/}"
+      ;;
+    new|updated)
+      info '%s %s' "${status^}" "${dir#"$toplevel"/}"
+      ;;
+  esac
+  conv__status=$status
+}
+
+gh_pr_pull() {
+  (( $# == 0 )) ||
+    die "pr pull: unexpected argument '%s'" "$1"
+
+  local pr_url
+  pr_url=$(state__require_url pr) ||
+    exit 1
+  local -a parts
+  mapfile -t parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+
+  local me comments reviews threads
+  me=$(command gh api user --jq .login) ||
+    die 'Unable to query authenticated user'
+  comments=$(conv__query comments "${parts[@]}") ||
+    die "Couldn't read the comments on '%s'" "$pr_url"
+  reviews=$(conv__query reviews "${parts[@]}") ||
+    die "Couldn't read the reviews on '%s'" "$pr_url"
+  threads=$(conv__query reviewThreads "${parts[@]}") ||
+    die "Couldn't read the review threads on '%s'" "$pr_url"
+
+  local comments_dir
+  comments_dir="$(state__dir pr)/comments"
+  mkdir -p -- "$comments_dir" ||
+    die "Couldn't create '%s'" "$comments_dir"
+
+  conv__index "$comments_dir"
+
+  local item items
+  local -A counts=([new]=0 [updated]=0 [unchanged]=0 [kept]=0)
+  items=$(conv__items "$me" "$comments" "$reviews" "$threads") ||
+    die "Couldn't interpret the conversation on '%s'" "$pr_url"
+  while IFS= read -r item
+  do
+    [[ -n $item ]] ||
+      continue
+    conv__apply_item "$comments_dir" "$item"
+    (( counts[$conv__status] += 1 ))
+  done <<<"$items"
+
+  info 'Pulled %s: %d new, %d updated, %d unchanged, %d unpushed edits kept' \
+       "$pr_url" "${counts[new]}" "${counts[updated]}" "${counts[unchanged]}" "${counts[kept]}"
+}
+
 gh_pr() {
   case ${1-} in
     push)
       shift
       gh_pr_push "$@"
+      ;;
+    pull)
+      shift
+      gh_pr_pull "$@"
       ;;
     edit)
       shift

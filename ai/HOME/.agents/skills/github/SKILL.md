@@ -124,6 +124,14 @@ timvisher_gh pr push     # or `pr edit` for only the title/body step
 timvisher_gh issue edit  # reads URL from .timvisher_gh/issue/issue.json
 ```
 
+## Workflow — reading PR feedback
+
+```bash
+timvisher_gh pr pull
+```
+
+Mirrors the whole conversation into `.timvisher_gh/pr/comments/`, one directory per item, named `<UTC timestamp>-<slug>` so `ls` order is chronological: issue comments and reviews with a body as `<ts>-<author>[-review]/comment.{md,json}`, review threads as `<ts>-<path>-L<line>-thread/thread.{md,json}` with replies in `<ts>-<author>/comment.{md,json}` inside. The JSON carries the node id, URL, author, and (for threads) path, line, starting review and resolved state. Safe to rerun: remote edits flow down, your unpushed edits to your own comments are kept, and intent keys (`reactions`, `resolved`) are never touched. Filter ARP threads by `thread.json` `.author` starting with `dd-agentic-review-platform`.
+
 ## Workflow — posting a PR comment
 
 Write the comment body to a file (e.g. `comment.md`), then post it:
