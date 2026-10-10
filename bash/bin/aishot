@@ -1418,7 +1418,7 @@ _review_validate_file() {
       def nonempty: (type=="string") and (length>0);
       (.schema_version == 1) as $v1 |
       (if $v1 then commonkeys + ["status"] else commonkeys + ["agent_status","human_status"] end) as $fkeys |
-      (if $v1 then ["p0","refutation"] else ["p0","refutation","escalation","human_note"] end) as $okeys |
+      (if $v1 then ["p0","refutation"] else ["p0","refutation","escalation","human_note","source"] end) as $okeys |
       [
         (envkeys[] as $k | select((has($k))|not) | "missing envelope key: \($k)"),
         (keys_unsorted[] as $k | select((envkeys|index($k))==null) | "unknown envelope key: \($k)"),
@@ -1440,7 +1440,8 @@ _review_validate_file() {
              (if $f.human_status != "overruled" or ($f.human_note|nonempty) then empty else "finding[\($i)] human_status overruled requires a human_note" end),
              (if $f.human_status != "overruled" or $f.agent_status == "open" then empty else "finding[\($i)] human_status overruled requires agent_status open" end),
              (if (($f|has("escalation"))|not) or (($f.escalation|type)=="string") then empty else "finding[\($i)] escalation must be a string" end),
-             (if (($f|has("human_note"))|not) or (($f.human_note|type)=="string") then empty else "finding[\($i)] human_note must be a string" end)
+             (if (($f|has("human_note"))|not) or (($f.human_note|type)=="string") then empty else "finding[\($i)] human_note must be a string" end),
+             (if (($f|has("source"))|not) or (($f.source|type)=="object") then empty else "finding[\($i)] source must be a JSON object" end)
            end),
           (if (($f|has("p0"))|not) or (($f.p0|type)=="boolean") then empty else "finding[\($i)] p0 must be boolean" end),
           (if (($f|has("refutation"))|not) or (($f.refutation|type)=="string") then empty else "finding[\($i)] refutation must be a string" end),
@@ -1568,7 +1569,8 @@ Usage: aishot git diff review record-finding --title T --description D \
          --level high|medium|low --category CAT --flagged-by claude,codex \
          [--p0 true|false] [--file PATH] [--line N] [--id UUID] \
          [--agent-status open|fixed|refuted|escalated] [--rationale TEXT] \
-         [--human-status unreviewed|confirmed|overruled] [--note TEXT]
+         [--human-status unreviewed|confirmed|overruled] [--note TEXT] \
+         [--source JSON]
 
 Record (or update) one code-review finding in .aishot/review.json. This is
 the ONLY correct way to modify the review artifact — do NOT hand-edit the
@@ -1626,6 +1628,11 @@ Fields:
                   Default: unreviewed.
   --note          with --human-status: the human's note. Required for
                   overruled.
+  --source        (optional) a JSON object describing where the finding
+                  came from (e.g. an outside reviewer's ids and URLs).
+                  Stored on the finding as is, carried forward, and shown
+                  by print; aishot never interprets it. On update, it
+                  replaces any earlier source.
   --id            (optional) UUID of an existing finding to update.
   --status        (deprecated) schema 1 spelling of --agent-status:
                   open | addressed (= fixed) | wontfix (= refuted) |
@@ -1673,7 +1680,7 @@ do_review_record_finding() {
 
     local title="" description="" file="" line="" level="" category="" \
           flagged_by="" status="" agent_status="" human_status="" note="" \
-          id="" p0="" rationale=""
+          id="" p0="" rationale="" source="" source_set=0
     while (( 0 < $# ))
     do
         case "$1" in
@@ -1690,6 +1697,7 @@ do_review_record_finding() {
             --note) note=$2; shift 2 ;;
             --p0) p0=$2; shift 2 ;;
             --rationale) rationale=$2; shift 2 ;;
+            --source) source=$2; source_set=1; shift 2 ;;
             --id) id=$2; shift 2 ;;
             --help|-h) show_review_record_finding_help; return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; show_review_record_finding_help >&2; return 1 ;;
@@ -1755,6 +1763,16 @@ do_review_record_finding() {
         echo "Error: --line must be a non-negative integer." >&2
         return 1
     fi
+    local source_json=null
+    if (( source_set ))
+    then
+        if ! source_json=$(jq -sc 'if length == 1 and (.[0] | type) == "object" then .[0] else error end' \
+                               <<< "$source" 2>/dev/null)
+        then
+            echo "Error: --source must be a single JSON object." >&2
+            return 1
+        fi
+    fi
 
     local flagged_json="[]" line_json
     if [[ -n $flagged_by ]]
@@ -1819,7 +1837,7 @@ do_review_record_finding() {
            --arg file "$file" --argjson line "$line_json" \
            --arg level "$level" --arg category "$category" \
            --arg astatus "$agent_status" --arg hstatus "$human_status" --arg note "$note" \
-           --arg p0 "$p0" --arg rationale "$rationale" \
+           --arg p0 "$p0" --arg rationale "$rationale" --argjson source "$source_json" \
            --argjson flagged "$flagged_json" "${REVIEW_MIGRATE_JQ}"'
           migrate
           | .updated=$now
@@ -1842,6 +1860,7 @@ do_review_record_finding() {
                    else . end)
                 | (if $hstatus=="overruled" then .agent_status="open" else . end)
                 | (if $note!="" then .human_note=$note else . end)
+                | (if $source!=null then .source=$source else . end)
                 | .flagged_by=((.flagged_by + $flagged)|unique)
                 | .last_seen_iteration=$iter
               else . end)
@@ -1853,7 +1872,7 @@ do_review_record_finding() {
            --arg level "$level" --arg category "$category" \
            --arg astatus "${agent_status:-open}" --arg hstatus "${human_status:-unreviewed}" \
            --arg note "$note" --argjson p0 "${p0:-false}" --arg rationale "$rationale" \
-           --argjson flagged "$flagged_json" "${REVIEW_MIGRATE_JQ}"'
+           --argjson source "$source_json" --argjson flagged "$flagged_json" "${REVIEW_MIGRATE_JQ}"'
           migrate
           | .updated=$now
           | .findings += [{
@@ -1864,7 +1883,8 @@ do_review_record_finding() {
               first_seen_iteration:$iter, last_seen_iteration:$iter, flagged_by:$flagged
             }
             + (if $astatus=="escalated" and $rationale!="" then {escalation:$rationale} else {} end)
-            + (if $note!="" then {human_note:$note} else {} end)]
+            + (if $note!="" then {human_note:$note} else {} end)
+            + (if $source!=null then {source:$source} else {} end)]
         ' "$path" > "$tmp" || { echo "Error: jq insert failed." >&2; return 1; }
     fi
 
@@ -2017,6 +2037,7 @@ do_review_print() {
                     (if .agent_status=="refuted" and (.refutation // "")!="" then "  refuted: \(.refutation)" else empty end),
                     (if .agent_status=="escalated" and (.escalation // "")!="" then "  escalated: \(.escalation)" else empty end),
                     (if (.human_note // "")!="" then "  human note: \(.human_note)" else empty end),
+                    (if .source!=null then "  source: \(.source|tojson)" else empty end),
                     ""
                   )
                 else empty end

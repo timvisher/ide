@@ -954,6 +954,47 @@ else
 fi
 rm -rf "$repo" "$reg_home"
 
+# ---------------------------------------------------------------------------
+# Case 34
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+src='{"finding_id":"f-1","sha":"abc","thread":{"id":7},"url":"https://example.com/c/1"}'
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude --source "$src") >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+ok=1
+[[ $(jq -c '.findings[0].source' "$rj") == "$(jq -c . <<< "$src")" ]] || ok=0
+[[ $(cd "$repo" && "$script" git diff review print 2>/dev/null) == *'source: {"finding_id":"f-1"'* ]] || ok=0
+[[ $(cd "$repo" && "$script" git diff review print --format=json 2>/dev/null | jq -r '.findings[0].source.thread.id') == 7 ]] || ok=0
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+[[ $(jq -r '.findings[0].source.finding_id' "$rj") == f-1 ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --agent-status fixed) >/dev/null 2>&1
+[[ $(jq -r '.findings[0].source.finding_id' "$rj") == f-1 ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --source '{"finding_id":"f-2"}') >/dev/null 2>&1
+[[ $(jq -c '.findings[0].source' "$rj") == '{"finding_id":"f-2"}' ]] || ok=0
+for bad in '[1,2]' '"str"' 'not json' '{"a":1} {"b":2}' ''
+do
+  if (cd "$repo" && "$script" git diff review record-finding --id "$fid" --source "$bad") >/dev/null 2>&1
+  then
+    ok=0
+    echo "  --source accepted: '$bad'" >&2
+  fi
+done
+[[ $(jq -c '.findings[0].source' "$rj") == '{"finding_id":"f-2"}' ]] || ok=0
+(cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 || ok=0
+jq '.findings[0].source="x"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+(cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 && ok=0
+if (( ok ))
+then
+  pass "--source is stored opaquely, carried forward, printed, and must be an object"
+else
+  fail "--source handling incorrect: $(jq -c '.findings[0]' "$rj")"
+fi
+rm -rf "$repo"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
