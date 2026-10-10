@@ -425,10 +425,11 @@ $(cat -- "$f")
     local candidate
     if [[ $mode == review ]]
     then
-        for candidate in x x.* y y.* z z.* pr.md
+        for candidate in x x.* y y.* z z.* pr.md .timvisher_gh/pr/pr.md
         do
             # Don't re-inline our own spilled diff file from a previous run.
             [[ $candidate == "$spill_diff_basename" ]] && continue
+            [[ $candidate == pr.md && -L $candidate ]] && continue
             [[ -f $candidate ]] && root_files+=("$candidate")
         done
     fi
@@ -442,7 +443,7 @@ them with the same rigor as tracked code.
 "
         for f in "${root_files[@]}"
         do
-            if [[ $f == pr.md ]]
+            if [[ $f == pr.md || $f == .timvisher_gh/pr/pr.md ]]
             then
                 root_section+="
 ### pr.md — PR DESCRIPTION DRAFT (review as deliverable, not just documentation)
