@@ -9,12 +9,17 @@
 # Each <dir> is an "agent home root" — its contents mirror what should
 # end up under $HOME for some agent. Recognized subpaths:
 #
-#   <dir>/.agents/skills/<name>     → ~/.agents/skills/<name>
-#   <dir>/.agents/languages/<name>  → ~/.agents/languages/<name>
-#   <dir>/.claude/hooks/<name>      → ~/.claude/hooks/<name>
+#   <dir>/.agents/skills/<name>            → ~/.agents/skills/<name>
+#   <dir>/.agents/languages/<name>         → ~/.agents/languages/<name>
+#   <dir>/.agents/aishot/reviewers/<name>  → ~/.agents/aishot/reviewers/<name>
+#   <dir>/.claude/hooks/<name>             → ~/.claude/hooks/<name>
+#
+# .agents/aishot/reviewers holds `aishot git diff review` reviewer
+# registrations (<name>.json); see `aishot git diff review reviewers --help`.
 #
 # Typical layout in a config repo:
-#   <repo>/ai/HOME/        — cross-agent home (skills, languages)
+#   <repo>/ai/HOME/        — cross-agent home (skills, languages, aishot
+#                            reviewers)
 #   <repo>/ai/claude/HOME/ — Claude-specific home (hooks, etc.)
 # Pass both as separate args.
 #
@@ -102,9 +107,10 @@ assert_not_symlink() {
 
 ensure_dir() {
   local path=$1
-  if [[ ! -d $path ]]
+  if [[ ! -d $path ]] && ! mkdir -p "$path"
   then
-    mkdir -p "$path"
+    found_error "could not create directory '${path}'"
+    return 1
   fi
 }
 
@@ -136,25 +142,33 @@ ensure_symlink() {
       # the desired (e.g., raw worktree path → preferred prefix).
       if [[ $existing_raw != "$target" ]]
       then
-        rm "$link"
-        ln -s "$target" "$link"
-        info "Updated symlink '%s' → '%s' (was → '%s')" "$link" "$target" "$existing_raw"
+        if rm "$link" && ln -s "$target" "$link"
+        then
+          info "Updated symlink '%s' → '%s' (was → '%s')" "$link" "$target" "$existing_raw"
+        else
+          found_error "could not update symlink '${link}' → '${target}'"
+        fi
       fi
     elif [[ ! -e $link ]]
     then
       # Dangling symlink — safe to replace
-      rm "$link"
-      ln -s "$target" "$link"
-      info "Replaced dangling symlink '%s' → '%s'" "$link" "$target"
+      if rm "$link" && ln -s "$target" "$link"
+      then
+        info "Replaced dangling symlink '%s' → '%s'" "$link" "$target"
+      else
+        found_error "could not replace dangling symlink '${link}' → '${target}'"
+      fi
     else
       found_error "'${link}' resolves to '${existing_resolved}', not '${target_resolved}'"
     fi
   elif [[ -e $link ]]
   then
     found_error "'${link}' exists and is not a symlink"
-  else
-    ln -s "$target" "$link"
+  elif ln -s "$target" "$link"
+  then
     info "Created symlink '%s' → '%s'" "$link" "$target"
+  else
+    found_error "could not create symlink '${link}' → '${target}'"
   fi
 }
 
@@ -193,6 +207,22 @@ do_install_from() {
     done
   fi
 
+  local reviewers_dir="${dir}/.agents/aishot/reviewers"
+  if [[ -d $reviewers_dir ]]
+  then
+    found_something=true
+    local reviewer
+    ensure_dir "${HOME}/.agents/aishot/reviewers" ||
+      return
+    for reviewer in "${reviewers_dir}"/*
+    do
+      [[ -f $reviewer ]] || continue
+      local name
+      name=$(basename "$reviewer")
+      ensure_symlink "${HOME}/.agents/aishot/reviewers/${name}" "$(prefer_path "$reviewer")"
+    done
+  fi
+
   local claude_hooks_dir="${dir}/.claude/hooks"
   if [[ -d $claude_hooks_dir ]]
   then
@@ -216,7 +246,7 @@ do_install_from() {
 
   if [[ $found_something == false ]]
   then
-    found_error "No .agents/skills/, .agents/languages/, or .claude/hooks/ directory found in '${dir}'"
+    found_error "No .agents/skills/, .agents/languages/, .agents/aishot/reviewers/, or .claude/hooks/ directory found in '${dir}'"
   fi
 }
 
@@ -277,6 +307,8 @@ require_python3
 assert_not_symlink "${HOME}/.agents"
 assert_not_symlink "${HOME}/.agents/skills"
 assert_not_symlink "${HOME}/.agents/languages"
+assert_not_symlink "${HOME}/.agents/aishot"
+assert_not_symlink "${HOME}/.agents/aishot/reviewers"
 
 if (( 0 < ${#errors[@]} ))
 then
@@ -290,6 +322,15 @@ fi
 ensure_dir "${HOME}/.agents"
 ensure_dir "${HOME}/.agents/skills"
 ensure_dir "${HOME}/.agents/languages"
+
+if (( 0 < ${#errors[@]} ))
+then
+  for msg in "${errors[@]}"
+  do
+    error '%s' "$msg"
+  done
+  exit 1
+fi
 
 for dir in "$@"
 do

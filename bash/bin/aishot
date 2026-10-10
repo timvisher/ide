@@ -17,11 +17,57 @@ DEFAULT_REVIEWERS="claude,codex"
 
 # Review-artifact vocabulary. The record-finding writer and the validate
 # checker share these so the enums can never drift apart.
-REVIEW_SCHEMA_VERSION=1
+REVIEW_SCHEMA_VERSION=2
 REVIEW_LEVELS="high medium low"
 REVIEW_CATEGORIES="correctness security performance reliability maintainability style testing docs"
-REVIEW_STATUSES="open addressed wontfix refuted"
+REVIEW_AGENT_STATUSES="open fixed refuted escalated"
+REVIEW_HUMAN_STATUSES="unreviewed confirmed overruled"
 REVIEW_REVIEWERS="claude codex gemini human"
+REVIEW_REVIEWER_NAME_RE='^[a-z0-9][a-z0-9_-]*$'
+
+# shellcheck disable=SC2016
+REVIEW_REGISTRATION_JQ='
+def nonempty: type == "string" and 0 < length;
+def keys_allowed: ["name", "orgs", "description"];
+if type != "object" then
+  {errors: ["\($file): must be a JSON object"]}
+else
+  [ (keys_allowed[] as $k | select(has($k) | not) | "missing key: \($k)"),
+    (keys_unsorted[] as $k | select((keys_allowed | index($k)) == null) | "unknown key: \($k)"),
+    (if has("name") then
+       .name as $n
+       | (if ($n | type) == "string" and ($n | test($namere)) then empty
+          else "name must match \($namere)" end),
+         (if $n == $stem then empty
+          else "name \($n | tojson) must match the file name \($stem | tojson)" end),
+         (if ($builtins | split(" ") | index($n)) == null then empty
+          else "name \($n | tojson) collides with a built-in reviewer" end)
+     else empty end),
+    (if has("orgs") and ((.orgs | type) != "array" or (.orgs | length) == 0 or any(.orgs[]; nonempty | not))
+     then "orgs must be a non-empty array of GitHub org names" else empty end),
+    (if has("description") and (.description | nonempty | not)
+     then "description must be a non-empty string" else empty end)
+  ] as $e
+  | if ($e | length) == 0 then {entry: {name, orgs, description, file: $file}}
+    else {errors: [$e[] | "\($file): \(.)"]} end
+end
+'
+
+# shellcheck disable=SC2016
+REVIEW_MIGRATE_JQ='
+def migrate:
+  if .schema_version == 1 then
+    .schema_version = 2
+    | .findings |= map(
+        .status as $s
+        | del(.status)
+        | .agent_status = ({open: "open", addressed: "fixed", wontfix: "refuted", refuted: "refuted"}[$s // "open"] // $s)
+        | .human_status = "unreviewed"
+        | if .agent_status == "refuted" and ((.refutation // "") == "")
+          then .refutation = "migrated from schema 1 status \($s); no rationale was recorded"
+          else . end)
+  else . end;
+'
 
 # FIXME: adopt the usage/show_help split used by timvisher_git and
 # timvisher_gh. show_help writes to stdout and the five error paths each
@@ -95,11 +141,12 @@ spilled to a file when large — see below). After all reviewers finish, a
 synthesis step records every distinct finding into .aishot/review.json via
 record-finding and the artifact is rendered to .aishot/review.md.
 
-The review is ITERATIVE: each run advances the artifact. On the same base
-it bumps the iteration and carries prior findings forward for re-judgement;
-when the base moves (or with --fresh) it archives the prior review to
-.aishot/review.bak.<ts>.json and starts a fresh series. Read the result
-with `aishot git diff review print` (never trust a stale copy).
+The review is ITERATIVE: each run advances the artifact. It bumps the
+iteration and carries prior findings forward for re-judgement, even when
+the merge base moved (e.g. after a rebase onto a newer trunk); base_sha and
+head_sha are updated to the current values. Only --fresh archives the prior
+review to .aishot/review.bak.<ts>.json and starts a new series. Read the
+result with `aishot git diff review print` (never trust a stale copy).
 
 Options:
   --fresh   Start a new review series (archive any prior artifact).
@@ -113,8 +160,16 @@ Review-artifact subcommands (operate on .aishot/review.json):
   record-finding   Record or update one finding (deterministic, atomic,
                    validated writer — the ONLY correct way to modify the
                    artifact; never hand-edit the JSON). See its --help.
-  validate         Check .aishot/review.json (schema, enums, invariants).
+  validate         Check .aishot/review.json (schema, enums, invariants)
+                   and the reviewer registration files.
   print [--format=md|json]   Render the artifact. Default: md.
+  status [--format=kv|json]  Machine-readable counts for a review loop
+                   (open/escalated/unreviewed, open and new P0s, ...).
+                   See its --help.
+  reviewers list   Show the reviewers --flagged-by accepts: the built-ins
+                   plus drop-in registrations in
+                   ~/.agents/aishot/reviewers/<name>.json, scoped by
+                   GitHub org. See its --help.
 
 Large diffs:
   Reviewers have a hard input ceiling (codex: ~1,048,576 chars), so a
@@ -479,18 +534,21 @@ $(cat -- "$f")
            (( 0 < $(jq '.findings | length' "$review_json" 2>/dev/null || echo 0) ))
         then
             local prior_json prior_section
-            prior_json=$(jq -c '{iteration:.iterations, findings:[.findings[] | {id,file,line,level,category,p0,title,description,status,refutation}]}' "$review_json")
+            prior_json=$(jq -c "${REVIEW_MIGRATE_JQ}"' migrate | {iteration:.iterations, findings:[.findings[] | {id,file,line,level,category,p0,title,description,agent_status,human_status,refutation,escalation,human_note}]}' "$review_json")
             prior_section="## Prior review findings (this review has run before)
 
 The findings below were recorded in earlier iterations of this review, as
 compact JSON. For EACH one, judge from the CURRENT diff whether it is now
-addressed, still open, or indeterminate — carry the same finding \`id\`
+fixed, still open, or indeterminate — carry the same finding \`id\`
 forward; do not re-derive it from scratch.
 
-Findings with \"status\":\"refuted\" were judged NOT to be real defects (see
-their \"refutation\"). Do NOT raise them again unless the current diff makes
-the refutation wrong. Findings with \"status\":\"addressed\" are fixed; only
-re-open one if the current diff shows it regressed.
+Findings with \"agent_status\":\"refuted\" were judged NOT to be real defects
+(see their \"refutation\"). Do NOT raise them again unless the current diff
+makes the refutation wrong. Findings with \"agent_status\":\"fixed\" are
+fixed; only re-open one if the current diff shows it regressed. Findings
+with \"agent_status\":\"escalated\" are waiting on a human. Findings with
+\"human_status\":\"overruled\" were sent back by a human (see their
+\"human_note\"); do not dismiss them again on the same grounds.
 
 \`\`\`json
 ${prior_json}
@@ -918,7 +976,8 @@ STEP 1 — Learn the tool and read prior state. Run:
     aishot git diff review record-finding --help
     aishot git diff review print --format=json
 The JSON lists findings carried over from earlier iterations, each with an
-"id" and "status".
+"id", an "agent_status" (your side of the triage), and a "human_status"
+(a human's review of it, which is not yours to change).
 
 STEP 2 — Record NEW findings. Merge and deduplicate across the reports
 below (ONE finding per distinct issue, even when several reviewers raised
@@ -944,17 +1003,24 @@ non-P0 findings too (they are useful), just never mark them P0.
 STEP 3 — Judge PRIOR findings. For each finding in the prior JSON, decide
 from the current reports and diff:
 - Clearly fixed by the current diff:
-    aishot git diff review record-finding --id <id> --status addressed --flagged-by <reviewer>
+    aishot git diff review record-finding --id <id> --agent-status fixed --flagged-by <reviewer>
 - A P0 that is actually NOT a real defect (reviewers were wrong, or it is
   intended/safe): refute it so it stops recurring:
-    aishot git diff review record-finding --id <id> --status refuted \
+    aishot git diff review record-finding --id <id> --agent-status refuted \
       --rationale "<why it is not a real defect>" --flagged-by <reviewer>
+- A finding you cannot judge confidently either way: escalate it so a
+  human looks first:
+    aishot git diff review record-finding --id <id> --agent-status escalated \
+      --rationale "<what is unclear>" --flagged-by <reviewer>
 - Otherwise leave it untouched (still open).
-Never re-open a finding already marked addressed or refuted unless the
-current diff clearly shows the issue is (again) present.
+Never re-open a finding already marked fixed or refuted unless the current
+diff clearly shows the issue is (again) present. A finding with
+"human_status":"overruled" was sent back by a human (see its "human_note"):
+fix it or escalate it, but do not refute it again on the same grounds.
 
 RULES:
 - NEVER hand-edit .aishot/review.json — only use record-finding.
+- NEVER pass --human-status; that field belongs to the human.
 - Do NOT run other project tooling (bd, beads, todo, tests, builds) or set
   up the project.
 - Record every distinct NEW finding (P0 and non-P0), each with a correct
@@ -1265,8 +1331,68 @@ _review_in_set() {
     return 1
 }
 
-# jq program (read on stdin as $prog) that emits one error string per line
-# for a review doc passed as the file argument; empty output means valid.
+_review_reviewers_dir() {
+    printf '%s/.agents/aishot/reviewers' "$HOME"
+}
+
+_review_registry_scan() {
+    local dir
+    dir=$(_review_reviewers_dir)
+    local -a files=() outs=()
+    if [[ -d $dir ]]
+    then
+        mapfile -t files < <(compgen -G "${dir}/*.json" | LC_ALL=C sort)
+    fi
+    local f stem out
+    for f in "${files[@]}"
+    do
+        stem=${f##*/}
+        stem=${stem%.json}
+        if ! out=$(jq -sc --arg stem "$stem" --arg file "$f" --arg builtins "$REVIEW_REVIEWERS" \
+                      --arg namere "$REVIEW_REVIEWER_NAME_RE" \
+                      'if length == 1 then .[0] | '"$REVIEW_REGISTRATION_JQ"' else error end' \
+                      "$f" 2>/dev/null) || [[ -z $out ]]
+        then
+            out=$(jq -nc --arg file "$f" '{errors: ["\($file): not a single valid JSON document"]}')
+        fi
+        outs+=("$out")
+    done
+    printf '%s\n' "${outs[@]}" |
+        jq -sc '{valid: [.[] | .entry // empty], errors: [.[] | .errors[]?]}'
+}
+
+_review_repo_org() {
+    local branch="" remote="" url
+    branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
+    if [[ -n $branch ]]
+    then
+        remote=$(git config "branch.${branch}.remote" 2>/dev/null)
+    fi
+    if [[ -z $remote || $remote == . ]]
+    then
+        remote=origin
+        if ! git remote get-url origin >/dev/null 2>&1
+        then
+            local -a remotes
+            mapfile -t remotes < <(git remote 2>/dev/null)
+            (( ${#remotes[@]} == 1 )) || return 1
+            remote=${remotes[0]}
+        fi
+    fi
+    url=$(git remote get-url "$remote" 2>/dev/null) || return 1
+    if [[ $url =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/([^/]+)/[^/] ]]
+    then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    elif [[ $url =~ ^([^@/:]+@)?[^/:]+:([^/]+)/[^/] ]]
+    then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+    else
+        return 1
+    fi
+}
+
+# Prints one error per line on stderr and returns non-zero when the review
+# doc at $1 is invalid.
 _review_validate_file() {
     local f=$1
     if [[ ! -f $f ]]
@@ -1280,45 +1406,101 @@ _review_validate_file() {
         return 1
     fi
     local errs
-    errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" '
+    if ! errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" \
+                 --arg levels "$REVIEW_LEVELS" --arg cats "$REVIEW_CATEGORIES" \
+                 --arg astats "$REVIEW_AGENT_STATUSES" --arg hstats "$REVIEW_HUMAN_STATUSES" \
+                 --arg namere "$REVIEW_REVIEWER_NAME_RE" '
+      def words: split(" ") | map(select(. != ""));
       def envkeys: ["schema_version","lineage","iterations","branch","base_sha","head_sha","created","updated","diff","findings"];
-      def fkeys: ["id","file","line","level","category","title","description","status","first_seen_iteration","last_seen_iteration","flagged_by"];
-      def okeys: ["p0","refutation"];
-      def levels: ["high","medium","low"];
-      def cats: ["correctness","security","performance","reliability","maintainability","style","testing","docs"];
-      def stats: ["open","addressed","wontfix","refuted"];
-      def revs: ["claude","codex","gemini","human"];
+      def commonkeys: ["id","file","line","level","category","title","description","first_seen_iteration","last_seen_iteration","flagged_by"];
       def isint: (type=="number") and (. == floor);
+      def nonempty: (type=="string") and (0<length);
+      def findings: if (.findings|type)=="array" then .findings else [] end;
+      if type != "object" then "the review must be a JSON object" else
+      (.schema_version == 1) as $v1 |
+      (if $v1 then commonkeys + ["status"] else commonkeys + ["agent_status","human_status"] end) as $fkeys |
+      (if $v1 then ["p0","refutation"] else ["p0","refutation","escalation","human_note","source"] end) as $okeys |
       [
         (envkeys[] as $k | select((has($k))|not) | "missing envelope key: \($k)"),
         (keys_unsorted[] as $k | select((envkeys|index($k))==null) | "unknown envelope key: \($k)"),
-        (if (.schema_version)==$ver then empty else "schema_version must be \($ver)" end),
-        (if ((.iterations|isint) and (.iterations>=1)) then empty else "iterations must be a positive integer" end),
+        (if $v1 or (.schema_version)==$ver then empty else "schema_version must be 1 or \($ver)" end),
+        (if ((.iterations|isint) and (1<=.iterations)) then empty else "iterations must be a positive integer" end),
         (if (.diff|type)=="string" then empty else "diff must be a string" end),
         (if (.findings|type)=="array" then empty else "findings must be an array" end),
-        ((.findings // []) | to_entries[] | .key as $i | .value as $f |
-          (fkeys[] as $k | select(($f|has($k))|not) | "finding[\($i)] missing key: \($k)"),
-          (($f|keys_unsorted[]) as $k | select(((fkeys+okeys)|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
-          (if (levels|index($f.level)) != null then empty else "finding[\($i)] invalid level: \($f.level)" end),
-          (if (cats|index($f.category)) != null then empty else "finding[\($i)] invalid category: \($f.category)" end),
-          (if (stats|index($f.status)) != null then empty else "finding[\($i)] invalid status: \($f.status)" end),
+        (findings | to_entries[] | .key as $i | .value as $f |
+         if ($f|type) != "object" then "finding[\($i)] must be a JSON object" else
+          ($fkeys[] as $k | select(($f|has($k))|not) | "finding[\($i)] missing key: \($k)"),
+          (($f|keys_unsorted[]) as $k | select((($fkeys+$okeys)|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
+          (if ($levels|words|index($f.level)) != null then empty else "finding[\($i)] invalid level: \($f.level)" end),
+          (if ($cats|words|index($f.category)) != null then empty else "finding[\($i)] invalid category: \($f.category)" end),
+          (if $v1 then
+             (if (["open","addressed","wontfix","refuted"]|index($f.status)) != null then empty else "finding[\($i)] invalid status: \($f.status)" end)
+           else
+             (if ($astats|words|index($f.agent_status)) != null then empty else "finding[\($i)] invalid agent_status: \($f.agent_status)" end),
+             (if ($hstats|words|index($f.human_status)) != null then empty else "finding[\($i)] invalid human_status: \($f.human_status)" end),
+             (if $f.agent_status != "refuted" or ($f.refutation|nonempty) then empty else "finding[\($i)] agent_status refuted requires a refutation rationale" end),
+             (if $f.human_status != "overruled" or ($f.human_note|nonempty) then empty else "finding[\($i)] human_status overruled requires a human_note" end),
+             (if $f.human_status != "overruled" or $f.agent_status == "open" then empty else "finding[\($i)] human_status overruled requires agent_status open" end),
+             (if (($f|has("escalation"))|not) or (($f.escalation|type)=="string") then empty else "finding[\($i)] escalation must be a string" end),
+             (if (($f|has("human_note"))|not) or (($f.human_note|type)=="string") then empty else "finding[\($i)] human_note must be a string" end),
+             (if (($f|has("source"))|not) or (($f.source|type)=="object") then empty else "finding[\($i)] source must be a JSON object" end)
+           end),
           (if (($f|has("p0"))|not) or (($f.p0|type)=="boolean") then empty else "finding[\($i)] p0 must be boolean" end),
           (if (($f|has("refutation"))|not) or (($f.refutation|type)=="string") then empty else "finding[\($i)] refutation must be a string" end),
           (if (($f.line)==null or ($f.line|isint)) then empty else "finding[\($i)] line must be int or null" end),
-          (if (($f.title|type)=="string" and ($f.title|length)>0) then empty else "finding[\($i)] title required" end),
-          (if (($f.description|type)=="string" and ($f.description|length)>0) then empty else "finding[\($i)] description required" end),
+          (if ($f.title|nonempty) then empty else "finding[\($i)] title required" end),
+          (if ($f.description|nonempty) then empty else "finding[\($i)] description required" end),
           (if (($f.first_seen_iteration|isint) and ($f.last_seen_iteration|isint) and ($f.first_seen_iteration<=$f.last_seen_iteration)) then empty else "finding[\($i)] iteration bounds invalid" end),
-          (if (($f.flagged_by|type)=="array" and ($f.flagged_by|length)>=1 and (all($f.flagged_by[]; . as $r | (revs|index($r))!=null))) then empty else "finding[\($i)] flagged_by must be a non-empty array of known reviewers" end)
+          (if (($f.flagged_by|type)=="array" and (1<=($f.flagged_by|length))
+               and all($f.flagged_by[]; type=="string" and test($namere))) then empty
+           else "finding[\($i)] flagged_by must be a non-empty array of reviewer names" end)
+         end
         ),
-        ((.findings // []) | (map(.id)) as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
+        (findings | [.[] | objects | .id] as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
       ] | .[]
-    ' "$f")
+      end
+    ' "$f" 2>&1)
+    then
+        printf 'could not validate %s: %s\n' "$f" "$errs" >&2
+        return 1
+    fi
     if [[ -n $errs ]]
     then
         printf '%s\n' "$errs" >&2
         return 1
     fi
     return 0
+}
+
+_review_flagged_by_warnings() {
+    local f=$1 registry org=""
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org) || org=""
+    jq -r --argjson reg "$registry" --arg builtins "$REVIEW_REVIEWERS" --arg org "$org" '
+      ($builtins | split(" ")) as $b
+      | [.findings[]? | objects | .flagged_by[]? | strings] | unique[] as $r
+      | select(($b | index($r)) == null)
+      | ([$reg.valid[] | select(.name == $r)] | first) as $e
+      | if $e == null then
+          "warning: flagged_by \($r | tojson) is not a built-in or registered reviewer"
+        elif $org == "" or (any($e.orgs[]; ascii_downcase == ($org | ascii_downcase)) | not) then
+          "warning: flagged_by \($r | tojson) is registered for orgs \($e.orgs | join(", ")), not this repo (org: \(if $org == "" then "none" else $org end))"
+        else empty end
+    ' "$f" 2>/dev/null
+}
+
+_review_lock() {
+    local lock=$1 waited=0
+    until mkdir "$lock" 2>/dev/null
+    do
+        (( waited += 1 ))
+        if (( 50 < waited ))
+        then
+            echo "Error: could not acquire review lock '${lock}'." >&2
+            return 1
+        fi
+        sleep 0.1
+    done
 }
 
 # The review-scope diff embedded in the artifact: branch-vs-upstream
@@ -1334,9 +1516,9 @@ _review_current_diff() {
 }
 
 # Initialize or advance .aishot/review.json for a review run (the driver
-# owns this; agents only record findings). Same base + prior review ->
-# bump iterations and carry findings forward for re-judgement. Base moved
-# (or --fresh, or no prior) -> archive any prior to review.bak.<ts>.json
+# owns this; agents only record findings). Prior review -> bump iterations
+# and carry findings forward for re-judgement, whether or not the base
+# moved. --fresh (or no prior) -> archive any prior to review.bak.<ts>.json
 # and start a new series (new lineage, iterations=1, empty findings).
 _review_begin_iteration() {
     _review_need_jq || return 1
@@ -1356,22 +1538,27 @@ _review_begin_iteration() {
 
     # The diff can be many MB. Write it to a file and hand it to jq via
     # --rawfile; passing it as --arg would blow ARG_MAX (E2BIG).
-    local difffile tmp=""
-    difffile=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
-    cleanup_begin() { rm -f "$difffile" "$tmp"; }
+    local difffile="" tmp="" lock="${dir}/.review.lock" held=0
+    cleanup_begin() {
+        rm -f "$difffile" "$tmp"
+        (( held )) && rmdir "$lock" 2>/dev/null
+        trap - RETURN
+    }
     trap cleanup_begin RETURN
+    difffile=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
     _review_current_diff > "$difffile"
 
+    _review_lock "$lock" || return 1
+    held=1
+
     local lineage iterations created findings
-    if [[ -f $path ]] && (( ! fresh_flag )) && [[ $(jq -r '.base_sha' "$path") == "$base" ]]
+    if [[ -f $path ]] && (( ! fresh_flag ))
     then
-        # Same base: continue the series.
         lineage=$(jq -r '.lineage' "$path")
         iterations=$(( $(jq -r '.iterations' "$path") + 1 ))
         created=$(jq -r '.created' "$path")
-        findings=$(jq -c '.findings' "$path")
+        findings=$(jq -c "${REVIEW_MIGRATE_JQ}"' migrate | .findings' "$path")
     else
-        # New series: fresh, first run, or the base moved. Archive any prior.
         if [[ -f $path ]]
         then
             local ts
@@ -1425,8 +1612,10 @@ show_review_record_finding_help() {
     cat <<'EOF'
 Usage: aishot git diff review record-finding --title T --description D \
          --level high|medium|low --category CAT --flagged-by claude,codex \
-         [--p0 true|false] [--file PATH] [--line N] \
-         [--status open|addressed|wontfix|refuted] [--rationale TEXT] [--id UUID]
+         [--p0 true|false] [--file PATH] [--line N] [--id UUID] \
+         [--agent-status open|fixed|refuted|escalated] [--rationale TEXT] \
+         [--human-status unreviewed|confirmed|overruled] [--note TEXT] \
+         [--source JSON]
 
 Record (or update) one code-review finding in .aishot/review.json. This is
 the ONLY correct way to modify the review artifact — do NOT hand-edit the
@@ -1436,27 +1625,65 @@ malformed file behind.
 
 Omit --id to MINT a new finding (a UUID is assigned; first_seen_iteration
 and last_seen_iteration are set to the current iteration). Pass --id to
-UPDATE an existing finding — e.g. mark it addressed:
-  aishot git diff review record-finding --id <uuid> --status addressed --flagged-by claude
+UPDATE an existing finding — e.g. mark it fixed:
+  aishot git diff review record-finding --id <uuid> --agent-status fixed --flagged-by claude
+
+Each finding carries two independent triage fields:
+
+  agent_status   the agent's judgement.
+                   open       not yet dealt with (the default).
+                   fixed      the current diff fixes it.
+                   refuted    not a real defect. Requires --rationale.
+                   escalated  questionable; the agent wants a human to
+                              look first. --rationale is optional.
+  human_status   a human's review of the agent's judgement.
+                   unreviewed  no human has looked (the default).
+                   confirmed   the human agrees.
+                   overruled   the human disagrees. Requires --note, and
+                               sends agent_status back to open.
+
+A finding is settled when agent_status is fixed or refuted AND
+human_status is confirmed. Changing agent_status, or the rationale behind
+it, resets human_status to unreviewed unless --human-status is passed in
+the same call, because the human reviewed the earlier judgement, not the
+new one.
 
 Fields:
-  --title        (required) one-line summary.
-  --description  (required) the finding detail.
-  --level        (required) severity: high | medium | low.
-  --category     (required) correctness | security | performance |
-                 reliability | maintainability | style | testing | docs.
-  --flagged-by   (required) csv of reviewers that raised it:
-                 claude | codex | gemini | human. On update, unioned in.
-  --file         (optional) path the finding is about.
-  --line         (optional) integer line number.
-  --status       (optional) open | addressed | wontfix | refuted. Default: open.
-  --p0           (optional) true | false. true = a must-fix correctness/
-                 security/reliability defect that gates completion. Default:
-                 false (nit / non-blocking). Only P0 findings must be
-                 addressed or refuted; non-P0 findings are advisory.
-  --rationale    (optional) with --status refuted, why the P0 is not a real
-                 defect. Recorded and carried forward so it is not re-raised.
-  --id           (optional) UUID of an existing finding to update.
+  --title         (required) one-line summary.
+  --description   (required) the finding detail.
+  --level         (required) severity: high | medium | low.
+  --category      (required) correctness | security | performance |
+                  reliability | maintainability | style | testing | docs.
+  --flagged-by    (required) csv of reviewers that raised it:
+                  claude | codex | gemini | human, or a registered
+                  reviewer whose orgs cover this repo's GitHub org (see
+                  `aishot git diff review reviewers list`). On update,
+                  unioned in.
+  --file          (optional) path the finding is about.
+  --line          (optional) integer line number.
+  --p0            (optional) true | false. true = a must-fix correctness/
+                  security/reliability defect that gates completion.
+                  Default: false (nit / non-blocking). Only P0 findings
+                  gate completion; non-P0 findings are advisory.
+  --agent-status  (optional) open | fixed | refuted | escalated.
+                  Default: open.
+  --rationale     with --agent-status refuted (required) or escalated
+                  (optional): why. Recorded and carried forward so a
+                  refuted finding is not re-raised.
+  --human-status  (optional) unreviewed | confirmed | overruled.
+                  Default: unreviewed.
+  --note          with --human-status: the human's note. Required for
+                  overruled.
+  --source        (optional) a JSON object describing where the finding
+                  came from (e.g. an outside reviewer's ids and URLs).
+                  Stored on the finding as is, carried forward, and shown
+                  by print; aishot never interprets it. On update, it
+                  replaces any earlier source.
+  --id            (optional) UUID of an existing finding to update.
+  --status        (deprecated) schema 1 spelling of --agent-status:
+                  open | addressed (= fixed) | wontfix (= refuted) |
+                  refuted. Like --agent-status refuted, wontfix and
+                  refuted now require --rationale.
 EOF
 }
 
@@ -1467,22 +1694,49 @@ _review_flagged_json() {
     IFS=',' read -ra arr <<< "$csv"
     (( 0 < ${#arr[@]} )) ||
         { echo "Error: --flagged-by is empty." >&2; return 1; }
-    local r
+    local registry org="" r orgs
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org) || org=""
     for r in "${arr[@]}"
     do
-        _review_in_set "$r" "$REVIEW_REVIEWERS" ||
-            { echo "Error: unknown reviewer in --flagged-by: '${r}'." >&2; return 1; }
+        _review_in_set "$r" "$REVIEW_REVIEWERS" && continue
+        orgs=$(jq -r --arg r "$r" '.valid[] | select(.name == $r) | .orgs | join(", ")' <<< "$registry")
+        if [[ -z $orgs ]]
+        then
+            echo "Error: unknown reviewer in --flagged-by: '${r}' (built-ins: ${REVIEW_REVIEWERS}; see 'aishot git diff review reviewers list')." >&2
+            return 1
+        fi
+        if [[ -z $org ]]
+        then
+            echo "Error: reviewer '${r}' is registered for orgs ${orgs}, but this repo has no remote org to match." >&2
+            return 1
+        fi
+        if ! jq -e --arg r "$r" --arg org "$org" \
+                '.valid[] | select(.name == $r) | any(.orgs[]; ascii_downcase == ($org | ascii_downcase))' \
+                <<< "$registry" >/dev/null
+        then
+            echo "Error: reviewer '${r}' is registered for orgs ${orgs}, not this repo's org '${org}'." >&2
+            return 1
+        fi
     done
-    printf '%s\n' "${arr[@]}" | jq -R . | jq -s .
+    printf '%s\n' "${arr[@]}" | jq -R . | jq -s 'reduce .[] as $r ([]; if index([$r]) then . else . + [$r] end)'
 }
 
 do_review_record_finding() {
     _review_need_jq || return 1
 
     local title="" description="" file="" line="" level="" category="" \
-          flagged_by="" status="" id="" p0="" rationale=""
+          flagged_by="" status="" agent_status="" human_status="" note="" \
+          id="" p0="" rationale="" source="" source_set=0
     while (( 0 < $# ))
     do
+        case "$1" in
+            --title|--description|--file|--line|--level|--category|--flagged-by|--status|\
+            --agent-status|--human-status|--note|--p0|--rationale|--source|--id)
+                (( 1 < $# )) ||
+                    { echo "Error: option '${1}' needs a value." >&2; return 1; }
+                ;;
+        esac
         case "$1" in
             --title) title=$2; shift 2 ;;
             --description) description=$2; shift 2 ;;
@@ -1492,13 +1746,29 @@ do_review_record_finding() {
             --category) category=$2; shift 2 ;;
             --flagged-by) flagged_by=$2; shift 2 ;;
             --status) status=$2; shift 2 ;;
+            --agent-status) agent_status=$2; shift 2 ;;
+            --human-status) human_status=$2; shift 2 ;;
+            --note) note=$2; shift 2 ;;
             --p0) p0=$2; shift 2 ;;
             --rationale) rationale=$2; shift 2 ;;
+            --source) source=$2; source_set=1; shift 2 ;;
             --id) id=$2; shift 2 ;;
             --help|-h) show_review_record_finding_help; return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; show_review_record_finding_help >&2; return 1 ;;
         esac
     done
+
+    if [[ -n $status ]]
+    then
+        [[ -z $agent_status ]] ||
+            { echo "Error: pass --agent-status or the deprecated --status, not both." >&2; return 1; }
+        case "$status" in
+            open|refuted) agent_status=$status ;;
+            addressed) agent_status=fixed ;;
+            wontfix) agent_status=refuted ;;
+            *) echo "Error: invalid --status '${status}' (want: open addressed wontfix refuted)." >&2; return 1 ;;
+        esac
+    fi
 
     # Minting a new finding requires the full descriptor; updating an
     # existing one (--id) touches only the fields actually passed.
@@ -1514,14 +1784,48 @@ do_review_record_finding() {
         { echo "Error: invalid --level '${level}' (want: ${REVIEW_LEVELS})." >&2; return 1; }
     [[ -z $category ]] || _review_in_set "$category" "$REVIEW_CATEGORIES" ||
         { echo "Error: invalid --category '${category}' (want: ${REVIEW_CATEGORIES})." >&2; return 1; }
-    [[ -z $status ]] || _review_in_set "$status" "$REVIEW_STATUSES" ||
-        { echo "Error: invalid --status '${status}' (want: ${REVIEW_STATUSES})." >&2; return 1; }
+    [[ -z $agent_status ]] || _review_in_set "$agent_status" "$REVIEW_AGENT_STATUSES" ||
+        { echo "Error: invalid --agent-status '${agent_status}' (want: ${REVIEW_AGENT_STATUSES})." >&2; return 1; }
+    [[ -z $human_status ]] || _review_in_set "$human_status" "$REVIEW_HUMAN_STATUSES" ||
+        { echo "Error: invalid --human-status '${human_status}' (want: ${REVIEW_HUMAN_STATUSES})." >&2; return 1; }
+    if [[ $agent_status == refuted && -z $rationale ]]
+    then
+        echo "Error: --agent-status refuted requires --rationale." >&2
+        return 1
+    fi
+    if [[ -n $rationale && $agent_status != refuted && $agent_status != escalated ]]
+    then
+        echo "Error: --rationale only applies with --agent-status refuted or escalated." >&2
+        return 1
+    fi
+    if [[ -n $note && -z $human_status ]]
+    then
+        echo "Error: --note only applies with --human-status." >&2
+        return 1
+    fi
+    if [[ $human_status == overruled ]]
+    then
+        [[ -n $note ]] ||
+            { echo "Error: --human-status overruled requires --note." >&2; return 1; }
+        [[ -z $agent_status || $agent_status == open ]] ||
+            { echo "Error: --human-status overruled sends agent_status back to open; it cannot be combined with --agent-status ${agent_status}." >&2; return 1; }
+    fi
     [[ -z $p0 || $p0 == true || $p0 == false ]] ||
         { echo "Error: --p0 must be true or false." >&2; return 1; }
     if [[ -n $line && ! $line =~ ^[0-9]+$ ]]
     then
         echo "Error: --line must be a non-negative integer." >&2
         return 1
+    fi
+    local source_json=null
+    if (( source_set ))
+    then
+        if ! source_json=$(jq -sc 'if length == 1 and (.[0] | type) == "object" then .[0] else error end' \
+                               <<< "$source" 2>/dev/null)
+        then
+            echo "Error: --source must be a single JSON object." >&2
+            return 1
+        fi
     fi
 
     local flagged_json="[]" line_json
@@ -1540,17 +1844,13 @@ do_review_record_finding() {
 
     # Serialize concurrent writers with an atomic mkdir lock.
     local lock="${dir}/.review.lock" tmp="" held=0
-    cleanup() { (( held )) && rmdir "$lock" 2>/dev/null; [[ -n $tmp ]] && rm -f "$tmp"; }
+    cleanup() {
+        (( held )) && rmdir "$lock" 2>/dev/null
+        [[ -n $tmp ]] && rm -f "$tmp"
+        trap - RETURN
+    }
     trap cleanup RETURN
-    local waited=0
-    until mkdir "$lock" 2>/dev/null
-    do
-        (( waited++ ))
-        if (( 50 < waited ))
-        then echo "Error: could not acquire review lock '${lock}'." >&2; return 1
-        fi
-        sleep 0.1
-    done
+    _review_lock "$lock" || return 1
     held=1
 
     # Seed a minimal envelope if none exists yet (the run driver normally
@@ -1585,21 +1885,32 @@ do_review_record_finding() {
         jq --arg id "$id" --arg now "$now" --argjson iter "$iter" \
            --arg title "$title" --arg description "$description" \
            --arg file "$file" --argjson line "$line_json" \
-           --arg level "$level" --arg category "$category" --arg status "$status" \
-           --arg p0 "$p0" --arg rationale "$rationale" \
-           --argjson flagged "$flagged_json" '
-          .updated=$now
+           --arg level "$level" --arg category "$category" \
+           --arg astatus "$agent_status" --arg hstatus "$human_status" --arg note "$note" \
+           --arg p0 "$p0" --arg rationale "$rationale" --argjson source "$source_json" \
+           --argjson flagged "$flagged_json" "${REVIEW_MIGRATE_JQ}"'
+          migrate
+          | .updated=$now
           | .findings |= map(
               if .id==$id then
-                  (if $title!="" then .title=$title else . end)
+                  {agent_status, refutation, escalation} as $prev
+                | (if $title!="" then .title=$title else . end)
                 | (if $description!="" then .description=$description else . end)
-                | (if $status!="" then .status=$status else . end)
                 | (if $file!="" then .file=$file else . end)
                 | (if $line!=null then .line=$line else . end)
                 | (if $level!="" then .level=$level else . end)
                 | (if $category!="" then .category=$category else . end)
                 | (if $p0!="" then .p0=($p0=="true") else . end)
-                | (if $rationale!="" then .refutation=$rationale else . end)
+                | (if $astatus!="" then .agent_status=$astatus else . end)
+                | (if $astatus=="refuted" then .refutation=$rationale
+                   elif $astatus=="escalated" and $rationale!="" then .escalation=$rationale
+                   else . end)
+                | (if $hstatus!="" then .human_status=$hstatus
+                   elif {agent_status, refutation, escalation} != $prev then .human_status="unreviewed"
+                   else . end)
+                | (if $hstatus=="overruled" then .agent_status="open" else . end)
+                | (if $note!="" then .human_note=$note else . end)
+                | (if $source!=null then .source=$source else . end)
                 | .flagged_by=((.flagged_by + $flagged)|unique)
                 | .last_seen_iteration=$iter
               else . end)
@@ -1608,16 +1919,22 @@ do_review_record_finding() {
         jq --arg id "$(_review_uuid)" --arg now "$now" --argjson iter "$iter" \
            --arg title "$title" --arg description "$description" \
            --arg file "$file" --argjson line "$line_json" \
-           --arg level "$level" --arg category "$category" --arg status "${status:-open}" \
-           --argjson p0 "${p0:-false}" --arg refutation "$rationale" \
-           --argjson flagged "$flagged_json" '
-          .updated=$now
+           --arg level "$level" --arg category "$category" \
+           --arg astatus "${agent_status:-open}" --arg hstatus "${human_status:-unreviewed}" \
+           --arg note "$note" --argjson p0 "${p0:-false}" --arg rationale "$rationale" \
+           --argjson source "$source_json" --argjson flagged "$flagged_json" "${REVIEW_MIGRATE_JQ}"'
+          migrate
+          | .updated=$now
           | .findings += [{
               id:$id, file:$file, line:$line, level:$level, category:$category,
-              title:$title, description:$description, status:$status, p0:$p0,
-              refutation:$refutation,
+              title:$title, description:$description,
+              agent_status:$astatus, human_status:$hstatus, p0:$p0,
+              refutation:(if $astatus=="refuted" then $rationale else "" end),
               first_seen_iteration:$iter, last_seen_iteration:$iter, flagged_by:$flagged
-            }]
+            }
+            + (if $astatus=="escalated" and $rationale!="" then {escalation:$rationale} else {} end)
+            + (if $note!="" then {human_note:$note} else {} end)
+            + (if $source!=null then {source:$source} else {} end)]
         ' "$path" > "$tmp" || { echo "Error: jq insert failed." >&2; return 1; }
     fi
 
@@ -1639,21 +1956,112 @@ do_review_validate() {
     while (( 0 < $# ))
     do
         case "$1" in
-            --file) path=$2; shift 2 ;;
+            --file)
+                (( 1 < $# )) ||
+                    { echo "Error: option '--file' needs a value." >&2; return 1; }
+                path=$2
+                shift 2
+                ;;
             --help|-h)
                 echo "Usage: aishot git diff review validate [--file PATH]"
-                echo "Validate .aishot/review.json (schema, enums, types, invariants)."
+                echo "Validate .aishot/review.json (schema, enums, types, invariants)"
+                echo "and the reviewer registrations in $(_review_reviewers_dir)."
                 return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
         esac
     done
     [[ -n $path ]] || path=$(_review_json_path) || return 1
+    local rc=0 registry_errs
+    registry_errs=$(_review_registry_scan | jq -r '.errors[] | "registration: \(.)"')
+    if [[ -n $registry_errs ]]
+    then
+        printf '%s\n' "$registry_errs" >&2
+        rc=1
+    fi
     if _review_validate_file "$path"
     then
-        echo "ok: ${path} is valid"
-        return 0
+        local warnings
+        warnings=$(_review_flagged_by_warnings "$path")
+        [[ -z $warnings ]] || printf '%s\n' "$warnings" >&2
+    else
+        rc=1
     fi
-    return 1
+    if (( rc == 0 ))
+    then
+        echo "ok: ${path} is valid"
+    fi
+    return "$rc"
+}
+
+show_review_reviewers_help() {
+    cat <<EOF
+Usage: aishot git diff review reviewers [list] [--format=text|json]
+
+List the reviewers --flagged-by accepts: the built-ins (${REVIEW_REVIEWERS})
+and the reviewers registered by drop-in files in
+$(_review_reviewers_dir)/<name>.json, each shaped like:
+
+  {"name": "<name>", "orgs": ["<github-org>", ...], "description": "<text>"}
+
+A registered reviewer applies only in repos whose remote's owner (the
+GitHub org: the first path component of the remote URL) is one of its
+orgs, compared case-insensitively. The remote is the current branch's
+remote, else origin, else the only remote. The host is not checked, so
+SSH host aliases work. Invalid registration files are reported on
+stderr and make the command exit non-zero.
+
+--format=json prints {"org", "builtin", "registered", "errors"}, where
+each registered entry carries name, orgs, description, file, and applies.
+EOF
+}
+
+review_reviewers_usage() {
+    show_review_reviewers_help >&2
+}
+
+do_review_reviewers() {
+    _review_need_jq || return 1
+    local format=text
+    [[ ${1-} == list ]] && shift
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --format=*) format=${1#--format=}; shift ;;
+            --help|-h) show_review_reviewers_help; return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; review_reviewers_usage; return 1 ;;
+        esac
+    done
+    local registry org="" report
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org 2>/dev/null) || org=""
+    report=$(jq -c --arg org "$org" --arg builtins "$REVIEW_REVIEWERS" '
+      {org: (if $org == "" then null else $org end),
+       builtin: ($builtins | split(" ")),
+       registered: [.valid[] | . + {applies: ($org != "" and any(.orgs[]; ascii_downcase == ($org | ascii_downcase)))}],
+       errors: .errors}' <<< "$registry") || return 1
+    case "$format" in
+        json)
+            jq . <<< "$report"
+            ;;
+        text)
+            jq -r '
+              "built-in: \(.builtin | join(" "))",
+              "registered (this repo'"'"'s org: \(.org // "none")):",
+              (if (.registered | length) == 0 then "  (none)" else empty end),
+              (.registered[] |
+                "  \(.name)  \(if .applies then "applies here" else "not here" end)  orgs: \(.orgs | join(", "))  \(.description)")
+            ' <<< "$report"
+            ;;
+        *)
+            echo "Error: unknown --format '${format}' (want: text, json)." >&2
+            return 1
+            ;;
+    esac
+    if jq -e '0 < (.errors | length)' <<< "$report" >/dev/null
+    then
+        jq -r '.errors[] | "registration: \(.)"' <<< "$report" >&2
+        return 1
+    fi
 }
 
 do_review_print() {
@@ -1665,7 +2073,8 @@ do_review_print() {
             --format=*) format=${1#--format=}; shift ;;
             --help|-h)
                 echo "Usage: aishot git diff review print [--format=md|markdown|json]"
-                echo "Render .aishot/review.json. Default: md."
+                echo "Render .aishot/review.json. Default: md. Both formats render the"
+                echo "current schema; an older artifact is upgraded in memory."
                 return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
         esac
@@ -1675,13 +2084,16 @@ do_review_print() {
 
     case "$format" in
         json)
-            jq . "$path"
+            jq "${REVIEW_MIGRATE_JQ}"' migrate' "$path"
             ;;
         md|markdown)
-            jq -r '
+            jq -r "${REVIEW_MIGRATE_JQ}"'
               def levels: ["high","medium","low"];
-              ([.findings[] | select(.status=="open" and (.p0==true))] | length) as $openp0 |
-              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s) · \($openp0) open P0",
+              migrate |
+              ([.findings[] | select(.agent_status=="open" and (.p0==true))] | length) as $openp0 |
+              ([.findings[] | select(.agent_status=="escalated")] | length) as $escalated |
+              ([.findings[] | select(.agent_status!="open" and .human_status=="unreviewed")] | length) as $awaiting |
+              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s) · \($openp0) open P0 · \($escalated) escalated · \($awaiting) awaiting human",
               "",
               "\(.branch // "?") · base \((.base_sha // "")[0:12]) · head \((.head_sha // "")[0:12]) · updated \(.updated // "?")",
               "",
@@ -1691,9 +2103,12 @@ do_review_print() {
                   "## \($lv|ascii_upcase)",
                   "",
                   ( $fs[] |
-                    "- \(if .p0==true then "⛔P0 " else "" end)**\(.title)** [\(.category)] (\(.status)) — \(.file // "—")\(if .line then ":\(.line)" else "" end) — flagged by \(.flagged_by|join(", "))",
+                    "- \(if .p0==true then "⛔P0 " else "" end)**\(.title)** [\(.category)] (agent: \(.agent_status) · human: \(.human_status)) — \(.file // "—")\(if .line then ":\(.line)" else "" end) — flagged by \(.flagged_by|join(", "))",
                     "  \(.description)",
-                    (if (.refutation // "")!="" then "  refuted: \(.refutation)" else empty end),
+                    (if .agent_status=="refuted" and (.refutation // "")!="" then "  refuted: \(.refutation)" else empty end),
+                    (if .agent_status=="escalated" and (.escalation // "")!="" then "  escalated: \(.escalation)" else empty end),
+                    (if (.human_note // "")!="" then "  human note: \(.human_note)" else empty end),
+                    (if .source!=null then "  source: \(.source|tojson)" else empty end),
                     ""
                   )
                 else empty end
@@ -1707,27 +2122,104 @@ do_review_print() {
     esac
 }
 
-# Machine-readable convergence signal for the review loop. Prints one line:
-#   iteration=N total=N open=N open_p0=N addressed=N refuted=N
-# The loop is DONE when open_p0=0. Non-P0 findings may remain open.
+show_review_status_help() {
+    cat <<'EOF'
+Usage: aishot git diff review status [--format=kv|json]
+
+Machine-readable summary of .aishot/review.json for a review loop. The
+default kv format is one line of space-separated key=value pairs, always
+in this order:
+
+  iteration       current iteration (0 when there is no artifact).
+  total           findings.
+  open            agent_status open.
+  open_p0         P0s with agent_status open: the agent must still fix,
+                  refute, or escalate them.
+  escalated       agent_status escalated (waiting on a human).
+  escalated_p0    P0s among them.
+  fixed           agent_status fixed.
+  refuted         agent_status refuted.
+  unreviewed      human_status unreviewed.
+  confirmed       human_status confirmed.
+  overruled       human_status overruled.
+  awaiting_human  agent_status other than open, human_status unreviewed.
+  settled         agent_status fixed or refuted AND human_status confirmed.
+  unsettled_p0    P0s that are not settled.
+  new             findings first seen in the current iteration.
+  new_p0          P0s first seen in the current iteration: whether the
+                  latest run raised new P0s versus the previous one.
+  sourced         findings that carry a --source.
+
+Only P0s gate completion; non-P0 findings may remain open.
+
+--format=json prints the same keys as a JSON object, plus by_reviewer:
+{"<reviewer>": {"total", "open", "open_p0"}} keyed by each flagged_by
+name, built-in or registered.
+EOF
+}
+
+review_status_usage() {
+    show_review_status_help >&2
+}
+
 do_review_status() {
     _review_need_jq || return 1
-    local path
+    local format=kv
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --format=*) format=${1#--format=}; shift ;;
+            --help|-h) show_review_status_help; return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; review_status_usage; return 1 ;;
+        esac
+    done
+    case "$format" in
+        kv|json) ;;
+        *) echo "Error: unknown --format '${format}' (want: kv, json)." >&2; return 1 ;;
+    esac
+    local path doc
     path=$(_review_json_path) || return 1
-    if [[ ! -f $path ]]
+    if [[ -f $path ]]
     then
-        echo "iteration=0 total=0 open=0 open_p0=0 addressed=0 refuted=0"
-        return 0
+        doc=$(cat -- "$path") || return 1
+    else
+        doc='{"schema_version":2,"iterations":0,"findings":[]}'
     fi
-    jq -r '
-      (.findings) as $f
-      | "iteration=\(.iterations)"
-        + " total=\($f|length)"
-        + " open=\([$f[]|select(.status=="open")]|length)"
-        + " open_p0=\([$f[]|select(.status=="open" and (.p0==true))]|length)"
-        + " addressed=\([$f[]|select(.status=="addressed")]|length)"
-        + " refuted=\([$f[]|select(.status=="refuted")]|length)"
-    ' "$path"
+    jq -r --arg format "$format" "${REVIEW_MIGRATE_JQ}"'
+      def settled: (.agent_status == "fixed" or .agent_status == "refuted") and .human_status == "confirmed";
+      migrate
+      | .iterations as $it
+      | .findings as $f
+      | def n(c): [$f[] | select(c)] | length;
+      {
+        iteration: $it,
+        total: ($f | length),
+        open: n(.agent_status == "open"),
+        open_p0: n(.agent_status == "open" and .p0 == true),
+        escalated: n(.agent_status == "escalated"),
+        escalated_p0: n(.agent_status == "escalated" and .p0 == true),
+        fixed: n(.agent_status == "fixed"),
+        refuted: n(.agent_status == "refuted"),
+        unreviewed: n(.human_status == "unreviewed"),
+        confirmed: n(.human_status == "confirmed"),
+        overruled: n(.human_status == "overruled"),
+        awaiting_human: n(.agent_status != "open" and .human_status == "unreviewed"),
+        settled: n(settled),
+        unsettled_p0: n(.p0 == true and (settled | not)),
+        new: n(.first_seen_iteration == $it),
+        new_p0: n(.first_seen_iteration == $it and .p0 == true),
+        sourced: n(has("source"))
+      } as $counts
+      | if $format == "json" then
+          $counts + {by_reviewer: (reduce $f[] as $x ({};
+            reduce ($x.flagged_by | unique)[] as $r (.;
+              .[$r].total += 1
+              | .[$r].open += (if $x.agent_status == "open" then 1 else 0 end)
+              | .[$r].open_p0 += (if $x.agent_status == "open" and $x.p0 == true then 1 else 0 end))))}
+        else
+          $counts | to_entries | map("\(.key)=\(.value)") | join(" ")
+        end
+    ' <<< "$doc"
 }
 
 # Global options may appear BEFORE the subcommand, not just after it:
@@ -1782,6 +2274,10 @@ case "${1:-}" in
                             status)
                                 shift
                                 do_review_status "$@"
+                                ;;
+                            reviewers)
+                                shift
+                                do_review_reviewers "$@"
                                 ;;
                             *)
                                 _run_git_diff_mode review do_review "$@" "${global_opts[@]}"

@@ -31,9 +31,19 @@ run_test() {
 script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   { echo "cannot resolve script_dir" >&2; exit 1; }
 script="${script_dir}/bin/aishot"
+test_git=""
+while IFS= read -r candidate
+do
+  if [[ $(head -c 2 "$candidate") != '#!' ]]
+  then
+    test_git=$candidate
+    break
+  fi
+done < <(type -a -P git)
+[[ -n $test_git ]] || { echo "no non-wrapper git binary on PATH" >&2; exit 1; }
 
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
-trap 'rm -rf "${repo:-}"' EXIT
+trap 'rm -rf "${repo:-}" "${reg_home:-}"' EXIT
 
 # Build a throwaway git repo with a staged + unstaged change to review.
 # No commit is made (no upstream needed), so the branch-diff section is
@@ -256,7 +266,9 @@ if [[ -f $rj ]] &&
    (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 &&
    [[ $(jq -r '.findings[0].level' "$rj") == high ]] &&
    [[ $(jq -r '.findings[0].category' "$rj") == security ]] &&
-   [[ $(jq -r '.findings[0].status' "$rj") == open ]] &&
+   [[ $(jq -r '.findings[0].agent_status' "$rj") == open ]] &&
+   [[ $(jq -r '.findings[0].human_status' "$rj") == unreviewed ]] &&
+   [[ $(jq -r '.schema_version' "$rj") -eq 2 ]] &&
    [[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj") == claude,codex ]] &&
    [[ $(jq -r '.findings[0].id|length' "$rj") -eq 36 ]] &&
    [[ $(cd "$repo" && "$script" git diff review print 2>/dev/null) == *'## HIGH'*'SQL injection'* ]]
@@ -284,7 +296,7 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
-# Case 12: --id updates only the passed fields (status + flagged_by union),
+# Case 12: --id updates only the passed fields (agent_status + flagged_by union),
 # preserving the rest, and bumps nothing else improperly.
 # ---------------------------------------------------------------------------
 run_test
@@ -297,8 +309,8 @@ repo=$(make_repo)
 rj="$repo/.aishot/review.json"
 fid=$(jq -r '.findings[0].id' "$rj")
 (cd "$repo" && "$script" git diff review record-finding --id "$fid" \
-   --status addressed --flagged-by gemini) >/dev/null 2>&1
-if [[ $(jq -r '.findings[0].status' "$rj") == addressed ]] &&
+   --agent-status fixed --flagged-by gemini) >/dev/null 2>&1
+if [[ $(jq -r '.findings[0].agent_status' "$rj") == fixed ]] &&
    [[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj") == claude,gemini ]] &&
    [[ $(jq -r '.findings[0].title' "$rj") == leak ]] &&
    [[ $(jq -r '.findings[0].level' "$rj") == medium ]] &&
@@ -386,26 +398,73 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
-# Case 17: a moved base (simulated by rewriting the stored base_sha)
-# archives the prior review and resets to a fresh series.
+# Case 17: a real rebase onto a moved upstream continues the series:
+# findings carry forward, iterations bump, lineage is kept, nothing is
+# archived, and base_sha/head_sha are refreshed.
 # ---------------------------------------------------------------------------
 run_test
-repo=$(make_repo)
-rj="$repo/.aishot/review.json"
-(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
-(cd "$repo" && "$script" git diff review record-finding --title T --description D \
-   --level low --category style --flagged-by claude) >/dev/null 2>&1
+repo=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+(
+  cd "$repo" || exit 1
+  "$test_git" init -q --bare -b main up.git
+  "$test_git" -C up.git config core.hooksPath /dev/null
+  "$test_git" -c core.hooksPath=/dev/null init -q -b main work
+  cd work || exit 1
+  "$test_git" config user.email t@example.com
+  "$test_git" config user.name t
+  "$test_git" config core.hooksPath /dev/null
+  "$test_git" config commit.gpgsign false
+  printf 'base\n' > a.txt
+  "$test_git" add a.txt
+  "$test_git" commit -qm base
+  "$test_git" remote add origin ../up.git
+  "$test_git" push -q -u origin main
+  printf 'feature\n' > b.txt
+  "$test_git" add b.txt
+  "$test_git" commit -qm feature
+) >/dev/null 2>&1
+work="$repo/work"
+rj="$work/.aishot/review.json"
+(cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude --source '{"k":1}') >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --id "$(jq -r '.findings[0].id' "$rj")" \
+   --agent-status refuted --rationale "by design") >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --id "$(jq -r '.findings[0].id' "$rj")" \
+   --human-status confirmed --note "agreed") >/dev/null 2>&1
+f1=$(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj")
 l1=$(jq -r '.lineage' "$rj")
-jq '.base_sha="deadbeefdeadbeefdeadbeef"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
-(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
-if [[ $(jq -r '.iterations' "$rj") -eq 1 ]] &&
-   [[ $(jq -r '.findings|length' "$rj") -eq 0 ]] &&
-   [[ $(jq -r '.lineage' "$rj") != "$l1" ]] &&
-   [[ $(ls "$repo"/.aishot/review.bak.*.json 2>/dev/null | wc -l) -eq 1 ]]
+b1=$(jq -r '.base_sha' "$rj")
+(
+  cd "$repo" || exit 1
+  "$test_git" clone -q -c core.hooksPath=/dev/null up.git other
+  cd other || exit 1
+  "$test_git" config user.email t@example.com
+  "$test_git" config user.name t
+  "$test_git" config commit.gpgsign false
+  printf 'trunk moved\n' > c.txt
+  "$test_git" add c.txt
+  "$test_git" commit -qm trunk
+  "$test_git" push -q origin main
+  cd "$work" || exit 1
+  "$test_git" fetch -q origin
+  "$test_git" rebase -q '@{u}'
+) >/dev/null 2>&1
+(cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+if [[ -n $b1 ]] &&
+   [[ $(jq -r '.base_sha' "$rj") == "$("$test_git" -C "$work" merge-base '@{u}' HEAD)" ]] &&
+   [[ $(jq -r '.base_sha' "$rj") != "$b1" ]] &&
+   [[ $(jq -r '.head_sha' "$rj") == "$("$test_git" -C "$work" rev-parse HEAD)" ]] &&
+   [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+   [[ $(jq -r '.findings|length' "$rj") -eq 1 ]] &&
+   [[ $(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj") == "$f1" ]] &&
+   [[ $(jq -r '.findings[0].refutation' "$rj") == "by design" ]] &&
+   [[ $(jq -r '.lineage' "$rj") == "$l1" ]] &&
+   ! compgen -G "$work/.aishot/review.bak.*.json" >/dev/null
 then
-  pass "moved base archives prior and resets to a fresh series"
+  pass "rebase onto a moved base carries findings forward, refreshes shas"
 else
-  fail "base-move archive/reset incorrect"
+  fail "base-move carry-forward incorrect"
 fi
 rm -rf "$repo"
 
@@ -558,9 +617,9 @@ repo=$(make_repo)
 rj="$repo/.aishot/review.json"
 fid=$(jq -r '.findings[0].id' "$rj")
 (cd "$repo" && "$script" git diff review record-finding --id "$fid" \
-   --status refuted --rationale "guarded by mutex" --flagged-by claude) >/dev/null 2>&1
+   --agent-status refuted --rationale "guarded by mutex" --flagged-by claude) >/dev/null 2>&1
 st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
-if [[ $(jq -r '.findings[0].status' "$rj") == refuted ]] &&
+if [[ $(jq -r '.findings[0].agent_status' "$rj") == refuted ]] &&
    [[ $(jq -r '.findings[0].refutation' "$rj") == "guarded by mutex" ]] &&
    [[ $st == *"open_p0=0"* ]] && [[ $st == *"refuted=1"* ]] &&
    (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
@@ -587,6 +646,646 @@ else
   fail "validate should reject p0 that is not boolean"
 fi
 rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 25
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --p0 true --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+fid=$(jq -r '.findings[0].id' "$rj")
+if ! (cd "$repo" && "$script" git diff review record-finding --id "$fid" \
+        --agent-status refuted) >/dev/null 2>&1 &&
+   [[ $(jq -r '.findings[0].agent_status' "$rj") == open ]]
+then
+  pass "refuted without --rationale is rejected"
+else
+  fail "refuted without --rationale should be rejected"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 26
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --p0 true --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+fid=$(jq -r '.findings[0].id' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" \
+   --agent-status escalated --rationale "depends on caller contract") >/dev/null 2>&1
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+md=$(cd "$repo" && "$script" git diff review print 2>/dev/null)
+if [[ $(jq -r '.findings[0].agent_status' "$rj") == escalated ]] &&
+   [[ $(jq -r '.findings[0].escalation' "$rj") == "depends on caller contract" ]] &&
+   [[ $st == *" open_p0=0 "* ]] && [[ $st == *" escalated_p0=1 "* ]] &&
+   [[ $md == *'escalated: depends on caller contract'* ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "escalated records its rationale and leaves the open_p0 gate"
+else
+  fail "escalated handling incorrect (status: $st)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 27
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --p0 true --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+fid=$(jq -r '.findings[0].id' "$rj")
+rf() { (cd "$repo" && "$script" git diff review record-finding --id "$fid" "$@") >/dev/null 2>&1; }
+ok=1
+rf --agent-status refuted --rationale "safe" || ok=0
+rf --human-status confirmed || ok=0
+[[ $(jq -r '.findings[0]|"\(.agent_status)/\(.human_status)"' "$rj") == refuted/confirmed ]] || ok=0
+rf --human-status overruled && ok=0
+rf --human-status overruled --note "it is real" --agent-status fixed && ok=0
+[[ $(jq -r '.findings[0].human_status' "$rj") == confirmed ]] || ok=0
+rf --human-status overruled --note "it is real" || ok=0
+[[ $(jq -r '.findings[0]|"\(.agent_status)/\(.human_status)/\(.human_note)"' "$rj") == "open/overruled/it is real" ]] || ok=0
+rf --agent-status fixed || ok=0
+[[ $(jq -r '.findings[0]|"\(.agent_status)/\(.human_status)"' "$rj") == fixed/unreviewed ]] || ok=0
+rf --note "orphan" && ok=0
+if (( ok )) && (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "human_status confirm/overrule rules and reset on agent change"
+else
+  fail "human_status rules incorrect: $(jq -c '.findings[0]' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 28
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title A --description D \
+   --level low --category style --flagged-by claude --status addressed) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review record-finding --title B --description D \
+   --level low --category style --flagged-by claude --status wontfix --rationale "by design") >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+if [[ $(jq -r '[.findings[].agent_status]|join(",")' "$rj") == fixed,refuted ]] &&
+   ! (cd "$repo" && "$script" git diff review record-finding --title C --description D \
+        --level low --category style --flagged-by claude --status fixed \
+        --agent-status fixed) >/dev/null 2>&1
+then
+  pass "deprecated --status maps addressed/wontfix onto agent_status"
+else
+  fail "deprecated --status mapping incorrect"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 29
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+cp "$rj" "$rj.orig"
+ok=1
+for corrupt in \
+  '.findings[0].agent_status="addressed"' \
+  '.findings[0].human_status="maybe"' \
+  '.findings[0].agent_status="refuted" | .findings[0].refutation=""' \
+  '.findings[0].human_status="overruled" | .findings[0].human_note="n" | .findings[0].agent_status="fixed"' \
+  '.findings[0].human_status="overruled"' \
+  '.findings[0].status="open"'
+do
+  jq "$corrupt" "$rj.orig" > "$rj"
+  if (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+  then
+    ok=0
+    echo "  validate accepted: $corrupt" >&2
+  fi
+done
+if (( ok ))
+then
+  pass "validate enforces schema 2 enums and invariants"
+else
+  fail "validate missed a schema 2 violation"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 30
+# ---------------------------------------------------------------------------
+write_v1() {
+  mkdir -p "$1/.aishot"
+  jq -n '{schema_version:1, lineage:"l", iterations:2, branch:"b", base_sha:"",
+          head_sha:"", created:"c", updated:"u", diff:"", findings:[
+    {id:"a", file:"x", line:1, level:"high", category:"correctness", title:"A",
+     description:"d", status:"open", p0:true, refutation:"",
+     first_seen_iteration:1, last_seen_iteration:2, flagged_by:["claude"]},
+    {id:"b", file:"x", line:2, level:"low", category:"style", title:"B",
+     description:"d", status:"addressed", p0:false, refutation:"",
+     first_seen_iteration:1, last_seen_iteration:2, flagged_by:["codex"]},
+    {id:"c", file:"x", line:3, level:"low", category:"style", title:"C",
+     description:"d", status:"wontfix",
+     first_seen_iteration:1, last_seen_iteration:2, flagged_by:["codex"]},
+    {id:"d", file:"x", line:4, level:"medium", category:"reliability", title:"D",
+     description:"d", status:"refuted", p0:true, refutation:"guarded",
+     first_seen_iteration:1, last_seen_iteration:2, flagged_by:["claude"]}]}' \
+    > "$1/.aishot/review.json"
+}
+run_test
+repo=$(make_repo)
+write_v1 "$repo"
+rj="$repo/.aishot/review.json"
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+pj=$(cd "$repo" && "$script" git diff review print --format=json 2>/dev/null)
+if (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 &&
+   [[ $st == *" open_p0=1 "* ]] && [[ $st == *" fixed=1 "* ]] && [[ $st == *" refuted=2 "* ]] &&
+   [[ $(jq -r '.schema_version' <<< "$pj") -eq 2 ]] &&
+   [[ $(jq -r '[.findings[].agent_status]|join(",")' <<< "$pj") == open,fixed,refuted,refuted ]] &&
+   [[ $(jq -r '[.findings[].human_status]|unique|join(",")' <<< "$pj") == unreviewed ]] &&
+   [[ $(jq -r '.findings[2].refutation' <<< "$pj") == *'wontfix'* ]] &&
+   [[ $(jq -r '.findings[3].refutation' <<< "$pj") == guarded ]] &&
+   [[ $(jq -r '.schema_version' "$rj") -eq 1 ]]
+then
+  pass "schema 1 artifact: validate/print/status read it without rewriting"
+else
+  fail "schema 1 read path incorrect (status: $st)"
+fi
+run_test
+(cd "$repo" && "$script" git diff review record-finding --id a --agent-status fixed) >/dev/null 2>&1
+if [[ $(jq -r '.schema_version' "$rj") -eq 2 ]] &&
+   [[ $(jq -r '[.findings[].agent_status]|join(",")' "$rj") == fixed,fixed,refuted,refuted ]] &&
+   [[ $(jq -r '[.findings[]|select(has("status"))]|length' "$rj") -eq 0 ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "schema 1 artifact: record-finding upgrades it in place"
+else
+  fail "record-finding did not upgrade a schema 1 artifact"
+fi
+run_test
+write_v1 "$repo"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+if [[ $(jq -r '.schema_version' "$rj") -eq 2 ]] &&
+   [[ $(jq -r '.iterations' "$rj") -eq 3 ]] &&
+   [[ $(jq -r '[.findings[].agent_status]|join(",")' "$rj") == open,fixed,refuted,refuted ]] &&
+   (cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1
+then
+  pass "schema 1 artifact: begin upgrades it and continues the series"
+else
+  fail "begin did not upgrade a schema 1 artifact"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 31
+# ---------------------------------------------------------------------------
+reg_home=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+reg_dir="$reg_home/.agents/aishot/reviewers"
+mkdir -p "$reg_dir"
+reg_path="$(dirname "$test_git"):$PATH"
+in_reg() {
+  local dir=$1
+  shift
+  (cd "$dir" && HOME="$reg_home" PATH="$reg_path" "$script" git diff review "$@")
+}
+reg_reset() {
+  rm -f "$reg_dir"/*.json
+  printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"outer loop reviewer"}' > "$reg_dir/outer.json"
+  printf '%s\n' '{"name":"elsewhere","orgs":["acme"],"description":"acme-only reviewer"}' > "$reg_dir/elsewhere.json"
+}
+
+run_test
+reg_reset
+repo=$(make_repo)
+"$test_git" -C "$repo" remote add origin git@github.com:datadog/thing.git
+rj="$repo/.aishot/review.json"
+ok=1
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by claude,outer >/dev/null 2>&1 || ok=0
+[[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj" 2>/dev/null) == claude,outer ]] || ok=0
+err=$(in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by elsewhere 2>&1 >/dev/null) && ok=0
+[[ $err == *"registered for orgs acme"*"'datadog'"* ]] || ok=0
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by nobody >/dev/null 2>&1 && ok=0
+[[ $(jq -r '.findings|length' "$rj") -eq 1 ]] || ok=0
+fid=$(jq -r '.findings[0].id' "$rj")
+in_reg "$repo" record-finding --id "$fid" --flagged-by elsewhere >/dev/null 2>&1 && ok=0
+if (( ok )) && in_reg "$repo" validate >/dev/null 2>&1
+then
+  pass "registered reviewers are accepted only in repos their orgs cover"
+else
+  fail "registered reviewer scoping incorrect (err: $err)"
+fi
+rm -rf "$repo"
+
+run_test
+repo=$(make_repo)
+if ! err=$(in_reg "$repo" record-finding --title T --description D --level low --category style \
+       --flagged-by outer 2>&1 >/dev/null) &&
+   [[ $err == *"no remote org"* ]] && [[ ! -f "$repo/.aishot/review.json" ]]
+then
+  pass "registered reviewer is rejected in a repo with no remote org"
+else
+  fail "registered reviewer without a remote org should be rejected (err: $err)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 32
+# ---------------------------------------------------------------------------
+run_test
+reg_reset
+repo=$(make_repo)
+ok=1
+for url_org in \
+  'git@github.com:DataDog/thing.git DataDog' \
+  'ssh://git@github.com/DataDog/thing DataDog' \
+  'https://github.com/timvisher/ide timvisher' \
+  'https://github.com/acme/x.git acme'
+do
+  read -r url want <<< "$url_org"
+  "$test_git" -C "$repo" remote remove origin >/dev/null 2>&1
+  "$test_git" -C "$repo" remote add origin "$url"
+  got=$(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org')
+  if [[ $got != "$want" ]]
+  then
+    ok=0
+    echo "  $url -> '$got', want '$want'" >&2
+  fi
+done
+"$test_git" -C "$repo" remote set-url origin ../some/local/path.git
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == null ]] || ok=0
+"$test_git" -C "$repo" remote set-url origin git@github.com:DATADOG/thing.git
+rj_list=$(in_reg "$repo" reviewers --format=json 2>/dev/null)
+[[ $(jq -r '[.registered[]|select(.applies)|.name]|join(",")' <<< "$rj_list") == outer ]] || ok=0
+[[ $(jq -r '.builtin|join(",")' <<< "$rj_list") == claude,codex,gemini,human ]] || ok=0
+txt=$(in_reg "$repo" reviewers list 2>/dev/null)
+[[ $txt == *'outer  applies here'* && $txt == *'elsewhere  not here'* ]] || ok=0
+if (( ok ))
+then
+  pass "reviewers list resolves the remote org and marks what applies"
+else
+  fail "reviewers list org resolution incorrect: $rj_list"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 33
+# ---------------------------------------------------------------------------
+run_test
+reg_reset
+repo=$(make_repo)
+"$test_git" -C "$repo" remote add origin git@github.com:datadog/thing.git
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by outer >/dev/null 2>&1
+printf '%s\n' '{"name":"wrong","orgs":[],"description":"","extra":1}' > "$reg_dir/bad.json"
+printf 'nope\n' > "$reg_dir/broken.json"
+printf '%s\n' '{"name":"claude","orgs":["x"],"description":"d"}' > "$reg_dir/claude.json"
+ok=1
+verr=$(in_reg "$repo" validate 2>&1 >/dev/null) && ok=0
+for want in 'bad.json: unknown key: extra' 'bad.json: name "wrong" must match the file name "bad"' \
+            'bad.json: orgs must be' 'bad.json: description must be' \
+            'broken.json: not a single valid JSON document' 'claude.json: name "claude" collides'
+do
+  [[ $verr == *"$want"* ]] || { ok=0; echo "  validate missing: $want" >&2; }
+done
+lerr=$(in_reg "$repo" reviewers list 2>&1 >/dev/null) && ok=0
+[[ $lerr == *'broken.json'* ]] || ok=0
+[[ $(in_reg "$repo" reviewers list 2>/dev/null) == *'outer  applies here'* ]] || ok=0
+rm -f "$reg_dir/bad.json" "$reg_dir/broken.json" "$reg_dir/claude.json"
+in_reg "$repo" validate >/dev/null 2>&1 || ok=0
+rm -f "$reg_dir/outer.json"
+verr=$(in_reg "$repo" validate 2>&1 >/dev/null) || ok=0
+[[ $verr == *'warning: flagged_by "outer" is not a built-in or registered reviewer'* ]] || ok=0
+if (( ok ))
+then
+  pass "validate checks registration files and flagged_by against the registry"
+else
+  fail "registration validation incorrect: $verr"
+fi
+rm -rf "$repo" "$reg_home"
+
+# ---------------------------------------------------------------------------
+# Case 34
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+src='{"finding_id":"f-1","sha":"abc","thread":{"id":7},"url":"https://example.com/c/1"}'
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude --source "$src") >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+ok=1
+[[ $(jq -c '.findings[0].source' "$rj") == "$(jq -c . <<< "$src")" ]] || ok=0
+[[ $(cd "$repo" && "$script" git diff review print 2>/dev/null) == *'source: {"finding_id":"f-1"'* ]] || ok=0
+[[ $(cd "$repo" && "$script" git diff review print --format=json 2>/dev/null | jq -r '.findings[0].source.thread.id') == 7 ]] || ok=0
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+[[ $(jq -r '.findings[0].source.finding_id' "$rj") == f-1 ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --agent-status fixed) >/dev/null 2>&1
+[[ $(jq -r '.findings[0].source.finding_id' "$rj") == f-1 ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --source '{"finding_id":"f-2"}') >/dev/null 2>&1
+[[ $(jq -c '.findings[0].source' "$rj") == '{"finding_id":"f-2"}' ]] || ok=0
+for bad in '[1,2]' '"str"' 'not json' '{"a":1} {"b":2}' ''
+do
+  if (cd "$repo" && "$script" git diff review record-finding --id "$fid" --source "$bad") >/dev/null 2>&1
+  then
+    ok=0
+    echo "  --source accepted: '$bad'" >&2
+  fi
+done
+[[ $(jq -c '.findings[0].source' "$rj") == '{"finding_id":"f-2"}' ]] || ok=0
+(cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 || ok=0
+jq '.findings[0].source="x"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+(cd "$repo" && "$script" git diff review validate) >/dev/null 2>&1 && ok=0
+if (( ok ))
+then
+  pass "--source is stored opaquely, carried forward, printed, and must be an object"
+else
+  fail "--source handling incorrect: $(jq -c '.findings[0]' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 35
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+want='iteration=0 total=0 open=0 open_p0=0 escalated=0 escalated_p0=0 fixed=0 refuted=0 unreviewed=0 confirmed=0 overruled=0 awaiting_human=0 settled=0 unsettled_p0=0 new=0 new_p0=0 sourced=0'
+if [[ $st == "$want" ]] &&
+   [[ $(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null | jq -c '.by_reviewer') == '{}' ]]
+then
+  pass "status with no artifact prints every key, zeroed, in order"
+else
+  fail "status with no artifact: got '$st'"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 36
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+rf() { (cd "$repo" && "$script" git diff review record-finding "$@") >/dev/null 2>&1; }
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+rf --title A --description d --level high --category correctness --p0 true --flagged-by claude,codex
+rf --title B --description d --level high --category security --p0 true --flagged-by claude
+rf --title C --description d --level low --category style --flagged-by codex --source '{"k":1}'
+rf --title D --description d --level low --category docs --flagged-by codex
+id_of() { jq -r --arg t "$1" '.findings[]|select(.title==$t).id' "$rj"; }
+rf --id "$(id_of A)" --agent-status fixed
+rf --id "$(id_of A)" --human-status confirmed
+rf --id "$(id_of B)" --agent-status escalated
+rf --id "$(id_of C)" --agent-status refuted --rationale "by design"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+rf --title E --description d --level high --category reliability --p0 true --flagged-by codex
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+want='iteration=2 total=5 open=2 open_p0=1 escalated=1 escalated_p0=1 fixed=1 refuted=1 unreviewed=4 confirmed=1 overruled=0 awaiting_human=2 settled=1 unsettled_p0=2 new=1 new_p0=1 sourced=1'
+sj=$(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null)
+md=$(cd "$repo" && "$script" git diff review print 2>/dev/null)
+if [[ $st == "$want" ]] &&
+   [[ $(jq -c '.by_reviewer' <<< "$sj") == '{"claude":{"total":2,"open":0,"open_p0":0},"codex":{"total":4,"open":2,"open_p0":1}}' ]] &&
+   [[ $(jq -r '.new_p0' <<< "$sj") -eq 1 ]] &&
+   [[ $md == *'1 open P0 · 1 escalated · 2 awaiting human'* ]]
+then
+  pass "status counts triage, settlement, and new P0s per iteration"
+else
+  fail "status counts incorrect: got '$st' / $(jq -c '.by_reviewer' <<< "$sj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 37
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+for sub in status reviewers record-finding
+do
+  [[ -n $(cd "$repo" && "$script" git diff review "$sub" --help 2>/dev/null) ]] || ok=0
+  [[ -z $(cd "$repo" && "$script" git diff review "$sub" --bogus 2>/dev/null) ]] || ok=0
+  [[ -n $(cd "$repo" && "$script" git diff review "$sub" --bogus 2>&1 >/dev/null) ]] || ok=0
+done
+[[ -z $(cd "$repo" && "$script" git diff review status --format=yaml 2>/dev/null) ]] || ok=0
+if (( ok ))
+then
+  pass "status/reviewers/record-finding: --help on stdout, usage errors on stderr only"
+else
+  fail "help/usage stream separation incorrect"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 38
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+for opt in --title --description --file --line --level --category --flagged-by --status \
+           --agent-status --human-status --note --p0 --rationale --source --id
+do
+  if ! out=$(cd "$repo" && timeout 10 "$script" git diff review record-finding "$opt" 2>&1)
+  then
+    [[ $out == *"option '${opt}' needs a value"* ]] || { ok=0; echo "  $opt: $out" >&2; }
+  else
+    ok=0
+    echo "  $opt was accepted without a value" >&2
+  fi
+done
+out=$(cd "$repo" && timeout 10 "$script" git diff review validate --file 2>&1) && ok=0
+[[ $out == *"needs a value"* ]] || ok=0
+if (( ok ))
+then
+  pass "value-taking options without a value fail fast instead of looping"
+else
+  fail "missing option values not rejected cleanly"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 39
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+printf '[]\n' > "$repo/arr.json"
+verr=$(cd "$repo" && "$script" git diff review validate --file arr.json 2>&1) && ok=0
+[[ $verr == *'must be a JSON object'* ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+for corrupt in '.findings=[1]' '.findings=["x"]' '.findings[0].flagged_by=[1]' '.findings[0].flagged_by=["Bad Name"]'
+do
+  jq "$corrupt" "$rj" > "$repo/c.json"
+  if (cd "$repo" && "$script" git diff review validate --file c.json) >/dev/null 2>&1
+  then
+    ok=0
+    echo "  validate accepted: $corrupt" >&2
+  fi
+done
+if (( ok ))
+then
+  pass "validate rejects wrong root and finding types instead of erroring into success"
+else
+  fail "validate accepted a structurally wrong artifact: $verr"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 40
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude,codex,claude) >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --flagged-by codex) >/dev/null 2>&1
+jq '.findings[0].flagged_by += ["claude"]' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+if [[ $(jq -c '.findings[0].flagged_by' "$rj") == '["claude","codex","claude"]' ]] &&
+   [[ $(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null | jq -c '.by_reviewer.claude.total') == 1 ]]
+then
+  run_test
+  repo2=$(make_repo)
+  (cd "$repo2" && "$script" git diff review record-finding --title T --description D \
+     --level low --category style --flagged-by claude,codex,claude) >/dev/null 2>&1
+  if [[ $(jq -c '.findings[0].flagged_by' "$repo2/.aishot/review.json") == '["claude","codex"]' ]]
+  then
+    pass "duplicate --flagged-by names are dropped on insert"
+  else
+    fail "duplicate --flagged-by names were stored"
+  fi
+  rm -rf "$repo2"
+  pass "status counts each reviewer once per finding"
+else
+  fail "duplicate flagged_by handling incorrect: $(jq -c '.findings[0].flagged_by' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 41
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --p0 true --flagged-by claude) >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+rf() { (cd "$repo" && "$script" git diff review record-finding --id "$fid" "$@") >/dev/null 2>&1; }
+ok=1
+rf --agent-status refuted --rationale A || ok=0
+rf --human-status confirmed || ok=0
+rf --agent-status refuted --rationale A || ok=0
+[[ $(jq -r '.findings[0].human_status' "$rj") == confirmed ]] || ok=0
+rf --agent-status refuted --rationale B || ok=0
+[[ $(jq -r '.findings[0].human_status' "$rj") == unreviewed ]] || ok=0
+rf --human-status confirmed || ok=0
+rf --agent-status open || ok=0
+rf --human-status confirmed || ok=0
+[[ $(jq -r '.findings[0]|"\(.agent_status)/\(.human_status)"' "$rj") == open/confirmed ]] || ok=0
+if (( ok ))
+then
+  pass "a changed rationale resets human_status; re-asserting the same one does not"
+else
+  fail "rationale-change reset incorrect: $(jq -c '.findings[0]' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 42
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+mkdir "$repo/.aishot/.review.lock"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1 &
+begin_pid=$!
+sleep 1
+it_held=$(jq -r '.iterations' "$rj")
+rmdir "$repo/.aishot/.review.lock"
+wait "$begin_pid"
+begin_rc=$?
+if [[ $it_held -eq 1 ]] && (( begin_rc == 0 )) &&
+   [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+   [[ ! -e "$repo/.aishot/.review.lock" ]]
+then
+  pass "begin waits for the review lock and releases it"
+else
+  fail "begin ignored or leaked the review lock (held: $it_held, rc: $begin_rc)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 43
+# ---------------------------------------------------------------------------
+run_test
+reg_home=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+reg_dir="$reg_home/.agents/aishot/reviewers"
+mkdir -p "$reg_dir"
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d"}' > "$reg_dir/outer.json"
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+"$test_git" -C "$repo" remote add origin git@github.com:DataDog/thing.git
+ok=1
+in_reg "$repo" record-finding --title T --description D --level high --category correctness \
+  --p0 true --flagged-by outer >/dev/null 2>&1 || ok=0
+fid=$(jq -r '.findings[0].id' "$rj")
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d","typo":1}' > "$reg_dir/outer.json"
+in_reg "$repo" record-finding --id "$fid" --agent-status fixed >/dev/null 2>&1 || ok=0
+in_reg "$repo" begin >/dev/null 2>&1 || ok=0
+rm -f "$reg_dir/outer.json"
+in_reg "$repo" record-finding --id "$fid" --agent-status open >/dev/null 2>&1 || ok=0
+vout=$(in_reg "$repo" validate 2>&1) || ok=0
+[[ $vout == *'warning: flagged_by "outer" is not a built-in or registered reviewer'* ]] || ok=0
+printf '%s\n' '{"name":"outer","orgs":["acme"],"description":"d"}' > "$reg_dir/outer.json"
+vout=$(in_reg "$repo" validate 2>&1) || ok=0
+[[ $vout == *'warning: flagged_by "outer" is registered for orgs acme'* ]] || ok=0
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d"}{"name":"outer","orgs":["acme"],"description":"d"}' > "$reg_dir/outer.json"
+lerr=$(in_reg "$repo" reviewers list 2>&1 >/dev/null) && ok=0
+[[ $lerr == *'outer.json: not a single valid JSON document'* ]] || ok=0
+in_reg "$repo" record-finding --title T2 --description D --level low --category style \
+  --flagged-by outer >/dev/null 2>&1 && ok=0
+if (( ok ))
+then
+  pass "a broken or removed registration warns but never locks the artifact"
+else
+  fail "registration breakage handling incorrect: $vout / $lerr"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 44
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+"$test_git" -C "$repo" remote add origin git@github.com:origin-org/x.git
+"$test_git" -C "$repo" remote add fork git@github.com:fork-org/x.git
+"$test_git" -C "$repo" symbolic-ref HEAD refs/heads/feature
+"$test_git" -C "$repo" config branch.feature.remote fork
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == fork-org ]] || ok=0
+"$test_git" -C "$repo" config --unset branch.feature.remote
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == origin-org ]] || ok=0
+"$test_git" -C "$repo" remote remove origin
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == fork-org ]] || ok=0
+"$test_git" -C "$repo" remote add other git@github.com:other-org/x.git
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == null ]] || ok=0
+[[ -z $(in_reg "$repo" reviewers --format=json list 2>/dev/null) ]] || ok=0
+if (( ok ))
+then
+  pass "remote org follows the branch remote, then origin, then a sole remote"
+else
+  fail "remote selection for the org incorrect"
+fi
+rm -rf "$repo" "$reg_home"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
