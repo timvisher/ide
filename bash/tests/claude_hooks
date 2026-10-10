@@ -386,6 +386,63 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# no-aishot-review-dismissal-stop.sh
+# ---------------------------------------------------------------------------
+
+dismiss_dir="$tmpdir/dismissal"
+mkdir -p "$dismiss_dir/.aishot"
+
+dismiss_run() {
+  local findings=$1 text=$2
+  jq -nc --argjson f "$findings" '{schema_version:2, findings:$f}' > "$dismiss_dir/.aishot/review.json"
+  {
+    jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"Bash",input:{command:"aishot git diff review"}}]}}'
+    jq -nc --arg t "$text" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'
+  } > "$tp"
+  jq -nc --arg p "$tp" '{transcript_path:$p, stop_hook_active:false}' > "$input_file"
+  (cd "$dismiss_dir" && "${hooks_dir}/no-aishot-review-dismissal-stop.sh" < "$input_file")
+}
+
+dismiss_assert() {
+  local want=$1 findings=$2 text=$3 label=$4 result
+  run_test
+  result=$(dismiss_run "$findings" "$text")
+  if [[ $want == block ]]
+  then
+    if printf '%s' "$result" | jq -e '.decision == "block"' >/dev/null 2>&1
+    then
+      pass "$label"
+    else
+      fail "$label — expected block, got: '${result}'"
+    fi
+  elif [[ -z $result ]]
+  then
+    pass "$label"
+  else
+    fail "$label — expected pass, got: '${result}'"
+  fi
+}
+
+open_p0='[{"p0":true,"agent_status":"open","human_status":"unreviewed"}]'
+refuted_p0='[{"p0":true,"agent_status":"refuted","human_status":"unreviewed","refutation":"guarded by the mutex"}]'
+escalated_p0='[{"p0":true,"agent_status":"escalated","human_status":"unreviewed"}]'
+open_nonp0='[{"p0":false,"agent_status":"open","human_status":"unreviewed"}]'
+v1_open_p0='[{"p0":true,"status":"open"}]'
+
+dismiss_assert block "$open_p0" "That one is pre-existing, so I left it." \
+  "dismissal: open P0 + 'pre-existing' blocks"
+dismiss_assert block "$v1_open_p0" "This is out of scope for the change." \
+  "dismissal: schema 1 open P0 still blocks"
+dismiss_assert pass "$open_p0" "Refuted the P0: the lock is held for the whole read, so the race cannot happen." \
+  "dismissal: explicit refutation with a rationale passes"
+dismiss_assert pass "$refuted_p0" "I won't fix that one; it is refuted with a rationale." \
+  "dismissal: no open P0 after refuting passes"
+dismiss_assert pass "$escalated_p0" "Escalated the P0; it is out of scope for me to judge." \
+  "dismissal: an escalated P0 does not gate"
+dismiss_assert pass "$open_nonp0" "That nit is not actionable." \
+  "dismissal: open non-P0 does not gate"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
