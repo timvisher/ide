@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/../lib/mock_commands.bash" || exit 1
+
+# Integration tests for aishot's review artifact against real repository
+# state. git is mocked with a passthrough to the real git, so aishot never
+# runs the ~/bin/git wrapper; fixtures are built with "$real_git" directly.
+# The unit suite, against a mocked git, is bash/tests/aishot.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/../.." && pwd)/bin/aishot"
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$real_git"
+
+fixture_git() {
+  "$real_git" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false "$@"
+}
+
+# ---------------------------------------------------------------------------
+# A real rebase onto a moved upstream continues the series: triaged
+# findings carry forward unchanged, and base_sha/head_sha follow the
+# rebased branch.
+# ---------------------------------------------------------------------------
+run_test
+work="$tmpdir/work"
+rj="$work/.aishot/review.json"
+if ! {
+  fixture_git init -q --bare -b main "$tmpdir/up.git" &&
+    fixture_git init -q -b main "$work" &&
+    printf 'base\n' > "$work/a.txt" &&
+    fixture_git -C "$work" add a.txt &&
+    fixture_git -C "$work" commit -qm base &&
+    fixture_git -C "$work" remote add origin ../up.git &&
+    fixture_git -C "$work" push -q -u origin main &&
+    printf 'feature\n' > "$work/b.txt" &&
+    fixture_git -C "$work" add b.txt &&
+    fixture_git -C "$work" commit -qm feature
+} >/dev/null 2>&1
+then
+  fail "rebase carry-forward: could not build the fixture repos"
+else
+  (cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+  (cd "$work" && "$script" git diff review record-finding --title T --description D \
+     --level low --category style --flagged-by claude --source '{"k":1}') >/dev/null 2>&1
+  fid=$(jq -r '.findings[0].id' "$rj" 2>/dev/null)
+  (cd "$work" && "$script" git diff review record-finding --id "$fid" \
+     --agent-status refuted --rationale "by design") >/dev/null 2>&1
+  (cd "$work" && "$script" git diff review record-finding --id "$fid" \
+     --human-status confirmed --note "agreed") >/dev/null 2>&1
+  f1=$(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj" 2>/dev/null)
+  l1=$(jq -r '.lineage' "$rj" 2>/dev/null)
+  b1=$(jq -r '.base_sha' "$rj" 2>/dev/null)
+  if ! {
+    fixture_git clone -q "$tmpdir/up.git" "$tmpdir/other" &&
+      printf 'trunk moved\n' > "$tmpdir/other/c.txt" &&
+      fixture_git -C "$tmpdir/other" add c.txt &&
+      fixture_git -C "$tmpdir/other" commit -qm trunk &&
+      fixture_git -C "$tmpdir/other" push -q origin main &&
+      fixture_git -C "$work" fetch -q origin &&
+      fixture_git -C "$work" rebase -q '@{u}'
+  } >/dev/null 2>&1
+  then
+    fail "rebase carry-forward: could not move the upstream and rebase"
+  else
+    (cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+    if [[ $b1 == "$("$real_git" -C "$work" rev-parse HEAD~2)" ]] &&
+       [[ $(jq -r '.base_sha' "$rj") == "$("$real_git" -C "$work" merge-base '@{u}' HEAD)" ]] &&
+       [[ $(jq -r '.base_sha' "$rj") != "$b1" ]] &&
+       [[ $(jq -r '.head_sha' "$rj") == "$("$real_git" -C "$work" rev-parse HEAD)" ]] &&
+       [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+       [[ $(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj") == "$f1" ]] &&
+       [[ $(jq -r '.lineage' "$rj") == "$l1" ]] &&
+       ! compgen -G "$work/.aishot/review.bak.*.json" >/dev/null
+    then
+      pass "rebase onto a moved upstream carries triaged findings forward, refreshes shas"
+    else
+      fail "rebase carry-forward incorrect: $(jq -c '{base_sha, head_sha, iterations, lineage}' "$rj" 2>/dev/null)"
+    fi
+  fi
+fi
+
+mock_finish || (( failures += 1 ))
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
