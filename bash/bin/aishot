@@ -95,11 +95,12 @@ spilled to a file when large — see below). After all reviewers finish, a
 synthesis step records every distinct finding into .aishot/review.json via
 record-finding and the artifact is rendered to .aishot/review.md.
 
-The review is ITERATIVE: each run advances the artifact. On the same base
-it bumps the iteration and carries prior findings forward for re-judgement;
-when the base moves (or with --fresh) it archives the prior review to
-.aishot/review.bak.<ts>.json and starts a fresh series. Read the result
-with `aishot git diff review print` (never trust a stale copy).
+The review is ITERATIVE: each run advances the artifact. It bumps the
+iteration and carries prior findings forward for re-judgement, even when
+the merge base moved (e.g. after a rebase onto a newer trunk); base_sha and
+head_sha are updated to the current values. Only --fresh archives the prior
+review to .aishot/review.bak.<ts>.json and starts a new series. Read the
+result with `aishot git diff review print` (never trust a stale copy).
 
 Options:
   --fresh   Start a new review series (archive any prior artifact).
@@ -1334,9 +1335,9 @@ _review_current_diff() {
 }
 
 # Initialize or advance .aishot/review.json for a review run (the driver
-# owns this; agents only record findings). Same base + prior review ->
-# bump iterations and carry findings forward for re-judgement. Base moved
-# (or --fresh, or no prior) -> archive any prior to review.bak.<ts>.json
+# owns this; agents only record findings). Prior review -> bump iterations
+# and carry findings forward for re-judgement, whether or not the base
+# moved. --fresh (or no prior) -> archive any prior to review.bak.<ts>.json
 # and start a new series (new lineage, iterations=1, empty findings).
 _review_begin_iteration() {
     _review_need_jq || return 1
@@ -1363,15 +1364,13 @@ _review_begin_iteration() {
     _review_current_diff > "$difffile"
 
     local lineage iterations created findings
-    if [[ -f $path ]] && (( ! fresh_flag )) && [[ $(jq -r '.base_sha' "$path") == "$base" ]]
+    if [[ -f $path ]] && (( ! fresh_flag ))
     then
-        # Same base: continue the series.
         lineage=$(jq -r '.lineage' "$path")
         iterations=$(( $(jq -r '.iterations' "$path") + 1 ))
         created=$(jq -r '.created' "$path")
         findings=$(jq -c '.findings' "$path")
     else
-        # New series: fresh, first run, or the base moved. Archive any prior.
         if [[ -f $path ]]
         then
             local ts

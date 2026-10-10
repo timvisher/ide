@@ -31,6 +31,7 @@ run_test() {
 script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   { echo "cannot resolve script_dir" >&2; exit 1; }
 script="${script_dir}/bin/aishot"
+test_git="$(brew --prefix)/bin/git"
 
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
 trap 'rm -rf "${repo:-}"' EXIT
@@ -386,26 +387,66 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
-# Case 17: a moved base (simulated by rewriting the stored base_sha)
-# archives the prior review and resets to a fresh series.
+# Case 17: a real rebase onto a moved upstream continues the series:
+# findings carry forward, iterations bump, lineage is kept, nothing is
+# archived, and base_sha/head_sha are refreshed.
 # ---------------------------------------------------------------------------
 run_test
-repo=$(make_repo)
-rj="$repo/.aishot/review.json"
-(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
-(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+repo=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+(
+  cd "$repo" || exit 1
+  "$test_git" init -q --bare -b main up.git
+  "$test_git" -C up.git config core.hooksPath /dev/null
+  "$test_git" -c core.hooksPath=/dev/null init -q -b main work
+  cd work || exit 1
+  "$test_git" config user.email t@example.com
+  "$test_git" config user.name t
+  "$test_git" config core.hooksPath /dev/null
+  "$test_git" config commit.gpgsign false
+  printf 'base\n' > a.txt
+  "$test_git" add a.txt
+  "$test_git" commit -qm base
+  "$test_git" remote add origin ../up.git
+  "$test_git" push -q -u origin main
+  printf 'feature\n' > b.txt
+  "$test_git" add b.txt
+  "$test_git" commit -qm feature
+) >/dev/null 2>&1
+work="$repo/work"
+rj="$work/.aishot/review.json"
+(cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --title T --description D \
    --level low --category style --flagged-by claude) >/dev/null 2>&1
 l1=$(jq -r '.lineage' "$rj")
-jq '.base_sha="deadbeefdeadbeefdeadbeef"' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
-(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
-if [[ $(jq -r '.iterations' "$rj") -eq 1 ]] &&
-   [[ $(jq -r '.findings|length' "$rj") -eq 0 ]] &&
-   [[ $(jq -r '.lineage' "$rj") != "$l1" ]] &&
-   [[ $(ls "$repo"/.aishot/review.bak.*.json 2>/dev/null | wc -l) -eq 1 ]]
+b1=$(jq -r '.base_sha' "$rj")
+(
+  cd "$repo" || exit 1
+  "$test_git" clone -q -c core.hooksPath=/dev/null up.git other
+  cd other || exit 1
+  "$test_git" config user.email t@example.com
+  "$test_git" config user.name t
+  "$test_git" config commit.gpgsign false
+  printf 'trunk moved\n' > c.txt
+  "$test_git" add c.txt
+  "$test_git" commit -qm trunk
+  "$test_git" push -q origin main
+  cd "$work" || exit 1
+  "$test_git" fetch -q origin
+  "$test_git" rebase -q '@{u}'
+) >/dev/null 2>&1
+(cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
+if [[ -n $b1 ]] &&
+   [[ $(jq -r '.base_sha' "$rj") == "$("$test_git" -C "$work" merge-base '@{u}' HEAD)" ]] &&
+   [[ $(jq -r '.base_sha' "$rj") != "$b1" ]] &&
+   [[ $(jq -r '.head_sha' "$rj") == "$("$test_git" -C "$work" rev-parse HEAD)" ]] &&
+   [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+   [[ $(jq -r '.findings|length' "$rj") -eq 1 ]] &&
+   [[ $(jq -r '.lineage' "$rj") == "$l1" ]] &&
+   ! compgen -G "$work/.aishot/review.bak.*.json" >/dev/null
 then
-  pass "moved base archives prior and resets to a fresh series"
+  pass "rebase onto a moved base carries findings forward, refreshes shas"
 else
-  fail "base-move archive/reset incorrect"
+  fail "base-move carry-forward incorrect"
 fi
 rm -rf "$repo"
 
