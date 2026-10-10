@@ -604,6 +604,25 @@ hook_org_candidates() {
   printf '%s\n' "${out[@]}"
 }
 
+die_if_trunk_cached_under_alias_org() {
+  local org=$1 repo=$2 candidate other_trunk note
+
+  while IFS= read -r candidate
+  do
+    [[ $candidate == "$org" ]] && continue
+    other_trunk="${repo_trunks_dir}/${candidate}/${repo}"
+    [[ -d $other_trunk ]] || continue
+
+    note="${other_trunk}/x.relocation-note"
+    if [[ -r $note ]]
+    then
+      cat -- "$note" >&2
+    fi
+    die "cache_trunk: '%s/%s' is not cached but its trunk exists under alias org '%s' at '%s'. Refusing to clone a second trunk. Use '%s/%s/...' or relocate the trunk to '%s'." \
+      "$org" "$repo" "$candidate" "$other_trunk" "$candidate" "$repo" "${repo_trunks_dir}/${org}/${repo}"
+  done < <(hook_org_candidates "$org")
+}
+
 maybe_execute_hook() {
   local org=$1 repo=$2 hook=$3
 
@@ -1011,6 +1030,8 @@ cache_trunk() {
       warn "cache_trunk: Unable to update origin/HEAD for ${org_repo}; continuing with stale cache"
   else
     info "${org_repo} is not cached"
+
+    die_if_trunk_cached_under_alias_org "$org" "$repo"
 
     # Probe whether this is a fork on GitHub.  If so, recursively cache
     # the parent first and wire this cache's objects/info/alternates to

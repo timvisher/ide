@@ -617,6 +617,60 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# die_if_trunk_cached_under_alias_org tests
+# ---------------------------------------------------------------------------
+
+alias_trunk_saved_repo_trunks_dir=$repo_trunks_dir
+repo_trunks_dir="$tmpdir/alias_trunk/repo_trunks"
+mkdir -p "$repo_trunks_dir/DataDog/moved-repo" "$repo_trunks_dir/DataDog/noted-repo" \
+  "$repo_trunks_dir/xenodium/solo-repo"
+printf 'PICKUP: see the migration epic\n' > "$repo_trunks_dir/DataDog/noted-repo/x.relocation-note"
+
+run_test
+stderr=$( (die_if_trunk_cached_under_alias_org ddoghq moved-repo) 2>&1 >/dev/null )
+rc=$?
+if (( rc != 0 )) &&
+  [[ $stderr == *"Refusing to clone a second trunk"* ]] &&
+  [[ $stderr == *"$repo_trunks_dir/DataDog/moved-repo"* ]]
+then
+  pass "die_if_trunk_cached_under_alias_org refuses when an alias org holds the trunk"
+else
+  fail "die_if_trunk_cached_under_alias_org ddoghq moved-repo: rc=${rc} stderr='${stderr}'"
+fi
+
+run_test
+stderr=$( (die_if_trunk_cached_under_alias_org ddoghq noted-repo) 2>&1 >/dev/null )
+rc=$?
+if (( rc != 0 )) && [[ $stderr == *"PICKUP: see the migration epic"* ]]
+then
+  pass "die_if_trunk_cached_under_alias_org prints the other trunk's x.relocation-note"
+else
+  fail "die_if_trunk_cached_under_alias_org should print x.relocation-note: rc=${rc} stderr='${stderr}'"
+fi
+
+run_test
+( die_if_trunk_cached_under_alias_org ddoghq never-cached ) >/dev/null 2>&1
+rc=$?
+if (( rc == 0 ))
+then
+  pass "die_if_trunk_cached_under_alias_org allows a clone when no alias org holds the trunk"
+else
+  fail "die_if_trunk_cached_under_alias_org ddoghq never-cached: expected rc 0, got ${rc}"
+fi
+
+run_test
+( die_if_trunk_cached_under_alias_org xenodium solo-repo ) >/dev/null 2>&1
+rc=$?
+if (( rc == 0 ))
+then
+  pass "die_if_trunk_cached_under_alias_org ignores the org's own trunk and non-alias orgs"
+else
+  fail "die_if_trunk_cached_under_alias_org xenodium solo-repo: expected rc 0, got ${rc}"
+fi
+
+repo_trunks_dir=$alias_trunk_saved_repo_trunks_dir
+
+# ---------------------------------------------------------------------------
 # ensure_worktree cache_trunk failure tests
 # ---------------------------------------------------------------------------
 
