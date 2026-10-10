@@ -995,6 +995,77 @@ else
 fi
 rm -rf "$repo"
 
+# ---------------------------------------------------------------------------
+# Case 35
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+want='iteration=0 total=0 open=0 open_p0=0 escalated=0 escalated_p0=0 fixed=0 refuted=0 unreviewed=0 confirmed=0 overruled=0 awaiting_human=0 settled=0 unsettled_p0=0 new=0 new_p0=0 sourced=0'
+if [[ $st == "$want" ]] &&
+   [[ $(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null | jq -c '.by_reviewer') == '{}' ]]
+then
+  pass "status with no artifact prints every key, zeroed, in order"
+else
+  fail "status with no artifact: got '$st'"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 36
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+rf() { (cd "$repo" && "$script" git diff review record-finding "$@") >/dev/null 2>&1; }
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+rf --title A --description d --level high --category correctness --p0 true --flagged-by claude,codex
+rf --title B --description d --level high --category security --p0 true --flagged-by claude
+rf --title C --description d --level low --category style --flagged-by codex --source '{"k":1}'
+rf --title D --description d --level low --category docs --flagged-by codex
+id_of() { jq -r --arg t "$1" '.findings[]|select(.title==$t).id' "$rj"; }
+rf --id "$(id_of A)" --agent-status fixed
+rf --id "$(id_of A)" --human-status confirmed
+rf --id "$(id_of B)" --agent-status escalated
+rf --id "$(id_of C)" --agent-status refuted --rationale "by design"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+rf --title E --description d --level high --category reliability --p0 true --flagged-by codex
+st=$(cd "$repo" && "$script" git diff review status 2>/dev/null)
+want='iteration=2 total=5 open=2 open_p0=1 escalated=1 escalated_p0=1 fixed=1 refuted=1 unreviewed=4 confirmed=1 overruled=0 awaiting_human=2 settled=1 unsettled_p0=2 new=1 new_p0=1 sourced=1'
+sj=$(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null)
+md=$(cd "$repo" && "$script" git diff review print 2>/dev/null)
+if [[ $st == "$want" ]] &&
+   [[ $(jq -c '.by_reviewer' <<< "$sj") == '{"claude":{"total":2,"open":0,"open_p0":0},"codex":{"total":4,"open":2,"open_p0":1}}' ]] &&
+   [[ $(jq -r '.new_p0' <<< "$sj") -eq 1 ]] &&
+   [[ $md == *'1 open P0 · 1 escalated · 2 awaiting human'* ]]
+then
+  pass "status counts triage, settlement, and new P0s per iteration"
+else
+  fail "status counts incorrect: got '$st' / $(jq -c '.by_reviewer' <<< "$sj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 37
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+for sub in status reviewers record-finding
+do
+  [[ -n $(cd "$repo" && "$script" git diff review "$sub" --help 2>/dev/null) ]] || ok=0
+  [[ -z $(cd "$repo" && "$script" git diff review "$sub" --bogus 2>/dev/null) ]] || ok=0
+  [[ -n $(cd "$repo" && "$script" git diff review "$sub" --bogus 2>&1 >/dev/null) ]] || ok=0
+done
+[[ -z $(cd "$repo" && "$script" git diff review status --format=yaml 2>/dev/null) ]] || ok=0
+if (( ok ))
+then
+  pass "status/reviewers/record-finding: --help on stdout, usage errors on stderr only"
+else
+  fail "help/usage stream separation incorrect"
+fi
+rm -rf "$repo"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

@@ -162,6 +162,9 @@ Review-artifact subcommands (operate on .aishot/review.json):
   validate         Check .aishot/review.json (schema, enums, invariants)
                    and the reviewer registration files.
   print [--format=md|json]   Render the artifact. Default: md.
+  status [--format=kv|json]  Machine-readable counts for a review loop
+                   (open/escalated/unreviewed, open and new P0s, ...).
+                   See its --help.
   reviewers list   Show the reviewers --flagged-by accepts: the built-ins
                    plus drop-in registrations in
                    ~/.agents/aishot/reviewers/<name>.json, scoped by
@@ -2022,7 +2025,9 @@ do_review_print() {
               def levels: ["high","medium","low"];
               migrate |
               ([.findings[] | select(.agent_status=="open" and (.p0==true))] | length) as $openp0 |
-              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s) · \($openp0) open P0",
+              ([.findings[] | select(.agent_status=="escalated")] | length) as $escalated |
+              ([.findings[] | select(.agent_status!="open" and .human_status=="unreviewed")] | length) as $awaiting |
+              "# Code review — iteration \(.iterations) · \(.findings|length) finding(s) · \($openp0) open P0 · \($escalated) escalated · \($awaiting) awaiting human",
               "",
               "\(.branch // "?") · base \((.base_sha // "")[0:12]) · head \((.head_sha // "")[0:12]) · updated \(.updated // "?")",
               "",
@@ -2051,34 +2056,100 @@ do_review_print() {
     esac
 }
 
-# Machine-readable convergence signal for the review loop. Prints one line:
-#   iteration=N total=N open=N open_p0=N escalated=N escalated_p0=N
-#   fixed=N refuted=N unreviewed=N
-# Only P0s gate completion: open_p0 counts the P0s the agent still has to
-# fix, refute, or escalate. Non-P0 findings may remain open.
+show_review_status_help() {
+    cat <<'EOF'
+Usage: aishot git diff review status [--format=kv|json]
+
+Machine-readable summary of .aishot/review.json for a review loop. The
+default kv format is one line of space-separated key=value pairs, always
+in this order:
+
+  iteration       current iteration (0 when there is no artifact).
+  total           findings.
+  open            agent_status open.
+  open_p0         P0s with agent_status open: the agent must still fix,
+                  refute, or escalate them.
+  escalated       agent_status escalated (waiting on a human).
+  escalated_p0    P0s among them.
+  fixed           agent_status fixed.
+  refuted         agent_status refuted.
+  unreviewed      human_status unreviewed.
+  confirmed       human_status confirmed.
+  overruled       human_status overruled.
+  awaiting_human  agent_status other than open, human_status unreviewed.
+  settled         agent_status fixed or refuted AND human_status confirmed.
+  unsettled_p0    P0s that are not settled.
+  new             findings first seen in the current iteration.
+  new_p0          P0s first seen in the current iteration: whether the
+                  latest run raised new P0s versus the previous one.
+  sourced         findings that carry a --source.
+
+Only P0s gate completion; non-P0 findings may remain open.
+
+--format=json prints the same keys as a JSON object, plus by_reviewer:
+{"<reviewer>": {"total", "open", "open_p0"}} keyed by each flagged_by
+name, built-in or registered.
+EOF
+}
+
 do_review_status() {
     _review_need_jq || return 1
-    local path
+    local format=kv
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            --format=*) format=${1#--format=}; shift ;;
+            --help|-h) show_review_status_help; return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; show_review_status_help >&2; return 1 ;;
+        esac
+    done
+    case "$format" in
+        kv|json) ;;
+        *) echo "Error: unknown --format '${format}' (want: kv, json)." >&2; return 1 ;;
+    esac
+    local path doc
     path=$(_review_json_path) || return 1
-    if [[ ! -f $path ]]
+    if [[ -f $path ]]
     then
-        echo "iteration=0 total=0 open=0 open_p0=0 escalated=0 escalated_p0=0 fixed=0 refuted=0 unreviewed=0"
-        return 0
+        doc=$(cat -- "$path") || return 1
+    else
+        doc='{"schema_version":2,"iterations":0,"findings":[]}'
     fi
-    jq -r "${REVIEW_MIGRATE_JQ}"'
+    jq -r --arg format "$format" "${REVIEW_MIGRATE_JQ}"'
+      def settled: (.agent_status == "fixed" or .agent_status == "refuted") and .human_status == "confirmed";
       migrate
-      | (.findings) as $f
+      | .iterations as $it
+      | .findings as $f
       | def n(c): [$f[] | select(c)] | length;
-      "iteration=\(.iterations)"
-        + " total=\($f|length)"
-        + " open=\(n(.agent_status=="open"))"
-        + " open_p0=\(n(.agent_status=="open" and .p0==true))"
-        + " escalated=\(n(.agent_status=="escalated"))"
-        + " escalated_p0=\(n(.agent_status=="escalated" and .p0==true))"
-        + " fixed=\(n(.agent_status=="fixed"))"
-        + " refuted=\(n(.agent_status=="refuted"))"
-        + " unreviewed=\(n(.human_status=="unreviewed"))"
-    ' "$path"
+      {
+        iteration: $it,
+        total: ($f | length),
+        open: n(.agent_status == "open"),
+        open_p0: n(.agent_status == "open" and .p0 == true),
+        escalated: n(.agent_status == "escalated"),
+        escalated_p0: n(.agent_status == "escalated" and .p0 == true),
+        fixed: n(.agent_status == "fixed"),
+        refuted: n(.agent_status == "refuted"),
+        unreviewed: n(.human_status == "unreviewed"),
+        confirmed: n(.human_status == "confirmed"),
+        overruled: n(.human_status == "overruled"),
+        awaiting_human: n(.agent_status != "open" and .human_status == "unreviewed"),
+        settled: n(settled),
+        unsettled_p0: n(.p0 == true and (settled | not)),
+        new: n(.first_seen_iteration == $it),
+        new_p0: n(.first_seen_iteration == $it and .p0 == true),
+        sourced: n(has("source"))
+      } as $counts
+      | if $format == "json" then
+          $counts + {by_reviewer: (reduce $f[] as $x ({};
+            reduce $x.flagged_by[] as $r (.;
+              .[$r].total += 1
+              | .[$r].open += (if $x.agent_status == "open" then 1 else 0 end)
+              | .[$r].open_p0 += (if $x.agent_status == "open" and $x.p0 == true then 1 else 0 end))))}
+        else
+          $counts | to_entries | map("\(.key)=\(.value)") | join(" ")
+        end
+    ' <<< "$doc"
 }
 
 # Global options may appear BEFORE the subcommand, not just after it:
