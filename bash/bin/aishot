@@ -27,7 +27,7 @@ REVIEW_REVIEWER_NAME_RE='^[a-z0-9][a-z0-9_-]*$'
 
 # shellcheck disable=SC2016
 REVIEW_REGISTRATION_JQ='
-def nonempty: type == "string" and length > 0;
+def nonempty: type == "string" and 0 < length;
 def keys_allowed: ["name", "orgs", "description"];
 if type != "object" then
   {errors: ["\($file): must be a JSON object"]}
@@ -61,7 +61,7 @@ def migrate:
     | .findings |= map(
         .status as $s
         | del(.status)
-        | .agent_status = ({open: "open", addressed: "fixed", wontfix: "refuted", refuted: "refuted"}[$s // ""] // $s)
+        | .agent_status = ({open: "open", addressed: "fixed", wontfix: "refuted", refuted: "refuted"}[$s // "open"] // $s)
         | .human_status = "unreviewed"
         | if .agent_status == "refuted" and ((.refutation // "") == "")
           then .refutation = "migrated from schema 1 status \($s); no rationale was recorded"
@@ -2015,6 +2015,10 @@ each registered entry carries name, orgs, description, file, and applies.
 EOF
 }
 
+review_reviewers_usage() {
+    show_review_reviewers_help >&2
+}
+
 do_review_reviewers() {
     _review_need_jq || return 1
     local format=text
@@ -2053,7 +2057,7 @@ do_review_reviewers() {
             return 1
             ;;
     esac
-    if jq -e '.errors | length > 0' <<< "$report" >/dev/null
+    if jq -e '0 < (.errors | length)' <<< "$report" >/dev/null
     then
         jq -r '.errors[] | "registration: \(.)"' <<< "$report" >&2
         return 1
@@ -2154,6 +2158,10 @@ name, built-in or registered.
 EOF
 }
 
+review_status_usage() {
+    show_review_status_help >&2
+}
+
 do_review_status() {
     _review_need_jq || return 1
     local format=kv
@@ -2162,7 +2170,7 @@ do_review_status() {
         case "$1" in
             --format=*) format=${1#--format=}; shift ;;
             --help|-h) show_review_status_help; return 0 ;;
-            *) echo "Error: unknown option '${1}'." >&2; show_review_status_help >&2; return 1 ;;
+            *) echo "Error: unknown option '${1}'." >&2; review_status_usage; return 1 ;;
         esac
     done
     case "$format" in
