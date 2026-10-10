@@ -16,7 +16,8 @@
 #   clean [path ...]  remove status files
 #
 # When paths are given, only those dev branches are processed instead
-# of discovering via marker files.
+# of the registry; each must be registered or marked with
+# x.dev-integration-branch, or the run is refused.
 #   __sync        (internal) agent: pull --rebase, resolve conflicts, test
 #   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
@@ -2342,8 +2343,8 @@ NAME
 SYNOPSIS
     # Full pipeline (sync + integrate + push), orchestrated via tmux + agents:
     timvisher_dev_ci                          # all dev branches in registry
-                                              #   (or current worktree, when run from inside one)
-    timvisher_dev_ci [run] PATH ...           # specific dev branches
+                                              #   (or current worktree, when it is a dev integration branch)
+    timvisher_dev_ci [run] PATH ...           # specific dev integration branches
 
     # Direct hook invocation in the controlling TTY (no tmux, no nested agent):
     timvisher_dev_ci hooks ls [PATH]                     # list resolved hooks
@@ -2368,7 +2369,15 @@ PATHS
       - Outside any worktree: runs every dev branch in the registry.
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
-        so subdirs of a worktree work too).
+        so subdirs of a worktree work too), and refuses unless that root
+        is a dev integration worktree.
+
+    Every explicit PATH given to the pipeline (bare, `run`, or the path
+    shortcut) must be a dev integration worktree: listed in the registry
+    or marked with x.dev-integration-branch. Anything else is refused
+    with code dev_ci_not_integration_worktree before any side effects,
+    because the pipeline resets each target to @{u}. To test an ordinary
+    worktree, use `timvisher_dev_ci run-tests`.
 
 AGENT USAGE
     To run the project's full local CI suite from inside a worktree:
@@ -2392,9 +2401,10 @@ AGENT USAGE
 
     Difference from bare `timvisher_dev_ci`: bare invocation does
     pull --rebase, agent-driven conflict resolution, octopus merge,
-    test verification, and push -- the full CI pipeline. `hooks` and
-    `run-tests` only run the hook scripts. For "did my changes
-    break tests?", use `run-tests`.
+    test verification, and push -- the full CI pipeline -- and refuses
+    outside dev integration worktrees. `hooks` and `run-tests` only run
+    the hook scripts, in any worktree. For "did my changes break
+    tests?", use `run-tests`.
 
 KNOWN HOOKS
     run-tests.sh             Full local CI suite (lint + test + build).
@@ -2559,7 +2569,7 @@ cmd_clean() {
 #   1. --help / -h / help      handled first so help is always cheap
 #   2. Known subcommands by NAME (BEFORE the dir-sniff, so a literal
 #      './hooks' or './run-tests' directory cannot shadow them)
-#   3. Bare invocation         no args → DTRT based on cwd
+#   3. Bare invocation         no args → current dev integration worktree, else registry
 #   4. Path shortcut            first arg is a readable directory → cmd_run
 #   5. Unknown                  aictl_die with --help suggestion
 
@@ -2637,7 +2647,8 @@ case ${1:-} in
 esac
 
 # 3. Bare invocation: scope to current worktree if cwd is under
-# $TIMVISHER_GIT_HOME, else fall back to the registry.
+# $TIMVISHER_GIT_HOME (cmd_run refuses it unless it is a dev
+# integration worktree), else fall back to the registry.
 if [[ $# == 0 ]]
 then
     git_base=$(canonical_git_home)
