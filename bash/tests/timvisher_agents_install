@@ -174,7 +174,7 @@ result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
   "$source_dir" 2>&1)
 exit_code=$?
 
-if (( exit_code != 0 )) && [[ $result == *"No .agents/skills/"*"directory found in '${source_dir}'"* ]]
+if (( exit_code != 0 )) && [[ $result == *"No .agents/skills/"*".agents/aishot/reviewers/"*"directory found in '${source_dir}'"* ]]
 then
   pass "install-from: errors when neither .agents subdir exists"
 else
@@ -403,6 +403,86 @@ else
   fail "no args: expected usage error, got exit=${exit_code} output='${result}'"
 fi
 cleanup "$test_home"
+
+# --- Test: installs aishot reviewer registrations ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/aishot/reviewers"
+echo '{"name":"outer","orgs":["acme"],"description":"d"}' > "${source_dir}/.agents/aishot/reviewers/outer.json"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code == 0 )) &&
+   [[ -d "${test_home}/.agents/aishot/reviewers" && ! -L "${test_home}/.agents/aishot/reviewers" ]] &&
+   resolves_to "${test_home}/.agents/aishot/reviewers/outer.json" "${source_dir}/.agents/aishot/reviewers/outer.json"
+then
+  pass "install-from: installs aishot reviewer registrations (reviewers only)"
+else
+  fail "install-from: expected .agents/aishot/reviewers/outer.json symlink, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: conflicting aishot reviewer names error ---
+run_test
+test_home=$(setup_home)
+source_a=$(mktemp -d)
+source_b=$(mktemp -d)
+mkdir -p "${source_a}/.agents/aishot/reviewers" "${source_b}/.agents/aishot/reviewers"
+echo '{}' > "${source_a}/.agents/aishot/reviewers/outer.json"
+echo '{}' > "${source_b}/.agents/aishot/reviewers/outer.json"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_a" "$source_b" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"reviewers/outer.json' resolves to"* ]]
+then
+  pass "install-from: conflicting aishot reviewer names error"
+else
+  fail "install-from: expected error on reviewer conflict, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
+# --- Test: no reviewers source leaves ~/.agents/aishot alone ---
+run_test
+test_home=$(setup_home)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
+
+if [[ ! -e "${test_home}/.agents/aishot" ]]
+then
+  pass "install-from: does not create ~/.agents/aishot without a reviewers source"
+else
+  fail "install-from: created ~/.agents/aishot with no reviewers source"
+fi
+cleanup "$test_home"
+
+# --- Test: errors when ~/.agents/aishot/reviewers is a symlink ---
+run_test
+test_home=$(setup_home)
+target=$(mktemp -d)
+mkdir -p "${test_home}/.agents/aishot"
+ln -s "$target" "${test_home}/.agents/aishot/reviewers"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "${test_home}/git/ide/ai/HOME" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"reviewers' is a symlink"* ]]
+then
+  pass "pre-flight: errors when ~/.agents/aishot/reviewers is a symlink"
+else
+  fail "pre-flight: expected error for symlinked reviewers dir, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$target"
 
 # --- Results ---
 echo ""

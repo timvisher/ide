@@ -9,12 +9,17 @@
 # Each <dir> is an "agent home root" — its contents mirror what should
 # end up under $HOME for some agent. Recognized subpaths:
 #
-#   <dir>/.agents/skills/<name>     → ~/.agents/skills/<name>
-#   <dir>/.agents/languages/<name>  → ~/.agents/languages/<name>
-#   <dir>/.claude/hooks/<name>      → ~/.claude/hooks/<name>
+#   <dir>/.agents/skills/<name>            → ~/.agents/skills/<name>
+#   <dir>/.agents/languages/<name>         → ~/.agents/languages/<name>
+#   <dir>/.agents/aishot/reviewers/<name>  → ~/.agents/aishot/reviewers/<name>
+#   <dir>/.claude/hooks/<name>             → ~/.claude/hooks/<name>
+#
+# .agents/aishot/reviewers holds `aishot git diff review` reviewer
+# registrations (<name>.json); see `aishot git diff review reviewers --help`.
 #
 # Typical layout in a config repo:
-#   <repo>/ai/HOME/        — cross-agent home (skills, languages)
+#   <repo>/ai/HOME/        — cross-agent home (skills, languages, aishot
+#                            reviewers)
 #   <repo>/ai/claude/HOME/ — Claude-specific home (hooks, etc.)
 # Pass both as separate args.
 #
@@ -193,6 +198,21 @@ do_install_from() {
     done
   fi
 
+  local reviewers_dir="${dir}/.agents/aishot/reviewers"
+  if [[ -d $reviewers_dir ]]
+  then
+    found_something=true
+    ensure_dir "${HOME}/.agents/aishot/reviewers"
+    local reviewer
+    for reviewer in "${reviewers_dir}"/*
+    do
+      [[ -f $reviewer ]] || continue
+      local name
+      name=$(basename "$reviewer")
+      ensure_symlink "${HOME}/.agents/aishot/reviewers/${name}" "$(prefer_path "$reviewer")"
+    done
+  fi
+
   local claude_hooks_dir="${dir}/.claude/hooks"
   if [[ -d $claude_hooks_dir ]]
   then
@@ -216,7 +236,7 @@ do_install_from() {
 
   if [[ $found_something == false ]]
   then
-    found_error "No .agents/skills/, .agents/languages/, or .claude/hooks/ directory found in '${dir}'"
+    found_error "No .agents/skills/, .agents/languages/, .agents/aishot/reviewers/, or .claude/hooks/ directory found in '${dir}'"
   fi
 }
 
@@ -277,6 +297,8 @@ require_python3
 assert_not_symlink "${HOME}/.agents"
 assert_not_symlink "${HOME}/.agents/skills"
 assert_not_symlink "${HOME}/.agents/languages"
+assert_not_symlink "${HOME}/.agents/aishot"
+assert_not_symlink "${HOME}/.agents/aishot/reviewers"
 
 if (( 0 < ${#errors[@]} ))
 then
