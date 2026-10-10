@@ -1,0 +1,4 @@
+--keep-order
+--tag
+--halt never
+--timeout 1200
