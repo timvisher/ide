@@ -893,6 +893,11 @@ the secret references cannot be resolved."
   (setq agent-shell-openai-authentication
         (agent-shell-openai-make-authentication :api-key (getenv "OPENAI_API_KEY")))
 
+  (add-to-list 'display-buffer-alist
+               '("\\[viewport\\]\\'"
+                 (display-buffer-reuse-window display-buffer-below-selected)
+                 (window-height . 0.3)))
+
   (load (expand-file-name "timvisher-agent-shell-alert" user-emacs-directory) nil t)
   (add-hook 'agent-shell-mode-hook #'timvisher-agent-shell-alert-subscribe))
 
