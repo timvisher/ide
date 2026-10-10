@@ -1896,6 +1896,141 @@ fi
 rm -rf "$tmpdir/repo/.timvisher_gh"
 unset MOCK_GH_HANDLER
 
+# --- pr push conversation tests ---
+
+write_push_conv_handler() {
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$*" in
+  'api user'*)
+    echo testuser
+    ;;
+  *addReaction*|*resolveReviewThread*)
+    echo '{"data":{}}'
+    ;;
+  'api graphql'*)
+    case "\$*" in
+      *'reviewThreads(first'*) mock_conn=reviewThreads ;;
+      *'reviews(first'*) mock_conn=reviews ;;
+      *'comments(first'*) mock_conn=comments ;;
+    esac
+    jq --arg c "\$mock_conn" '{data: {repository: {pullRequest: {(\$c): {nodes: .}}}}}' "$conv_dir/\$mock_conn.json" | respond
+    ;;
+  'api --method POST repos/testuser/testrepo/issues/50/comments'*)
+    echo '{"id":101,"node_id":"IC_new","html_url":"https://github.com/testuser/testrepo/pull/50#issuecomment-101","created_at":"2026-10-10T12:00:00Z"}'
+    ;;
+  'api --method POST repos/testuser/testrepo/pulls/50/comments'*)
+    echo '{"id":102,"node_id":"PRRC_new","html_url":"https://github.com/testuser/testrepo/pull/50#discussion_r102","created_at":"2026-10-10T12:01:00Z"}'
+    ;;
+  'api --method PATCH '*|'api --method PUT '*)
+    mock_id=\${4##*/}
+    for mock_arg in "\$@"
+    do
+      if [[ \$mock_arg == body=* ]]
+      then
+        jq -n --arg b "\${mock_arg#body=}" '{body: \$b}' > "$conv_dir/remote_\$mock_id.json"
+      fi
+    done
+    echo '{}'
+    ;;
+  'api repos/'*)
+    mock_id=\${2##*/}
+    respond < "$conv_dir/remote_\$mock_id.json"
+    ;;
+  'pr view'*)
+    echo '{"title":"","body":""}' | respond
+    ;;
+esac
+HANDLER
+}
+
+# Test: pr push posts new comments and replies, edits, reacts and resolves in filename order
+run_test
+pull_fixture
+write_conv
+v2_reset push_conv_setup
+write_push_conv_handler
+run_v2 pr pull >/dev/null 2>&1
+jq -n '{body: "my note"}' > "$conv_dir/remote_12.json"
+mkdir -p "$pull_comments/2026-10-10T12-00-00+0000-thanks"
+printf 'Thanks all\n' > "$pull_comments/2026-10-10T12-00-00+0000-thanks/comment.md"
+mkdir -p "$thread_dir/2026-10-10T12-01-00+0000-fix"
+printf '@arp fixed in abc\n' > "$thread_dir/2026-10-10T12-01-00+0000-fix/comment.md"
+jq '.reactions = ["👍", "EYES", "❤"]' "$alice_dir/comment.json" > "$alice_dir/c.new" && mv "$alice_dir/c.new" "$alice_dir/comment.json"
+jq '.resolved = true' "$thread_dir/thread.json" > "$thread_dir/t.new" && mv "$thread_dir/t.new" "$thread_dir/thread.json"
+printf 'my note, revised\n' > "$mine_dir/comment.md"
+v2_reset push_conv
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+reply_line=$(grep -n 'POST repos/testuser/testrepo/pulls/50/comments -F in_reply_to=31 -f body=@arp fixed in abc' "$MOCK_LOG" | cut -d: -f1)
+resolve_line=$(grep -n 'resolveReviewThread' "$MOCK_LOG" | cut -d: -f1)
+patch_line=$(grep -n 'PATCH repos/testuser/testrepo/issues/comments/12 -f body=my note, revised' "$MOCK_LOG" | cut -d: -f1)
+post_line=$(grep -n 'POST repos/testuser/testrepo/issues/50/comments -f body=Thanks all' "$MOCK_LOG" | cut -d: -f1)
+if (( rc == 0 )) &&
+   [[ -n $reply_line && -n $resolve_line && -n $patch_line && -n $post_line ]] &&
+   (( reply_line < resolve_line && resolve_line < patch_line && patch_line < post_line )) &&
+   grep -q -- '-f id=PRRT_1$' "$MOCK_LOG" &&
+   [[ $(grep -c addReaction "$MOCK_LOG") == 2 ]] &&
+   grep -q -- '-f id=IC_1 -f content=EYES$' "$MOCK_LOG" &&
+   grep -q -- '-f id=IC_1 -f content=HEART$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$alice_dir/comment.json") == '["+1","eyes","heart"]' ]] &&
+   [[ $(jq -c '.posted.reactions | sort' "$alice_dir/comment.json") == '["+1","eyes","heart"]' ]] &&
+   [[ $(jq -r .posted.resolved "$thread_dir/thread.json") == true ]] &&
+   [[ $(jq -r '.id + " " + .kind + " " + .posted.body' "$thread_dir/2026-10-10T12-01-00+0000-fix/comment.json") == 'PRRC_new review_comment @arp fixed in abc' ]] &&
+   [[ $(jq -r '.id + " " + .url' "$pull_comments/2026-10-10T12-00-00+0000-thanks/comment.json") == 'IC_new https://github.com/testuser/testrepo/pull/50#issuecomment-101' ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note, revised' ]]
+then
+  pass "pr push: posts, replies, edits, reacts and resolves in filename order"
+else
+  fail "pr push conv: rc=${rc} lines=${reply_line}/${resolve_line}/${patch_line}/${post_line} log=$(grep -v 'api graphql -f query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -600}'"
+fi
+
+# Test: rerunning pr push sends nothing more
+run_test
+v2_reset push_conv_rerun
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   ! grep -q -- '--method POST\|--method PATCH\|addReaction\|resolveReviewThread' "$MOCK_LOG" &&
+   [[ $result == *"Conversation converged"* ]]
+then
+  pass "pr push: rerun posts nothing (comments, reactions and resolves already done)"
+else
+  fail "pr push conv rerun: rc=${rc} log=$(cut -c1-160 "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: an edit to my comment is refused when GitHub's copy moved
+run_test
+printf 'my note, third\n' > "$mine_dir/comment.md"
+jq -n '{body: "edited on the web"}' > "$conv_dir/remote_12.json"
+v2_reset push_conv_lease
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   ! grep -q -- '--method PATCH' "$MOCK_LOG" &&
+   [[ $result == *"+edited on the web"* ]] &&
+   [[ $(jq -r .posted.body "$mine_dir/comment.json") == 'my note, revised' ]]
+then
+  pass "pr push: refuses to overwrite a comment edited on GitHub"
+else
+  fail "pr push conv lease: rc=${rc} log=$(cut -c1-160 "$MOCK_LOG") got '${result: -400}'"
+fi
+printf 'edited on the web\n' > "$mine_dir/comment.md"
+
+# Test: an unknown reaction is reported and fails the push
+run_test
+jq '.reactions = ["sparkles"]' "$reply_dir/comment.json" > "$reply_dir/c.new" && mv "$reply_dir/c.new" "$reply_dir/comment.json"
+v2_reset push_conv_bad_reaction
+write_push_conv_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ $result == *"Unknown reaction 'sparkles'"* ]] && ! grep -q addReaction "$MOCK_LOG"
+then
+  pass "pr push: unknown reaction names fail loudly"
+else
+  fail "pr push bad reaction: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing

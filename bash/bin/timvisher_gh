@@ -62,6 +62,24 @@ show_help() {
       creates a draft from pr.md (title line 1, body line 3+)
     - Title/body: updated from pr.md under the description lease (see
       pr edit)
+    - Conversation: walks .timvisher_gh/pr/comments/ in filename order
+      (see pr pull) and sends local intent:
+        a directory with comment.md but no id      posted: a top-level
+                                                   comment, or a reply
+                                                   when inside a thread
+        your posted comment whose .md changed      edited, under a lease
+                                                   on posted.body (refused
+                                                   with a diff if GitHub's
+                                                   copy moved)
+        "reactions": [...] in any json             added; REST names
+                                                   (+1, heart), emoji, or
+                                                   GraphQL enums
+                                                   (THUMBS_UP); stored as
+                                                   REST names
+        "resolved": true in thread.json            resolved after the
+                                                   thread's replies
+      What was sent is recorded in each json, so reruns send nothing
+      twice.  Starting new review threads is not supported
     - Prints the PR URL on stdout.  --open also opens it in the
       browser (default: --no-open)
 
@@ -1339,6 +1357,10 @@ gh_pr_push() {
     fi
   fi
 
+  local comments_failed=false
+  conv__push_all "$pr_url" ||
+    comments_failed=true
+
   hooks__run_post push
 
   printf '%s\n' "$pr_url"
@@ -1349,6 +1371,11 @@ gh_pr_push() {
   fi
 
   hooks__finish push
+
+  if [[ $comments_failed == true ]]
+  then
+    die 'Some comments, edits, reactions or resolutions did not push; rerun once fixed'
+  fi
 }
 
 # --- conversation ---
@@ -1582,6 +1609,372 @@ conv__apply_item() {
       ;;
   esac
   conv__status=$status
+}
+
+conv__reaction_rest() {
+  case ${1,,} in
+    +1|thumbs_up|thumbsup|👍)
+      echo +1
+      ;;
+    -1|thumbs_down|thumbsdown|👎)
+      echo -1
+      ;;
+    laugh|😄)
+      echo laugh
+      ;;
+    hooray|tada|🎉)
+      echo hooray
+      ;;
+    confused|😕)
+      echo confused
+      ;;
+    heart|❤️|❤)
+      echo heart
+      ;;
+    rocket|🚀)
+      echo rocket
+      ;;
+    eyes|👀)
+      echo eyes
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+conv__reaction_enum() {
+  case $1 in
+    +1) echo THUMBS_UP ;;
+    -1) echo THUMBS_DOWN ;;
+    *) echo "${1^^}" ;;
+  esac
+}
+
+conv__me_login=
+
+conv__me() {
+  if [[ -z $conv__me_login ]]
+  then
+    conv__me_login=$(command gh api user --jq .login) ||
+      die 'Unable to query authenticated user'
+  fi
+}
+
+conv__pr_parts=()
+
+conv__load_pr() {
+  local pr_url=$1
+  mapfile -t conv__pr_parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#conv__pr_parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+}
+
+conv__endpoint() {
+  local kind=$1 database_id=$2
+  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}"
+  case $kind in
+    issue_comment)
+      printf 'repos/%s/issues/comments/%s\n' "$repo" "$database_id"
+      ;;
+    review_comment|thread)
+      printf 'repos/%s/pulls/comments/%s\n' "$repo" "$database_id"
+      ;;
+    review)
+      printf 'repos/%s/pulls/%s/reviews/%s\n' "$repo" "${conv__pr_parts[2]}" "$database_id"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+conv__item_file() {
+  if [[ -e $1/thread.md || -e $1/thread.json ]]
+  then
+    echo thread
+  else
+    echo comment
+  fi
+}
+
+conv__write() {
+  local json_file=$1 json=$2
+  jq . <<<"$json" | state__write_file "$json_file" ||
+    die "Couldn't write '%s'" "$json_file"
+}
+
+conv__post_new() {
+  local dir=$1 thread_dir=$2 md=$3 json_file=$4 json=$5
+  local body resp kind
+  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}" number=${conv__pr_parts[2]}
+  body=$(desc__normalize "$(< "$md")")
+  [[ -n $body ]] ||
+    {
+      error "Not posting empty comment '%s'" "${md#"$toplevel"/}"
+      return 1
+    }
+
+  if [[ -n $thread_dir ]]
+  then
+    local parent_id
+    parent_id=$(jq -r '.database_id // empty' "${thread_dir}/thread.json" 2>/dev/null)
+    [[ -n $parent_id ]] ||
+      {
+        error "Can't reply in '%s': its thread has no database_id (run pr pull)" "${thread_dir#"$toplevel"/}"
+        return 1
+      }
+    resp=$(command gh api --method POST "repos/${repo}/pulls/${number}/comments" \
+                   -F "in_reply_to=${parent_id}" \
+                   -f "body=${body}") ||
+      {
+        error "Couldn't post reply '%s'" "${md#"$toplevel"/}"
+        return 1
+      }
+    kind=review_comment
+  else
+    resp=$(command gh api --method POST "repos/${repo}/issues/${number}/comments" \
+                   -f "body=${body}") ||
+      {
+        error "Couldn't post comment '%s'" "${md#"$toplevel"/}"
+        return 1
+      }
+    kind=issue_comment
+  fi
+
+  json=$(jq --argjson resp "$resp" --arg kind "$kind" --arg me "$conv__me_login" --arg body "$body" '
+    . + {kind: $kind, id: $resp.node_id, database_id: $resp.id, url: $resp.html_url,
+         author: $me, created_at: $resp.created_at}
+    | .posted = ((.posted // {}) + {body: $body, url: $resp.html_url})' <<<"$json") ||
+    die "Couldn't record the post of '%s'; it IS on GitHub: %s" "${md#"$toplevel"/}" "$resp"
+  conv__write "$json_file" "$json"
+  info 'Posted %s: %s' "${dir#"$toplevel"/}" "$(jq -r .url <<<"$json")"
+}
+
+conv__edit() {
+  local dir=$1 md=$2 json_file=$3 json=$4
+  local kind database_id endpoint local_body posted_body remote_body
+  kind=$(jq -r .kind <<<"$json")
+  database_id=$(jq -r '.database_id // empty' <<<"$json")
+  endpoint=$(conv__endpoint "$kind" "$database_id") ||
+    {
+      error "Don't know how to edit a '%s' (%s)" "$kind" "${dir#"$toplevel"/}"
+      return 1
+    }
+  local_body=$(desc__normalize "$(< "$md")")
+  posted_body=$(jq -r '.posted.body // ""' <<<"$json")
+
+  remote_body=$(command gh api "$endpoint" --jq '.body // ""') ||
+    {
+      error "Couldn't read the current body of '%s'" "${dir#"$toplevel"/}"
+      return 1
+    }
+  remote_body=$(desc__normalize "$remote_body")
+
+  if [[ $remote_body == "$local_body" ]]
+  then
+    info "Comment already current: '%s'" "${dir#"$toplevel"/}"
+  elif [[ $remote_body != "$posted_body" ]]
+  then
+    error "Comment '%s' changed on GitHub since it was last pushed or pulled:" "${dir#"$toplevel"/}"
+    diff -u --label 'last pushed' --label 'GitHub now' \
+         <(printf '%s\n' "$posted_body") <(printf '%s\n' "$remote_body") >&2
+    error "Not overwriting it. Fold those edits into '%s' to continue." "${md#"$toplevel"/}"
+    return 1
+  else
+    local method=PATCH
+    [[ $kind == review ]] &&
+      method=PUT
+    command gh api --method "$method" "$endpoint" -f "body=${local_body}" >/dev/null ||
+      {
+        error "Couldn't edit '%s'" "${dir#"$toplevel"/}"
+        return 1
+      }
+    info 'Edited %s' "${dir#"$toplevel"/}"
+  fi
+
+  json=$(jq --arg body "$local_body" '.posted = ((.posted // {}) + {body: $body})' <<<"$json")
+  conv__write "$json_file" "$json"
+}
+
+conv__react() {
+  local dir=$1 json_file=$2 json=$3
+  local id raw rest enum failures=0 changed=false
+  local -a wanted=()
+  id=$(jq -r '.id // empty' <<<"$json")
+  mapfile -t wanted < <(jq -r '.reactions // [] | .[]' <<<"$json")
+  (( ${#wanted[@]} )) ||
+    return 0
+
+  local -a normalized=()
+  for raw in "${wanted[@]}"
+  do
+    if ! rest=$(conv__reaction_rest "$raw")
+    then
+      error "Unknown reaction '%s' in '%s'" "$raw" "${json_file#"$toplevel"/}"
+      (( failures += 1 ))
+      continue
+    fi
+    normalized+=("$rest")
+  done
+
+  json=$(jq '.reactions = ($ARGS.positional | unique)' --args "${normalized[@]}" <<<"$json")
+  [[ $json == "$(jq . "$json_file" 2>/dev/null)" ]] ||
+    changed=true
+
+  # shellcheck disable=SC2016
+  local mutation='mutation($id: ID!, $content: ReactionContent!) {
+  addReaction(input: {subjectId: $id, content: $content}) { reaction { content } }
+}'
+  local -a to_add
+  mapfile -t to_add < <(jq -r '.reactions[]' <<<"$json")
+  for rest in "${to_add[@]}"
+  do
+    if jq -e --arg r "$rest" '(.posted.reactions // []) | index($r)' >/dev/null <<<"$json"
+    then
+      continue
+    fi
+    enum=$(conv__reaction_enum "$rest")
+    if command gh api graphql -f query="$mutation" -f id="$id" -f content="$enum" >/dev/null
+    then
+      info "Reacted %s on '%s'" "$rest" "${dir#"$toplevel"/}"
+      json=$(jq --arg r "$rest" '.posted = ((.posted // {}) | .reactions = ((.reactions // []) + [$r] | unique))' <<<"$json")
+      changed=true
+    else
+      error "Couldn't react %s on '%s'" "$rest" "${dir#"$toplevel"/}"
+      (( failures += 1 ))
+    fi
+  done
+
+  if [[ $changed == true ]]
+  then
+    conv__write "$json_file" "$json"
+  fi
+  (( failures == 0 ))
+}
+
+conv__resolve() {
+  local dir=$1 json_file="$1/thread.json" json thread_id
+  [[ -r $json_file ]] ||
+    return 0
+  json=$(< "$json_file")
+  jq -e '.resolved == true' >/dev/null <<<"$json" ||
+    return 0
+  if jq -e '.posted.resolved == true' >/dev/null <<<"$json"
+  then
+    return 0
+  fi
+  thread_id=$(jq -r '.thread_id // empty' <<<"$json")
+  [[ -n $thread_id ]] ||
+    {
+      error "Can't resolve '%s': no thread_id (run pr pull)" "${dir#"$toplevel"/}"
+      return 1
+    }
+
+  # shellcheck disable=SC2016
+  local mutation='mutation($id: ID!) {
+  resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+}'
+  command gh api graphql -f query="$mutation" -f id="$thread_id" >/dev/null ||
+    {
+      error "Couldn't resolve '%s'" "${dir#"$toplevel"/}"
+      return 1
+    }
+  info "Resolved '%s'" "${dir#"$toplevel"/}"
+  conv__write "$json_file" "$(jq '.posted = ((.posted // {}) + {resolved: true})' <<<"$json")"
+}
+
+conv__push_item() {
+  local dir=${1%/} thread_dir=${2-}
+  local file md json_file json='{}' failures=0
+  file=$(conv__item_file "$dir")
+  md="${dir}/${file}.md"
+  json_file="${dir}/${file}.json"
+  [[ -e $md || -e $json_file ]] ||
+    return 0
+  [[ -r $json_file ]] &&
+    json=$(< "$json_file")
+
+  if [[ -z $(jq -r '.id // empty' <<<"$json") ]]
+  then
+    if [[ $file == thread ]]
+    then
+      error "Starting new review threads is not supported: '%s'" "${dir#"$toplevel"/}"
+      return 1
+    fi
+    if [[ ! -r $md ]]
+    then
+      error "'%s' has no %s.md to post" "${dir#"$toplevel"/}" "$file"
+      return 1
+    fi
+    conv__post_new "$dir" "$thread_dir" "$md" "$json_file" "$json" ||
+      return 1
+    json=$(< "$json_file")
+  elif [[ -r $md ]] && jq -e --arg me "$conv__me_login" '.author == $me' >/dev/null <<<"$json"
+  then
+    if [[ $(desc__normalize "$(< "$md")") != "$(jq -r '.posted.body // ""' <<<"$json")" ]]
+    then
+      conv__edit "$dir" "$md" "$json_file" "$json" ||
+        (( failures += 1 ))
+      json=$(< "$json_file")
+    fi
+  fi
+
+  conv__react "$dir" "$json_file" "$json" ||
+    (( failures += 1 ))
+
+  (( failures == 0 ))
+}
+
+conv__subdirs() {
+  find "$1" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort
+}
+
+conv__push_thread() {
+  local dir=$1 failures=0 reply
+  local -a replies
+  conv__push_item "$dir" ||
+    (( failures += 1 ))
+  mapfile -t replies < <(conv__subdirs "$dir")
+  for reply in "${replies[@]}"
+  do
+    conv__push_item "$reply" "$dir" ||
+      (( failures += 1 ))
+  done
+  conv__resolve "$dir" ||
+    (( failures += 1 ))
+  (( failures == 0 ))
+}
+
+conv__push_all() {
+  local pr_url=$1 comments_dir dir failures=0
+  local -a dirs
+  comments_dir="$(state__dir pr)/comments"
+  [[ -d $comments_dir ]] ||
+    return 0
+  conv__load_pr "$pr_url"
+  conv__me
+
+  mapfile -t dirs < <(conv__subdirs "$comments_dir")
+  for dir in "${dirs[@]}"
+  do
+    if [[ $(conv__item_file "$dir") == thread ]]
+    then
+      conv__push_thread "$dir" ||
+        (( failures += 1 ))
+    else
+      conv__push_item "$dir" ||
+        (( failures += 1 ))
+    fi
+  done
+
+  if (( failures == 0 ))
+  then
+    info 'Conversation converged: %s' "$pr_url"
+    return 0
+  fi
+  error '%d comment item(s) failed to push; fix them and rerun' "$failures"
+  return 1
 }
 
 gh_pr_pull() {
