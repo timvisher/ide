@@ -657,6 +657,27 @@ cleanup "$test_home"
 cleanup "$target"
 cleanup "$source_dir"
 
+# --- Test: a blocked reviewers directory is an error, not a silent success ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d "${test_root}/t.XXXXXX")
+mkdir -p "${source_dir}/.agents/aishot/reviewers"
+echo '{}' > "${source_dir}/.agents/aishot/reviewers/outer.json"
+touch "${test_home}/.agents/aishot"
+
+result=$(timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"could not create directory"*"aishot/reviewers"* ]]
+then
+  pass "install: a blocked ~/.agents/aishot/reviewers fails the install"
+else
+  fail "install: expected failure for blocked reviewers dir, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
 # --- Results ---
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
