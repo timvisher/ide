@@ -773,6 +773,278 @@ else
   fail "pr merge: exits if pr.md.url missing: got '${result}'"
 fi
 
+# --- handler-driven gh mock ---
+
+mkdir -p "$tmpdir/mockbin_v2"
+cat > "$tmpdir/mockbin_v2/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "mock-gh $*" >> "$MOCK_LOG"
+mock_jq=
+mock_prev=
+for mock_arg in "$@"
+do
+  if [[ $mock_prev == --jq ]]
+  then
+    mock_jq=$mock_arg
+  fi
+  mock_prev=$mock_arg
+done
+respond() {
+  if [[ -n $mock_jq ]]
+  then
+    jq -r "$mock_jq"
+  else
+    cat
+  fi
+}
+if [[ -r ${MOCK_GH_HANDLER-} ]]
+then
+  source "$MOCK_GH_HANDLER"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin_v2/gh"
+
+v2_path="$tmpdir/mockbin_v2:$tmpdir/mockbin:$PATH"
+v2_home="$tmpdir/home_v2"
+mkdir -p "$v2_home/.config/timvisher/ide"
+ln -s "$funcs_dir" "$v2_home/.functions"
+
+run_v2() {
+  (
+    cd "$tmpdir/repo" &&
+      HOME="$v2_home" \
+      PATH="$v2_path" \
+      TIMVISHER_AGENT='' \
+      timvisher_logging_log_level=INFO \
+      TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config" \
+      TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
+      TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 \
+      "$script" "$@"
+  )
+}
+
+v2_reset() {
+  export MOCK_LOG="$tmpdir/log_$1"
+  : > "$MOCK_LOG"
+  export MOCK_GH_HANDLER="$tmpdir/handler_$1"
+  : > "$MOCK_GH_HANDLER"
+}
+
+# --- pr merge idempotency tests ---
+
+merge_graphql() {
+  local state=$1 extra=${2-}
+  jq -n --arg state "$state" --argjson extra "${extra:-{\}}" '
+    {data: {viewer: {login: "testuser"},
+            repository: {pullRequest: ({
+              state: $state,
+              isInMergeQueue: false,
+              autoMergeRequest: null,
+              mergeCommit: (if $state == "MERGED" then {oid: "abc123"} else null end),
+              commits: {nodes: [{commit: {committedDate: "2026-10-10T10:00:00Z"}}]},
+              timelineItems: {nodes: []}
+            } + $extra)}}}'
+}
+
+write_merge_handler() {
+  local graphql=$1
+  printf '%s\n' "$graphql" > "$MOCK_GH_HANDLER.graphql"
+  cat > "$MOCK_GH_HANDLER" <<HANDLER
+case "\$1 \$2" in
+  'api graphql') respond < '$MOCK_GH_HANDLER.graphql' ;;
+  'pr view') echo '{"state":"MERGED","mergeCommit":{"oid":"def456"}}' ;;
+  'repo view') echo '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false}' ;;
+  'pr comment') echo 'https://github.com/testuser/testrepo/pull/42#issuecomment-1' ;;
+  'pr merge') true ;;
+esac
+HANDLER
+}
+
+merge_comment_repos() {
+  if [[ -n ${1-} ]]
+  then
+    printf '%s\n' "$1" > "$v2_home/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  else
+    rm -f "$v2_home/.config/timvisher/ide/gh-pr-merge-comment-repos"
+  fi
+}
+
+# Test: pr merge on an already-merged PR reports it and drops the cookie
+run_test
+v2_reset merge_already
+write_merge_handler "$(merge_graphql MERGED)"
+merge_comment_repos
+echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
+rm -f "$tmpdir/repo/x.merged"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"already merged in abc123"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr comment' "$MOCK_LOG" &&
+   grep -qx 'merge_commit=abc123' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: already merged reports it, no prompt, cookie dropped"
+else
+  fail "pr merge already merged: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: rerunning pr merge on a merged PR keeps the existing cookie
+run_test
+v2_reset merge_already_rerun
+write_merge_handler "$(merge_graphql MERGED)"
+printf 'merged_at=original\n' > "$tmpdir/repo/x.merged"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Merged cookie already present"* ]] &&
+   [[ $(< "$tmpdir/repo/x.merged") == 'merged_at=original' ]]
+then
+  pass "pr merge: rerun on merged PR leaves the cookie alone"
+else
+  fail "pr merge rerun: rc=${rc} cookie=$(cat "$tmpdir/repo/x.merged") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: pr merge with auto-merge already enabled waits without re-requesting
+run_test
+v2_reset merge_auto
+write_merge_handler "$(merge_graphql OPEN '{"autoMergeRequest":{"enabledAt":"2026-10-10T11:00:00Z"}}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Merge already requested (auto-merge is enabled)"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   grep -qx 'merge_commit=def456' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: auto-merge already enabled skips straight to waiting"
+else
+  fail "pr merge auto-merge: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: pr merge with the PR already in the merge queue waits
+run_test
+v2_reset merge_queue
+write_merge_handler "$(merge_graphql OPEN '{"isInMergeQueue":true}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"in the merge queue"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "pr merge: PR already in the merge queue skips straight to waiting"
+else
+  fail "pr merge queue: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: comment-merge repo with my /merge since the last push: no duplicate
+run_test
+v2_reset merge_comment_dup
+merge_comment_repos testuser/testrepo
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"HeadRefForcePushedEvent","createdAt":"2026-10-10T11:00:00Z"},
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:05:00Z","body":" /merge\n","author":{"login":"testuser"}}]}}')"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"already commented '/merge' since the last push"* ]] &&
+   ! grep -q 'mock-gh pr comment' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo does not post a duplicate /merge"
+else
+  fail "pr merge comment dup: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: comment-merge repo with /merge only before the last push re-requests
+run_test
+v2_reset merge_comment_stale
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T10:30:00Z","body":"/merge","author":{"login":"testuser"}},
+  {"__typename":"HeadRefForcePushedEvent","createdAt":"2026-10-10T11:00:00Z"}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/42 --body /merge' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo re-requests when /merge predates the last push"
+else
+  fail "pr merge comment stale: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: comment-merge repo ignores someone else's /merge
+run_test
+v2_reset merge_comment_other
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:30:00Z","body":"/merge","author":{"login":"someoneelse"}}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q 'mock-gh pr comment' "$MOCK_LOG"
+then
+  pass "pr merge: comment repo ignores another user's /merge"
+else
+  fail "pr merge comment other: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+merge_comment_repos
+
+# Test: a /merge comment in a gh-merge repo does not count as requested
+run_test
+v2_reset merge_gh_ignores_comment
+write_merge_handler "$(merge_graphql OPEN '{"timelineItems":{"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-10T11:30:00Z","body":"/merge","author":{"login":"testuser"}}]}}')"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+then
+  pass "pr merge: gh-merge repo merges with gh even after a /merge comment"
+else
+  fail "pr merge gh ignores comment: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: open PR, nothing requested: prompts, merges, waits, drops cookie
+run_test
+v2_reset merge_open
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   grep -qx 'strategy=merge' "$tmpdir/repo/x.merged" &&
+   grep -qx 'merge_commit=def456' "$tmpdir/repo/x.merged"
+then
+  pass "pr merge: open PR merges, waits, and drops the cookie"
+else
+  fail "pr merge open: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.merged"
+
+# Test: declining the prompt exits non-zero without merging
+run_test
+v2_reset merge_decline
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo n | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG" &&
+   [[ ! -e $tmpdir/repo/x.merged ]]
+then
+  pass "pr merge: declining the prompt exits non-zero without merging"
+else
+  fail "pr merge decline: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a closed PR fails without merging
+run_test
+v2_reset merge_closed
+write_merge_handler "$(merge_graphql CLOSED)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"closed without merging"* ]] &&
+   ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "pr merge: closed PR fails without merging"
+else
+  fail "pr merge closed: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/x.merged"
+unset MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing

@@ -50,13 +50,28 @@ show_help() {
 
   pr merge subcommand:
     - Requires pr.md.url to exist
-    - Tries rebase, then squash, then merge (based on repo settings)
+    - Idempotent: observes the PR before acting, so rerunning it after
+      any partial failure converges and never requests a merge twice:
+        already MERGED       reports 'already merged in <commit>' and
+                             makes sure the cookie exists
+        already requested    auto-merge is on, the PR is in the merge
+                             queue, or (comment-merge repos) you
+                             commented '/merge' since the last push;
+                             reports it and goes straight to waiting
+        CLOSED               fails
+      It prompts only when a merge request is about to be made, and
+      exits non-zero if you decline
+    - Tries merge, then squash, then rebase (whichever the repo allows)
     - Repos listed in ~/.config/timvisher/ide/gh-pr-merge-comment-repos
-      are merged by posting a '/merge' comment instead
+      are merged by posting a '/merge' comment instead.  If the queue
+      rejects that request, push again (or comment '/merge' yourself)
+      before rerunning: a '/merge' since the last push counts as
+      already requested
     - Extra arguments are passed to 'gh pr merge'
     - Blocks until the PR is actually merged (polls past any merge
       queue); on confirmed merge, drops an 'x.merged' cookie at the
-      worktree top level so worktree gc can eagerly reap it
+      worktree top level so worktree gc can eagerly reap it.  An
+      existing cookie is left alone, keeping its original mtime
     - Override poll/timeout with TIMVISHER_GH_PR_MERGE_POLL_INTERVAL
       (default 10s) and TIMVISHER_GH_PR_MERGE_TIMEOUT (default 7200s)
 
@@ -368,28 +383,94 @@ gh_pr_edit() {
   info 'PR updated'
 }
 
-# Block until the PR is genuinely merged. Both merge paths (gh pr merge
-# and the /merge comment) can return before the merge actually lands —
-# gh pr merge may only enqueue, and the comment is processed
-# asynchronously by a bot / merge queue. Poll PR state until MERGED so
-# callers can act on a confirmed merge (e.g. drop the cookie).
+gh_pr__url_parts() {
+  local pr_url=$1
+  if [[ $pr_url =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]
+  then
+    printf '%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+}
+
+gh_pr__merge_state() {
+  local pr_url=$1
+  local -a parts
+  mapfile -t parts < <(gh_pr__url_parts "$pr_url")
+  (( ${#parts[@]} == 3 )) ||
+    die "'%s' doesn't look like a PR URL" "$pr_url"
+
+  # shellcheck disable=SC2016
+  local query='query($owner: String!, $repo: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      state
+      isInMergeQueue
+      autoMergeRequest { enabledAt }
+      mergeCommit { oid }
+      commits(last: 1) { nodes { commit { committedDate } } }
+      timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT]) {
+        nodes {
+          __typename
+          ... on HeadRefForcePushedEvent { createdAt }
+          ... on IssueComment { createdAt body author { login } }
+        }
+      }
+    }
+  }
+}'
+
+  command gh api graphql \
+          -f query="$query" \
+          -f owner="${parts[0]}" \
+          -f repo="${parts[1]}" \
+          -F number="${parts[2]}" \
+          --jq '.data.repository.pullRequest + {viewer: .data.viewer.login}'
+}
+
+gh_pr__merge_requested_reason() {
+  local state_json=$1 comment_merge=$2
+  jq -r --argjson comment_merge "$comment_merge" '
+    ([.commits.nodes[0].commit.committedDate]
+     + [.timelineItems.nodes[]
+        | select(.__typename == "HeadRefForcePushedEvent")
+        | .createdAt]
+     | map(select(. != null)) | max) as $last_push
+    | .viewer as $me
+    | if .autoMergeRequest != null then "auto-merge is enabled"
+      elif .isInMergeQueue then "the PR is in the merge queue"
+      elif $comment_merge
+           and any(.timelineItems.nodes[];
+                   .__typename == "IssueComment"
+                   and .author.login == $me
+                   and (.body | gsub("^\\s+|\\s+$"; "")) == "/merge"
+                   and ($last_push == null or $last_push < .createdAt))
+        then "you already commented '\''/merge'\'' since the last push"
+      else empty
+      end' <<<"$state_json"
+}
+
 gh_pr_wait_until_merged() {
   local pr_url=$1
   local poll_interval=${TIMVISHER_GH_PR_MERGE_POLL_INTERVAL:-10}
   local timeout=${TIMVISHER_GH_PR_MERGE_TIMEOUT:-7200}
   local waited=0
-  local state
+  local view state
 
   while true
   do
-    # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
-    state=$(command gh pr view "$pr_url" --json state -q .state 2>/dev/null) || true
+    view=$(command gh pr view "$pr_url" --json state,mergeCommit 2>/dev/null) || true
+    state=$(jq -r '.state // empty' <<<"$view" 2>/dev/null) || true
 
     case $state in
       MERGED)
-        return 0 ;;
+        jq -r '.mergeCommit.oid // empty' <<<"$view"
+        return 0
+        ;;
       CLOSED)
-        die 'PR was closed without merging: %s' "$pr_url" ;;
+        die 'PR was closed without merging: %s' "$pr_url"
+        ;;
     esac
 
     if (( timeout <= waited ))
@@ -400,27 +481,98 @@ gh_pr_wait_until_merged() {
 
     info 'Waiting for merge to complete (state=%s); retrying in %ds' "${state:-unknown}" "$poll_interval"
     sleep "$poll_interval"
-    (( waited += poll_interval )) || true
+    (( waited += poll_interval ))
   done
 }
 
-# Record an authoritative "this worktree was merged" marker that the gc
-# eager-reap tier keys on. Written only after a CONFIRMED merge. The x.
-# prefix keeps it gitignored; the gc reads its mtime for the 4-day window.
 gh_pr__drop_merged_cookie() {
-  local pr_url=$1 strategy=$2
+  local pr_url=$1 strategy=$2 merge_oid=$3
   local cookie="${toplevel}/x.merged"
 
+  if [[ -f $cookie ]]
+  then
+    info 'Merged cookie already present: %s' "$cookie"
+    return 0
+  fi
+
   if {
-    printf 'merged_at=%s\n' "$(date -u '+%FT%TZ')"
-    printf 'pr_url=%s\n'    "$pr_url"
-    printf 'strategy=%s\n'  "$strategy"
+    printf 'merged_at=%s\n'    "$(date -u '+%FT%TZ')"
+    printf 'pr_url=%s\n'       "$pr_url"
+    printf 'strategy=%s\n'     "$strategy"
+    printf 'merge_commit=%s\n' "$merge_oid"
   } > "$cookie"
   then
     info 'Wrote merged cookie %s' "$cookie"
   else
     warn 'Could not write merged cookie %s' "$cookie"
   fi
+}
+
+gh_pr__request_merge_by_comment() {
+  local pr_url=$1
+
+  read -rp "Request merge for ${pr_url} by commenting '/merge'? y/N " r
+  if [[ $r != y ]]
+  then
+    info "Exiting at user's request."
+    return 1
+  fi
+
+  gh pr comment "$pr_url" --body "/merge" ||
+    die "Couldn't post /merge comment to '%s'" "$pr_url"
+
+  info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
+  merge_strategy=comment
+}
+
+gh_pr__request_merge_by_gh() {
+  local pr_url=$1
+  shift
+
+  local capabilities_json
+  capabilities_json=$(
+    gh repo view "$repo_spec" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+  ) ||
+    die "Could not read merge settings for '%s'" "$repo_spec"
+
+  local strategies=()
+  jq -e '.mergeCommitAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(merge)
+  jq -e '.squashMergeAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(squash)
+  jq -e '.rebaseMergeAllowed'  <<<"$capabilities_json" >/dev/null && strategies+=(rebase)
+
+  (( ${#strategies[@]} )) ||
+    die 'Repository allows no merge strategies: rebase, squash, and merge are all disabled.'
+
+  read -rp "Really merge ${pr_url}? y/N " r
+
+  if [[ $r != y ]]
+  then
+    info "Exiting at user's request."
+    return 1
+  fi
+
+  local i strat next
+  for ((i = 0; i < ${#strategies[@]}; i++))
+  do
+    strat=${strategies[i]}
+
+    if gh pr merge "$@" "--${strat}" "$pr_url"
+    then
+      merge_strategy=$strat
+      info 'Merge requested via %s; waiting for it to complete' "$strat"
+      return 0
+    fi
+
+    next=${strategies[i+1]:-}
+    if [[ -n $next ]]
+    then
+      read -rp "Merge with '${strat}' failed. Try '${next}'? Y/n " ans
+      [[ ${ans,,} == n* ]] && die "Aborted after '${strat}' failure."
+    fi
+  done
+
+  die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
+      "$pr_url" "${strategies[*]}"
 }
 
 gh_pr_merge() {
@@ -437,75 +589,57 @@ gh_pr_merge() {
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
   local repo_slug_lc=${repo_slug_from_url,,}
 
-  # Repos that merge via comment (e.g. /merge) instead of gh pr merge.
+  local comment_merge=false
   local comment_merge_config="${HOME}/.config/timvisher/ide/gh-pr-merge-comment-repos"
   if [[ -r $comment_merge_config ]] && grep -qix "$repo_slug_lc" "$comment_merge_config"
   then
-    read -rp "Request merge for ${pr_url} by commenting '/merge'? y/N " r
-    if [[ $r != y ]]
-    then
-      info "Exiting at user's request."
-      return
-    fi
-
-    gh pr comment "$pr_url" --body "/merge" ||
-      die "Couldn't post /merge comment to '%s'" "$pr_url"
-
-    info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
-    gh_pr_wait_until_merged "$pr_url"
-    gh_pr__drop_merged_cookie "$pr_url" comment
-    info 'PR merged: %s' "$pr_url"
-    return 0
+    comment_merge=true
   fi
 
-  local capabilities_json
-  capabilities_json=$(
-    gh repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
-  )
+  local state_json state
+  state_json=$(gh_pr__merge_state "$pr_url") ||
+    die "Couldn't read the state of '%s'" "$pr_url"
+  state=$(jq -r '.state // empty' <<<"$state_json")
 
-  local strategies=()
-  jq -e '.mergeCommitAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(merge)
-  jq -e '.squashMergeAllowed' <<<"$capabilities_json" >/dev/null && strategies+=(squash)
-  jq -e '.rebaseMergeAllowed'  <<<"$capabilities_json" >/dev/null && strategies+=(rebase)
+  merge_strategy=unknown
+  merge_commit=
+  case $state in
+    MERGED)
+      merge_commit=$(jq -r '.mergeCommit.oid // empty' <<<"$state_json")
+      info 'PR already merged in %s: %s' "${merge_commit:-<unknown commit>}" "$pr_url"
+      gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
+      return 0
+      ;;
+    CLOSED)
+      die 'PR is closed without merging: %s' "$pr_url"
+      ;;
+    OPEN)
+      ;;
+    *)
+      die "Unexpected PR state '%s' for '%s'" "$state" "$pr_url"
+      ;;
+  esac
 
-  (( ${#strategies[@]} )) ||
-    die 'Repository allows no merge strategies: rebase, squash, and merge are all disabled.'
+  local requested
+  requested=$(gh_pr__merge_requested_reason "$state_json" "$comment_merge") ||
+    die "Couldn't interpret the state of '%s'" "$pr_url"
 
-  read -rp "Really merge ${pr_url}? y/N " r
-
-  if [[ $r != y ]]
+  if [[ -n $requested ]]
   then
-    info "Exiting at user's request."
-    return
+    info 'Merge already requested (%s); waiting for it to complete' "$requested"
+  elif [[ $comment_merge == true ]]
+  then
+    gh_pr__request_merge_by_comment "$pr_url" ||
+      return 1
+  else
+    gh_pr__request_merge_by_gh "$pr_url" "$@" ||
+      return 1
   fi
 
-  local merged=
-  for ((i = 0; i < ${#strategies[@]}; i++))
-  do
-    local strat=${strategies[i]}
-
-    if gh pr merge "$@" "--${strat}" "$pr_url"
-    then
-      merged=$strat
-      break
-    fi
-
-    local next=${strategies[i+1]:-}
-    if [[ -n $next ]]
-    then
-      read -rp "Merge with '${strat}' failed. Try '${next}'? Y/n " ans
-      [[ ${ans,,} == n* ]] && die "Aborted after '${strat}' failure."
-    fi
-  done
-
-  [[ -n ${merged-} ]] ||
-    die "Couldn't merge PR '%s' with any strategy (tried: %s)" \
-        "$pr_url" "${strategies[*]}"
-
-  info 'Merge requested via %s; waiting for it to complete' "$merged"
-  gh_pr_wait_until_merged "$pr_url"
-  gh_pr__drop_merged_cookie "$pr_url" "$merged"
-  info 'PR merged via %s' "$merged"
+  merge_commit=$(gh_pr_wait_until_merged "$pr_url") ||
+    exit 1
+  gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
+  info 'PR merged in %s via %s' "${merge_commit:-<unknown commit>}" "$merge_strategy"
 }
 
 gh_pr() {
