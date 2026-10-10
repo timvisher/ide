@@ -1643,9 +1643,10 @@ Each finding carries two independent triage fields:
                                sends agent_status back to open.
 
 A finding is settled when agent_status is fixed or refuted AND
-human_status is confirmed. Changing agent_status resets human_status to
-unreviewed unless --human-status is passed in the same call, because the
-human reviewed the earlier judgement, not the new one.
+human_status is confirmed. Changing agent_status, or the rationale behind
+it, resets human_status to unreviewed unless --human-status is passed in
+the same call, because the human reviewed the earlier judgement, not the
+new one.
 
 Fields:
   --title         (required) one-line summary.
@@ -1681,7 +1682,8 @@ Fields:
   --id            (optional) UUID of an existing finding to update.
   --status        (deprecated) schema 1 spelling of --agent-status:
                   open | addressed (= fixed) | wontfix (= refuted) |
-                  refuted.
+                  refuted. Like --agent-status refuted, wontfix and
+                  refuted now require --rationale.
 EOF
 }
 
@@ -1891,7 +1893,7 @@ do_review_record_finding() {
           | .updated=$now
           | .findings |= map(
               if .id==$id then
-                  .agent_status as $prev
+                  {agent_status, refutation, escalation} as $prev
                 | (if $title!="" then .title=$title else . end)
                 | (if $description!="" then .description=$description else . end)
                 | (if $file!="" then .file=$file else . end)
@@ -1904,7 +1906,7 @@ do_review_record_finding() {
                    elif $astatus=="escalated" and $rationale!="" then .escalation=$rationale
                    else . end)
                 | (if $hstatus!="" then .human_status=$hstatus
-                   elif .agent_status!=$prev then .human_status="unreviewed"
+                   elif {agent_status, refutation, escalation} != $prev then .human_status="unreviewed"
                    else . end)
                 | (if $hstatus=="overruled" then .agent_status="open" else . end)
                 | (if $note!="" then .human_note=$note else . end)

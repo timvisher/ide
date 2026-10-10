@@ -1154,6 +1154,35 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 41
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level high --category correctness --p0 true --flagged-by claude) >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+rf() { (cd "$repo" && "$script" git diff review record-finding --id "$fid" "$@") >/dev/null 2>&1; }
+ok=1
+rf --agent-status refuted --rationale A || ok=0
+rf --human-status confirmed || ok=0
+rf --agent-status refuted --rationale A || ok=0
+[[ $(jq -r '.findings[0].human_status' "$rj") == confirmed ]] || ok=0
+rf --agent-status refuted --rationale B || ok=0
+[[ $(jq -r '.findings[0].human_status' "$rj") == unreviewed ]] || ok=0
+rf --human-status confirmed || ok=0
+rf --agent-status open || ok=0
+rf --human-status confirmed || ok=0
+[[ $(jq -r '.findings[0]|"\(.agent_status)/\(.human_status)"' "$rj") == open/confirmed ]] || ok=0
+if (( ok ))
+then
+  pass "a changed rationale resets human_status; re-asserting the same one does not"
+else
+  fail "rationale-change reset incorrect: $(jq -c '.findings[0]' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
 # Case 42
 # ---------------------------------------------------------------------------
 run_test
