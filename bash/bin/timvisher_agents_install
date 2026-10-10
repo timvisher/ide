@@ -107,9 +107,10 @@ assert_not_symlink() {
 
 ensure_dir() {
   local path=$1
-  if [[ ! -d $path ]]
+  if [[ ! -d $path ]] && ! mkdir -p "$path"
   then
-    mkdir -p "$path"
+    found_error "could not create directory '${path}'"
+    return 1
   fi
 }
 
@@ -141,25 +142,33 @@ ensure_symlink() {
       # the desired (e.g., raw worktree path → preferred prefix).
       if [[ $existing_raw != "$target" ]]
       then
-        rm "$link"
-        ln -s "$target" "$link"
-        info "Updated symlink '%s' → '%s' (was → '%s')" "$link" "$target" "$existing_raw"
+        if rm "$link" && ln -s "$target" "$link"
+        then
+          info "Updated symlink '%s' → '%s' (was → '%s')" "$link" "$target" "$existing_raw"
+        else
+          found_error "could not update symlink '${link}' → '${target}'"
+        fi
       fi
     elif [[ ! -e $link ]]
     then
       # Dangling symlink — safe to replace
-      rm "$link"
-      ln -s "$target" "$link"
-      info "Replaced dangling symlink '%s' → '%s'" "$link" "$target"
+      if rm "$link" && ln -s "$target" "$link"
+      then
+        info "Replaced dangling symlink '%s' → '%s'" "$link" "$target"
+      else
+        found_error "could not replace dangling symlink '${link}' → '${target}'"
+      fi
     else
       found_error "'${link}' resolves to '${existing_resolved}', not '${target_resolved}'"
     fi
   elif [[ -e $link ]]
   then
     found_error "'${link}' exists and is not a symlink"
-  else
-    ln -s "$target" "$link"
+  elif ln -s "$target" "$link"
+  then
     info "Created symlink '%s' → '%s'" "$link" "$target"
+  else
+    found_error "could not create symlink '${link}' → '${target}'"
   fi
 }
 
@@ -202,8 +211,9 @@ do_install_from() {
   if [[ -d $reviewers_dir ]]
   then
     found_something=true
-    ensure_dir "${HOME}/.agents/aishot/reviewers"
     local reviewer
+    ensure_dir "${HOME}/.agents/aishot/reviewers" ||
+      return
     for reviewer in "${reviewers_dir}"/*
     do
       [[ -f $reviewer ]] || continue
@@ -312,6 +322,15 @@ fi
 ensure_dir "${HOME}/.agents"
 ensure_dir "${HOME}/.agents/skills"
 ensure_dir "${HOME}/.agents/languages"
+
+if (( 0 < ${#errors[@]} ))
+then
+  for msg in "${errors[@]}"
+  do
+    error '%s' "$msg"
+  done
+  exit 1
+fi
 
 for dir in "$@"
 do

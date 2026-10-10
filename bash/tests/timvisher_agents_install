@@ -20,6 +20,11 @@ run_test() {
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
+test_root=""
+trap 'rm -rf -- "${test_root}"' EXIT
+test_root=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+export TMPDIR="$test_root"
+
 # shellcheck disable=SC1091
 source "${repo_root}/bash/functions/logging.bash"
 
@@ -50,7 +55,7 @@ resolves_to() {
   [[ -L $1 ]] && [[ $(canon "$1") == "$(canon "$2")" ]]
 }
 
-# --- Test: --install-from installs skill symlinks ---
+# --- Test: install installs skill symlinks ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -69,7 +74,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --install-from with multiple skills ---
+# --- Test: install with multiple skills ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -98,7 +103,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --install-from from multiple sources ---
+# --- Test: install from multiple sources ---
 run_test
 test_home=$(setup_home)
 source_a=$(mktemp -d)
@@ -165,7 +170,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --install-from errors when no .agents subdir ---
+# --- Test: install errors when no .agents subdir ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -183,7 +188,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --install-from installs language file symlinks ---
+# --- Test: install installs language file symlinks ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -202,7 +207,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --install-from installs languages from multiple sources ---
+# --- Test: install installs languages from multiple sources ---
 run_test
 test_home=$(setup_home)
 source_a=$(mktemp -d)
@@ -252,7 +257,7 @@ cleanup "$test_home"
 cleanup "$source_a"
 cleanup "$source_b"
 
-# --- Test: --install-from with only languages (no skills) succeeds ---
+# --- Test: install with only languages (no skills) succeeds ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -273,7 +278,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --resolve creates ~/AGENTS.md symlink ---
+# --- Test: resolve creates ~/AGENTS.md symlink ---
 run_test
 test_home=$(setup_home)
 
@@ -288,7 +293,7 @@ else
 fi
 cleanup "$test_home"
 
-# --- Test: --resolve creates ~/.claude/CLAUDE.md → ~/AGENTS.md ---
+# --- Test: resolve creates ~/.claude/CLAUDE.md → ~/AGENTS.md ---
 run_test
 test_home=$(setup_home)
 
@@ -303,7 +308,7 @@ else
 fi
 cleanup "$test_home"
 
-# --- Test: --resolve creates ~/.claude/skills → ~/.agents/skills ---
+# --- Test: resolve creates ~/.claude/skills → ~/.agents/skills ---
 run_test
 test_home=$(setup_home)
 
@@ -318,7 +323,7 @@ else
 fi
 cleanup "$test_home"
 
-# --- Test: --resolve creates ~/.codex/AGENTS.md → ~/AGENTS.md ---
+# --- Test: resolve creates ~/.codex/AGENTS.md → ~/AGENTS.md ---
 run_test
 test_home=$(setup_home)
 
@@ -333,7 +338,7 @@ else
 fi
 cleanup "$test_home"
 
-# --- Test: --resolve creates per-skill symlinks in ~/.codex/skills ---
+# --- Test: resolve creates per-skill symlinks in ~/.codex/skills ---
 run_test
 test_home=$(setup_home)
 source_dir=$(mktemp -d)
@@ -352,7 +357,7 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: --resolve preserves ~/.codex/skills/.system ---
+# --- Test: resolve preserves ~/.codex/skills/.system ---
 run_test
 test_home=$(setup_home)
 touch "${test_home}/.codex/skills/.system/marker"
@@ -483,6 +488,27 @@ else
 fi
 cleanup "$test_home"
 cleanup "$target"
+
+# --- Test: a blocked reviewers directory is an error, not a silent success ---
+run_test
+test_home=$(setup_home)
+source_dir=$(mktemp -d)
+mkdir -p "${source_dir}/.agents/aishot/reviewers"
+echo '{}' > "${source_dir}/.agents/aishot/reviewers/outer.json"
+touch "${test_home}/.agents/aishot"
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_dir" 2>&1)
+exit_code=$?
+
+if (( exit_code != 0 )) && [[ $result == *"could not create directory"*"aishot/reviewers"* ]]
+then
+  pass "install: a blocked ~/.agents/aishot/reviewers fails the install"
+else
+  fail "install: expected failure for blocked reviewers dir, got exit=${exit_code} output='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
 
 # --- Results ---
 echo ""
