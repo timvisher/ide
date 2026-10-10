@@ -119,6 +119,31 @@ timvisher_notify__osascript() {
   osascript -e "display notification \"${message//\"/\\\"}\" with title \"${title//\"/\\\"}\"" 2>/dev/null || true
 }
 
+timvisher_notify__write_tmux_pane_tty() {
+  local wrapped=$1
+
+  if [[ -z ${TMUX:-} || -z ${TMUX_PANE:-} ]]
+  then
+    timvisher_notify__debug "no tmux pane tty: TMUX='${TMUX:-}' TMUX_PANE='${TMUX_PANE:-}'"
+    return 1
+  fi
+
+  local pane_tty
+  if ! pane_tty=$(tmux display -p -t "$TMUX_PANE" '#{pane_tty}' 2>/dev/null) || [[ -z $pane_tty ]]
+  then
+    timvisher_notify__debug "cannot resolve tmux pane tty for TMUX_PANE='${TMUX_PANE}'"
+    return 1
+  fi
+
+  if [[ ! -c $pane_tty ]] || ! { printf '%s' "$wrapped" > "$pane_tty"; } 2>/dev/null
+  then
+    timvisher_notify__debug "cannot write to tmux pane tty '${pane_tty}'"
+    return 1
+  fi
+
+  timvisher_notify__debug "wrote to tmux pane tty '${pane_tty}' for TMUX_PANE='${TMUX_PANE}'"
+}
+
 timvisher_notify__platform_notify() {
   local title=$1 message=$2
 
@@ -156,8 +181,13 @@ timvisher_notify__platform_notify() {
   if [[ -c /dev/tty ]] && { true > /dev/tty; } 2>/dev/null
   then
     printf '%s' "$wrapped" > /dev/tty
-  else
-    timvisher_notify__debug "fallback to osascript: cannot write to /dev/tty"
+    return
+  fi
+
+  timvisher_notify__debug "cannot write to /dev/tty, trying tmux pane tty"
+  if ! timvisher_notify__write_tmux_pane_tty "$wrapped"
+  then
+    timvisher_notify__debug "fallback to osascript: cannot write to /dev/tty or tmux pane tty"
     timvisher_notify__osascript "$title" "$message"
   fi
 }
