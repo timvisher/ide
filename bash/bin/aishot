@@ -1391,14 +1391,8 @@ _review_repo_org() {
     fi
 }
 
-_review_known_reviewers() {
-    local registered
-    registered=$(_review_registry_scan | jq -r '[.valid[].name] | join(" ")')
-    printf '%s %s' "$REVIEW_REVIEWERS" "$registered"
-}
-
-# jq program (read on stdin as $prog) that emits one error string per line
-# for a review doc passed as the file argument; empty output means valid.
+# Prints one error per line on stderr and returns non-zero when the review
+# doc at $1 is invalid.
 _review_validate_file() {
     local f=$1
     if [[ ! -f $f ]]
@@ -1411,17 +1405,18 @@ _review_validate_file() {
         echo "'${f}' is not valid JSON" >&2
         return 1
     fi
-    local errs known
-    known=$(_review_known_reviewers)
-    errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" \
+    local errs
+    if ! errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" \
                  --arg levels "$REVIEW_LEVELS" --arg cats "$REVIEW_CATEGORIES" \
                  --arg astats "$REVIEW_AGENT_STATUSES" --arg hstats "$REVIEW_HUMAN_STATUSES" \
-                 --arg revs "$known" '
+                 --arg namere "$REVIEW_REVIEWER_NAME_RE" '
       def words: split(" ") | map(select(. != ""));
       def envkeys: ["schema_version","lineage","iterations","branch","base_sha","head_sha","created","updated","diff","findings"];
       def commonkeys: ["id","file","line","level","category","title","description","first_seen_iteration","last_seen_iteration","flagged_by"];
       def isint: (type=="number") and (. == floor);
-      def nonempty: (type=="string") and (length>0);
+      def nonempty: (type=="string") and (0<length);
+      def findings: if (.findings|type)=="array" then .findings else [] end;
+      if type != "object" then "the review must be a JSON object" else
       (.schema_version == 1) as $v1 |
       (if $v1 then commonkeys + ["status"] else commonkeys + ["agent_status","human_status"] end) as $fkeys |
       (if $v1 then ["p0","refutation"] else ["p0","refutation","escalation","human_note","source"] end) as $okeys |
@@ -1429,10 +1424,11 @@ _review_validate_file() {
         (envkeys[] as $k | select((has($k))|not) | "missing envelope key: \($k)"),
         (keys_unsorted[] as $k | select((envkeys|index($k))==null) | "unknown envelope key: \($k)"),
         (if $v1 or (.schema_version)==$ver then empty else "schema_version must be 1 or \($ver)" end),
-        (if ((.iterations|isint) and (.iterations>=1)) then empty else "iterations must be a positive integer" end),
+        (if ((.iterations|isint) and (1<=.iterations)) then empty else "iterations must be a positive integer" end),
         (if (.diff|type)=="string" then empty else "diff must be a string" end),
         (if (.findings|type)=="array" then empty else "findings must be an array" end),
-        ((.findings // []) | to_entries[] | .key as $i | .value as $f |
+        (findings | to_entries[] | .key as $i | .value as $f |
+         if ($f|type) != "object" then "finding[\($i)] must be a JSON object" else
           ($fkeys[] as $k | select(($f|has($k))|not) | "finding[\($i)] missing key: \($k)"),
           (($f|keys_unsorted[]) as $k | select((($fkeys+$okeys)|index($k))==null) | "finding[\($i)] unknown key: \($k)"),
           (if ($levels|words|index($f.level)) != null then empty else "finding[\($i)] invalid level: \($f.level)" end),
@@ -1455,20 +1451,56 @@ _review_validate_file() {
           (if ($f.title|nonempty) then empty else "finding[\($i)] title required" end),
           (if ($f.description|nonempty) then empty else "finding[\($i)] description required" end),
           (if (($f.first_seen_iteration|isint) and ($f.last_seen_iteration|isint) and ($f.first_seen_iteration<=$f.last_seen_iteration)) then empty else "finding[\($i)] iteration bounds invalid" end),
-          (if (($f.flagged_by|type)=="array" and ($f.flagged_by|length)>=1) then
-             ([$f.flagged_by[] | . as $r | select(($revs|words|index($r))==null)] | map(tostring)) as $unknown
-             | if ($unknown|length)==0 then empty else "finding[\($i)] flagged_by has unknown reviewers: \($unknown|join(", "))" end
-           else "finding[\($i)] flagged_by must be a non-empty array of reviewers" end)
+          (if (($f.flagged_by|type)=="array" and (1<=($f.flagged_by|length))
+               and all($f.flagged_by[]; type=="string" and test($namere))) then empty
+           else "finding[\($i)] flagged_by must be a non-empty array of reviewer names" end)
+         end
         ),
-        ((.findings // []) | (map(.id)) as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
+        (findings | [.[] | objects | .id] as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
       ] | .[]
-    ' "$f")
+      end
+    ' "$f" 2>&1)
+    then
+        printf 'could not validate %s: %s\n' "$f" "$errs" >&2
+        return 1
+    fi
     if [[ -n $errs ]]
     then
         printf '%s\n' "$errs" >&2
         return 1
     fi
     return 0
+}
+
+_review_flagged_by_warnings() {
+    local f=$1 registry org=""
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org) || org=""
+    jq -r --argjson reg "$registry" --arg builtins "$REVIEW_REVIEWERS" --arg org "$org" '
+      ($builtins | split(" ")) as $b
+      | [.findings[]? | objects | .flagged_by[]? | strings] | unique[] as $r
+      | select(($b | index($r)) == null)
+      | ([$reg.valid[] | select(.name == $r)] | first) as $e
+      | if $e == null then
+          "warning: flagged_by \($r | tojson) is not a built-in or registered reviewer"
+        elif $org == "" or (any($e.orgs[]; ascii_downcase == ($org | ascii_downcase)) | not) then
+          "warning: flagged_by \($r | tojson) is registered for orgs \($e.orgs | join(", ")), not this repo (org: \(if $org == "" then "none" else $org end))"
+        else empty end
+    ' "$f" 2>/dev/null
+}
+
+_review_lock() {
+    local lock=$1 waited=0
+    until mkdir "$lock" 2>/dev/null
+    do
+        (( waited += 1 ))
+        if (( 50 < waited ))
+        then
+            echo "Error: could not acquire review lock '${lock}'." >&2
+            return 1
+        fi
+        sleep 0.1
+    done
 }
 
 # The review-scope diff embedded in the artifact: branch-vs-upstream
@@ -1929,7 +1961,14 @@ do_review_validate() {
         printf '%s\n' "$registry_errs" >&2
         rc=1
     fi
-    _review_validate_file "$path" || rc=1
+    if _review_validate_file "$path"
+    then
+        local warnings
+        warnings=$(_review_flagged_by_warnings "$path")
+        [[ -z $warnings ]] || printf '%s\n' "$warnings" >&2
+    else
+        rc=1
+    fi
     if (( rc == 0 ))
     then
         echo "ok: ${path} is valid"

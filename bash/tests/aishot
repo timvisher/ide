@@ -944,8 +944,8 @@ lerr=$(in_reg "$repo" reviewers list 2>&1 >/dev/null) && ok=0
 rm -f "$reg_dir/bad.json" "$reg_dir/broken.json" "$reg_dir/claude.json"
 in_reg "$repo" validate >/dev/null 2>&1 || ok=0
 rm -f "$reg_dir/outer.json"
-verr=$(in_reg "$repo" validate 2>&1 >/dev/null) && ok=0
-[[ $verr == *'flagged_by has unknown reviewers: outer'* ]] || ok=0
+verr=$(in_reg "$repo" validate 2>&1 >/dev/null) || ok=0
+[[ $verr == *'warning: flagged_by "outer" is not a built-in or registered reviewer'* ]] || ok=0
 if (( ok ))
 then
   pass "validate checks registration files and flagged_by against the registry"
@@ -1063,6 +1063,73 @@ then
   pass "status/reviewers/record-finding: --help on stdout, usage errors on stderr only"
 else
   fail "help/usage stream separation incorrect"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 39
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+printf '[]\n' > "$repo/arr.json"
+verr=$(cd "$repo" && "$script" git diff review validate --file arr.json 2>&1) && ok=0
+[[ $verr == *'must be a JSON object'* ]] || ok=0
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude) >/dev/null 2>&1
+rj="$repo/.aishot/review.json"
+for corrupt in '.findings=[1]' '.findings=["x"]' '.findings[0].flagged_by=[1]' '.findings[0].flagged_by=["Bad Name"]'
+do
+  jq "$corrupt" "$rj" > "$repo/c.json"
+  if (cd "$repo" && "$script" git diff review validate --file c.json) >/dev/null 2>&1
+  then
+    ok=0
+    echo "  validate accepted: $corrupt" >&2
+  fi
+done
+if (( ok ))
+then
+  pass "validate rejects wrong root and finding types instead of erroring into success"
+else
+  fail "validate accepted a structurally wrong artifact: $verr"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 43
+# ---------------------------------------------------------------------------
+run_test
+reg_home=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+reg_dir="$reg_home/.agents/aishot/reviewers"
+mkdir -p "$reg_dir"
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d"}' > "$reg_dir/outer.json"
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+"$test_git" -C "$repo" remote add origin git@github.com:DataDog/thing.git
+ok=1
+in_reg "$repo" record-finding --title T --description D --level high --category correctness \
+  --p0 true --flagged-by outer >/dev/null 2>&1 || ok=0
+fid=$(jq -r '.findings[0].id' "$rj")
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d","typo":1}' > "$reg_dir/outer.json"
+in_reg "$repo" record-finding --id "$fid" --agent-status fixed >/dev/null 2>&1 || ok=0
+in_reg "$repo" begin >/dev/null 2>&1 || ok=0
+rm -f "$reg_dir/outer.json"
+in_reg "$repo" record-finding --id "$fid" --agent-status open >/dev/null 2>&1 || ok=0
+vout=$(in_reg "$repo" validate 2>&1) || ok=0
+[[ $vout == *'warning: flagged_by "outer" is not a built-in or registered reviewer'* ]] || ok=0
+printf '%s\n' '{"name":"outer","orgs":["acme"],"description":"d"}' > "$reg_dir/outer.json"
+vout=$(in_reg "$repo" validate 2>&1) || ok=0
+[[ $vout == *'warning: flagged_by "outer" is registered for orgs acme'* ]] || ok=0
+printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"d"}{"name":"outer","orgs":["acme"],"description":"d"}' > "$reg_dir/outer.json"
+lerr=$(in_reg "$repo" reviewers list 2>&1 >/dev/null) && ok=0
+[[ $lerr == *'outer.json: not a single valid JSON document'* ]] || ok=0
+in_reg "$repo" record-finding --title T2 --description D --level low --category style \
+  --flagged-by outer >/dev/null 2>&1 && ok=0
+if (( ok ))
+then
+  pass "a broken or removed registration warns but never locks the artifact"
+else
+  fail "registration breakage handling incorrect: $vout / $lerr"
 fi
 rm -rf "$repo"
 
