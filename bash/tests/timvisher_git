@@ -616,6 +616,26 @@ else
   fail "maybe_execute_hook should succeed when no hook exists"
 fi
 
+# ---------------------------------------------------------------------------
+# ensure_worktree cache_trunk failure tests
+# ---------------------------------------------------------------------------
+
+run_test
+stderr=$(
+  cache_trunk() { return 1; }
+  branch_path_for_source() { printf 'ENSURE_WORKTREE_CONTINUED' >&2; }
+  ensure_worktree ddoghq/moved-repo/some-branch 2>&1 >/dev/null
+)
+rc=$?
+if (( rc != 0 )) &&
+  [[ $stderr == *"Unable to cache trunk"* ]] &&
+  [[ $stderr != *ENSURE_WORKTREE_CONTINUED* ]]
+then
+  pass "ensure_worktree stops when cache_trunk fails"
+else
+  fail "ensure_worktree should die on cache_trunk failure: rc=${rc} stderr='${stderr}'"
+fi
+
 unset 'org_aliases[dd]' 'org_aliases[datadog]'
 hooks_dir=$hook_alias_saved_hooks_dir
 

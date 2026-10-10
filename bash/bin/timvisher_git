@@ -1475,7 +1475,8 @@ ensure_worktree() {
   local source=$1
   die_if_git_component "ensure_worktree: source" "$source"
   local trunk_cache
-  trunk_cache=$(cache_trunk "$source")
+  trunk_cache=$(cache_trunk "$source") ||
+    die "ensure_worktree: Unable to cache trunk for '%s'" "$source"
 
   local branch_dir_and_branch
   branch_dir_and_branch=$(branch_path_for_source "$source" "$trunk_cache")
