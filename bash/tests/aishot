@@ -1067,6 +1067,33 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 38
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+for opt in --title --description --file --line --level --category --flagged-by --status \
+           --agent-status --human-status --note --p0 --rationale --source --id
+do
+  if ! out=$(cd "$repo" && timeout 10 "$script" git diff review record-finding "$opt" 2>&1)
+  then
+    [[ $out == *"option '${opt}' needs a value"* ]] || { ok=0; echo "  $opt: $out" >&2; }
+  else
+    ok=0
+    echo "  $opt was accepted without a value" >&2
+  fi
+done
+out=$(cd "$repo" && timeout 10 "$script" git diff review validate --file 2>&1) && ok=0
+[[ $out == *"needs a value"* ]] || ok=0
+if (( ok ))
+then
+  pass "value-taking options without a value fail fast instead of looping"
+else
+  fail "missing option values not rejected cleanly"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
 # Case 39
 # ---------------------------------------------------------------------------
 run_test

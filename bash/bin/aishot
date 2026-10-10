@@ -1729,6 +1729,13 @@ do_review_record_finding() {
     while (( 0 < $# ))
     do
         case "$1" in
+            --title|--description|--file|--line|--level|--category|--flagged-by|--status|\
+            --agent-status|--human-status|--note|--p0|--rationale|--source|--id)
+                (( 1 < $# )) ||
+                    { echo "Error: option '${1}' needs a value." >&2; return 1; }
+                ;;
+        esac
+        case "$1" in
             --title) title=$2; shift 2 ;;
             --description) description=$2; shift 2 ;;
             --file) file=$2; shift 2 ;;
@@ -1947,7 +1954,12 @@ do_review_validate() {
     while (( 0 < $# ))
     do
         case "$1" in
-            --file) path=$2; shift 2 ;;
+            --file)
+                (( 1 < $# )) ||
+                    { echo "Error: option '--file' needs a value." >&2; return 1; }
+                path=$2
+                shift 2
+                ;;
             --help|-h)
                 echo "Usage: aishot git diff review validate [--file PATH]"
                 echo "Validate .aishot/review.json (schema, enums, types, invariants)"
