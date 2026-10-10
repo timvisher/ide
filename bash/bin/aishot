@@ -23,6 +23,7 @@ REVIEW_CATEGORIES="correctness security performance reliability maintainability 
 REVIEW_AGENT_STATUSES="open fixed refuted escalated"
 REVIEW_HUMAN_STATUSES="unreviewed confirmed overruled"
 REVIEW_REVIEWERS="claude codex gemini human"
+REVIEW_REVIEWER_NAME_RE='^[a-z0-9][a-z0-9_-]*$'
 
 # shellcheck disable=SC2016
 REVIEW_REGISTRATION_JQ='
@@ -35,8 +36,8 @@ else
     (keys_unsorted[] as $k | select((keys_allowed | index($k)) == null) | "unknown key: \($k)"),
     (if has("name") then
        .name as $n
-       | (if ($n | type) == "string" and ($n | test("^[a-z0-9][a-z0-9_-]*$")) then empty
-          else "name must match ^[a-z0-9][a-z0-9_-]*$" end),
+       | (if ($n | type) == "string" and ($n | test($namere)) then empty
+          else "name must match \($namere)" end),
          (if $n == $stem then empty
           else "name \($n | tojson) must match the file name \($stem | tojson)" end),
          (if ($builtins | split(" ") | index($n)) == null then empty
@@ -1347,8 +1348,10 @@ _review_registry_scan() {
     do
         stem=${f##*/}
         stem=${stem%.json}
-        if ! out=$(jq -c --arg stem "$stem" --arg file "$f" --arg builtins "$REVIEW_REVIEWERS" \
-                      "$REVIEW_REGISTRATION_JQ" "$f" 2>/dev/null) || [[ -z $out ]]
+        if ! out=$(jq -sc --arg stem "$stem" --arg file "$f" --arg builtins "$REVIEW_REVIEWERS" \
+                      --arg namere "$REVIEW_REVIEWER_NAME_RE" \
+                      'if length == 1 then .[0] | '"$REVIEW_REGISTRATION_JQ"' else error end' \
+                      "$f" 2>/dev/null) || [[ -z $out ]]
         then
             out=$(jq -nc --arg file "$f" '{errors: ["\($file): not a single valid JSON document"]}')
         fi
@@ -1944,9 +1947,12 @@ $(_review_reviewers_dir)/<name>.json, each shaped like:
 
   {"name": "<name>", "orgs": ["<github-org>", ...], "description": "<text>"}
 
-A registered reviewer applies only in repos whose remote's GitHub org is
-one of its orgs (case-insensitive). Invalid registration files are
-reported on stderr and make the command exit non-zero.
+A registered reviewer applies only in repos whose remote's owner (the
+GitHub org: the first path component of the remote URL) is one of its
+orgs, compared case-insensitively. The remote is the current branch's
+remote, else origin, else the only remote. The host is not checked, so
+SSH host aliases work. Invalid registration files are reported on
+stderr and make the command exit non-zero.
 
 --format=json prints {"org", "builtin", "registered", "errors"}, where
 each registered entry carries name, orgs, description, file, and applies.
@@ -1956,13 +1962,13 @@ EOF
 do_review_reviewers() {
     _review_need_jq || return 1
     local format=text
+    [[ ${1-} == list ]] && shift
     while (( 0 < $# ))
     do
         case "$1" in
-            list) shift ;;
             --format=*) format=${1#--format=}; shift ;;
             --help|-h) show_review_reviewers_help; return 0 ;;
-            *) echo "Error: unknown option '${1}'." >&2; show_review_reviewers_help >&2; return 1 ;;
+            *) echo "Error: unknown option '${1}'." >&2; review_reviewers_usage; return 1 ;;
         esac
     done
     local registry org="" report

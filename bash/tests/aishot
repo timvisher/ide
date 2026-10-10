@@ -1066,6 +1066,32 @@ else
 fi
 rm -rf "$repo"
 
+# ---------------------------------------------------------------------------
+# Case 44
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+ok=1
+"$test_git" -C "$repo" remote add origin git@github.com:origin-org/x.git
+"$test_git" -C "$repo" remote add fork git@github.com:fork-org/x.git
+"$test_git" -C "$repo" symbolic-ref HEAD refs/heads/feature
+"$test_git" -C "$repo" config branch.feature.remote fork
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == fork-org ]] || ok=0
+"$test_git" -C "$repo" config --unset branch.feature.remote
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == origin-org ]] || ok=0
+"$test_git" -C "$repo" remote remove origin
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == fork-org ]] || ok=0
+"$test_git" -C "$repo" remote add other git@github.com:other-org/x.git
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == null ]] || ok=0
+[[ -z $(in_reg "$repo" reviewers --format=json list 2>/dev/null) ]] || ok=0
+if (( ok ))
+then
+  pass "remote org follows the branch remote, then origin, then a sole remote"
+else
+  fail "remote selection for the org incorrect"
+fi
+rm -rf "$repo" "$reg_home"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
