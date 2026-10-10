@@ -42,8 +42,11 @@ show_help() {
                                  Post a comment on a PR from <file>
     timvisher_gh comment edit [--pull-request=URL] <file>
                                  Update an existing comment from <file>
-    timvisher_gh comment reply <comment-url> <file>
-                                 Reply to a review comment from <file>
+    timvisher_gh comment reply <comment-url> <file> [--reaction R]...
+                                 Reply to a review comment from <file>;
+                                 each --reaction goes on <comment-url>
+    timvisher_gh comment react <comment-url> --reaction R...
+                                 React to any PR comment or review
     timvisher_gh comment delete [--force] <file>
                                  Delete the comment tracked by <file>.url
 
@@ -111,6 +114,8 @@ show_help() {
                                                 thread reply
     - Items are matched to existing directories by node id, so renamed
       directories and rerunning are fine
+    - Root x.*.md files whose x.*.md.url points at a comment on this PR
+      (the old reply workflow) move into that comment's directory
     - Remote edits flow down.  Your own comment with an unpushed local
       edit keeps the edit and its lease; anyone else's comment is
       read-only and is overwritten from GitHub
@@ -187,9 +192,25 @@ show_help() {
 
   comment reply subcommand:
     - Replies to a PR review comment (inline discussion thread)
-    - <comment-url> is the full GitHub URL with #discussion_r<ID>
-    - Stores the reply URL in <file>.url
-    - If <file>.url already exists, prints the URL to stdout
+    - <comment-url> is the full GitHub URL with #discussion_r<ID>, of
+      the thread's first comment or any reply in it
+    - Copies <file> into the thread's directory in
+      .timvisher_gh/pr/comments/ (pulling the conversation first if
+      the thread is not mirrored yet) and posts it right away with the
+      same code as pr push; prints the reply URL
+    - --reaction R (repeatable) reacts to <comment-url>, the comment
+      being replied to, not to your reply
+    - Idempotent: the draft remembers <file>, so rerunning the same
+      command posts and reacts nothing twice.  A legacy <file>.url
+      also counts as already replied
+  comment react subcommand:
+    - Adds each --reaction R to the comment at <comment-url>
+      (#discussion_r, #issuecomment- or #pullrequestreview-), recording
+      it in that item's json and posting it right away; reactions
+      already there are skipped
+    - R may be a REST name (+1, -1, laugh, hooray, confused, heart,
+      rocket, eyes), an emoji (a bare heart without VS16 works), or a
+      GraphQL enum (THUMBS_UP); it is stored as the REST name
 
   comment delete subcommand:
     - Deletes the PR comment tracked by <file>.url
@@ -2018,6 +2039,8 @@ gh_pr_pull() {
     (( counts[$conv__status] += 1 ))
   done <<<"$items"
 
+  conv__migrate_root_pairs
+
   info 'Pulled %s: %d new, %d updated, %d unchanged, %d unpushed edits kept' \
        "$pr_url" "${counts[new]}" "${counts[updated]}" "${counts[unchanged]}" "${counts[kept]}"
 }
@@ -2184,9 +2207,146 @@ gh_comment_edit() {
   info 'Comment updated'
 }
 
+conv__slug() {
+  local text=${1,,}
+  text=${text//[^a-z0-9]/-}
+  while [[ $text == *--* ]]
+  do
+    text=${text//--/-}
+  done
+  text=${text#-}
+  text=${text%-}
+  printf '%s\n' "${text:0:60}"
+}
+
+conv__target_pr_url=
+conv__target_kinds=
+conv__target_db=
+
+conv__parse_comment_url() {
+  local url=$1
+  if ! [[ $url =~ ^(https://github\.com/[^/]+/[^/]+/pull/[0-9]+)[^#]*#(discussion_r|issuecomment-|pullrequestreview-)([0-9]+)$ ]]
+  then
+    die "'%s' doesn't look like a PR comment URL (#discussion_r<ID>, #issuecomment-<ID> or #pullrequestreview-<ID>)" "$url"
+  fi
+  conv__target_pr_url=${BASH_REMATCH[1]}
+  conv__target_db=${BASH_REMATCH[3]}
+  case ${BASH_REMATCH[2]} in
+    discussion_r)
+      conv__target_kinds=thread,review_comment
+      ;;
+    issuecomment-)
+      conv__target_kinds=issue_comment
+      ;;
+    pullrequestreview-)
+      conv__target_kinds=review
+      ;;
+  esac
+}
+
+conv__find_target() {
+  local comments_dir
+  comments_dir="$(state__dir pr)/comments"
+  [[ -d $comments_dir ]] ||
+    return 1
+  find "$comments_dir" -name '*.json' -type f -exec \
+       jq -r --arg db "$conv__target_db" --arg kinds "$conv__target_kinds" '
+         select((.database_id | tostring) == $db and (.kind as $k | $kinds | split(",") | index($k)))
+         | input_filename' {} + |
+    head -n1 |
+    grep .
+}
+
+conv__ensure_target() {
+  local recorded
+  recorded=$(state__url pr)
+  if [[ -z $recorded ]]
+  then
+    info "No PR recorded; adopting '%s' from the comment URL" "$conv__target_pr_url"
+    state__set_url pr "$conv__target_pr_url"
+  elif [[ $recorded != "$conv__target_pr_url" ]]
+  then
+    die "Comment is on '%s', but this worktree's PR is '%s'" "$conv__target_pr_url" "$recorded"
+  fi
+
+  local found
+  if ! found=$(conv__find_target)
+  then
+    info 'Comment not mirrored yet; pulling the conversation'
+    gh_pr_pull
+    found=$(conv__find_target) ||
+      die "Couldn't find the comment %s on '%s'" "$conv__target_db" "$conv__target_pr_url"
+  fi
+  printf '%s\n' "$found"
+}
+
+conv__add_reactions() {
+  local json_file=$1
+  shift
+  local json
+  json=$(jq '.reactions = (((.reactions // []) + $ARGS.positional) | unique)' "$json_file" --args "$@") ||
+    die "Couldn't read '%s'" "$json_file"
+  conv__write "$json_file" "$json"
+}
+
+conv__parse_reactions() {
+  local -n reactions_out=$1
+  shift
+  local rest
+  conv__rest_args=()
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --reaction)
+        (( 2 <= $# )) ||
+          die 'Option --reaction requires a value'
+        rest=$(conv__reaction_rest "$2") ||
+          die "Unknown reaction '%s' (use a REST name like +1 or heart, an emoji, or a GraphQL enum like THUMBS_UP)" "$2"
+        reactions_out+=("$rest")
+        shift 2
+        ;;
+      --reaction=*)
+        rest=$(conv__reaction_rest "${1#--reaction=}") ||
+          die "Unknown reaction '%s' (use a REST name like +1 or heart, an emoji, or a GraphQL enum like THUMBS_UP)" "${1#--reaction=}"
+        reactions_out+=("$rest")
+        shift
+        ;;
+      *)
+        conv__rest_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+conv__source_key() {
+  local file=$1 abs
+  abs=$(cd "$(dirname -- "$file")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename -- "$file")") ||
+    abs=$file
+  printf '%s\n' "${abs#"$toplevel"/}"
+}
+
+conv__push_target_reactions() {
+  local target_json=$1
+  shift
+  (( $# )) ||
+    return 0
+  local target_dir=${target_json%/*} parent_thread=
+  conv__add_reactions "$target_json" "$@"
+  if [[ ${target_json##*/} == comment.json && -e ${target_dir%/*}/thread.json ]]
+  then
+    parent_thread=${target_dir%/*}
+  fi
+  conv__push_item "$target_dir" "$parent_thread"
+}
+
 gh_comment_reply() {
-  local comment_url=${1-}
-  local comment_file=${2-}
+  local -a reactions=()
+  local -a conv__rest_args=()
+  conv__parse_reactions reactions "$@"
+  set -- "${conv__rest_args[@]}"
+
+  local comment_url=${1-} comment_file=${2-}
 
   [[ -n $comment_url ]] ||
     die 'comment reply requires a <comment-url> argument'
@@ -2194,39 +2354,144 @@ gh_comment_reply() {
   [[ -n $comment_file ]] ||
     die 'comment reply requires a <file> argument'
 
-  [[ -r $comment_file ]] ||
-    die "'%s' is not readable" "$comment_file"
+  (( $# <= 2 )) ||
+    die "comment reply: unexpected argument '%s'" "$3"
 
-  if [[ -r "${comment_file}.url" ]]
+  conv__parse_comment_url "$comment_url"
+  [[ $conv__target_kinds == thread,review_comment ]] ||
+    die "'%s' isn't a review comment; only #discussion_r<ID> comments take replies (use 'comment react' to react)" "$comment_url"
+
+  if [[ -r ${comment_file}.url ]]
   then
-    info "'%s.url' already exists" "$comment_file"
-    cat "${comment_file}.url"
+    info "'%s.url' already exists; already replied" "$comment_file"
+    if (( ${#reactions[@]} ))
+    then
+      local legacy_target
+      legacy_target=$(conv__ensure_target) ||
+        exit 1
+      conv__load_pr "$conv__target_pr_url"
+      conv__me
+      conv__push_target_reactions "$legacy_target" "${reactions[@]}" ||
+        die 'comment reply did not fully converge; rerun the same command'
+    fi
+    cat -- "${comment_file}.url"
     return
   fi
 
-  # Parse: https://github.com/OWNER/REPO/pull/N#discussion_rID
-  local owner_repo pr_number comment_id
-  if [[ $comment_url =~ github\.com/([^/]+/[^/]+)/pull/([0-9]+)#discussion_r([0-9]+) ]]
+  local target_json thread_dir
+  target_json=$(conv__ensure_target) ||
+    exit 1
+  if [[ ${target_json##*/} == thread.json ]]
   then
-    owner_repo=${BASH_REMATCH[1]}
-    pr_number=${BASH_REMATCH[2]}
-    comment_id=${BASH_REMATCH[3]}
+    thread_dir=${target_json%/*}
   else
-    die "'%s' doesn't look like a review comment URL (expected #discussion_r<ID>)" "$comment_url"
+    thread_dir=${target_json%/*}
+    thread_dir=${thread_dir%/*}
   fi
 
-  local reply_url
-  reply_url=$(
-    gh api \
-       --method POST \
-       "repos/${owner_repo}/pulls/${pr_number}/comments" \
-       -F "in_reply_to=${comment_id}" \
-       -f "body=$(< "$comment_file")" \
-       --jq '.html_url'
-  ) ||
-    die 'Unable to post reply'
+  local source dir
+  source=$(conv__source_key "$comment_file")
+  dir=$(
+    find "$thread_dir" -mindepth 2 -maxdepth 2 -name comment.json -type f -exec \
+         jq -r --arg source "$source" 'select(.source == $source) | input_filename' {} + |
+      head -n1
+  )
+  dir=${dir%/comment.json}
 
-  tee <<<"$reply_url" "${comment_file}.url"
+  if [[ -n $dir ]]
+  then
+    info "Already drafted from '%s' in '%s'" "$comment_file" "${dir#"$toplevel"/}"
+  else
+    [[ -r $comment_file ]] ||
+      die "'%s' is not readable" "$comment_file"
+    local name
+    name=$(conv__slug "$(basename -- "${comment_file%.md}")")
+    dir=$(conv__unique_dir "${thread_dir}/$(date -u +%FT%H-%M-%S%z)-${name:-reply}")
+    mkdir -p -- "$dir" ||
+      die "Couldn't create '%s'" "$dir"
+    state__write_file "${dir}/comment.md" < "$comment_file" ||
+      die "Couldn't write '%s'" "${dir}/comment.md"
+    conv__write "${dir}/comment.json" "$(jq -n --arg source "$source" '{source: $source}')"
+  fi
+
+  conv__load_pr "$conv__target_pr_url"
+  conv__me
+
+  local failed=false
+  conv__push_item "$dir" "$thread_dir" ||
+    failed=true
+  conv__push_target_reactions "$target_json" "${reactions[@]}" ||
+    failed=true
+
+  local reply_url
+  reply_url=$(jq -r '.url // empty' "${dir}/comment.json")
+  [[ -n $reply_url ]] &&
+    printf '%s\n' "$reply_url"
+
+  [[ $failed == false ]] ||
+    die 'comment reply did not fully converge; rerun the same command'
+}
+
+gh_comment_react() {
+  local -a reactions=()
+  local -a conv__rest_args=()
+  conv__parse_reactions reactions "$@"
+  set -- "${conv__rest_args[@]}"
+
+  local comment_url=${1-}
+  [[ -n $comment_url ]] ||
+    die 'comment react requires a <comment-url> argument'
+  (( $# <= 1 )) ||
+    die "comment react: unexpected argument '%s'" "$2"
+  (( ${#reactions[@]} )) ||
+    die 'comment react requires at least one --reaction'
+
+  conv__parse_comment_url "$comment_url"
+  local target_json
+  target_json=$(conv__ensure_target) ||
+    exit 1
+
+  conv__load_pr "$conv__target_pr_url"
+  conv__me
+  conv__push_target_reactions "$target_json" "${reactions[@]}" ||
+    die 'comment react did not fully converge; rerun the same command'
+  info "Reactions converged on '%s'" "${target_json%/*}"
+}
+
+conv__migrate_root_pairs() {
+  local md url db kind target_json target_dir file body
+  for md in "${toplevel}"/x.*.md
+  do
+    [[ -f $md && -r ${md}.url ]] ||
+      continue
+    url=$(< "${md}.url")
+    url=${url//[[:space:]]/}
+    [[ $url =~ ^(https://github\.com/[^/]+/[^/]+/pull/[0-9]+)[^#]*#(discussion_r|issuecomment-)([0-9]+)$ ]] ||
+      continue
+    [[ ${BASH_REMATCH[1]} == "$(state__url pr)" ]] ||
+      continue
+    db=${BASH_REMATCH[3]}
+    kind=thread,review_comment
+    [[ ${BASH_REMATCH[2]} == issuecomment- ]] &&
+      kind=issue_comment
+    conv__target_db=$db
+    conv__target_kinds=$kind
+    target_json=$(conv__find_target) ||
+      continue
+    target_dir=${target_json%/*}
+    file=${target_json##*/}
+    file=${file%.json}
+    body=$(desc__normalize "$(< "$md")")
+    if [[ $body != "$(desc__normalize "$(< "${target_dir}/${file}.md")")" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "${target_dir}/${file}.md" ||
+        die "Couldn't write '%s'" "${target_dir}/${file}.md"
+    fi
+    conv__write "$target_json" "$(jq --arg source "${md#"$toplevel"/}" '.source = $source' "$target_json")"
+    rm -f -- "$md" "${md}.url" ||
+      die "Couldn't remove '%s'" "$md"
+    info "Moved '%s' into '%s'" "${md#"$toplevel"/}" "${target_dir#"$toplevel"/}"
+  done
 }
 
 gh_comment_delete() {
@@ -2352,6 +2617,11 @@ gh_comment() {
     reply)
       shift
       gh_comment_reply "$@"
+      return
+      ;;
+    react)
+      shift
+      gh_comment_react "$@"
       return
       ;;
     delete)

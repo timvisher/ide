@@ -166,10 +166,13 @@ timvisher_gh comment edit comment.md   # reads URL from comment.md.url
 To reply to an inline review comment (discussion thread), write the reply body to a file and pass the comment URL:
 
 ```bash
-timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' reply.md
+timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' reply.md --reaction +1
+timvisher_gh comment react 'https://github.com/o/r/pull/1#issuecomment-789' --reaction heart
 ```
 
-The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the specific review comment you are replying to. The reply URL is stored in `reply.md.url`. Running the same command again when `.url` exists opens it in the browser instead of posting a duplicate.
+The `<comment-url>` must contain `#discussion_r<ID>` (the thread's first comment or any reply). The reply is copied into the thread's directory under `.timvisher_gh/pr/comments/` and posted immediately; the reply URL is printed. `--reaction` (repeatable) reacts to the comment being replied to, not to your reply. Rerunning the same command posts nothing twice. `comment react` adds reactions to any comment or review. Reactions accept REST names (`+1`, `heart`), emoji, or GraphQL enums (`THUMBS_UP`).
+
+Replies and reactions are also sent by `pr push` from the tree (see "answering PR feedback"), which is the better fit for a batch of replies.
 
 ## Hooks and canned comments
 

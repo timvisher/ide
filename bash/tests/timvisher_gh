@@ -2031,6 +2031,156 @@ fi
 rm -rf "$tmpdir/repo/.timvisher_gh"
 unset MOCK_GH_HANDLER
 
+# --- comment reply / react tests ---
+
+reply_setup() {
+  pull_fixture
+  write_conv
+  v2_reset reply_setup
+  write_push_conv_handler
+  run_v2 pr pull >/dev/null 2>&1
+}
+
+# Test: comment reply drafts into the thread, posts it, and reacts on the parent
+run_test
+reply_setup
+printf 'Done, thanks\n' > "$tmpdir/repo/x.reply.md"
+v2_reset reply_post
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md --reaction 👍 2>"$tmpdir/reply.err") && rc=0 || rc=$?
+new_reply=$(cd "$thread_dir" && find . -mindepth 2 -name comment.json -exec jq -r 'select(.source == "x.reply.md") | input_filename' {} +)
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50#discussion_r102 ]] &&
+   [[ -n $new_reply && $new_reply == ./*-x-reply/comment.json ]] &&
+   [[ $(< "$thread_dir/${new_reply%.json}.md") == 'Done, thanks' ]] &&
+   grep -q 'POST repos/testuser/testrepo/pulls/50/comments -F in_reply_to=31 -f body=Done, thanks' "$MOCK_LOG" &&
+   grep -q -- '-f id=PRRC_1 -f content=THUMBS_UP$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$thread_dir/thread.json") == '["+1"]' ]]
+then
+  pass "comment reply: drafts into the thread dir, posts, reacts on the replied-to comment"
+else
+  fail "comment reply: rc=${rc} new=${new_reply} err=$(tail -5 "$tmpdir/reply.err") log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result}'"
+fi
+
+# Test: rerunning the same reply posts nothing
+run_test
+v2_reset reply_rerun
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md --reaction +1 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Already drafted from 'x.reply.md'"* ]] &&
+   [[ $result == *"#discussion_r102" ]] &&
+   ! grep -q -- '--method POST\|addReaction' "$MOCK_LOG"
+then
+  pass "comment reply: rerun is a no-op"
+else
+  fail "comment reply rerun: rc=${rc} log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -300}'"
+fi
+
+# Test: replying to a reply lands in the same thread, against the thread root
+run_test
+printf 'Another\n' > "$tmpdir/repo/x.reply2.md"
+v2_reset reply_to_reply
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r32' x.reply2.md 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'in_reply_to=31 -f body=Another' "$MOCK_LOG" &&
+   [[ -n $(cd "$thread_dir" && find . -mindepth 2 -name comment.json -exec jq -r 'select(.source == "x.reply2.md") | input_filename' {} +) ]]
+then
+  pass "comment reply: a reply URL resolves to its thread"
+else
+  fail "comment reply to reply: rc=${rc} got '${result: -300}'"
+fi
+
+# Test: comment react adds reactions in any spelling, skipping ones already there
+run_test
+v2_reset react
+write_push_conv_handler
+result=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' --reaction heart --reaction=THUMBS_DOWN --reaction 👍 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $(grep -c addReaction "$MOCK_LOG") == 2 ]] &&
+   grep -q -- '-f id=IC_1 -f content=HEART$' "$MOCK_LOG" &&
+   grep -q -- '-f id=IC_1 -f content=THUMBS_DOWN$' "$MOCK_LOG" &&
+   [[ $(jq -c .reactions "$alice_dir/comment.json") == '["+1","-1","heart"]' ]]
+then
+  pass "comment react: normalizes reactions and adds only the missing ones"
+else
+  fail "comment react: rc=${rc} log=$(grep -v 'query=query' "$MOCK_LOG" | cut -c1-160) got '${result: -300}'"
+fi
+
+# Test: comment react needs a reaction, and unknown reactions fail before any call
+run_test
+v2_reset react_errors
+write_push_conv_handler
+result1=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' 2>&1) && rc1=0 || rc1=$?
+result2=$(run_v2 comment react 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' --reaction sparkles 2>&1) && rc2=0 || rc2=$?
+if (( rc1 != 0 && rc2 != 0 )) &&
+   [[ $result1 == *"at least one --reaction"* ]] &&
+   [[ $result2 == *"Unknown reaction 'sparkles'"* ]] &&
+   ! grep -q 'mock-gh api' "$MOCK_LOG"
+then
+  pass "comment react: missing or unknown reactions are errors"
+else
+  fail "comment react errors: rc=${rc1}/${rc2} got '${result1: -200}' '${result2: -200}'"
+fi
+
+# Test: comment reply rejects non-review-comment URLs and other PRs
+run_test
+v2_reset reply_errors
+write_push_conv_handler
+result1=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#issuecomment-11' x.reply.md 2>&1) && rc1=0 || rc1=$?
+result2=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/99#discussion_r31' x.reply.md 2>&1) && rc2=0 || rc2=$?
+if (( rc1 != 0 && rc2 != 0 )) &&
+   [[ $result1 == *"only #discussion_r<ID> comments take replies"* ]] &&
+   [[ $result2 == *"this worktree's PR is"* ]] &&
+   ! grep -q -- '--method POST' "$MOCK_LOG"
+then
+  pass "comment reply: rejects issue comments and other PRs"
+else
+  fail "comment reply errors: rc=${rc1}/${rc2} got '${result1: -200}' '${result2: -200}'"
+fi
+
+# Test: replying before the conversation is mirrored pulls it first
+run_test
+rm -rf "$pull_comments"
+v2_reset reply_pulls_first
+write_push_conv_handler
+result=$(run_v2 comment reply 'https://github.com/testuser/testrepo/pull/50#discussion_r31' x.reply.md 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"pulling the conversation"* ]] &&
+   [[ -f $thread_dir/thread.json ]] &&
+   grep -q 'in_reply_to=31 -f body=Done, thanks' "$MOCK_LOG"
+then
+  pass "comment reply: pulls the conversation when the target is not mirrored"
+else
+  fail "comment reply pull first: rc=${rc} got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.reply.md" "$tmpdir/repo/x.reply2.md"
+
+# Test: pr pull moves root x.*.md + .url pairs into the tree
+run_test
+reply_setup
+printf 'Fixed, revised locally\n' > "$tmpdir/repo/x.arp-reply-1.md"
+echo 'https://github.com/testuser/testrepo/pull/50#discussion_r32' > "$tmpdir/repo/x.arp-reply-1.md.url"
+printf 'unrelated\n' > "$tmpdir/repo/x.notes.md"
+v2_reset migrate_pairs
+write_push_conv_handler
+result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ ! -e $tmpdir/repo/x.arp-reply-1.md && ! -e $tmpdir/repo/x.arp-reply-1.md.url ]] &&
+   [[ -e $tmpdir/repo/x.notes.md ]] &&
+   [[ $(< "$reply_dir/comment.md") == 'Fixed, revised locally' ]] &&
+   [[ $(jq -r .source "$reply_dir/comment.json") == x.arp-reply-1.md ]] &&
+   [[ $(jq -r .posted.body "$reply_dir/comment.json") == Fixed ]]
+then
+  pass "pr pull: migrates root x.*.md reply pairs into the mirrored tree"
+else
+  fail "pr pull migrate pairs: rc=${rc} got '${result: -400}'"
+fi
+rm -f "$tmpdir/repo/x.notes.md"
+rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing
