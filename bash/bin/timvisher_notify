@@ -123,6 +123,92 @@ timvisher_notify__osascript() {
   osascript -e "display notification \"${message//\"/\\\"}\" with title \"${title//\"/\\\"}\"" 2>/dev/null || true
 }
 
+timvisher_notify__terminal_bundle_id() {
+  case $1 in
+    ghostty) printf 'com.mitchellh.ghostty' ;;
+    iTerm.app) printf 'com.googlecode.iterm2' ;;
+    WezTerm) printf 'com.github.wez.wezterm' ;;
+    kitty) printf 'net.kovidgoyal.kitty' ;;
+    *) return 1 ;;
+  esac
+}
+
+# A pane write succeeds even when the terminal won't show the banner, so
+# it must only be tried when the banner will show: the terminal app isn't
+# frontmost (it hides its own banners while focused) and a client can
+# see the pane (tmux drops passthrough for panes nobody sees). Any
+# question left unanswered means osascript, which always shows.
+timvisher_notify__pane_banner_will_show() {
+  local term=$1
+
+  local term_bundle
+  if ! term_bundle=$(timvisher_notify__terminal_bundle_id "$term")
+  then
+    timvisher_notify__debug "no bundle id known for terminal '${term}'"
+    return 1
+  fi
+
+  local front_info front_bundle
+  if ! front_info=$(lsappinfo info -only bundleID "$(lsappinfo front 2>/dev/null)" 2>/dev/null)
+  then
+    timvisher_notify__debug "cannot tell the frontmost app"
+    return 1
+  fi
+  if [[ $front_info =~ (bundleID|\"CFBundleIdentifier\")=\"([^\"]*)\" ]]
+  then
+    front_bundle=${BASH_REMATCH[2]}
+  fi
+  if [[ -z ${front_bundle:-} || $front_bundle == "$term_bundle" ]]
+  then
+    timvisher_notify__debug "frontmost app '${front_bundle:-unknown}' may hide the banner"
+    return 1
+  fi
+
+  local attached window_active zoomed pane_active
+  if ! read -r attached window_active zoomed pane_active < <(
+    tmux display -p -t "$TMUX_PANE" '#{session_attached} #{window_active} #{window_zoomed_flag} #{pane_active}' 2>/dev/null
+  )
+  then
+    timvisher_notify__debug "cannot read tmux visibility for TMUX_PANE='${TMUX_PANE}'"
+    return 1
+  fi
+  if (( attached < 1 )) || [[ $window_active != 1 ]] || [[ $zoomed == 1 && $pane_active != 1 ]]
+  then
+    timvisher_notify__debug "pane not visible: attached=${attached} window_active=${window_active} zoomed=${zoomed} pane_active=${pane_active}"
+    return 1
+  fi
+}
+
+timvisher_notify__write_tmux_pane_tty() {
+  local wrapped=$1 term=$2
+
+  if [[ -z ${TMUX:-} || -z ${TMUX_PANE:-} ]]
+  then
+    timvisher_notify__debug "no tmux pane tty: TMUX='${TMUX:-}' TMUX_PANE='${TMUX_PANE:-}'"
+    return 1
+  fi
+
+  if ! timvisher_notify__pane_banner_will_show "$term"
+  then
+    return 1
+  fi
+
+  local pane_tty
+  if ! pane_tty=$(tmux display -p -t "$TMUX_PANE" '#{pane_tty}' 2>/dev/null) || [[ -z $pane_tty ]]
+  then
+    timvisher_notify__debug "cannot resolve tmux pane tty for TMUX_PANE='${TMUX_PANE}'"
+    return 1
+  fi
+
+  if [[ ! -c $pane_tty ]] || ! { printf '%s' "$wrapped" > "$pane_tty"; } 2>/dev/null
+  then
+    timvisher_notify__debug "cannot write to tmux pane tty '${pane_tty}'"
+    return 1
+  fi
+
+  timvisher_notify__debug "wrote to tmux pane tty '${pane_tty}' for TMUX_PANE='${TMUX_PANE}'"
+}
+
 timvisher_notify__platform_notify() {
   local title=$1 message=$2
 
@@ -157,11 +243,17 @@ timvisher_notify__platform_notify() {
 
   # Write directly to /dev/tty so escape sequences bypass any pipe
   # and reach the terminal emulator.
-  if [[ -c /dev/tty ]] && { true > /dev/tty; } 2>/dev/null
+  local tty=${TIMVISHER_NOTIFY_TTY:-/dev/tty}
+  if [[ -c $tty ]] && { true > "$tty"; } 2>/dev/null
   then
-    printf '%s' "$wrapped" > /dev/tty
-  else
-    timvisher_notify__debug "fallback to osascript: cannot write to /dev/tty"
+    printf '%s' "$wrapped" > "$tty"
+    return
+  fi
+
+  timvisher_notify__debug "cannot write to ${tty}, trying tmux pane tty"
+  if ! timvisher_notify__write_tmux_pane_tty "$wrapped" "$term"
+  then
+    timvisher_notify__debug "fallback to osascript: cannot write to /dev/tty or tmux pane tty"
     timvisher_notify__osascript "$title" "$message"
   fi
 }
