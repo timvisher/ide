@@ -182,6 +182,19 @@ is_dev_integration_worktree() {
     return 1
 }
 
+require_dev_integration_worktree() {
+    local path=$1
+
+    is_dev_integration_worktree "$path" && return 0
+
+    aictl_die \
+        --code "dev_ci_not_integration_worktree" \
+        --message "'${path}' is not a dev integration worktree" \
+        --reason "The pipeline resets every target to @{u} and merges its x.active-worktrees. On a feature branch or trunk that reset discards every local commit. '${path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
+        --suggestion "timvisher_dev_ci run-tests runs this worktree's tests without touching git state" \
+        --suggestion "Or, if '${path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${path}/x.dev-integration-branch'"
+}
+
 # ---------------------------------------------------------------------------
 # Hook helpers: map worktree paths to hook scripts
 # ---------------------------------------------------------------------------
@@ -988,6 +1001,12 @@ cmd__integrate() {
         }
 
     rm -f "$status_file"
+
+    if ! is_dev_integration_worktree "$dev_path"
+    then
+        echo 'fail' > "$status_file"
+        require_dev_integration_worktree "$dev_path"
+    fi
 
     # --- scripted baseline ---
 
@@ -2426,6 +2445,12 @@ EOF
 }
 
 cmd_run() {
+    local path
+    for path in "$@"
+    do
+        require_dev_integration_worktree "$path"
+    done
+
     pull_xenodium_mains
 
     info "Phase 0: upgrading agent tooling"
