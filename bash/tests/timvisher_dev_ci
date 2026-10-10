@@ -1189,6 +1189,33 @@ else
 fi
 : > "$guard_registry"
 
+run_test
+out=$(TIMVISHER_DEV_CI_REGISTRY="$guard_registry" \
+  "$script" integrate -C "$guard_wt" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_not_integration_worktree"'* ]] &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_head" ]]
+then
+  pass "integrate refuses a non-integration worktree and leaves HEAD alone"
+else
+  fail "integrate guard: rc=$rc head=$("$test_git" -C "$guard_wt" rev-parse HEAD) out='$out'"
+fi
+
+run_test
+touch "$guard_wt/x.dev-integration-branch"
+guard_upstream_head=$("$test_git" -C "$guard_wt" rev-parse '@{u}')
+if (PATH="$(dirname "$test_git"):$PATH" DEV_CI_REGISTRY=$guard_registry \
+      reset_dev_worktree_to_upstream "$guard_wt") >/dev/null 2>&1 &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_upstream_head" ]]
+then
+  pass "reset_dev_worktree_to_upstream: resets a marked worktree to @{u}"
+else
+  fail "reset_dev_worktree_to_upstream did not reset a marked worktree: head=$("$test_git" -C "$guard_wt" rev-parse HEAD) want=$guard_upstream_head"
+fi
+rm -f "$guard_wt/x.dev-integration-branch"
+"$test_git" -C "$guard_wt" reset -q --hard "$guard_head"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

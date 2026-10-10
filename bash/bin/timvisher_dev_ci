@@ -191,9 +191,35 @@ require_dev_integration_worktree() {
     aictl_die \
         --code "dev_ci_not_integration_worktree" \
         --message "'${path}' is not a dev integration worktree" \
-        --reason "The pipeline resets every target to @{u} and merges its x.active-worktrees. On a feature branch or trunk that reset discards every local commit. '${path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
-        --suggestion "timvisher_dev_ci run-tests runs this worktree's tests without touching git state" \
+        --reason "Both the pipeline and integrate reset the worktree to @{u} and merge its x.active-worktrees. On a feature branch or trunk that reset discards every local commit. '${path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
+        --suggestion "timvisher_dev_ci run-tests -C '${path}' runs this worktree's tests without touching git state" \
+        --suggestion "timvisher_dev_ci integrate --build-only -C '${path}' runs the build hooks without touching git state" \
         --suggestion "Or, if '${path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${path}/x.dev-integration-branch'"
+}
+
+reset_dev_worktree_to_upstream() {
+    local dev_path=$1
+    local status_file=${2-}
+
+    if ! is_dev_integration_worktree "$dev_path"
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        require_dev_integration_worktree "$dev_path"
+    fi
+
+    info "integrate: fetching in '%s'" "$dev_path"
+    if ! git -C "$dev_path" fetch --all
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        die "integrate: git fetch failed in '%s'" "$dev_path"
+    fi
+
+    info "integrate: resetting '%s' to @{u}" "$dev_path"
+    if ! git -C "$dev_path" reset --hard '@{u}'
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        die "integrate: git reset --hard @{u} failed in '%s'" "$dev_path"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1003,27 +1029,9 @@ cmd__integrate() {
 
     rm -f "$status_file"
 
-    if ! is_dev_integration_worktree "$dev_path"
-    then
-        echo 'fail' > "$status_file"
-        require_dev_integration_worktree "$dev_path"
-    fi
-
     # --- scripted baseline ---
 
-    info "integrate: fetching"
-    if ! git fetch --all
-    then
-        echo 'fail' > "$status_file"
-        die "git fetch failed in '%s'" "$dev_path"
-    fi
-
-    info "integrate: resetting to @{u}"
-    if ! git reset --hard '@{u}'
-    then
-        echo 'fail' > "$status_file"
-        die "git reset failed in '%s'" "$dev_path"
-    fi
+    reset_dev_worktree_to_upstream "$dev_path" "$status_file"
 
     # Ensure run-tests.sh exists before baseline test.
     if ! ensure_repo_script "$dev_path" "run-tests.sh"
@@ -2226,17 +2234,6 @@ cmd_integrate_local() {
     local dev_path
     dev_path=$(resolve_worktree_path "$worktree_arg") || exit $?
 
-    if ! "$build_only" && ! is_dev_integration_worktree "$dev_path"
-    then
-        aictl_die \
-            --code "dev_ci_integrate_not_integration_worktree" \
-            --message "integrate: '${dev_path}' is not a dev integration worktree" \
-            --reason "A full integrate resets the worktree to @{u} and merges its x.active-worktrees. On a feature branch tracking origin/main that reset discards every commit on the branch. '${dev_path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
-            --suggestion "timvisher_dev_ci integrate --build-only -C '${dev_path}' runs the build hooks without touching git state" \
-            --suggestion "Point -C at a dev integration worktree for a full integrate" \
-            --suggestion "Or, if '${dev_path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${dev_path}/x.dev-integration-branch'"
-    fi
-
     cd "$dev_path" ||
         die "integrate: cannot cd to '%s'" "$dev_path"
 
@@ -2248,13 +2245,7 @@ cmd_integrate_local() {
     else
         local active_file="${dev_path}/x.active-worktrees"
 
-        info "integrate: fetching in '%s'" "$dev_path"
-        git fetch --all ||
-            die "integrate: git fetch failed in '%s'" "$dev_path"
-
-        info "integrate: resetting to @{u}"
-        git reset --hard '@{u}' ||
-            die "integrate: git reset --hard @{u} failed in '%s'" "$dev_path"
+        reset_dev_worktree_to_upstream "$dev_path"
 
         # Generated files (default: BUILD.bazel) are DERIVED, not source: each
         # feature commits its own gazelle output in isolation, so they collide
