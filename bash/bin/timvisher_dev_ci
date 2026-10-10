@@ -197,6 +197,12 @@ require_dev_integration_worktree() {
         --suggestion "Or, if '${path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${path}/x.dev-integration-branch'"
 }
 
+# The ONLY place timvisher_dev_ci may run git reset.  A reset to @{u}
+# discards every local commit, so it must never run on anything but a
+# dev integration worktree.  Do not add another reset anywhere else;
+# call this instead.  bash/tests/timvisher_dev_ci enforces this.
+#
+# Dies on any failure, writing 'fail' to STATUS_FILE first when given.
 reset_dev_worktree_to_upstream() {
     local dev_path=$1
     local status_file=${2-}

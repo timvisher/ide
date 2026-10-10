@@ -1216,6 +1216,22 @@ fi
 rm -f "$guard_wt/x.dev-integration-branch"
 "$test_git" -C "$guard_wt" reset -q --hard "$guard_head"
 
+run_test
+reset_sites=$(awk '
+  /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn) }
+  /^}/ { fn = "" }
+  /^[[:space:]]*#/ { next }
+  /(^|[;&|!(]|then|do)[[:space:]]*(command[[:space:]]+)?git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+reset([[:space:]]|$)/ {
+    printf "%d:%s\n", NR, (fn == "" ? "<top-level>" : fn)
+  }
+' "$script")
+if [[ $reset_sites == +([0-9]):reset_dev_worktree_to_upstream ]]
+then
+  pass "git reset runs only in reset_dev_worktree_to_upstream"
+else
+  fail "git reset must run only in reset_dev_worktree_to_upstream; found: $(tr '\n' ' ' <<<"$reset_sites")"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
