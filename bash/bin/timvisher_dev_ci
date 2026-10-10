@@ -16,7 +16,8 @@
 #   clean [path ...]  remove status files
 #
 # When paths are given, only those dev branches are processed instead
-# of discovering via marker files.
+# of the registry; each must be registered or marked with
+# x.dev-integration-branch, or the run is refused.
 #   __sync        (internal) agent: pull --rebase, resolve conflicts, test
 #   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
@@ -180,6 +181,51 @@ is_dev_integration_worktree() {
     done < <(read_active_worktrees "$DEV_CI_REGISTRY")
 
     return 1
+}
+
+require_dev_integration_worktree() {
+    local path=$1
+
+    is_dev_integration_worktree "$path" && return 0
+
+    aictl_die \
+        --code "dev_ci_not_integration_worktree" \
+        --message "'${path}' is not a dev integration worktree" \
+        --reason "Both the pipeline and integrate reset the worktree to @{u} and merge its x.active-worktrees. On a feature branch or trunk that reset discards every local commit. '${path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
+        --suggestion "timvisher_dev_ci run-tests -C '${path}' runs this worktree's tests without touching git state" \
+        --suggestion "timvisher_dev_ci integrate --build-only -C '${path}' runs the build hooks without touching git state" \
+        --suggestion "Or, if '${path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${path}/x.dev-integration-branch'"
+}
+
+# The ONLY place timvisher_dev_ci may run git reset.  A reset to @{u}
+# discards every local commit, so it must never run on anything but a
+# dev integration worktree.  Do not add another reset anywhere else;
+# call this instead.  bash/tests/timvisher_dev_ci enforces this.
+#
+# Dies on any failure, writing 'fail' to STATUS_FILE first when given.
+reset_dev_worktree_to_upstream() {
+    local dev_path=$1
+    local status_file=${2-}
+
+    if ! is_dev_integration_worktree "$dev_path"
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        require_dev_integration_worktree "$dev_path"
+    fi
+
+    info "integrate: fetching in '%s'" "$dev_path"
+    if ! git -C "$dev_path" fetch --all
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        die "integrate: git fetch failed in '%s'" "$dev_path"
+    fi
+
+    info "integrate: resetting '%s' to @{u}" "$dev_path"
+    if ! git -C "$dev_path" reset --hard '@{u}'
+    then
+        [[ -n $status_file ]] && echo 'fail' > "$status_file"
+        die "integrate: git reset --hard @{u} failed in '%s'" "$dev_path"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -991,19 +1037,7 @@ cmd__integrate() {
 
     # --- scripted baseline ---
 
-    info "integrate: fetching"
-    if ! git fetch --all
-    then
-        echo 'fail' > "$status_file"
-        die "git fetch failed in '%s'" "$dev_path"
-    fi
-
-    info "integrate: resetting to @{u}"
-    if ! git reset --hard '@{u}'
-    then
-        echo 'fail' > "$status_file"
-        die "git reset failed in '%s'" "$dev_path"
-    fi
+    reset_dev_worktree_to_upstream "$dev_path" "$status_file"
 
     # Ensure run-tests.sh exists before baseline test.
     if ! ensure_repo_script "$dev_path" "run-tests.sh"
@@ -1146,7 +1180,9 @@ Run:
 This merges all branches at once. If the octopus merge fails (conflicts),
 fall back to merging the branches one at a time, resolving conflicts as
 you go. When falling back:
-1. Reset to @{u} with 'git reset --hard @{u}'.
+1. Abandon the octopus attempt with 'git merge --abort'. If git says
+   there is no merge to abort, the worktree is already back at @{u}.
+   Never run 'git reset' in this worktree.
 2. Merge each branch individually with 'git merge <branch>'.
 3. If a merge has conflicts, resolve them preserving the intent of both
    sides. Stage resolved files with 'git add' and complete with
@@ -2206,17 +2242,6 @@ cmd_integrate_local() {
     local dev_path
     dev_path=$(resolve_worktree_path "$worktree_arg") || exit $?
 
-    if ! "$build_only" && ! is_dev_integration_worktree "$dev_path"
-    then
-        aictl_die \
-            --code "dev_ci_integrate_not_integration_worktree" \
-            --message "integrate: '${dev_path}' is not a dev integration worktree" \
-            --reason "A full integrate resets the worktree to @{u} and merges its x.active-worktrees. On a feature branch tracking origin/main that reset discards every commit on the branch. '${dev_path}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
-            --suggestion "timvisher_dev_ci integrate --build-only -C '${dev_path}' runs the build hooks without touching git state" \
-            --suggestion "Point -C at a dev integration worktree for a full integrate" \
-            --suggestion "Or, if '${dev_path}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${dev_path}/x.dev-integration-branch'"
-    fi
-
     cd "$dev_path" ||
         die "integrate: cannot cd to '%s'" "$dev_path"
 
@@ -2228,13 +2253,7 @@ cmd_integrate_local() {
     else
         local active_file="${dev_path}/x.active-worktrees"
 
-        info "integrate: fetching in '%s'" "$dev_path"
-        git fetch --all ||
-            die "integrate: git fetch failed in '%s'" "$dev_path"
-
-        info "integrate: resetting to @{u}"
-        git reset --hard '@{u}' ||
-            die "integrate: git reset --hard @{u} failed in '%s'" "$dev_path"
+        reset_dev_worktree_to_upstream "$dev_path"
 
         # Generated files (default: BUILD.bazel) are DERIVED, not source: each
         # feature commits its own gazelle output in isolation, so they collide
@@ -2323,8 +2342,8 @@ NAME
 SYNOPSIS
     # Full pipeline (sync + integrate + push), orchestrated via tmux + agents:
     timvisher_dev_ci                          # all dev branches in registry
-                                              #   (or current worktree, when run from inside one)
-    timvisher_dev_ci [run] PATH ...           # specific dev branches
+                                              #   (or current worktree, when it is a dev integration branch)
+    timvisher_dev_ci [run] PATH ...           # specific dev integration branches
 
     # Direct hook invocation in the controlling TTY (no tmux, no nested agent):
     timvisher_dev_ci hooks ls [PATH]                     # list resolved hooks
@@ -2349,7 +2368,15 @@ PATHS
       - Outside any worktree: runs every dev branch in the registry.
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
-        so subdirs of a worktree work too).
+        so subdirs of a worktree work too), and refuses unless that root
+        is a dev integration worktree.
+
+    Every explicit PATH given to the pipeline (bare, `run`, or the path
+    shortcut) must be a dev integration worktree: listed in the registry
+    or marked with x.dev-integration-branch. Anything else is refused
+    with code dev_ci_not_integration_worktree before any side effects,
+    because the pipeline resets each target to @{u}. To test an ordinary
+    worktree, use `timvisher_dev_ci run-tests`.
 
 AGENT USAGE
     To run the project's full local CI suite from inside a worktree:
@@ -2373,9 +2400,10 @@ AGENT USAGE
 
     Difference from bare `timvisher_dev_ci`: bare invocation does
     pull --rebase, agent-driven conflict resolution, octopus merge,
-    test verification, and push -- the full CI pipeline. `hooks` and
-    `run-tests` only run the hook scripts. For "did my changes
-    break tests?", use `run-tests`.
+    test verification, and push -- the full CI pipeline -- and refuses
+    outside dev integration worktrees. `hooks` and `run-tests` only run
+    the hook scripts, in any worktree. For "did my changes break
+    tests?", use `run-tests`.
 
 KNOWN HOOKS
     run-tests.sh             Full local CI suite (lint + test + build).
@@ -2426,6 +2454,12 @@ EOF
 }
 
 cmd_run() {
+    local path
+    for path in "$@"
+    do
+        require_dev_integration_worktree "$path"
+    done
+
     pull_xenodium_mains
 
     info "Phase 0: upgrading agent tooling"
@@ -2534,7 +2568,7 @@ cmd_clean() {
 #   1. --help / -h / help      handled first so help is always cheap
 #   2. Known subcommands by NAME (BEFORE the dir-sniff, so a literal
 #      './hooks' or './run-tests' directory cannot shadow them)
-#   3. Bare invocation         no args → DTRT based on cwd
+#   3. Bare invocation         no args → current dev integration worktree, else registry
 #   4. Path shortcut            first arg is a readable directory → cmd_run
 #   5. Unknown                  aictl_die with --help suggestion
 
@@ -2612,7 +2646,8 @@ case ${1:-} in
 esac
 
 # 3. Bare invocation: scope to current worktree if cwd is under
-# $TIMVISHER_GIT_HOME, else fall back to the registry.
+# $TIMVISHER_GIT_HOME (cmd_run refuses it unless it is a dev
+# integration worktree), else fall back to the registry.
 if [[ $# == 0 ]]
 then
     git_base=$(canonical_git_home)

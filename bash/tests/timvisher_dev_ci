@@ -1090,6 +1090,149 @@ REPO_HOOKS_DIR=$rung_saved_repo_hooks_dir
 REPO_HOOKS_EXT_DIR=$rung_saved_repo_hooks_ext_dir
 
 # ---------------------------------------------------------------------------
+# Pipeline guard
+# ---------------------------------------------------------------------------
+
+guard_registry="$tmpdir/guard_registry"
+: > "$guard_registry"
+
+guard_upstream="$tmpdir/guard_upstream.git"
+"$test_git" init -q --bare -b main "$guard_upstream"
+guard_wt_unresolved="$TIMVISHER_GIT_HOME/guardorg/guardrepo/main"
+"$test_git" clone -q "$guard_upstream" "$guard_wt_unresolved" 2>/dev/null
+guard_wt=$(cd "$guard_wt_unresolved" && pwd -P)
+"$test_git" -C "$guard_wt" config core.hooksPath /dev/null
+"$test_git" -C "$guard_wt" config user.email t@t
+"$test_git" -C "$guard_wt" config user.name t
+"$test_git" -C "$guard_wt" commit -q --allow-empty -m pushed
+"$test_git" -C "$guard_wt" push -q origin main 2>/dev/null
+"$test_git" -C "$guard_wt" commit -q --allow-empty -m local-only
+guard_head=$("$test_git" -C "$guard_wt" rev-parse HEAD)
+
+guard_mockbin="$tmpdir/guard_mockbin"
+guard_side_effects="$tmpdir/guard_side_effects"
+mkdir -p "$guard_mockbin"
+for guard_cmd in parallel brew timvisher_git claudeshot
+do
+  cat > "$guard_mockbin/$guard_cmd" <<MOCK
+#!/usr/bin/env bash
+printf '%s\n' "$guard_cmd \$*" >> "$guard_side_effects"
+exit 1
+MOCK
+  chmod +x "$guard_mockbin/$guard_cmd"
+done
+
+run_test
+rm -f "$guard_side_effects"
+out=$(cd "$guard_wt" &&
+  PATH="$guard_mockbin:$PATH" TIMVISHER_DEV_CI_REGISTRY="$guard_registry" \
+    "$script" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_not_integration_worktree"'* ]] &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_head" ]] &&
+   [[ ! -e $guard_side_effects ]]
+then
+  pass "bare invocation in a non-integration worktree refuses before any side effect"
+else
+  fail "bare guard: rc=$rc head=$("$test_git" -C "$guard_wt" rev-parse HEAD) side_effects='$(cat "$guard_side_effects" 2>/dev/null)' out='$out'"
+fi
+
+run_test
+rm -f "$guard_side_effects"
+out=$(PATH="$guard_mockbin:$PATH" TIMVISHER_DEV_CI_REGISTRY="$guard_registry" \
+  "$script" run "$guard_wt" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_not_integration_worktree"'* ]] &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_head" ]] &&
+   [[ ! -e $guard_side_effects ]]
+then
+  pass "run <path> refuses a non-integration worktree before any side effect"
+else
+  fail "run guard: rc=$rc side_effects='$(cat "$guard_side_effects" 2>/dev/null)' out='$out'"
+fi
+
+run_test
+rm -f "$guard_side_effects" "$guard_wt/$STATUS_FILENAME"
+out=$(PATH="$guard_mockbin:$PATH" TIMVISHER_DEV_CI_REGISTRY="$guard_registry" \
+  "$script" __integrate "$guard_wt" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_not_integration_worktree"'* ]] &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_head" ]] &&
+   [[ $(cat "$guard_wt/$STATUS_FILENAME" 2>/dev/null) == fail ]]
+then
+  pass "__integrate refuses a non-integration worktree and leaves HEAD alone"
+else
+  fail "__integrate guard: rc=$rc head=$("$test_git" -C "$guard_wt" rev-parse HEAD) status='$(cat "$guard_wt/$STATUS_FILENAME" 2>/dev/null)' out='$out'"
+fi
+rm -f "$guard_wt/$STATUS_FILENAME"
+
+run_test
+touch "$guard_wt/x.dev-integration-branch"
+if (DEV_CI_REGISTRY=$guard_registry require_dev_integration_worktree "$guard_wt") >/dev/null 2>&1
+then
+  pass "require_dev_integration_worktree: accepts a marked worktree"
+else
+  fail "require_dev_integration_worktree rejected a marked worktree"
+fi
+rm -f "$guard_wt/x.dev-integration-branch"
+
+run_test
+printf '%s\n' "$guard_wt" > "$guard_registry"
+if (DEV_CI_REGISTRY=$guard_registry require_dev_integration_worktree "$guard_wt") >/dev/null 2>&1
+then
+  pass "require_dev_integration_worktree: accepts a registered worktree"
+else
+  fail "require_dev_integration_worktree rejected a registered worktree"
+fi
+: > "$guard_registry"
+
+run_test
+out=$(TIMVISHER_DEV_CI_REGISTRY="$guard_registry" \
+  "$script" integrate -C "$guard_wt" 2>&1)
+rc=$?
+if (( rc != 0 )) &&
+   [[ $out == *'"code":"dev_ci_not_integration_worktree"'* ]] &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_head" ]]
+then
+  pass "integrate refuses a non-integration worktree and leaves HEAD alone"
+else
+  fail "integrate guard: rc=$rc head=$("$test_git" -C "$guard_wt" rev-parse HEAD) out='$out'"
+fi
+
+run_test
+touch "$guard_wt/x.dev-integration-branch"
+guard_upstream_head=$("$test_git" -C "$guard_wt" rev-parse '@{u}')
+if (PATH="$(dirname "$test_git"):$PATH" DEV_CI_REGISTRY=$guard_registry \
+      reset_dev_worktree_to_upstream "$guard_wt") >/dev/null 2>&1 &&
+   [[ $("$test_git" -C "$guard_wt" rev-parse HEAD) == "$guard_upstream_head" ]]
+then
+  pass "reset_dev_worktree_to_upstream: resets a marked worktree to @{u}"
+else
+  fail "reset_dev_worktree_to_upstream did not reset a marked worktree: head=$("$test_git" -C "$guard_wt" rev-parse HEAD) want=$guard_upstream_head"
+fi
+rm -f "$guard_wt/x.dev-integration-branch"
+"$test_git" -C "$guard_wt" reset -q --hard "$guard_head"
+
+run_test
+reset_sites=$(awk '
+  /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn) }
+  /^}/ { fn = "" }
+  /^[[:space:]]*#/ { next }
+  /(^|[;&|!(]|then|do)[[:space:]]*(command[[:space:]]+)?git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+reset([[:space:]]|$)/ {
+    printf "%d:%s\n", NR, (fn == "" ? "<top-level>" : fn)
+  }
+' "$script")
+if [[ $reset_sites == +([0-9]):reset_dev_worktree_to_upstream ]]
+then
+  pass "git reset runs only in reset_dev_worktree_to_upstream"
+else
+  fail "git reset must run only in reset_dev_worktree_to_upstream; found: $(tr '\n' ' ' <<<"$reset_sites")"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
