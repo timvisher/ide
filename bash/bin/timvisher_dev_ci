@@ -1174,7 +1174,9 @@ Run:
 This merges all branches at once. If the octopus merge fails (conflicts),
 fall back to merging the branches one at a time, resolving conflicts as
 you go. When falling back:
-1. Reset to @{u} with 'git reset --hard @{u}'.
+1. Abandon the octopus attempt with 'git merge --abort'. If git says
+   there is no merge to abort, the worktree is already back at @{u}.
+   Never run 'git reset' in this worktree.
 2. Merge each branch individually with 'git merge <branch>'.
 3. If a merge has conflicts, resolve them preserving the intent of both
    sides. Stage resolved files with 'git add' and complete with
