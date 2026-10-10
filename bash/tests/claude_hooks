@@ -391,24 +391,33 @@ fi
 # ---------------------------------------------------------------------------
 
 dismiss_dir="$tmpdir/dismissal"
-mkdir -p "$dismiss_dir/.aishot"
+mkdir -p "$dismiss_dir/.aishot" "$dismiss_dir/sub/dir"
+git -C "$dismiss_dir" init -q
+
+dismiss_cwd=$dismiss_dir
+dismiss_version=2
 
 dismiss_run() {
   local findings=$1 text=$2
-  jq -nc --argjson f "$findings" '{schema_version:2, findings:$f}' > "$dismiss_dir/.aishot/review.json"
+  jq -nc --argjson f "$findings" --argjson v "$dismiss_version" '{schema_version:$v, findings:$f}' \
+    > "$dismiss_dir/.aishot/review.json"
   {
     jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"Bash",input:{command:"aishot git diff review"}}]}}'
     jq -nc --arg t "$text" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'
   } > "$tp"
   jq -nc --arg p "$tp" '{transcript_path:$p, stop_hook_active:false}' > "$input_file"
-  (cd "$dismiss_dir" && "${hooks_dir}/no-aishot-review-dismissal-stop.sh" < "$input_file")
+  (cd "$dismiss_cwd" && "${hooks_dir}/no-aishot-review-dismissal-stop.sh" < "$input_file")
 }
 
 dismiss_assert() {
-  local want=$1 findings=$2 text=$3 label=$4 result
+  local want=$1 findings=$2 text=$3 label=$4 result rc
   run_test
   result=$(dismiss_run "$findings" "$text")
-  if [[ $want == block ]]
+  rc=$?
+  if (( rc != 0 ))
+  then
+    fail "$label — hook exited ${rc}"
+  elif [[ $want == block ]]
   then
     if printf '%s' "$result" | jq -e '.decision == "block"' >/dev/null 2>&1
     then
@@ -432,8 +441,14 @@ v1_open_p0='[{"p0":true,"status":"open"}]'
 
 dismiss_assert block "$open_p0" "That one is pre-existing, so I left it." \
   "dismissal: open P0 + 'pre-existing' blocks"
+dismiss_version=1
 dismiss_assert block "$v1_open_p0" "This is out of scope for the change." \
   "dismissal: schema 1 open P0 still blocks"
+dismiss_version=2
+dismiss_cwd="$dismiss_dir/sub/dir"
+dismiss_assert block "$open_p0" "That one is pre-existing, so I left it." \
+  "dismissal: finds the repo-root artifact from a subdirectory"
+dismiss_cwd=$dismiss_dir
 dismiss_assert pass "$open_p0" "Refuted the P0: the lock is held for the whole read, so the race cannot happen." \
   "dismissal: explicit refutation with a rationale passes"
 dismiss_assert pass "$refuted_p0" "I won't fix that one; it is refuted with a rationale." \

@@ -51,7 +51,8 @@ RECENT_REVIEW=$(tail -n 200 "$TP" 2>/dev/null \
 # when the review artifact for the current worktree still has P0 findings
 # whose agent_status is open. If none (or no artifact reachable from cwd),
 # the agent is free to move on.
-REVIEW_JSON="${PWD}/.aishot/review.json"
+REVIEW_ROOT=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || REVIEW_ROOT=$PWD
+REVIEW_JSON="${REVIEW_ROOT}/.aishot/review.json"
 [ -r "$REVIEW_JSON" ] || exit 0
 OPEN_P0=$(jq -r '[.findings[]?|select(((.agent_status // .status)=="open") and (.p0==true))]|length' "$REVIEW_JSON" 2>/dev/null)
 [ -z "$OPEN_P0" ] && OPEN_P0=0
