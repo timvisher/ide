@@ -25,6 +25,34 @@ REVIEW_HUMAN_STATUSES="unreviewed confirmed overruled"
 REVIEW_REVIEWERS="claude codex gemini human"
 
 # shellcheck disable=SC2016
+REVIEW_REGISTRATION_JQ='
+def nonempty: type == "string" and length > 0;
+def keys_allowed: ["name", "orgs", "description"];
+if type != "object" then
+  {errors: ["\($file): must be a JSON object"]}
+else
+  [ (keys_allowed[] as $k | select(has($k) | not) | "missing key: \($k)"),
+    (keys_unsorted[] as $k | select((keys_allowed | index($k)) == null) | "unknown key: \($k)"),
+    (if has("name") then
+       .name as $n
+       | (if ($n | type) == "string" and ($n | test("^[a-z0-9][a-z0-9_-]*$")) then empty
+          else "name must match ^[a-z0-9][a-z0-9_-]*$" end),
+         (if $n == $stem then empty
+          else "name \($n | tojson) must match the file name \($stem | tojson)" end),
+         (if ($builtins | split(" ") | index($n)) == null then empty
+          else "name \($n | tojson) collides with a built-in reviewer" end)
+     else empty end),
+    (if has("orgs") and ((.orgs | type) != "array" or (.orgs | length) == 0 or any(.orgs[]; nonempty | not))
+     then "orgs must be a non-empty array of GitHub org names" else empty end),
+    (if has("description") and (.description | nonempty | not)
+     then "description must be a non-empty string" else empty end)
+  ] as $e
+  | if ($e | length) == 0 then {entry: {name, orgs, description, file: $file}}
+    else {errors: [$e[] | "\($file): \(.)"]} end
+end
+'
+
+# shellcheck disable=SC2016
 REVIEW_MIGRATE_JQ='
 def migrate:
   if .schema_version == 1 then
@@ -131,8 +159,13 @@ Review-artifact subcommands (operate on .aishot/review.json):
   record-finding   Record or update one finding (deterministic, atomic,
                    validated writer — the ONLY correct way to modify the
                    artifact; never hand-edit the JSON). See its --help.
-  validate         Check .aishot/review.json (schema, enums, invariants).
+  validate         Check .aishot/review.json (schema, enums, invariants)
+                   and the reviewer registration files.
   print [--format=md|json]   Render the artifact. Default: md.
+  reviewers list   Show the reviewers --flagged-by accepts: the built-ins
+                   plus drop-in registrations in
+                   ~/.agents/aishot/reviewers/<name>.json, scoped by
+                   GitHub org. See its --help.
 
 Large diffs:
   Reviewers have a hard input ceiling (codex: ~1,048,576 chars), so a
@@ -1294,6 +1327,70 @@ _review_in_set() {
     return 1
 }
 
+_review_reviewers_dir() {
+    printf '%s/.agents/aishot/reviewers' "$HOME"
+}
+
+_review_registry_scan() {
+    local dir
+    dir=$(_review_reviewers_dir)
+    local -a files=() outs=()
+    if [[ -d $dir ]]
+    then
+        mapfile -t files < <(compgen -G "${dir}/*.json" | LC_ALL=C sort)
+    fi
+    local f stem out
+    for f in "${files[@]}"
+    do
+        stem=${f##*/}
+        stem=${stem%.json}
+        if ! out=$(jq -c --arg stem "$stem" --arg file "$f" --arg builtins "$REVIEW_REVIEWERS" \
+                      "$REVIEW_REGISTRATION_JQ" "$f" 2>/dev/null) || [[ -z $out ]]
+        then
+            out=$(jq -nc --arg file "$f" '{errors: ["\($file): not a single valid JSON document"]}')
+        fi
+        outs+=("$out")
+    done
+    printf '%s\n' "${outs[@]}" |
+        jq -sc '{valid: [.[] | .entry // empty], errors: [.[] | .errors[]?]}'
+}
+
+_review_repo_org() {
+    local branch="" remote="" url
+    branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
+    if [[ -n $branch ]]
+    then
+        remote=$(git config "branch.${branch}.remote" 2>/dev/null)
+    fi
+    if [[ -z $remote || $remote == . ]]
+    then
+        remote=origin
+        if ! git remote get-url origin >/dev/null 2>&1
+        then
+            local -a remotes
+            mapfile -t remotes < <(git remote 2>/dev/null)
+            (( ${#remotes[@]} == 1 )) || return 1
+            remote=${remotes[0]}
+        fi
+    fi
+    url=$(git remote get-url "$remote" 2>/dev/null) || return 1
+    if [[ $url =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/([^/]+)/[^/] ]]
+    then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    elif [[ $url =~ ^([^@/:]+@)?[^/:]+:([^/]+)/[^/] ]]
+    then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+    else
+        return 1
+    fi
+}
+
+_review_known_reviewers() {
+    local registered
+    registered=$(_review_registry_scan | jq -r '[.valid[].name] | join(" ")')
+    printf '%s %s' "$REVIEW_REVIEWERS" "$registered"
+}
+
 # jq program (read on stdin as $prog) that emits one error string per line
 # for a review doc passed as the file argument; empty output means valid.
 _review_validate_file() {
@@ -1308,12 +1405,13 @@ _review_validate_file() {
         echo "'${f}' is not valid JSON" >&2
         return 1
     fi
-    local errs
+    local errs known
+    known=$(_review_known_reviewers)
     errs=$(jq -r --argjson ver "$REVIEW_SCHEMA_VERSION" \
                  --arg levels "$REVIEW_LEVELS" --arg cats "$REVIEW_CATEGORIES" \
                  --arg astats "$REVIEW_AGENT_STATUSES" --arg hstats "$REVIEW_HUMAN_STATUSES" \
-                 --arg revs "$REVIEW_REVIEWERS" '
-      def words: split(" ");
+                 --arg revs "$known" '
+      def words: split(" ") | map(select(. != ""));
       def envkeys: ["schema_version","lineage","iterations","branch","base_sha","head_sha","created","updated","diff","findings"];
       def commonkeys: ["id","file","line","level","category","title","description","first_seen_iteration","last_seen_iteration","flagged_by"];
       def isint: (type=="number") and (. == floor);
@@ -1350,7 +1448,10 @@ _review_validate_file() {
           (if ($f.title|nonempty) then empty else "finding[\($i)] title required" end),
           (if ($f.description|nonempty) then empty else "finding[\($i)] description required" end),
           (if (($f.first_seen_iteration|isint) and ($f.last_seen_iteration|isint) and ($f.first_seen_iteration<=$f.last_seen_iteration)) then empty else "finding[\($i)] iteration bounds invalid" end),
-          (if (($f.flagged_by|type)=="array" and ($f.flagged_by|length)>=1 and (all($f.flagged_by[]; . as $r | ($revs|words|index($r))!=null))) then empty else "finding[\($i)] flagged_by must be a non-empty array of known reviewers" end)
+          (if (($f.flagged_by|type)=="array" and ($f.flagged_by|length)>=1) then
+             ([$f.flagged_by[] | . as $r | select(($revs|words|index($r))==null)] | map(tostring)) as $unknown
+             | if ($unknown|length)==0 then empty else "finding[\($i)] flagged_by has unknown reviewers: \($unknown|join(", "))" end
+           else "finding[\($i)] flagged_by must be a non-empty array of reviewers" end)
         ),
         ((.findings // []) | (map(.id)) as $ids | if ($ids|length)!=($ids|unique|length) then "duplicate finding ids present" else empty end)
       ] | .[]
@@ -1506,7 +1607,10 @@ Fields:
   --category      (required) correctness | security | performance |
                   reliability | maintainability | style | testing | docs.
   --flagged-by    (required) csv of reviewers that raised it:
-                  claude | codex | gemini | human. On update, unioned in.
+                  claude | codex | gemini | human, or a registered
+                  reviewer whose orgs cover this repo's GitHub org (see
+                  `aishot git diff review reviewers list`). On update,
+                  unioned in.
   --file          (optional) path the finding is about.
   --line          (optional) integer line number.
   --p0            (optional) true | false. true = a must-fix correctness/
@@ -1536,11 +1640,30 @@ _review_flagged_json() {
     IFS=',' read -ra arr <<< "$csv"
     (( 0 < ${#arr[@]} )) ||
         { echo "Error: --flagged-by is empty." >&2; return 1; }
-    local r
+    local registry org="" r orgs
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org) || org=""
     for r in "${arr[@]}"
     do
-        _review_in_set "$r" "$REVIEW_REVIEWERS" ||
-            { echo "Error: unknown reviewer in --flagged-by: '${r}'." >&2; return 1; }
+        _review_in_set "$r" "$REVIEW_REVIEWERS" && continue
+        orgs=$(jq -r --arg r "$r" '.valid[] | select(.name == $r) | .orgs | join(", ")' <<< "$registry")
+        if [[ -z $orgs ]]
+        then
+            echo "Error: unknown reviewer in --flagged-by: '${r}' (built-ins: ${REVIEW_REVIEWERS}; see 'aishot git diff review reviewers list')." >&2
+            return 1
+        fi
+        if [[ -z $org ]]
+        then
+            echo "Error: reviewer '${r}' is registered for orgs ${orgs}, but this repo has no remote org to match." >&2
+            return 1
+        fi
+        if ! jq -e --arg r "$r" --arg org "$org" \
+                '.valid[] | select(.name == $r) | any(.orgs[]; ascii_downcase == ($org | ascii_downcase))' \
+                <<< "$registry" >/dev/null
+        then
+            echo "Error: reviewer '${r}' is registered for orgs ${orgs}, not this repo's org '${org}'." >&2
+            return 1
+        fi
     done
     printf '%s\n' "${arr[@]}" | jq -R . | jq -s .
 }
@@ -1766,18 +1889,90 @@ do_review_validate() {
             --file) path=$2; shift 2 ;;
             --help|-h)
                 echo "Usage: aishot git diff review validate [--file PATH]"
-                echo "Validate .aishot/review.json (schema, enums, types, invariants)."
+                echo "Validate .aishot/review.json (schema, enums, types, invariants)"
+                echo "and the reviewer registrations in $(_review_reviewers_dir)."
                 return 0 ;;
             *) echo "Error: unknown option '${1}'." >&2; return 1 ;;
         esac
     done
     [[ -n $path ]] || path=$(_review_json_path) || return 1
-    if _review_validate_file "$path"
+    local rc=0 registry_errs
+    registry_errs=$(_review_registry_scan | jq -r '.errors[] | "registration: \(.)"')
+    if [[ -n $registry_errs ]]
+    then
+        printf '%s\n' "$registry_errs" >&2
+        rc=1
+    fi
+    _review_validate_file "$path" || rc=1
+    if (( rc == 0 ))
     then
         echo "ok: ${path} is valid"
-        return 0
     fi
-    return 1
+    return "$rc"
+}
+
+show_review_reviewers_help() {
+    cat <<EOF
+Usage: aishot git diff review reviewers [list] [--format=text|json]
+
+List the reviewers --flagged-by accepts: the built-ins (${REVIEW_REVIEWERS})
+and the reviewers registered by drop-in files in
+$(_review_reviewers_dir)/<name>.json, each shaped like:
+
+  {"name": "<name>", "orgs": ["<github-org>", ...], "description": "<text>"}
+
+A registered reviewer applies only in repos whose remote's GitHub org is
+one of its orgs (case-insensitive). Invalid registration files are
+reported on stderr and make the command exit non-zero.
+
+--format=json prints {"org", "builtin", "registered", "errors"}, where
+each registered entry carries name, orgs, description, file, and applies.
+EOF
+}
+
+do_review_reviewers() {
+    _review_need_jq || return 1
+    local format=text
+    while (( 0 < $# ))
+    do
+        case "$1" in
+            list) shift ;;
+            --format=*) format=${1#--format=}; shift ;;
+            --help|-h) show_review_reviewers_help; return 0 ;;
+            *) echo "Error: unknown option '${1}'." >&2; show_review_reviewers_help >&2; return 1 ;;
+        esac
+    done
+    local registry org="" report
+    registry=$(_review_registry_scan) || return 1
+    org=$(_review_repo_org 2>/dev/null) || org=""
+    report=$(jq -c --arg org "$org" --arg builtins "$REVIEW_REVIEWERS" '
+      {org: (if $org == "" then null else $org end),
+       builtin: ($builtins | split(" ")),
+       registered: [.valid[] | . + {applies: ($org != "" and any(.orgs[]; ascii_downcase == ($org | ascii_downcase)))}],
+       errors: .errors}' <<< "$registry") || return 1
+    case "$format" in
+        json)
+            jq . <<< "$report"
+            ;;
+        text)
+            jq -r '
+              "built-in: \(.builtin | join(" "))",
+              "registered (this repo'"'"'s org: \(.org // "none")):",
+              (if (.registered | length) == 0 then "  (none)" else empty end),
+              (.registered[] |
+                "  \(.name)  \(if .applies then "applies here" else "not here" end)  orgs: \(.orgs | join(", "))  \(.description)")
+            ' <<< "$report"
+            ;;
+        *)
+            echo "Error: unknown --format '${format}' (want: text, json)." >&2
+            return 1
+            ;;
+    esac
+    if jq -e '.errors | length > 0' <<< "$report" >/dev/null
+    then
+        jq -r '.errors[] | "registration: \(.)"' <<< "$report" >&2
+        return 1
+    fi
 }
 
 do_review_print() {
@@ -1917,6 +2112,10 @@ case "${1:-}" in
                             status)
                                 shift
                                 do_review_status "$@"
+                                ;;
+                            reviewers)
+                                shift
+                                do_review_reviewers "$@"
                                 ;;
                             *)
                                 _run_git_diff_mode review do_review "$@" "${global_opts[@]}"

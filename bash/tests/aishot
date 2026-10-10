@@ -34,7 +34,7 @@ script="${script_dir}/bin/aishot"
 test_git="$(brew --prefix)/bin/git"
 
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
-trap 'rm -rf "${repo:-}"' EXIT
+trap 'rm -rf "${repo:-}" "${reg_home:-}"' EXIT
 
 # Build a throwaway git repo with a staged + unstaged change to review.
 # No commit is made (no upstream needed), so the branch-diff section is
@@ -823,6 +823,136 @@ else
   fail "begin did not upgrade a schema 1 artifact"
 fi
 rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 31
+# ---------------------------------------------------------------------------
+reg_home=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+reg_dir="$reg_home/.agents/aishot/reviewers"
+mkdir -p "$reg_dir"
+reg_path="$(dirname "$test_git"):$PATH"
+in_reg() {
+  local dir=$1
+  shift
+  (cd "$dir" && HOME="$reg_home" PATH="$reg_path" "$script" git diff review "$@")
+}
+reg_reset() {
+  rm -f "$reg_dir"/*.json
+  printf '%s\n' '{"name":"outer","orgs":["DataDog"],"description":"outer loop reviewer"}' > "$reg_dir/outer.json"
+  printf '%s\n' '{"name":"elsewhere","orgs":["acme"],"description":"acme-only reviewer"}' > "$reg_dir/elsewhere.json"
+}
+
+run_test
+reg_reset
+repo=$(make_repo)
+"$test_git" -C "$repo" remote add origin git@github.com:datadog/thing.git
+rj="$repo/.aishot/review.json"
+ok=1
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by claude,outer >/dev/null 2>&1 || ok=0
+[[ $(jq -r '.findings[0].flagged_by|join(",")' "$rj" 2>/dev/null) == claude,outer ]] || ok=0
+err=$(in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by elsewhere 2>&1 >/dev/null) && ok=0
+[[ $err == *"registered for orgs acme"*"'datadog'"* ]] || ok=0
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by nobody >/dev/null 2>&1 && ok=0
+[[ $(jq -r '.findings|length' "$rj") -eq 1 ]] || ok=0
+fid=$(jq -r '.findings[0].id' "$rj")
+in_reg "$repo" record-finding --id "$fid" --flagged-by elsewhere >/dev/null 2>&1 && ok=0
+if (( ok )) && in_reg "$repo" validate >/dev/null 2>&1
+then
+  pass "registered reviewers are accepted only in repos their orgs cover"
+else
+  fail "registered reviewer scoping incorrect (err: $err)"
+fi
+rm -rf "$repo"
+
+run_test
+repo=$(make_repo)
+if ! err=$(in_reg "$repo" record-finding --title T --description D --level low --category style \
+       --flagged-by outer 2>&1 >/dev/null) &&
+   [[ $err == *"no remote org"* ]] && [[ ! -f "$repo/.aishot/review.json" ]]
+then
+  pass "registered reviewer is rejected in a repo with no remote org"
+else
+  fail "registered reviewer without a remote org should be rejected (err: $err)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 32
+# ---------------------------------------------------------------------------
+run_test
+reg_reset
+repo=$(make_repo)
+ok=1
+for url_org in \
+  'git@github.com:DataDog/thing.git DataDog' \
+  'ssh://git@github.com/DataDog/thing DataDog' \
+  'https://github.com/timvisher/ide timvisher' \
+  'https://github.com/acme/x.git acme'
+do
+  read -r url want <<< "$url_org"
+  "$test_git" -C "$repo" remote remove origin >/dev/null 2>&1
+  "$test_git" -C "$repo" remote add origin "$url"
+  got=$(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org')
+  if [[ $got != "$want" ]]
+  then
+    ok=0
+    echo "  $url -> '$got', want '$want'" >&2
+  fi
+done
+"$test_git" -C "$repo" remote set-url origin ../some/local/path.git
+[[ $(in_reg "$repo" reviewers --format=json 2>/dev/null | jq -r '.org') == null ]] || ok=0
+"$test_git" -C "$repo" remote set-url origin git@github.com:DATADOG/thing.git
+rj_list=$(in_reg "$repo" reviewers --format=json 2>/dev/null)
+[[ $(jq -r '[.registered[]|select(.applies)|.name]|join(",")' <<< "$rj_list") == outer ]] || ok=0
+[[ $(jq -r '.builtin|join(",")' <<< "$rj_list") == claude,codex,gemini,human ]] || ok=0
+txt=$(in_reg "$repo" reviewers list 2>/dev/null)
+[[ $txt == *'outer  applies here'* && $txt == *'elsewhere  not here'* ]] || ok=0
+if (( ok ))
+then
+  pass "reviewers list resolves the remote org and marks what applies"
+else
+  fail "reviewers list org resolution incorrect: $rj_list"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
+# Case 33
+# ---------------------------------------------------------------------------
+run_test
+reg_reset
+repo=$(make_repo)
+"$test_git" -C "$repo" remote add origin git@github.com:datadog/thing.git
+in_reg "$repo" record-finding --title T --description D --level low --category style \
+  --flagged-by outer >/dev/null 2>&1
+printf '%s\n' '{"name":"wrong","orgs":[],"description":"","extra":1}' > "$reg_dir/bad.json"
+printf 'nope\n' > "$reg_dir/broken.json"
+printf '%s\n' '{"name":"claude","orgs":["x"],"description":"d"}' > "$reg_dir/claude.json"
+ok=1
+verr=$(in_reg "$repo" validate 2>&1 >/dev/null) && ok=0
+for want in 'bad.json: unknown key: extra' 'bad.json: name "wrong" must match the file name "bad"' \
+            'bad.json: orgs must be' 'bad.json: description must be' \
+            'broken.json: not a single valid JSON document' 'claude.json: name "claude" collides'
+do
+  [[ $verr == *"$want"* ]] || { ok=0; echo "  validate missing: $want" >&2; }
+done
+lerr=$(in_reg "$repo" reviewers list 2>&1 >/dev/null) && ok=0
+[[ $lerr == *'broken.json'* ]] || ok=0
+[[ $(in_reg "$repo" reviewers list 2>/dev/null) == *'outer  applies here'* ]] || ok=0
+rm -f "$reg_dir/bad.json" "$reg_dir/broken.json" "$reg_dir/claude.json"
+in_reg "$repo" validate >/dev/null 2>&1 || ok=0
+rm -f "$reg_dir/outer.json"
+verr=$(in_reg "$repo" validate 2>&1 >/dev/null) && ok=0
+[[ $verr == *'flagged_by has unknown reviewers: outer'* ]] || ok=0
+if (( ok ))
+then
+  pass "validate checks registration files and flagged_by against the registry"
+else
+  fail "registration validation incorrect: $verr"
+fi
+rm -rf "$repo" "$reg_home"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
