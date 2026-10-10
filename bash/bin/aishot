@@ -1538,11 +1538,18 @@ _review_begin_iteration() {
 
     # The diff can be many MB. Write it to a file and hand it to jq via
     # --rawfile; passing it as --arg would blow ARG_MAX (E2BIG).
-    local difffile tmp=""
-    difffile=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
-    cleanup_begin() { rm -f "$difffile" "$tmp"; }
+    local difffile="" tmp="" lock="${dir}/.review.lock" held=0
+    cleanup_begin() {
+        rm -f "$difffile" "$tmp"
+        (( held )) && rmdir "$lock" 2>/dev/null
+        trap - RETURN
+    }
     trap cleanup_begin RETURN
+    difffile=$(mktemp) || { echo "Error: mktemp failed." >&2; return 1; }
     _review_current_diff > "$difffile"
+
+    _review_lock "$lock" || return 1
+    held=1
 
     local lineage iterations created findings
     if [[ -f $path ]] && (( ! fresh_flag ))
@@ -1828,17 +1835,13 @@ do_review_record_finding() {
 
     # Serialize concurrent writers with an atomic mkdir lock.
     local lock="${dir}/.review.lock" tmp="" held=0
-    cleanup() { (( held )) && rmdir "$lock" 2>/dev/null; [[ -n $tmp ]] && rm -f "$tmp"; }
+    cleanup() {
+        (( held )) && rmdir "$lock" 2>/dev/null
+        [[ -n $tmp ]] && rm -f "$tmp"
+        trap - RETURN
+    }
     trap cleanup RETURN
-    local waited=0
-    until mkdir "$lock" 2>/dev/null
-    do
-        (( waited++ ))
-        if (( 50 < waited ))
-        then echo "Error: could not acquire review lock '${lock}'." >&2; return 1
-        fi
-        sleep 0.1
-    done
+    _review_lock "$lock" || return 1
     held=1
 
     # Seed a minimal envelope if none exists yet (the run driver normally

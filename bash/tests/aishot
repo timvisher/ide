@@ -1096,6 +1096,31 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 42
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1
+mkdir "$repo/.aishot/.review.lock"
+(cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1 &
+begin_pid=$!
+sleep 1
+it_held=$(jq -r '.iterations' "$rj")
+rmdir "$repo/.aishot/.review.lock"
+wait "$begin_pid"
+begin_rc=$?
+if [[ $it_held -eq 1 ]] && (( begin_rc == 0 )) &&
+   [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
+   [[ ! -e "$repo/.aishot/.review.lock" ]]
+then
+  pass "begin waits for the review lock and releases it"
+else
+  fail "begin ignored or leaked the review lock (held: $it_held, rc: $begin_rc)"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
 # Case 43
 # ---------------------------------------------------------------------------
 run_test
