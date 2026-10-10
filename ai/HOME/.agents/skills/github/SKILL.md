@@ -174,6 +174,18 @@ The `<comment-url>` must contain `#discussion_r<ID>` (the thread's first comment
 
 Replies and reactions are also sent by `pr push` from the tree (see "answering PR feedback"), which is the better fit for a batch of replies.
 
+## Workflow — merging and releasing
+
+Agents do not merge. Hand the human one of:
+
+```bash
+timvisher_gh pr release              # merge, then watch the release via merge post-hooks
+timvisher_gh pr release --no-watch   # merge only (same as `timvisher_gh pr merge`)
+timvisher_gh pr merge                # the lower-level merge step
+```
+
+Both are idempotent: an already-merged PR reports "already merged in <commit>", an already-requested merge (auto-merge, merge queue, or a `/merge` comment since the last push) goes straight to waiting, and nothing is ever requested twice. After a confirmed merge, `timvisher_gh` drops `.timvisher_gh/pr/merged` and pulls the trunk worktree (`~/git/<org>/<repo>/<default branch>`) in the background. `--open` opens the PR, merge queue, and whatever the hooks discover.
+
 ## Hooks and canned comments
 
 Org-, repo- and path-specific steps (ARP review kicks, readiness gates, release watchers) are hooks, not ad hoc scripts: executables under `timvisher_gh.config/<scope>/pr/<push|ready|merge>/{pre,post}.d/` in either config root (`bash/bin/timvisher_gh.config/` in this repo, or `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/`). `<scope>` is `orgs/OWNER`, `repos/OWNER/REPO`, or `repos/OWNER/REPO/paths/<dir>` (fires only when the PR touches `<dir>`). Pre-hooks gate a transition and are skipped once it has happened; post-hooks run every time and must check their own end state. `timvisher_gh --help` lists the environment they receive.

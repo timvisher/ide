@@ -51,6 +51,9 @@ elif [[ \$1 == push ]]
 then
   echo "mock-git-push \$*" >> "\$MOCK_LOG"
   [[ -z \${MOCK_GIT_PUSH_FAIL-} ]]
+elif [[ \$1 == -C && \$3 == pull ]]
+then
+  echo "mock-git-pull \$*" >> "\$MOCK_LOG"
 elif [[ \$1 == ls-remote ]]
 then
   echo "mock-git-ls-remote \$*" >> "\$MOCK_LOG"
@@ -866,7 +869,7 @@ write_merge_handler() {
 case "\$1 \$2" in
   'api graphql') respond < '$MOCK_GH_HANDLER.graphql' ;;
   'pr view') echo '{"state":"MERGED","mergeCommit":{"oid":"def456"}}' ;;
-  'repo view') echo '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false}' ;;
+  'repo view') echo '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false,"defaultBranchRef":{"name":"main"}}' | respond ;;
   'pr comment') echo 'https://github.com/testuser/testrepo/pull/42#issuecomment-1' ;;
   'pr merge') true ;;
 esac
@@ -2179,6 +2182,110 @@ else
 fi
 rm -f "$tmpdir/repo/x.notes.md"
 rm -rf "$tmpdir/repo/.timvisher_gh"
+unset MOCK_GH_HANDLER
+
+# --- pr release tests ---
+
+# Test: release on a merged PR runs the merge post-hooks with the merge commit
+run_test
+reset_hooks
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+mkdir -p "$push_st"
+jq -n '{url: "https://github.com/testuser/testrepo/pull/42"}' > "$push_st/pr.json"
+make_hook "$ext_root/orgs/testuser/pr/merge/post.d/10-watch"
+v2_reset release_merged
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr release --open 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'merge/post.d/10-watch phase=merge hook=post url=https://github.com/testuser/testrepo/pull/42 .* open=true merge=abc123 ' "$hook_log" &&
+   grep -q 'mock-open https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   [[ -f $push_st/merged ]] &&
+   [[ $result == *"Release converged"* ]]
+then
+  pass "pr release: merged PR runs merge post-hooks with the merge commit"
+else
+  fail "pr release merged: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release --no-watch stops after the merge
+run_test
+: > "$hook_log"
+v2_reset release_no_watch
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr release --no-watch 2>&1 </dev/null) && rc=0 || rc=$?
+if (( rc == 0 )) && [[ ! -s $hook_log ]] && [[ $result == *"not watching the release"* ]] &&
+   ! grep -q mock-open "$MOCK_LOG"
+then
+  pass "pr release: --no-watch skips the merge post-hooks"
+else
+  fail "pr release no-watch: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release of an open PR merges first, then watches
+run_test
+: > "$hook_log"
+rm_state x.merged
+v2_reset release_open_pr
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr release 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr merge --merge https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG" &&
+   grep -q '10-watch .* merge=def456 ' "$hook_log"
+then
+  pass "pr release: open PR is merged, then post-hooks get the new merge commit"
+else
+  fail "pr release open: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: release that declines the merge does not watch
+run_test
+: > "$hook_log"
+rm_state x.merged
+v2_reset release_decline
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo n | run_v2 pr release 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ ! -s $hook_log ]]
+then
+  pass "pr release: declining the merge skips the watch"
+else
+  fail "pr release decline: rc=${rc} hooks=$(cat "$hook_log")"
+fi
+reset_hooks
+
+# Test: a confirmed merge pulls the trunk worktree in the background
+run_test
+git_home=$(cd "$tmpdir" && pwd -P)/githome
+mkdir -p "$git_home/testuser/testrepo"
+"$real_git" -C "$tmpdir" clone -q "$tmpdir/repo" "$git_home/testuser/testrepo/feature"
+"$real_git" -C "$git_home/testuser/testrepo/feature" remote set-url origin https://github.com/testuser/testrepo.git
+"$real_git" init -q "$git_home/testuser/testrepo/main"
+mkdir -p "$git_home/testuser/testrepo/feature/.timvisher_gh/pr"
+jq -n '{url: "https://github.com/testuser/testrepo/pull/42"}' > "$git_home/testuser/testrepo/feature/.timvisher_gh/pr/pr.json"
+v2_reset trunk_pull
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(
+  cd "$git_home/testuser/testrepo/feature" &&
+    HOME="$v2_home" PATH="$v2_path" TIMVISHER_AGENT='' timvisher_logging_log_level=INFO \
+    TIMVISHER_GH_CONFIG_DIR="$ext_root" TIMVISHER_GH_CORE_CONFIG_DIR="$core_root" \
+    TIMVISHER_GIT_HOME="$git_home" \
+    "$script" pr merge 2>&1 </dev/null
+) && rc=0 || rc=$?
+for _ in {1..50}
+do
+  grep -q mock-git-pull "$MOCK_LOG" && break
+  sleep 0.1
+done
+if (( rc == 0 )) &&
+   grep -q "mock-git-pull -C $git_home/testuser/testrepo/main pull --ff-only" "$MOCK_LOG" &&
+   [[ -f $git_home/testuser/testrepo/main/.timvisher_gh/trunk-pull.log ]]
+then
+  pass "pr merge: pulls the trunk worktree in the background after the merge"
+else
+  fail "trunk pull: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+rm -rf "$git_home" "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
 unset MOCK_GH_HANDLER
 
 # --- pr ready tests ---

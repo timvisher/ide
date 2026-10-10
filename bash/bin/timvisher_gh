@@ -35,6 +35,9 @@ show_help() {
     timvisher_gh pr pull         Mirror the PR conversation into
                                  .timvisher_gh/pr/comments/
     timvisher_gh pr merge [gh-opts]  Merge the PR recorded in pr.json
+    timvisher_gh pr release [--{no-}watch] [--{no-}open] [gh-opts]
+                                 Merge, then watch the release through
+                                 the merge post-hooks
     timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
     timvisher_gh issue edit      Edit an existing issue from issue.md
@@ -143,10 +146,28 @@ show_help() {
       before rerunning: a '/merge' since the last push counts as
       already requested
     - Extra arguments are passed to 'gh pr merge'
+    - Runs the merge pre-hooks just before requesting the merge
     - Blocks until the PR is actually merged (polls past any merge
       queue); on confirmed merge, drops the '.timvisher_gh/pr/merged'
       cookie so worktree gc can eagerly reap it.  An
       existing cookie is left alone, keeping its original mtime
+    - Then starts 'git pull --ff-only' in the background in the trunk
+      worktree, $TIMVISHER_GIT_HOME/<org>/<repo>/<default branch>
+      (default ~/git), logging to its .timvisher_gh/trunk-pull.log and
+      sending timvisher_notify only if the pull fails.  It does not
+      wait for the pull
+
+  pr release subcommand:
+    - The end-of-life command for a PR: pr merge (above), then the
+      merge post-hooks, which watch the release (CI, deploys, package
+      channels) and must be idempotent.  Every step reports 'already'
+      when done, so rerun it after any failure
+    - --watch (default) runs the merge post-hooks; --no-watch stops
+      after the merge
+    - --open opens the PR (and the merge queue, when it is queued);
+      hooks see TIMVISHER_GH_OPEN=true and open what they find.
+      Default --no-open
+    - Other arguments are passed to pr merge
     - Override poll/timeout with TIMVISHER_GH_PR_MERGE_POLL_INTERVAL
       (default 10s) and TIMVISHER_GH_PR_MERGE_TIMEOUT (default 7200s)
 
@@ -286,7 +307,8 @@ show_help() {
       ready  pre: after checks pass, before 'gh pr ready' (skipped when
              already ready); post: every run
       merge  pre: before the merge request (skipped when already merged
-             or requested)
+             or requested); post: from pr release after a confirmed
+             merge, every run (skipped by --no-watch)
     A failing pre-hook stops the command before its transition.  Post-
     hooks always run, so they must check their own end state first; a
     failing one does not stop the rest, but the command exits non-zero.
@@ -976,6 +998,7 @@ gh_pr__merge_state() {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       state
+      baseRefName
       isInMergeQueue
       autoMergeRequest { enabledAt }
       mergeCommit { oid }
@@ -1176,7 +1199,7 @@ gh_pr_merge() {
     MERGED)
       merge_commit=$(jq -r '.mergeCommit.oid // empty' <<<"$state_json")
       info 'PR already merged in %s: %s' "${merge_commit:-<unknown commit>}" "$pr_url"
-      gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
+      gh_pr__after_merged "$pr_url"
       return 0
       ;;
     CLOSED)
@@ -1207,10 +1230,128 @@ gh_pr_merge() {
       return 1
   fi
 
+  if [[ ${hooks__open-} == true ]]
+  then
+    gh_pr__open_merge_queue "$pr_url"
+  fi
+
   merge_commit=$(gh_pr_wait_until_merged "$pr_url") ||
     exit 1
-  gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
   info 'PR merged in %s via %s' "${merge_commit:-<unknown commit>}" "$merge_strategy"
+  gh_pr__after_merged "$pr_url"
+}
+
+gh_pr__open_merge_queue() {
+  local pr_url=$1 state_json base
+  state_json=$(gh_pr__merge_state "$pr_url") ||
+    return 0
+  jq -e '.isInMergeQueue == true' >/dev/null <<<"$state_json" ||
+    return 0
+  base=$(jq -r '.baseRefName // empty' <<<"$state_json")
+  [[ -n $base ]] ||
+    return 0
+  open_url "https://github.com/${repo_spec}/queue/${base}"
+}
+
+gh_pr__trunk_pull() {
+  local pr_url=$1
+  local git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  git_home=$(cd -- "$git_home" 2>/dev/null && pwd -P) ||
+    git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  if [[ $toplevel != "$git_home"/*/*/* ]]
+  then
+    info "Worktree is not under '%s'; not pulling a trunk worktree" "$git_home"
+    return 0
+  fi
+
+  local rel org repo default trunk
+  rel=${toplevel#"$git_home"/}
+  org=${rel%%/*}
+  rel=${rel#*/}
+  repo=${rel%%/*}
+  default=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+    {
+      warn "Couldn't read the default branch of '%s'; not pulling a trunk worktree" "$repo_spec"
+      return 0
+    }
+  trunk="${git_home}/${org}/${repo}/${default}"
+  if ! [[ -d $trunk ]] || ! command git -C "$trunk" rev-parse --is-inside-work-tree >/dev/null 2>&1
+  then
+    info "No trunk worktree at '%s'; not pulling it" "$trunk"
+    return 0
+  fi
+
+  local log="${trunk}/.timvisher_gh/trunk-pull.log"
+  mkdir -p -- "${log%/*}" ||
+    {
+      warn "Couldn't create '%s'; not pulling the trunk worktree" "${log%/*}"
+      return 0
+    }
+  info "Pulling trunk worktree '%s' in the background (log: %s)" "$trunk" "$log"
+  (
+    printf '%s git pull --ff-only after %s\n' "$(date -u '+%FT%TZ')" "$pr_url" >> "$log"
+    if ! command git -C "$trunk" pull --ff-only >> "$log" 2>&1
+    then
+      timvisher_notify 'timvisher_gh: trunk pull failed' \
+                       "git pull --ff-only failed in ${trunk}; see ${log}" >> "$log" 2>&1
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  disown
+}
+
+gh_pr__after_merged() {
+  local pr_url=$1
+  gh_pr__drop_merged_cookie "$pr_url" "$merge_strategy" "$merge_commit"
+  gh_pr__trunk_pull "$pr_url"
+}
+
+gh_pr_release() {
+  local watch=true open=false
+  local -a merge_args=()
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --watch)
+        watch=true
+        ;;
+      --no-watch)
+        watch=false
+        ;;
+      --open)
+        open=true
+        ;;
+      --no-open)
+        open=false
+        ;;
+      *)
+        merge_args+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  local pr_url
+  pr_url=$(state__require_url pr) ||
+    exit 1
+
+  hooks__open=$open
+  if [[ $open == true ]]
+  then
+    open_url "$pr_url"
+  fi
+
+  gh_pr_merge "${merge_args[@]}" ||
+    exit 1
+
+  if [[ $watch == false ]]
+  then
+    info 'Merged; not watching the release (--no-watch)'
+    return 0
+  fi
+
+  hooks__run_post merge
+  hooks__finish merge
+  info 'Release converged: %s' "$pr_url"
 }
 
 gh_pr__branch_pushed() {
@@ -2062,6 +2203,10 @@ gh_pr() {
     merge)
       shift
       gh_pr_merge "$@"
+      ;;
+    release)
+      shift
+      gh_pr_release "$@"
       ;;
     ready)
       shift
