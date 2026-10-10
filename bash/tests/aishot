@@ -31,7 +31,16 @@ run_test() {
 script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   { echo "cannot resolve script_dir" >&2; exit 1; }
 script="${script_dir}/bin/aishot"
-test_git="$(brew --prefix)/bin/git"
+test_git=""
+while IFS= read -r candidate
+do
+  if [[ $(head -c 2 "$candidate") != '#!' ]]
+  then
+    test_git=$candidate
+    break
+  fi
+done < <(type -a -P git)
+[[ -n $test_git ]] || { echo "no non-wrapper git binary on PATH" >&2; exit 1; }
 
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
 trap 'rm -rf "${repo:-}" "${reg_home:-}"' EXIT
@@ -418,7 +427,12 @@ work="$repo/work"
 rj="$work/.aishot/review.json"
 (cd "$work" && "$script" git diff review begin) >/dev/null 2>&1
 (cd "$work" && "$script" git diff review record-finding --title T --description D \
-   --level low --category style --flagged-by claude) >/dev/null 2>&1
+   --level low --category style --flagged-by claude --source '{"k":1}') >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --id "$(jq -r '.findings[0].id' "$rj")" \
+   --agent-status refuted --rationale "by design") >/dev/null 2>&1
+(cd "$work" && "$script" git diff review record-finding --id "$(jq -r '.findings[0].id' "$rj")" \
+   --human-status confirmed --note "agreed") >/dev/null 2>&1
+f1=$(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj")
 l1=$(jq -r '.lineage' "$rj")
 b1=$(jq -r '.base_sha' "$rj")
 (
@@ -443,6 +457,8 @@ if [[ -n $b1 ]] &&
    [[ $(jq -r '.head_sha' "$rj") == "$("$test_git" -C "$work" rev-parse HEAD)" ]] &&
    [[ $(jq -r '.iterations' "$rj") -eq 2 ]] &&
    [[ $(jq -r '.findings|length' "$rj") -eq 1 ]] &&
+   [[ $(jq -c '.findings[0] | del(.last_seen_iteration)' "$rj") == "$f1" ]] &&
+   [[ $(jq -r '.findings[0].refutation' "$rj") == "by design" ]] &&
    [[ $(jq -r '.lineage' "$rj") == "$l1" ]] &&
    ! compgen -G "$work/.aishot/review.bak.*.json" >/dev/null
 then
