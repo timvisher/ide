@@ -1717,7 +1717,7 @@ _review_flagged_json() {
             return 1
         fi
     done
-    printf '%s\n' "${arr[@]}" | jq -R . | jq -s .
+    printf '%s\n' "${arr[@]}" | jq -R . | jq -s 'reduce .[] as $r ([]; if index([$r]) then . else . + [$r] end)'
 }
 
 do_review_record_finding() {
@@ -2202,7 +2202,7 @@ do_review_status() {
       } as $counts
       | if $format == "json" then
           $counts + {by_reviewer: (reduce $f[] as $x ({};
-            reduce $x.flagged_by[] as $r (.;
+            reduce ($x.flagged_by | unique)[] as $r (.;
               .[$r].total += 1
               | .[$r].open += (if $x.agent_status == "open" then 1 else 0 end)
               | .[$r].open_p0 += (if $x.agent_status == "open" and $x.p0 == true then 1 else 0 end))))}

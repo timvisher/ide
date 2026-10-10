@@ -1123,6 +1123,37 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 40
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+rj="$repo/.aishot/review.json"
+(cd "$repo" && "$script" git diff review record-finding --title T --description D \
+   --level low --category style --flagged-by claude,codex,claude) >/dev/null 2>&1
+fid=$(jq -r '.findings[0].id' "$rj")
+(cd "$repo" && "$script" git diff review record-finding --id "$fid" --flagged-by codex) >/dev/null 2>&1
+jq '.findings[0].flagged_by += ["claude"]' "$rj" > "$rj.x" && mv "$rj.x" "$rj"
+if [[ $(jq -c '.findings[0].flagged_by' "$rj") == '["claude","codex","claude"]' ]] &&
+   [[ $(cd "$repo" && "$script" git diff review status --format=json 2>/dev/null | jq -c '.by_reviewer.claude.total') == 1 ]]
+then
+  run_test
+  repo2=$(make_repo)
+  (cd "$repo2" && "$script" git diff review record-finding --title T --description D \
+     --level low --category style --flagged-by claude,codex,claude) >/dev/null 2>&1
+  if [[ $(jq -c '.findings[0].flagged_by' "$repo2/.aishot/review.json") == '["claude","codex"]' ]]
+  then
+    pass "duplicate --flagged-by names are dropped on insert"
+  else
+    fail "duplicate --flagged-by names were stored"
+  fi
+  rm -rf "$repo2"
+  pass "status counts each reviewer once per finding"
+else
+  fail "duplicate flagged_by handling incorrect: $(jq -c '.findings[0].flagged_by' "$rj")"
+fi
+rm -rf "$repo"
+
+# ---------------------------------------------------------------------------
 # Case 42
 # ---------------------------------------------------------------------------
 run_test
