@@ -50,6 +50,14 @@ then
 elif [[ \$1 == push ]]
 then
   echo "mock-git-push \$*" >> "\$MOCK_LOG"
+  [[ -z \${MOCK_GIT_PUSH_FAIL-} ]]
+elif [[ \$1 == ls-remote ]]
+then
+  echo "mock-git-ls-remote \$*" >> "\$MOCK_LOG"
+  if [[ -n \${MOCK_REMOTE_SHA-} ]]
+  then
+    printf '%s\\t%s\\n' "\$MOCK_REMOTE_SHA" "\$3"
+  fi
 else
   "$real_git" "\$@"
 fi
@@ -519,20 +527,6 @@ then
 else
   fail "pr exits if pr.md doesn't exist: got '${result}'"
 fi
-
-# Test: pr opens existing pr.md.url if present
-run_test
-echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
-export MOCK_LOG="$tmpdir/log_pr_existing"
-touch "$MOCK_LOG"
-PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true
-if grep -q 'mock-open.*https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
-then
-  pass "pr opens existing pr.md.url"
-else
-  fail "pr opens existing pr.md.url: got $(cat "$MOCK_LOG")"
-fi
-rm_state pr.md.url
 
 # Test: pr creates PR from pr.md when git status is clean
 run_test
@@ -1066,10 +1060,47 @@ unset MOCK_GH_HANDLER
 # --- state migration tests ---
 
 write_edit_handler() {
+  local remote=${MOCK_REMOTE_DESC:-$MOCK_GH_HANDLER.remote}
+  if [[ ! -e $remote ]]
+  then
+    echo '{"title":"","body":""}' > "$remote"
+  fi
   cat > "$MOCK_GH_HANDLER" <<'HANDLER'
+mock_remote=${MOCK_REMOTE_DESC:-$MOCK_GH_HANDLER.remote}
 case "$1 $2" in
-  'pr edit') echo mock-pr-edit ;;
-  'issue edit') echo mock-issue-edit ;;
+  'pr view'|'issue view')
+    respond < "$mock_remote"
+    ;;
+  'pr edit'|'issue edit')
+    mock_title=
+    mock_body=
+    mock_prev=
+    for mock_arg in "$@"
+    do
+      case $mock_prev in
+        --title) mock_title=$mock_arg ;;
+        --body-file) mock_body=$(< "$mock_arg") ;;
+      esac
+      mock_prev=$mock_arg
+    done
+    jq -n --arg title "$mock_title" --arg body "$mock_body" '{title: $title, body: $body}' > "$mock_remote"
+    echo "mock-$1-edit"
+    ;;
+  'pr list')
+    if [[ -n ${MOCK_EXISTING_PR-} ]]
+    then
+      jq -n --arg url "$MOCK_EXISTING_PR" '[{url: $url}]' | respond
+    else
+      echo '[]' | respond
+    fi
+    ;;
+  'repo view')
+    echo '{"defaultBranchRef":{"name":"main"}}' | respond
+    ;;
+  'pr create')
+    printf '%s\n' "$*" >> "$MOCK_GH_HANDLER.created"
+    echo 'https://github.com/testuser/testrepo/pull/50'
+    ;;
 esac
 HANDLER
 }
@@ -1077,6 +1108,8 @@ HANDLER
 # Test: root pr.md, pr.md.url and x.merged move into .timvisher_gh/ with compat links
 run_test
 v2_reset migrate_root
+export MOCK_REMOTE_DESC="$tmpdir/remote_migrate.json"
+rm -f "$MOCK_REMOTE_DESC"
 write_edit_handler
 rm -rf "$tmpdir/repo/.timvisher_gh"
 printf 'Title\n\nBody\n' > "$tmpdir/repo/pr.md"
@@ -1137,13 +1170,12 @@ fi
 run_test
 v2_reset migrate_url_drift
 write_edit_handler
-jq '. + {posted: {title: "t", body: "b"}}' "$st/pr.json" > "$st/pr.json.new" && mv "$st/pr.json.new" "$st/pr.json"
 echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
 result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
    [[ $(jq -r .url "$st/pr.json") == https://github.com/testuser/testrepo/pull/77 ]] &&
-   [[ $(jq -r '.posted // "none"' "$st/pr.json") == none ]] &&
-   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/77' "$MOCK_LOG"
+   [[ $result == *"adopting GitHub's as the baseline"* ]] &&
+   grep -q 'mock-gh pr view https://github.com/testuser/testrepo/pull/77' "$MOCK_LOG"
 then
   pass "state: URL rewritten through pr.md.url is adopted, dropping the old lease"
 else
@@ -1154,12 +1186,13 @@ fi
 run_test
 v2_reset migrate_same_url
 write_edit_handler
-jq '. + {posted: {title: "t", body: "b"}}' "$st/pr.json" > "$st/pr.json.new" && mv "$st/pr.json.new" "$st/pr.json"
 rm -f "$tmpdir/repo/pr.md.url"
 echo "https://github.com/testuser/testrepo/pull/77" > "$tmpdir/repo/pr.md.url"
 result=$(run_v2 pr edit 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
-   [[ $(jq -r .posted.title "$st/pr.json") == t ]] &&
+   [[ $result != *"adopting GitHub's as the baseline"* ]] &&
+   [[ $result == *"description already current"* ]] &&
+   [[ $(jq -r .posted.title "$st/pr.json") == 'New title' ]] &&
    [[ -L $tmpdir/repo/pr.md.url ]]
 then
   pass "state: same-URL root pr.md.url re-migrates without dropping the lease"
@@ -1168,6 +1201,7 @@ else
 fi
 rm -rf "$tmpdir/repo/.timvisher_gh"
 rm_state pr.md pr.md.url x.merged
+unset MOCK_REMOTE_DESC
 
 # Test: root issue.md and issue.md.url move into .timvisher_gh/issue/
 run_test
@@ -1204,6 +1238,206 @@ else
   fail "state info: rc=${rc} got '${result: -400}'"
 fi
 unset MOCK_GH_HANDLER
+
+# --- pr push tests ---
+
+fixture_branch=$("$real_git" -C "$tmpdir/repo" symbolic-ref --short HEAD)
+fixture_head=$("$real_git" -C "$tmpdir/repo" rev-parse HEAD)
+push_st="$tmpdir/repo/.timvisher_gh/pr"
+export MOCK_REMOTE_DESC="$tmpdir/remote_push.json"
+rm -f "$MOCK_REMOTE_DESC"
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+
+# Test: pr push with no PR pushes the branch and creates a draft PR
+run_test
+v2_reset push_create
+write_edit_handler
+printf 'Push title\n\nPush body\n' > "$tmpdir/repo/pr.md"
+result=$(run_v2 pr push 2>"$tmpdir/push_create.err") && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   grep -q "mock-git-push push -v origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG" &&
+   grep -q -- '--draft --base main --title Push title' "$MOCK_GH_HANDLER.created" &&
+   [[ $(jq -r .url "$push_st/pr.json") == https://github.com/testuser/testrepo/pull/50 ]] &&
+   [[ $(jq -r .posted.title "$push_st/pr.json") == 'Push title' ]] &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body' ]] &&
+   [[ $(readlink "$tmpdir/repo/pr.md.url") == .timvisher_gh/pr/pr.url ]] &&
+   ! grep -q mock-open "$MOCK_LOG"
+then
+  pass "pr push: pushes, creates a draft PR, records url + posted lease"
+else
+  fail "pr push create: rc=${rc} log=$(cat "$MOCK_LOG") err=$(tail -5 "$tmpdir/push_create.err") got '${result}'"
+fi
+jq -n '{title: "Push title", body: "Push body"}' > "$MOCK_REMOTE_DESC"
+
+# Test: rerunning pr push converges with nothing to do
+run_test
+v2_reset push_rerun
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"Branch already pushed"* ]] &&
+   [[ $result == *"description already current"* ]] &&
+   ! grep -q mock-git-push "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr create' "$MOCK_LOG" &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG"
+then
+  pass "pr push: bare pr rerun reports already pushed / already current"
+else
+  fail "pr push rerun: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a local pr.md change is pushed under the lease
+run_test
+v2_reset push_edit
+write_edit_handler
+printf 'Push title v2\n\nPush body v2\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/50 --repo testuser/testrepo --title Push title v2' "$MOCK_LOG" &&
+   [[ $(jq -r .title "$MOCK_REMOTE_DESC") == 'Push title v2' ]] &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body v2' ]]
+then
+  pass "pr push: edits the description when only pr.md changed"
+else
+  fail "pr push edit: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a description edited on GitHub since the last push is not overwritten
+run_test
+v2_reset push_lease_refuse
+write_edit_handler
+jq -n '{title: "Push title v2", body: "Edited on GitHub"}' > "$MOCK_REMOTE_DESC"
+printf 'Push title v3\n\nPush body v3\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"changed since timvisher_gh last pushed it"* ]] &&
+   [[ $result == *"+Edited on GitHub"* ]] &&
+   [[ $result == *"-Push body v2"* ]] &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG" &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Push body v2' ]]
+then
+  pass "pr push: refuses and shows a diff when GitHub's description moved"
+else
+  fail "pr push lease refuse: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -600}'"
+fi
+
+# Test: folding GitHub's edits into pr.md makes it the new baseline
+run_test
+v2_reset push_lease_reconcile
+write_edit_handler
+printf 'Push title v2\n\nEdited on GitHub\n' > "$push_st/pr.md"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"description already current"* ]] &&
+   ! grep -q 'mock-gh pr edit' "$MOCK_LOG" &&
+   [[ $(jq -r .posted.body "$push_st/pr.json") == 'Edited on GitHub' ]]
+then
+  pass "pr push: a pr.md matching GitHub becomes the new lease baseline"
+else
+  fail "pr push lease reconcile: rc=${rc} json=$(cat "$push_st/pr.json") got '${result: -400}'"
+fi
+
+# Test: --force-with-lease passes through with --force-if-includes
+run_test
+v2_reset push_force
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push --force-with-lease 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-git-push push -v --force-with-lease --force-if-includes origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG"
+then
+  pass "pr push: --force-with-lease adds --force-if-includes"
+else
+  fail "pr push force: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: --force-with-lease=<sha> leases the branch against that sha
+run_test
+v2_reset push_force_sha
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=1111111111111111111111111111111111111111 run_v2 pr push --force-with-lease=1111111 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-git-push push -v --force-with-lease=refs/heads/${fixture_branch}:1111111 --force-if-includes origin" "$MOCK_LOG"
+then
+  pass "pr push: --force-with-lease=<sha> expands to the branch ref"
+else
+  fail "pr push force sha: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a failed git push stops before touching the PR
+run_test
+v2_reset push_fail
+write_edit_handler
+result=$(MOCK_GIT_PUSH_FAIL=1 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"rerun with --force-with-lease"* ]] &&
+   ! grep -q 'mock-gh pr' "$MOCK_LOG"
+then
+  pass "pr push: a failed git push stops before the PR steps"
+else
+  fail "pr push fail: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: --open opens the PR
+run_test
+v2_reset push_open
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push --open 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q 'mock-open https://github.com/testuser/testrepo/pull/50' "$MOCK_LOG"
+then
+  pass "pr push: --open opens the PR"
+else
+  fail "pr push open: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: an unknown option is an error
+run_test
+v2_reset push_bad_opt
+write_edit_handler
+result=$(run_v2 pr push --bogus 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && [[ $result == *"unknown argument '--bogus'"* ]] && ! grep -q mock-git-push "$MOCK_LOG"
+then
+  pass "pr push: unknown option is an error"
+else
+  fail "pr push bad opt: rc=${rc} got '${result: -400}'"
+fi
+
+# Test: with no recorded URL, an open PR for the branch is adopted, not duplicated
+run_test
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+printf 'Push title v2\n\nEdited on GitHub\n' > "$tmpdir/repo/pr.md"
+v2_reset push_adopt
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head MOCK_EXISTING_PR=https://github.com/testuser/testrepo/pull/61 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"adopting it"* ]] &&
+   ! grep -q 'mock-gh pr create' "$MOCK_LOG" &&
+   [[ $(jq -r .url "$push_st/pr.json") == https://github.com/testuser/testrepo/pull/61 ]] &&
+   [[ $result == *"description already current"* ]]
+then
+  pass "pr push: adopts an existing open PR for the branch"
+else
+  fail "pr push adopt: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: a detached HEAD is refused
+run_test
+v2_reset push_detached
+write_edit_handler
+"$real_git" -C "$tmpdir/repo" checkout -q --detach
+result=$(run_v2 pr push 2>&1) && rc=0 || rc=$?
+"$real_git" -C "$tmpdir/repo" checkout -q "$fixture_branch"
+if (( rc != 0 )) && [[ $result == *"HEAD is detached"* ]] && ! grep -q mock-git-push "$MOCK_LOG"
+then
+  pass "pr push: refuses a detached HEAD"
+else
+  fail "pr push detached: rc=${rc} got '${result: -400}'"
+fi
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url
+unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
 
 # --- pr ready tests ---
 

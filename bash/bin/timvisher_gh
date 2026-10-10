@@ -25,8 +25,11 @@ show_help() {
 
     timvisher_gh info <field>    Query repository metadata
     timvisher_gh info --json     Query the whole context blob
-    timvisher_gh pr              Create a PR from pr.md (or open existing)
-    timvisher_gh pr edit         Edit an existing PR from pr.md
+    timvisher_gh pr [push] [--force-with-lease[=<sha>]] [--{no-}open]
+                                 Converge GitHub to the worktree: push the
+                                 branch, create the PR or update its
+                                 title/body from pr.md
+    timvisher_gh pr edit         Only the title/body step of pr push
     timvisher_gh pr merge [gh-opts]  Merge the PR recorded in pr.json
     timvisher_gh pr ready        Wait for CI checks to pass, then mark PR ready
     timvisher_gh issue           Create an issue from issue.md (or open existing)
@@ -40,14 +43,36 @@ show_help() {
     timvisher_gh comment delete [--force] <file>
                                  Delete the comment tracked by <file>.url
 
-  pr subcommand:
-    - Requires a clean git status
-    - Pushes the current branch before creating
-    - Reads title from line 1 and body from line 3+ of pr.md
+  pr push subcommand (bare 'pr' is the same):
+    - Idempotent: every step checks GitHub first and reports when there
+      is nothing to do, so rerunning after any failure converges
+    - Requires a clean git status and a checked-out branch
+    - Branch: pushes HEAD to origin, or reports 'already pushed' when
+      origin's branch is already at HEAD.  A rewritten branch needs
+      --force-with-lease, which runs 'git push --force-with-lease
+      --force-if-includes' (a fetch in another worktree sharing the
+      ref store cannot satisfy the lease behind your back).
+      --force-with-lease=<sha> leases the branch against <sha>;
+      --force-with-lease=<ref>:<sha> passes through as is
+    - PR: with no recorded PR, adopts an open PR for the branch or
+      creates a draft from pr.md (title line 1, body line 3+)
+    - Title/body: updated from pr.md under the description lease (see
+      pr edit)
+    - Prints the PR URL on stdout.  --open also opens it in the
+      browser (default: --no-open)
 
   pr edit subcommand:
-    - Requires a recorded PR (pr.json)
-    - Updates the PR title and body from pr.md
+    - Requires a recorded PR (pr.json) and pr.md
+    - Converges the PR title and body to pr.md under a lease on what
+      timvisher_gh last posted (pr.json .posted):
+        GitHub == pr.md            'already current'
+        GitHub == posted           pushes pr.md
+        GitHub != posted           refuses and shows the diff; fold the
+                                   GitHub edits into pr.md (a pr.md that
+                                   matches GitHub becomes the new
+                                   baseline) or delete .posted to
+                                   overwrite GitHub
+        nothing posted yet         adopts GitHub's as the baseline
 
   pr merge subcommand:
     - Requires a recorded PR (pr.json)
@@ -94,7 +119,8 @@ show_help() {
 
   issue edit subcommand:
     - Requires a recorded issue (issue.json)
-    - Updates the issue title and body from issue.md
+    - Converges the issue title and body to issue.md under the same
+      lease as pr edit
 
   comment subcommand:
     - Posts the contents of <file> as a PR comment
@@ -545,6 +571,83 @@ gh_pr_ready() {
   info 'PR marked as ready for review: %s' "$pr_url"
 }
 
+open_url() {
+  osascript -e 'on run argv
+  tell script "timvisher Browser" to openUrl(item 1 of argv)
+end run' "$1"
+}
+
+desc__normalize() {
+  local text=${1//$'\r'/}
+  text=${text%"${text##*[!$'\n']}"}
+  printf '%s' "$text"
+}
+
+desc__record_posted() {
+  local kind=$1 title=$2 body=$3 json
+  json=$(state__json "$kind" |
+           jq --arg title "$title" --arg body "$body" '.posted = {title: $title, body: $body}') ||
+    die "Couldn't record the posted %s description" "$kind"
+  state__write_json "$kind" "$json"
+}
+
+desc__converge() {
+  local kind=$1 url=$2 md=$3
+  local local_title local_body
+  local_title=$(desc__normalize "$(head -n1 "$md")")
+  local_body=$(desc__normalize "$(tail -n+3 "$md")")
+
+  local remote_json remote_title remote_body
+  remote_json=$(command gh "$kind" view "$url" --repo "$repo_spec" --json title,body) ||
+    die "Couldn't read the %s description from '%s'" "$kind" "$url"
+  remote_title=$(desc__normalize "$(jq -r '.title // ""' <<<"$remote_json")")
+  remote_body=$(desc__normalize "$(jq -r '.body // ""' <<<"$remote_json")")
+
+  local json posted_title posted_body have_posted=false
+  json=$(state__json "$kind")
+  if jq -e '.posted | type == "object"' >/dev/null <<<"$json"
+  then
+    have_posted=true
+    posted_title=$(jq -r '.posted.title // ""' <<<"$json")
+    posted_body=$(jq -r '.posted.body // ""' <<<"$json")
+  else
+    info "No posted %s description recorded; adopting GitHub's as the baseline" "$kind"
+    posted_title=$remote_title
+    posted_body=$remote_body
+  fi
+
+  if [[ $local_title == "$remote_title" && $local_body == "$remote_body" ]]
+  then
+    if [[ $have_posted == false || $posted_title != "$local_title" || $posted_body != "$local_body" ]]
+    then
+      desc__record_posted "$kind" "$local_title" "$local_body"
+    fi
+    info '%s description already current: %s' "$kind" "$url"
+    return 0
+  fi
+
+  if [[ $remote_title != "$posted_title" || $remote_body != "$posted_body" ]]
+  then
+    error 'The %s description on GitHub changed since timvisher_gh last pushed it:' "$kind"
+    diff -u \
+         --label 'last pushed' \
+         --label 'GitHub now' \
+         <(printf '%s\n\n%s\n' "$posted_title" "$posted_body") \
+         <(printf '%s\n\n%s\n' "$remote_title" "$remote_body") >&2
+    die "Refusing to overwrite it. Fold those edits into '%s' (a file that matches GitHub becomes the new baseline), or delete .posted from '%s' to overwrite GitHub with the file." \
+        "${md#"$toplevel"/}" ".timvisher_gh/${kind}/${kind}.json"
+  fi
+
+  command gh "$kind" edit "$url" \
+          --repo "$repo_spec" \
+          --title "$local_title" \
+          --body-file <(printf '%s\n' "$local_body") >/dev/null ||
+    die "Unable to edit the %s description of '%s'" "$kind" "$url"
+
+  desc__record_posted "$kind" "$local_title" "$local_body"
+  info '%s description updated: %s' "$kind" "$url"
+}
+
 gh_pr_edit() {
   local pr_url pr_md
   pr_url=$(state__require_url pr) ||
@@ -552,14 +655,7 @@ gh_pr_edit() {
   pr_md=$(state__require_md pr) ||
     exit 1
 
-  command gh pr edit \
-          "$pr_url" \
-          --repo "$repo_spec" \
-          --title "$(head -n1 "$pr_md")" \
-          -F <(tail -n+3 "$pr_md") ||
-    die 'Unable to edit PR'
-
-  info 'PR updated'
+  desc__converge pr "$pr_url" "$pr_md"
 }
 
 gh_pr__url_parts() {
@@ -820,73 +916,189 @@ gh_pr_merge() {
   info 'PR merged in %s via %s' "${merge_commit:-<unknown commit>}" "$merge_strategy"
 }
 
-gh_pr() {
-  case ${1-} in
-    edit)
-      shift
-      gh_pr_edit "$@"
-      return
-      ;;
-    merge)
-      shift
-      gh_pr_merge "$@"
-      return
-      ;;
-    ready)
-      shift
-      gh_pr_ready "$@"
-      return
-      ;;
-  esac
+gh_pr__push_branch() {
+  local force=$1 lease=$2 branch=$3
+  local head remote_sha
+  head=$(command git rev-parse HEAD) ||
+    die "Couldn't resolve HEAD"
 
-  local existing_url
-  existing_url=$(state__url pr)
-  if [[ -n $existing_url ]]
+  remote_sha=$(command git ls-remote origin "refs/heads/${branch}") ||
+    die "Couldn't read '%s' from origin" "$branch"
+  remote_sha=${remote_sha%%[[:space:]]*}
+
+  if [[ $remote_sha == "$head" ]]
   then
-    info 'PR already exists. Opening %s' "$existing_url"
-    osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$existing_url"
-    return
+    info "Branch already pushed: origin '%s' is at %s" "$branch" "${head:0:12}"
+    return 0
+  fi
+
+  local -a push_args=(push -v)
+  if [[ $force == true ]]
+  then
+    if [[ -z $lease ]]
+    then
+      push_args+=(--force-with-lease)
+    elif [[ $lease == *:* ]]
+    then
+      push_args+=("--force-with-lease=${lease}")
+    else
+      push_args+=("--force-with-lease=refs/heads/${branch}:${lease}")
+    fi
+    push_args+=(--force-if-includes)
+  fi
+  push_args+=(origin "HEAD:refs/heads/${branch}")
+
+  if ! command git "${push_args[@]}"
+  then
+    if [[ $force == true ]]
+    then
+      die "Unable to git push '%s'; the lease no longer holds (someone else pushed?)" "$branch"
+    fi
+    die "Unable to git push '%s'; if you rewrote it, rerun with --force-with-lease" "$branch"
+  fi
+  info "Pushed '%s' at %s" "$branch" "${head:0:12}"
+}
+
+gh_pr__create() {
+  local branch=$1 pr_md=$2
+
+  local existing
+  existing=$(command gh pr list --repo "$repo_spec" --head "$branch" --state open --json url --jq '.[0].url // empty') ||
+    die "Couldn't look for an existing PR for '%s'" "$branch"
+  if [[ -n $existing ]]
+  then
+    info "Found an open PR for '%s'; adopting it: %s" "$branch" "$existing"
+    state__set_url pr "$existing"
+    return 1
   fi
 
   local base_branch
-  base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+  base_branch=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
-  local pr_md
-  pr_md=$(state__require_md pr) ||
-    exit 1
-
-  local status
-  status=$(command git status --porcelain)
-
-  [[ -z $status ]] ||
-    die '%s\ngit status is not clean' "$status"
-
-  command git push -v origin HEAD ||
-    die 'Unable to git push'
-
-  osascript -e 'tell script "timvisher Browser" to activate()'
-
-  local pr_url
+  local title body pr_url
+  title=$(desc__normalize "$(head -n1 "$pr_md")")
+  body=$(desc__normalize "$(tail -n+3 "$pr_md")")
   pr_url=$(
     command gh pr create \
             --repo "$repo_spec" \
             --draft \
             --base "$base_branch" \
-            --title "$(head -n1 "$pr_md")" \
-            -F <(tail -n+3 "$pr_md")
+            --title "$title" \
+            --body-file <(printf '%s\n' "$body")
         ) ||
     die 'Unable to create PR'
 
   state__set_url pr "$pr_url"
+  desc__record_posted pr "$title" "$body"
+  info 'Created draft PR: %s' "$pr_url"
+}
+
+gh_pr_push() {
+  local open=false force=false lease=
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --force-with-lease)
+        force=true
+        lease=
+        shift
+        ;;
+      --force-with-lease=*)
+        force=true
+        lease=${1#--force-with-lease=}
+        [[ -n $lease ]] ||
+          die 'Option --force-with-lease= requires a value'
+        shift
+        ;;
+      --open)
+        open=true
+        shift
+        ;;
+      --no-open)
+        open=false
+        shift
+        ;;
+      *)
+        die "pr push: unknown argument '%s'" "$1"
+        ;;
+    esac
+  done
+
+  local status
+  status=$(command git status --porcelain) ||
+    die "Couldn't read git status"
+  [[ -z $status ]] ||
+    die '%s\ngit status is not clean' "$status"
+
+  local branch
+  branch=$(command git symbolic-ref --quiet --short HEAD) ||
+    die 'HEAD is detached; check out a branch to push'
+
+  local pr_md pr_url
+  pr_md=$(state__md pr)
+  pr_url=$(state__url pr)
+
+  if [[ -z $pr_url ]]
+  then
+    pr_md=$(state__require_md pr) ||
+      exit 1
+  fi
+
+  gh_pr__push_branch "$force" "$lease" "$branch"
+
+  local created=false
+  if [[ -z $pr_url ]]
+  then
+    if gh_pr__create "$branch" "$pr_md"
+    then
+      created=true
+    fi
+    pr_url=$(state__require_url pr) ||
+      exit 1
+  fi
   state__link_compat pr.md.url .timvisher_gh/pr/pr.url
+
+  if [[ $created == false ]]
+  then
+    if [[ -r $pr_md ]]
+    then
+      desc__converge pr "$pr_url" "$pr_md"
+    else
+      warn "No '%s'; leaving the PR description alone" "${pr_md#"$toplevel"/}"
+    fi
+  fi
+
   printf '%s\n' "$pr_url"
 
-  osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$pr_url"
+  if [[ $open == true ]]
+  then
+    open_url "$pr_url"
+  fi
+}
+
+gh_pr() {
+  case ${1-} in
+    push)
+      shift
+      gh_pr_push "$@"
+      ;;
+    edit)
+      shift
+      gh_pr_edit "$@"
+      ;;
+    merge)
+      shift
+      gh_pr_merge "$@"
+      ;;
+    ready)
+      shift
+      gh_pr_ready "$@"
+      ;;
+    *)
+      gh_pr_push "$@"
+      ;;
+  esac
 }
 
 # --- subcommand: issue ---
@@ -898,14 +1110,7 @@ gh_issue_edit() {
   issue_md=$(state__require_md issue) ||
     exit 1
 
-  command gh issue edit \
-          "$issue_url" \
-          --repo "$repo_spec" \
-          --title "$(head -n1 "$issue_md")" \
-          -F <(tail -n+3 "$issue_md") ||
-    die 'Unable to edit issue'
-
-  info 'Issue updated'
+  desc__converge issue "$issue_url" "$issue_md"
 }
 
 gh_issue() {
@@ -922,9 +1127,7 @@ gh_issue() {
   if [[ -n $existing_url ]]
   then
     info 'Issue already exists. Opening %s' "$existing_url"
-    osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$existing_url"
+    open_url "$existing_url"
     return
   fi
 
@@ -934,21 +1137,22 @@ end run' "$existing_url"
 
   osascript -e 'tell script "timvisher Browser" to activate()'
 
-  local issue_url
+  local title body issue_url
+  title=$(desc__normalize "$(head -n1 "$issue_md")")
+  body=$(desc__normalize "$(tail -n+3 "$issue_md")")
   issue_url=$(
     command gh issue create \
             --repo "$repo_spec" \
-            --title "$(head -n1 "$issue_md")" \
-            -F <(tail -n+3 "$issue_md")
+            --title "$title" \
+            --body-file <(printf '%s\n' "$body")
         ) ||
     die 'Unable to create issue'
 
   state__set_url issue "$issue_url"
+  desc__record_posted issue "$title" "$body"
   printf '%s\n' "$issue_url"
 
-  osascript -e 'on run argv
-  tell script "timvisher Browser" to openUrl(item 1 of argv)
-end run' "$issue_url"
+  open_url "$issue_url"
 }
 
 # --- subcommand: comment ---
