@@ -1146,15 +1146,25 @@ function ntmux3__main() {
 
         if [[ -n $expected_pr_md_url ]]
         then
-            if ! [[ -r pr.md.url ]]
+            local pr_url_file=.timvisher_gh/pr/pr.url
+            if ! [[ -r $pr_url_file ]] && [[ -r pr.md.url ]]
             then
-                echo "Adding pr.md.url with contents '${expected_pr_md_url}'" >&2
-                tee pr.md.url <<<"${expected_pr_md_url}" >&2
+                pr_url_file=pr.md.url
             fi
-            pr_md_url=$(< pr.md.url)
-            if [[ ${pr_md_url} != ${expected_pr_md_url} ]]
+            if ! [[ -r $pr_url_file ]]
             then
-                info 'pr.md.url contents '%s' != expected contents '%s'' "${pr_md_url}" "${expected_pr_md_url}"
+                echo "Adding ${pr_url_file} with contents '${expected_pr_md_url}'" >&2
+                mkdir -p .timvisher_gh/pr ||
+                    {
+                        error 'Could not create .timvisher_gh/pr'
+                        return 1
+                    }
+                tee "$pr_url_file" <<<"${expected_pr_md_url}" >&2
+            fi
+            pr_md_url=$(< "$pr_url_file")
+            if [[ ${pr_md_url} != "${expected_pr_md_url}" ]]
+            then
+                info "%s contents '%s' != expected contents '%s'" "$pr_url_file" "${pr_md_url}" "${expected_pr_md_url}"
                 read -rp 'Override? (y/N) ' resp
                 if [[ $resp != y ]]
                 then
@@ -1162,10 +1172,10 @@ function ntmux3__main() {
                     return
                 fi
 
-                info 'Setting pr.md.url contents to expected content '%s'' "${expected_pr_md_url}"
-                tee pr.md.url <<<"${expected_pr_md_url}" >&2 ||
+                info "Setting %s contents to expected content '%s'" "$pr_url_file" "${expected_pr_md_url}"
+                tee "$pr_url_file" <<<"${expected_pr_md_url}" >&2 ||
                     {
-                        error 'Could not set pr.md.url contents'
+                        error 'Could not set %s contents' "$pr_url_file"
                         return 1
                     }
             fi
