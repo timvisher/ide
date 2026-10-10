@@ -828,6 +828,7 @@ run_v2() {
       TIMVISHER_AGENT='' \
       timvisher_logging_log_level=INFO \
       TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config" \
+      TIMVISHER_GH_CORE_CONFIG_DIR="$v2_home/core" \
       TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
       TIMVISHER_GH_PR_MERGE_TIMEOUT=2 \
       TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 \
@@ -1100,6 +1101,21 @@ case "$1 $2" in
   'pr create')
     printf '%s\n' "$*" >> "$MOCK_GH_HANDLER.created"
     echo 'https://github.com/testuser/testrepo/pull/50'
+    ;;
+  'pr ready')
+    jq '.isDraft = false' "$mock_remote" > "$mock_remote.new" && mv "$mock_remote.new" "$mock_remote"
+    ;;
+  'pr checks')
+    echo '[]'
+    ;;
+  'pr diff')
+    if [[ -r ${MOCK_PR_DIFF_FILE-} ]]
+    then
+      cat "$MOCK_PR_DIFF_FILE"
+    fi
+    ;;
+  'pr comment')
+    echo 'https://github.com/testuser/testrepo/pull/50#issuecomment-7'
     ;;
 esac
 HANDLER
@@ -1439,6 +1455,276 @@ rm -rf "$tmpdir/repo/.timvisher_gh"
 rm_state pr.md pr.md.url
 unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
 
+# --- hook tests ---
+
+core_root="$v2_home/core"
+ext_root="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config"
+hook_log="$tmpdir/hook.log"
+export MOCK_REMOTE_DESC="$tmpdir/remote_hooks.json"
+
+make_hook() {
+  local path=$1 rc=${2:-0}
+  mkdir -p "${path%/*}"
+  cat > "$path" <<HOOK
+#!/usr/bin/env bash
+printf '%s phase=%s hook=%s url=%s head=%s scope=%s open=%s merge=%s title=%s\\n' \\
+  "\${0#$v2_home/}" "\$TIMVISHER_GH_PHASE" "\$TIMVISHER_GH_HOOK" "\$TIMVISHER_GH_PR_URL" \\
+  "\$TIMVISHER_GH_HEAD_SHA" "\$TIMVISHER_GH_PATH_SCOPE" "\$TIMVISHER_GH_OPEN" \\
+  "\$TIMVISHER_GH_MERGE_COMMIT" "\$TIMVISHER_GH_NOTIFY_TITLE" >> '$hook_log'
+echo hook-stdout
+exit $rc
+HOOK
+  chmod +x "$path"
+}
+
+reset_hooks() {
+  rm -rf "$core_root" "$ext_root" "$hook_log"
+  : > "$hook_log"
+}
+
+hooks_fixture() {
+  rm -rf "$tmpdir/repo/.timvisher_gh"
+  rm_state pr.md pr.md.url x.merged
+  mkdir -p "$push_st"
+  printf 'Hook title\n\nHook body\n' > "$push_st/pr.md"
+  jq -n '{url: "https://github.com/testuser/testrepo/pull/50", posted: {title: "Hook title", body: "Hook body"}}' > "$push_st/pr.json"
+  jq -n '{title: "Hook title", body: "Hook body", isDraft: true}' > "$MOCK_REMOTE_DESC"
+}
+
+# Test: push pre- and post-hooks from both roots and both scopes run in order
+run_test
+reset_hooks
+hooks_fixture
+v2_reset hooks_push
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/10-core-org"
+make_hook "$ext_root/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo"
+make_hook "$core_root/repos/testuser/testrepo/pr/push/post.d/20-core-repo"
+make_hook "$ext_root/orgs/testuser/pr/push/post.d/10-ext-org"
+printf 'not a hook\n' > "$ext_root/orgs/testuser/pr/push/post.d/README"
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>"$tmpdir/hooks_push.err") && rc=0 || rc=$?
+expected_order='core/orgs/testuser/pr/push/pre.d/10-core-org
+.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo
+core/repos/testuser/testrepo/pr/push/post.d/20-core-repo
+.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/testuser/pr/push/post.d/10-ext-org'
+if (( rc == 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   [[ $(cut -d' ' -f1 "$hook_log") == "$expected_order" ]] &&
+   grep -q "post.d/10-ext-org phase=push hook=post url=https://github.com/testuser/testrepo/pull/50 head=${fixture_head} scope= open=false merge= title=testuser/testrepo#50: Hook title" "$hook_log" &&
+   grep -q hook-stdout "$tmpdir/hooks_push.err"
+then
+  pass "hooks: push pre/post hooks run from both roots and scopes, stdout kept off stdout"
+else
+  fail "hooks push: rc=${rc} result='${result}' hooks=$(cat "$hook_log") err=$(tail -5 "$tmpdir/hooks_push.err")"
+fi
+
+# Test: push pre-hooks are skipped when the branch is already pushed; post-hooks still run
+run_test
+: > "$hook_log"
+v2_reset hooks_push_already
+write_edit_handler
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push --open 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   ! grep -q 'pre.d' "$hook_log" &&
+   grep -q 'post.d/20-core-repo .* open=true' "$hook_log" &&
+   grep -q 'post.d/10-ext-org' "$hook_log"
+then
+  pass "hooks: push pre-hooks skipped when already pushed, post-hooks always run"
+else
+  fail "hooks push already: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing push pre-hook stops before git push
+run_test
+reset_hooks
+v2_reset hooks_push_pre_fail
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/10-gate" 1
+make_hook "$core_root/orgs/testuser/pr/push/pre.d/20-after"
+make_hook "$core_root/orgs/testuser/pr/push/post.d/10-post"
+result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == *"push pre-hook failed; not proceeding"* ]] &&
+   ! grep -q mock-git-push "$MOCK_LOG" &&
+   ! grep -q '20-after\|10-post' "$hook_log"
+then
+  pass "hooks: failing pre-hook gates the push"
+else
+  fail "hooks pre fail: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing post-hook still lets the others run, then exits non-zero
+run_test
+reset_hooks
+v2_reset hooks_push_post_fail
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/push/post.d/10-broken" 1
+make_hook "$core_root/orgs/testuser/pr/push/post.d/20-fine"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>"$tmpdir/hooks_post_fail.err") && rc=0 || rc=$?
+if (( rc != 0 )) &&
+   [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
+   grep -q '20-fine' "$hook_log" &&
+   grep -q 'post-hook(s) failed' "$tmpdir/hooks_post_fail.err"
+then
+  pass "hooks: failing post-hook runs the rest and exits non-zero"
+else
+  fail "hooks post fail: rc=${rc} hooks=$(cat "$hook_log") err=$(tail -3 "$tmpdir/hooks_post_fail.err")"
+fi
+
+# Test: path-scoped hooks fire only when the PR diff touches the directory
+run_test
+reset_hooks
+v2_reset hooks_paths
+write_edit_handler
+make_hook "$ext_root/repos/testuser/testrepo/paths/apps/cfctl/pr/push/post.d/10-cfctl"
+make_hook "$ext_root/repos/testuser/testrepo/paths/apps/other/pr/push/post.d/10-other"
+export MOCK_PR_DIFF_FILE="$tmpdir/pr_diff.txt"
+printf 'apps/cfctl/main.go\nREADME.md\n' > "$MOCK_PR_DIFF_FILE"
+result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q '10-cfctl .* scope=apps/cfctl ' "$hook_log" &&
+   ! grep -q '10-other' "$hook_log"
+then
+  pass "hooks: path scope fires only for directories the PR touches"
+else
+  fail "hooks paths: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+unset MOCK_PR_DIFF_FILE
+
+# Test: ready on a draft runs pre-hooks, marks it ready, runs post-hooks
+run_test
+reset_hooks
+v2_reset hooks_ready
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/ready/pre.d/10-gate"
+make_hook "$core_root/orgs/testuser/pr/ready/post.d/10-after"
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q 'mock-gh pr ready' "$MOCK_LOG" &&
+   [[ $(cut -d' ' -f1 "$hook_log") == $'core/orgs/testuser/pr/ready/pre.d/10-gate\ncore/orgs/testuser/pr/ready/post.d/10-after' ]]
+then
+  pass "hooks: ready runs pre-hooks then gh pr ready then post-hooks"
+else
+  fail "hooks ready: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: ready on an already-ready PR skips the gate and the checks, runs post-hooks
+run_test
+: > "$hook_log"
+v2_reset hooks_ready_already
+write_edit_handler
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   [[ $result == *"PR already ready for review"* ]] &&
+   ! grep -q 'mock-gh pr ready\|mock-gh pr checks' "$MOCK_LOG" &&
+   [[ $(cut -d' ' -f1 "$hook_log") == 'core/orgs/testuser/pr/ready/post.d/10-after' ]]
+then
+  pass "hooks: already-ready PR skips pre-hooks and checks, runs post-hooks"
+else
+  fail "hooks ready already: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
+# Test: a failing ready pre-hook keeps the PR a draft
+run_test
+reset_hooks
+jq '.isDraft = true' "$MOCK_REMOTE_DESC" > "$MOCK_REMOTE_DESC.new" && mv "$MOCK_REMOTE_DESC.new" "$MOCK_REMOTE_DESC"
+v2_reset hooks_ready_gate
+write_edit_handler
+make_hook "$core_root/orgs/testuser/pr/ready/pre.d/10-gate" 1
+result=$(run_v2 pr ready 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && ! grep -q 'mock-gh pr ready' "$MOCK_LOG"
+then
+  pass "hooks: failing ready pre-hook keeps the PR a draft"
+else
+  fail "hooks ready gate: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: merge pre-hooks run before a merge request, not when already merged
+run_test
+reset_hooks
+v2_reset hooks_merge_pre
+make_hook "$core_root/orgs/testuser/pr/merge/pre.d/10-gate"
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+first_rc=$rc
+first_hooks=$(cat "$hook_log")
+: > "$hook_log"
+rm_state x.merged
+v2_reset hooks_merge_pre_already
+write_merge_handler "$(merge_graphql MERGED)"
+result=$(run_v2 pr merge 2>&1 </dev/null) && rc=0 || rc=$?
+if (( first_rc == 0 && rc == 0 )) &&
+   [[ $first_hooks == *"merge/pre.d/10-gate phase=merge hook=pre"* ]] &&
+   [[ ! -s $hook_log ]]
+then
+  pass "hooks: merge pre-hooks gate a request and are skipped once merged"
+else
+  fail "hooks merge pre: rc=${first_rc}/${rc} first=${first_hooks} second=$(cat "$hook_log")"
+fi
+
+# Test: a failing merge pre-hook stops before any merge request
+run_test
+reset_hooks
+v2_reset hooks_merge_gate
+make_hook "$core_root/orgs/testuser/pr/merge/pre.d/10-gate" 1
+write_merge_handler "$(merge_graphql OPEN)"
+result=$(echo y | run_v2 pr merge 2>&1) && rc=0 || rc=$?
+if (( rc != 0 )) && ! grep -q 'mock-gh pr merge' "$MOCK_LOG"
+then
+  pass "hooks: failing merge pre-hook blocks the merge request"
+else
+  fail "hooks merge gate: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+reset_hooks
+
+# Test: comment <name> falls back to canned comments in either config root
+run_test
+v2_reset canned_comment
+write_edit_handler
+mkdir -p "$ext_root/comments"
+printf '@arp review\n' > "$ext_root/comments/arp-review.md"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -q "mock-gh pr comment https://github.com/testuser/testrepo/pull/50 --body-file $ext_root/comments/arp-review.md" "$MOCK_LOG" &&
+   [[ ! -e $tmpdir/repo/arp-review.url && ! -e $tmpdir/repo/arp-review.md.url ]]
+then
+  pass "canned: comment <name> posts timvisher_gh.config/comments/<name>.md"
+else
+  fail "canned: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
+fi
+
+# Test: the core root's canned comment wins over the extension root's
+run_test
+v2_reset canned_core_first
+write_edit_handler
+mkdir -p "$core_root/comments"
+printf 'core\n' > "$core_root/comments/arp-review.md"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q -- "--body-file $core_root/comments/arp-review.md" "$MOCK_LOG"
+then
+  pass "canned: core root is searched before the extension root"
+else
+  fail "canned core first: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+
+# Test: a readable file wins over a canned comment of the same name
+run_test
+v2_reset canned_file_wins
+write_edit_handler
+printf 'from file\n' > "$tmpdir/repo/arp-review"
+result=$(run_v2 comment arp-review 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q -- '--body-file arp-review' "$MOCK_LOG"
+then
+  pass "canned: a readable file of the same name is posted instead"
+else
+  fail "canned file wins: rc=${rc} log=$(cat "$MOCK_LOG")"
+fi
+rm -f "$tmpdir/repo/arp-review" "$tmpdir/repo/arp-review.url"
+reset_hooks
+rm -rf "$tmpdir/repo/.timvisher_gh"
+rm_state pr.md pr.md.url x.merged
+unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
+
 # --- pr ready tests ---
 
 # Test: pr ready - exits if pr.md.url is missing
@@ -1558,11 +1844,11 @@ unset MOCK_CHECKS_FILE
 
 # Test: pr ready - uses configurable exclude-checks config path
 run_test
-if grep -q 'timvisher_gh.config/repos' "$script"
+if grep -qF '/pr/ready/exclude-checks.txt' "$script"
 then
   pass "pr ready: uses configurable exclude-checks config path"
 else
-  fail "pr ready: does not reference timvisher_gh.config/repos config path"
+  fail "pr ready: does not reference the repos/OWNER/REPO exclude-checks path"
 fi
 
 # Test: pr ready - non-JSON output from gh pr checks retries (does not infinite loop)

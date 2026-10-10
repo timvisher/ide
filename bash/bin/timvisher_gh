@@ -15,6 +15,8 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
+
 show_help() {
   cat <<'USAGE'
   timvisher_gh - GitHub workflow commands
@@ -103,10 +105,14 @@ show_help() {
 
   pr ready subcommand:
     - Requires a recorded PR (pr.json)
-    - Polls CI checks until all pass, then runs 'gh pr ready'
-    - Exclude patterns are loaded from org-level then repo-level files:
-        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/OWNER/pr/ready/exclude-checks.txt
-        ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt
+    - A PR that is already ready reports 'already ready' and only runs
+      the ready post-hooks
+    - Otherwise polls CI checks until all pass, runs the ready
+      pre-hooks, then runs 'gh pr ready'
+    - Exclude patterns are loaded from org-level then repo-level files
+      under each config root (see Hooks):
+        <root>/orgs/OWNER/pr/ready/exclude-checks.txt
+        <root>/repos/OWNER/REPO/pr/ready/exclude-checks.txt
       Org-level patterns apply to every repo in the org; repo-level
       patterns add to them. One regex pattern per line; matching check
       names are ignored. Lines starting with '#' and blank lines are
@@ -124,6 +130,9 @@ show_help() {
 
   comment subcommand:
     - Posts the contents of <file> as a PR comment
+    - When <file> is not a readable file, posts the canned comment
+      <root>/comments/<file>.md from the first config root that has
+      it (e.g. 'timvisher_gh comment arp-review'); nothing is recorded
     - PR URL comes from --pull-request=URL, or pr.json, or Chrome active tab
     - Stores the comment URL in <file>.url
     - If <file>.url already exists, prints the URL to stdout
@@ -193,6 +202,46 @@ show_help() {
     Compatibility symlinks pr.md, pr.md.url, and x.merged are left at
     the root.  A URL written through the pr.md.url symlink is adopted
     into pr.json.
+
+  Hooks:
+    Executables in
+      <root>/<scope>/pr/<phase>/{pre,post}.d/*
+    run in name order, core root before extension root and org before
+    repo before path scope.  Config roots:
+      core       timvisher_gh.config/ beside this script
+                 (TIMVISHER_GH_CORE_CONFIG_DIR overrides)
+      extension  ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/
+                 (TIMVISHER_GH_CONFIG_DIR overrides)
+    Scopes:
+      orgs/OWNER
+      repos/OWNER/REPO
+      repos/OWNER/REPO/paths/<dir>   only when the PR diff touches <dir>
+    Phases:
+      push   pre: before the branch is pushed (skipped when already
+             pushed); post: after the PR is converged, every run
+      ready  pre: after checks pass, before 'gh pr ready' (skipped when
+             already ready); post: every run
+      merge  pre: before the merge request (skipped when already merged
+             or requested)
+    A failing pre-hook stops the command before its transition.  Post-
+    hooks always run, so they must check their own end state first; a
+    failing one does not stop the rest, but the command exits non-zero.
+    Hooks run from the worktree root with stdout sent to stderr and
+    this environment:
+      TIMVISHER_GH_PHASE         push | ready | merge
+      TIMVISHER_GH_HOOK          pre | post
+      TIMVISHER_GH_REPO          OWNER/REPO
+      TIMVISHER_GH_PR_URL        PR URL (empty before the PR exists)
+      TIMVISHER_GH_PR_NUMBER     PR number
+      TIMVISHER_GH_HEAD_SHA      local HEAD
+      TIMVISHER_GH_WORKTREE      worktree root
+      TIMVISHER_GH_STATE_DIR     <worktree root>/.timvisher_gh/pr
+      TIMVISHER_GH_MERGE_COMMIT  merge commit, once merged
+      TIMVISHER_GH_NOTIFY_TITLE  'OWNER/REPO#N: <pr.md title>', for
+                                 timvisher_notify
+      TIMVISHER_GH_OPEN          true when --open was given; hooks open
+                                 their own URLs
+      TIMVISHER_GH_PATH_SCOPE    <dir> for path-scoped hooks
 
   Options:
     -C <path>           Resolve context from <path> instead of the
@@ -480,6 +529,167 @@ state__require_md() {
   printf '%s\n' "$md"
 }
 
+# --- config and hooks ---
+
+config_roots() {
+  local core=${TIMVISHER_GH_CORE_CONFIG_DIR:-${SELF_DIR}/timvisher_gh.config}
+  local ext=${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}
+  printf '%s\n' "$core"
+  if [[ $ext != "$core" ]]
+  then
+    printf '%s\n' "$ext"
+  fi
+}
+
+hooks__changed_loaded=false
+hooks__changed=()
+
+hooks__load_changed() {
+  [[ $hooks__changed_loaded == true ]] &&
+    return 0
+
+  local pr_url
+  pr_url=$(state__url pr)
+  if [[ -n $pr_url ]]
+  then
+    mapfile -t hooks__changed < <(command gh pr diff "$pr_url" --repo "$repo_spec" --name-only)
+  else
+    local base merge_base
+    base=$(command gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+      die "Could not determine default branch for repository '%s'" "$repo_spec"
+    merge_base=$(command git merge-base "refs/remotes/origin/${base}" HEAD) ||
+      die "Couldn't find the merge base of HEAD and origin/%s for path-scoped hooks" "$base"
+    mapfile -t hooks__changed < <(command git diff --name-only "$merge_base" HEAD)
+  fi
+  hooks__changed_loaded=true
+}
+
+hooks__touches() {
+  local dir=${1%/} file
+  hooks__load_changed
+  for file in "${hooks__changed[@]}"
+  do
+    if [[ $file == "$dir"/* ]]
+    then
+      return 0
+    fi
+  done
+  return 1
+}
+
+hooks__found=()
+
+hooks__emit() {
+  local dir=$1 scope=$2 hook name
+  [[ -d $dir ]] ||
+    return 0
+  for hook in "$dir"/*
+  do
+    name=${hook##*/}
+    [[ -f $hook && -x $hook && $name != .* && $name != *~ ]] ||
+      continue
+    hooks__found+=("${hook}"$'\t'"${scope}")
+  done
+}
+
+hooks__collect() {
+  local phase=$1 when=$2 owner=${repo_spec%%/*}
+  local root paths_dir dir rel
+  local -a roots scoped
+  hooks__found=()
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    hooks__emit "${root}/orgs/${owner}/pr/${phase}/${when}.d" ''
+    hooks__emit "${root}/repos/${repo_spec}/pr/${phase}/${when}.d" ''
+    paths_dir="${root}/repos/${repo_spec}/paths"
+    [[ -d $paths_dir ]] ||
+      continue
+    mapfile -t scoped < <(find "$paths_dir" -type d -path "*/pr/${phase}/${when}.d" | LC_ALL=C sort)
+    for dir in "${scoped[@]}"
+    do
+      rel=${dir#"${paths_dir}/"}
+      rel=${rel%"/pr/${phase}/${when}.d"}
+      if hooks__touches "$rel"
+      then
+        hooks__emit "$dir" "$rel"
+      fi
+    done
+  done
+}
+
+hooks__run() {
+  local phase=$1 when=$2
+  local entry hook scope failures=0 pr_url pr_number title
+  hooks__collect "$phase" "$when"
+  (( ${#hooks__found[@]} )) ||
+    return 0
+
+  pr_url=$(state__url pr)
+  pr_number=
+  if [[ $pr_url =~ /pull/([0-9]+) ]]
+  then
+    pr_number=${BASH_REMATCH[1]}
+  fi
+  title=$repo_spec${pr_number:+#${pr_number}}
+  if [[ -r $(state__md pr) ]]
+  then
+    title+=": $(head -n1 "$(state__md pr)")"
+  fi
+
+  for entry in "${hooks__found[@]}"
+  do
+    hook=${entry%%$'\t'*}
+    scope=${entry#*$'\t'}
+    info 'Running %s %s-hook %s' "$phase" "$when" "$hook"
+    if ! (
+        cd "$toplevel" &&
+          TIMVISHER_GH_PHASE=$phase \
+          TIMVISHER_GH_HOOK=$when \
+          TIMVISHER_GH_REPO=$repo_spec \
+          TIMVISHER_GH_PR_URL=$pr_url \
+          TIMVISHER_GH_PR_NUMBER=$pr_number \
+          TIMVISHER_GH_HEAD_SHA=$(command git rev-parse HEAD) \
+          TIMVISHER_GH_WORKTREE=$toplevel \
+          TIMVISHER_GH_STATE_DIR=$(state__dir pr) \
+          TIMVISHER_GH_MERGE_COMMIT=${merge_commit-} \
+          TIMVISHER_GH_NOTIFY_TITLE=$title \
+          TIMVISHER_GH_OPEN=${hooks__open:-false} \
+          TIMVISHER_GH_PATH_SCOPE=$scope \
+          "$hook"
+      ) >&2
+    then
+      error '%s %s-hook failed: %s' "$phase" "$when" "$hook"
+      (( failures += 1 ))
+      if [[ $when == pre ]]
+      then
+        break
+      fi
+    fi
+  done
+
+  (( failures == 0 ))
+}
+
+hooks__run_pre() {
+  hooks__run "$1" pre ||
+    die '%s pre-hook failed; not proceeding (rerun once it passes)' "$1"
+}
+
+hooks__post_failed=false
+
+hooks__run_post() {
+  hooks__run "$1" post ||
+    hooks__post_failed=true
+}
+
+hooks__finish() {
+  if [[ $hooks__post_failed == true ]]
+  then
+    die '%s post-hook(s) failed; rerun once fixed (completed steps report "already")' "$1"
+  fi
+}
+
 # --- subcommand: pr ---
 
 gh_pr_ready() {
@@ -487,20 +697,37 @@ gh_pr_ready() {
   pr_url=$(state__require_url pr) ||
     exit 1
 
+  local is_draft
+  is_draft=$(command gh pr view "$pr_url" --repo "$repo_spec" --json isDraft --jq .isDraft) ||
+    die "Couldn't read the draft state of '%s'" "$pr_url"
+
+  if [[ $is_draft == false ]]
+  then
+    info 'PR already ready for review: %s' "$pr_url"
+    hooks__run_post ready
+    hooks__finish ready
+    return 0
+  fi
+
   # Load exclude patterns for checks that should be ignored (e.g.
   # mergegate, which never completes until all others pass). Org-level
   # patterns apply to every repo in the org; repo-level patterns add to
   # them.
-  local config_dir="${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config"
   local repo_slug_from_url=${pr_url#https://github.com/}
   repo_slug_from_url=${repo_slug_from_url%%/pull/*}
   local owner_from_url=${repo_slug_from_url%%/*}
 
-  local -a exclude_patterns=()
-  local exclude_file
-  for exclude_file in \
-    "${config_dir}/orgs/${owner_from_url}/pr/ready/exclude-checks.txt" \
-    "${config_dir}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
+  local -a exclude_patterns=() exclude_files=() roots=()
+  local exclude_file root
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    exclude_files+=(
+      "${root}/orgs/${owner_from_url}/pr/ready/exclude-checks.txt"
+      "${root}/repos/${repo_slug_from_url}/pr/ready/exclude-checks.txt"
+    )
+  done
+  for exclude_file in "${exclude_files[@]}"
   do
     [[ -r $exclude_file ]] ||
       continue
@@ -565,10 +792,14 @@ gh_pr_ready() {
     sleep "$poll_interval"
   done
 
+  hooks__run_pre ready
+
   command gh pr ready "$pr_url" --repo "$repo_spec" ||
     die 'Unable to mark PR as ready'
 
   info 'PR marked as ready for review: %s' "$pr_url"
+  hooks__run_post ready
+  hooks__finish ready
 }
 
 open_url() {
@@ -903,9 +1134,11 @@ gh_pr_merge() {
     info 'Merge already requested (%s); waiting for it to complete' "$requested"
   elif [[ $comment_merge == true ]]
   then
+    hooks__run_pre merge
     gh_pr__request_merge_by_comment "$pr_url" ||
       return 1
   else
+    hooks__run_pre merge
     gh_pr__request_merge_by_gh "$pr_url" "$@" ||
       return 1
   fi
@@ -916,9 +1149,8 @@ gh_pr_merge() {
   info 'PR merged in %s via %s' "${merge_commit:-<unknown commit>}" "$merge_strategy"
 }
 
-gh_pr__push_branch() {
-  local force=$1 lease=$2 branch=$3
-  local head remote_sha
+gh_pr__branch_pushed() {
+  local branch=$1 head remote_sha
   head=$(command git rev-parse HEAD) ||
     die "Couldn't resolve HEAD"
 
@@ -931,6 +1163,14 @@ gh_pr__push_branch() {
     info "Branch already pushed: origin '%s' is at %s" "$branch" "${head:0:12}"
     return 0
   fi
+  return 1
+}
+
+gh_pr__push_branch() {
+  local force=$1 lease=$2 branch=$3
+  local head
+  head=$(command git rev-parse HEAD) ||
+    die "Couldn't resolve HEAD"
 
   local -a push_args=(push -v)
   if [[ $force == true ]]
@@ -1045,7 +1285,12 @@ gh_pr_push() {
       exit 1
   fi
 
-  gh_pr__push_branch "$force" "$lease" "$branch"
+  hooks__open=$open
+  if ! gh_pr__branch_pushed "$branch"
+  then
+    hooks__run_pre push
+    gh_pr__push_branch "$force" "$lease" "$branch"
+  fi
 
   local created=false
   if [[ -z $pr_url ]]
@@ -1069,12 +1314,16 @@ gh_pr_push() {
     fi
   fi
 
+  hooks__run_post push
+
   printf '%s\n' "$pr_url"
 
   if [[ $open == true ]]
   then
     open_url "$pr_url"
   fi
+
+  hooks__finish push
 }
 
 gh_pr() {
@@ -1178,6 +1427,24 @@ resolve_pr_url() {
   fi
 
   printf '%s' "$url"
+}
+
+comment__canned() {
+  local name=$1 root file
+  local -a roots
+  [[ -n $name && $name != */* ]] ||
+    return 1
+  mapfile -t roots < <(config_roots)
+  for root in "${roots[@]}"
+  do
+    file="${root}/comments/${name}.md"
+    if [[ -r $file ]]
+    then
+      printf '%s\n' "$file"
+      return 0
+    fi
+  done
+  return 1
 }
 
 gh_comment_edit() {
@@ -1398,6 +1665,18 @@ gh_comment() {
 
   [[ -n $comment_file ]] ||
     die 'comment requires a <file> argument'
+
+  local canned
+  if [[ ! -r $comment_file ]] && canned=$(comment__canned "$comment_file")
+  then
+    local pr_url
+    pr_url=$(resolve_pr_url) ||
+      exit $?
+    info "Posting canned comment '%s' from %s" "$comment_file" "$canned"
+    command gh pr comment "$pr_url" --body-file "$canned" ||
+      die "Unable to post canned comment '%s'" "$comment_file"
+    return
+  fi
 
   [[ -r $comment_file ]] ||
     die "'%s' is not readable" "$comment_file"

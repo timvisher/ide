@@ -108,9 +108,10 @@ Wait for CI checks to pass, then remove draft status:
 timvisher_gh pr ready
 ```
 
-- Polls `gh pr checks` until all non-excluded checks pass, then runs `gh pr ready`
+- Reports "already ready" (and runs only the ready post-hooks) when the PR is not a draft
+- Polls `gh pr checks` until all non-excluded checks pass, runs the ready pre-hooks (e.g. an ARP gate), then runs `gh pr ready`
 - Fails immediately if any check has `bucket == "fail"`
-- Per-repo exclude patterns at `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt` ignore meta-checks (like mergegate) that never complete until all other checks pass
+- Org and repo exclude patterns at `timvisher_gh.config/{orgs/OWNER,repos/OWNER/REPO}/pr/ready/exclude-checks.txt` (either config root) ignore meta-checks (like mergegate) that never complete until all other checks pass
 - One regex pattern per line; `#` comments and blank lines are skipped
 - Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
 
@@ -151,6 +152,12 @@ timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' re
 ```
 
 The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the specific review comment you are replying to. The reply URL is stored in `reply.md.url`. Running the same command again when `.url` exists opens it in the browser instead of posting a duplicate.
+
+## Hooks and canned comments
+
+Org-, repo- and path-specific steps (ARP review kicks, readiness gates, release watchers) are hooks, not ad hoc scripts: executables under `timvisher_gh.config/<scope>/pr/<push|ready|merge>/{pre,post}.d/` in either config root (`bash/bin/timvisher_gh.config/` in this repo, or `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/`). `<scope>` is `orgs/OWNER`, `repos/OWNER/REPO`, or `repos/OWNER/REPO/paths/<dir>` (fires only when the PR touches `<dir>`). Pre-hooks gate a transition and are skipped once it has happened; post-hooks run every time and must check their own end state. `timvisher_gh --help` lists the environment they receive.
+
+`timvisher_gh comment <name>` posts the canned comment `timvisher_gh.config/comments/<name>.md` when `<name>` is not a file (e.g. `timvisher_gh comment arp-review`).
 
 ## General GitHub interactions
 
