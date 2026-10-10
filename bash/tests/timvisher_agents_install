@@ -42,6 +42,14 @@ cleanup() {
   rm -rf "$1"
 }
 
+canon() {
+  python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
+resolves_to() {
+  [[ -L $1 ]] && [[ $(canon "$1") == "$(canon "$2")" ]]
+}
+
 # --- Test: --install-from installs skill symlinks ---
 run_test
 test_home=$(setup_home)
@@ -50,10 +58,9 @@ mkdir -p "${source_dir}/.agents/skills/my-skill"
 echo "test" > "${source_dir}/.agents/skills/my-skill/SKILL.md"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>/dev/null
+  "$source_dir" 2>/dev/null
 
-if [[ -L "${test_home}/.agents/skills/my-skill" ]] &&
-   [[ $(readlink "${test_home}/.agents/skills/my-skill") == "${source_dir}/.agents/skills/my-skill" ]]
+if resolves_to "${test_home}/.agents/skills/my-skill" "${source_dir}/.agents/skills/my-skill"
 then
   pass "install-from: creates symlinks for skills"
 else
@@ -71,7 +78,7 @@ mkdir -p "${source_dir}/.agents/skills/skill-b"
 mkdir -p "${source_dir}/.agents/skills/skill-c"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>/dev/null
+  "$source_dir" 2>/dev/null
 
 count=0
 for s in skill-a skill-b skill-c
@@ -100,8 +107,8 @@ mkdir -p "${source_a}/.agents/skills/from-a"
 mkdir -p "${source_b}/.agents/skills/from-b"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_a" \
-  --install-from "$source_b" 2>/dev/null
+  "$source_a" \
+  "$source_b" 2>/dev/null
 
 if [[ -L "${test_home}/.agents/skills/from-a" ]] &&
    [[ -L "${test_home}/.agents/skills/from-b" ]]
@@ -123,11 +130,11 @@ mkdir -p "${source_a}/.agents/skills/conflict"
 mkdir -p "${source_b}/.agents/skills/conflict"
 
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_a" \
-  --install-from "$source_b" 2>&1)
+  "$source_a" \
+  "$source_b" 2>&1)
 exit_code=$?
 
-if (( exit_code != 0 )) && [[ $result == *"already points to"* ]]
+if (( exit_code != 0 )) && [[ $result == *"resolves to"*", not "* ]]
 then
   pass "install-from: conflicting skill names error"
 else
@@ -144,9 +151,9 @@ source_dir=$(mktemp -d)
 mkdir -p "${source_dir}/.agents/skills/idem-skill"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>/dev/null
+  "$source_dir" 2>/dev/null
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>&1)
+  "$source_dir" 2>&1)
 exit_code=$?
 
 if (( exit_code == 0 ))
@@ -164,10 +171,10 @@ test_home=$(setup_home)
 source_dir=$(mktemp -d)
 
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>&1)
+  "$source_dir" 2>&1)
 exit_code=$?
 
-if (( exit_code != 0 )) && [[ $result == *"No .agents/skills/ or .agents/languages/ directory"* ]]
+if (( exit_code != 0 )) && [[ $result == *"No .agents/skills/"*"directory found in '${source_dir}'"* ]]
 then
   pass "install-from: errors when neither .agents subdir exists"
 else
@@ -184,10 +191,9 @@ mkdir -p "${source_dir}/.agents/languages"
 echo "# Bash" > "${source_dir}/.agents/languages/bash.md"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>/dev/null
+  "$source_dir" 2>/dev/null
 
-if [[ -L "${test_home}/.agents/languages/bash.md" ]] &&
-   [[ $(readlink "${test_home}/.agents/languages/bash.md") == "${source_dir}/.agents/languages/bash.md" ]]
+if resolves_to "${test_home}/.agents/languages/bash.md" "${source_dir}/.agents/languages/bash.md"
 then
   pass "install-from: creates symlinks for language files"
 else
@@ -207,8 +213,8 @@ echo "# Bash" > "${source_a}/.agents/languages/bash.md"
 echo "# Terraform" > "${source_b}/.agents/languages/terraform.md"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_a" \
-  --install-from "$source_b" 2>/dev/null
+  "$source_a" \
+  "$source_b" 2>/dev/null
 
 if [[ -L "${test_home}/.agents/languages/bash.md" ]] &&
    [[ -L "${test_home}/.agents/languages/terraform.md" ]]
@@ -232,11 +238,11 @@ echo "# Bash v1" > "${source_a}/.agents/languages/bash.md"
 echo "# Bash v2" > "${source_b}/.agents/languages/bash.md"
 
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_a" \
-  --install-from "$source_b" 2>&1)
+  "$source_a" \
+  "$source_b" 2>&1)
 exit_code=$?
 
-if (( exit_code != 0 )) && [[ $result == *"already points to"* ]]
+if (( exit_code != 0 )) && [[ $result == *"resolves to"*", not "* ]]
 then
   pass "install-from: conflicting language names error"
 else
@@ -254,7 +260,7 @@ mkdir -p "${source_dir}/.agents/languages"
 echo "# Terraform" > "${source_dir}/.agents/languages/terraform.md"
 
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" 2>&1)
+  "$source_dir" 2>&1)
 exit_code=$?
 
 if (( exit_code == 0 )) &&
@@ -272,10 +278,9 @@ run_test
 test_home=$(setup_home)
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>/dev/null
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
-if [[ -L "${test_home}/AGENTS.md" ]] &&
-   [[ $(readlink "${test_home}/AGENTS.md") == "${test_home}/git/ide/ai/HOME/AGENTS.md" ]]
+if resolves_to "${test_home}/AGENTS.md" "${test_home}/git/ide/ai/HOME/AGENTS.md"
 then
   pass "resolve: creates ~/AGENTS.md symlink"
 else
@@ -288,10 +293,9 @@ run_test
 test_home=$(setup_home)
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>/dev/null
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
-if [[ -L "${test_home}/.claude/CLAUDE.md" ]] &&
-   [[ $(readlink "${test_home}/.claude/CLAUDE.md") == "${test_home}/AGENTS.md" ]]
+if resolves_to "${test_home}/.claude/CLAUDE.md" "${test_home}/AGENTS.md"
 then
   pass "resolve: creates ~/.claude/CLAUDE.md → ~/AGENTS.md"
 else
@@ -304,10 +308,9 @@ run_test
 test_home=$(setup_home)
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>/dev/null
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
-if [[ -L "${test_home}/.claude/skills" ]] &&
-   [[ $(readlink "${test_home}/.claude/skills") == "${test_home}/.agents/skills" ]]
+if resolves_to "${test_home}/.claude/skills" "${test_home}/.agents/skills"
 then
   pass "resolve: creates ~/.claude/skills → ~/.agents/skills"
 else
@@ -320,10 +323,9 @@ run_test
 test_home=$(setup_home)
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>/dev/null
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
-if [[ -L "${test_home}/.codex/AGENTS.md" ]] &&
-   [[ $(readlink "${test_home}/.codex/AGENTS.md") == "${test_home}/AGENTS.md" ]]
+if resolves_to "${test_home}/.codex/AGENTS.md" "${test_home}/AGENTS.md"
 then
   pass "resolve: creates ~/.codex/AGENTS.md → ~/AGENTS.md"
 else
@@ -338,11 +340,10 @@ source_dir=$(mktemp -d)
 mkdir -p "${source_dir}/.agents/skills/codex-test-skill"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --install-from "$source_dir" \
-  --resolve 2>/dev/null
+  "$source_dir" \
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
-if [[ -L "${test_home}/.codex/skills/codex-test-skill" ]] &&
-   [[ $(readlink "${test_home}/.codex/skills/codex-test-skill") == "${test_home}/.agents/skills/codex-test-skill" ]]
+if resolves_to "${test_home}/.codex/skills/codex-test-skill" "${test_home}/.agents/skills/codex-test-skill"
 then
   pass "resolve: creates per-skill symlinks in ~/.codex/skills"
 else
@@ -357,7 +358,7 @@ test_home=$(setup_home)
 touch "${test_home}/.codex/skills/.system/marker"
 
 HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>/dev/null
+  "${test_home}/git/ide/ai/HOME" 2>/dev/null
 
 if [[ -f "${test_home}/.codex/skills/.system/marker" ]]
 then
@@ -376,7 +377,7 @@ target=$(mktemp -d)
 ln -s "$target" "${test_home}/.agents"
 
 result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
-  --resolve 2>&1)
+  "${test_home}/git/ide/ai/HOME" 2>&1)
 exit_code=$?
 
 if (( exit_code != 0 )) && [[ $result == *"is a symlink"* ]]
