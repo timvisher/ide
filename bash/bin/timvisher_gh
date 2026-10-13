@@ -1158,30 +1158,34 @@ comment__react_apply() {
   addReaction(input: {subjectId: $id, content: $content}) { reaction { content } }
 }'
   fi
-  local -a done_reactions=()
+  local current
+  current=$(comment__viewer_reactions "$id") ||
+    exit 1
   for r in "$@"
   do
+    if jq -e --arg r "$r" 'index($r) != null' >/dev/null <<<"$current"
+    then
+      [[ $mode == add ]] &&
+        continue
+    else
+      [[ $mode == delete ]] &&
+        continue
+    fi
     if comment__graphql "$c_owner" "$mutation" -f id="$id" -f content="$(comment__reaction_enum "$r")"
     then
-      done_reactions+=("$r")
+      if [[ $mode == delete ]]
+      then
+        current=$(jq -c --arg r "$r" '. - [$r]' <<<"$current")
+      else
+        current=$(jq -c --arg r "$r" '. + [$r] | unique' <<<"$current")
+      fi
     else
       error "Unable to %s reaction '%s' on '%s' (%s)" "$mode" "$r" "$c_url" "$(comment__failure)"
       (( failures += 1 ))
     fi
   done
-  if (( 0 < ${#done_reactions[@]} ))
-  then
-    local list
-    list=$(printf '%s\n' "${done_reactions[@]}" | jq -R . | jq -sc .)
-    if [[ $mode == delete ]]
-    then
-      comment__sidecar_update '.id = $id | .posted.reactions = ((.posted.reactions // []) - $list | sort)' \
-        --arg id "$id" --argjson list "$list"
-    else
-      comment__sidecar_update '.id = $id | .posted.reactions = ((.posted.reactions // []) + $list | unique)' \
-        --arg id "$id" --argjson list "$list"
-    fi
-  fi
+  comment__sidecar_update '.id = $id | .posted.reactions = ($current | sort)' \
+    --arg id "$id" --argjson current "$current"
   (( failures == 0 ))
 }
 
