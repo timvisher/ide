@@ -21,116 +21,93 @@ timvisher_gh__repo_spec_from_url() {
   printf '%s\n' "$url"
 }
 
-# Echo the org owner a gh invocation targets, or return 1. Best-effort, in
-# order, the way gh itself resolves a target:
-#   1. a positional github.com web URL (`gh pr view <url>`; also www., any
-#      host case, and git@github.com:o/r). /orgs/<o> and /users/<u> yield the
-#      org or user; GitHub's own top-level pages yield nothing.
-#   2. --repo/-R OWNER/REPO (and = forms)
-#   3. a positional `repos/OWNER/REPO` API path (`gh api repos/o/r/...`)
-#   4. TIMVISHER_GH_OWNER, for callers that know the owner but whose
-#      arguments can't name it (graphql node IDs). OWNER/REPO is cut to OWNER.
-# Values of value-taking flags (--body, -f, --jq, ...) are never read as URLs
-# or paths, so a URL in a comment body can't steer the account. Owners must be
-# valid GitHub names. Otherwise callers fall back to the cwd remote.
+# Echo the org owner a gh invocation targets, or return 1. Best-effort and
+# roughly in gh's own order: a github.com web URL given as the command's
+# selector (`gh pr view <url>`), the last --repo/-R, the endpoint of `gh api`
+# (repos/, orgs/ or users/ paths), then TIMVISHER_GH_OWNER for callers whose
+# arguments can't name an owner (graphql). Callers fall back to the cwd remote.
 timvisher_gh__owner_from_args() {
-  local a lower owner skip=0 prev=""
-  local -a positionals=()
+  local a owner repo_value='' consume=0 bare_flag=0
+  local -a positionals=() after_bare_flag=()
   for a in "$@"
   do
-    if (( skip ))
+    if (( consume == 1 ))
     then
-      skip=0
-      prev=$a
+      consume=0
+      bare_flag=0
+      continue
+    fi
+    if (( consume == 2 ))
+    then
+      consume=0
+      bare_flag=0
+      repo_value=$a
       continue
     fi
     case $a in
-      -b|--body|-t|--title|-n|--notes|-F|--field|-f|--raw-field|-q|--jq|--template|-H|--header|--head|-B|--base|-m|--message|--milestone|-l|--label|-a|--assignee|-r|--reviewer|-p|--project|--body-file|--notes-file|--input|-X|--method|--hostname|--cache|-e|--editor)
-        skip=1
-        ;;
       -R|--repo)
+        consume=2
+        ;;
+      --repo=*|-R=*)
+        repo_value=${a#*=}
+        bare_flag=0
+        ;;
+      -R?*)
+        repo_value=${a#-R}
+        bare_flag=0
+        ;;
+      -b|--body|-F|--body-file|--field|-f|--raw-field|-t|--title|--template|-c|--comment|--subject|-S|--search|--json|-q|--jq|--homepage|--notes|--notes-file|-n|--milestone|--label|-l|--assignee|--reviewer|--head|-H|--header|--base|-B|--input|-X|--method|--hostname|--cache|-p|--preview|--description)
+        consume=1
+        ;;
+      --*=*)
+        bare_flag=0
         ;;
       -*)
+        bare_flag=1
         ;;
       *)
-        case $prev in
-          -R|--repo) ;;
-          *) positionals+=("$a") ;;
-        esac
+        positionals+=("$a")
+        after_bare_flag+=("$bare_flag")
+        bare_flag=0
         ;;
     esac
-    prev=$a
   done
 
-  for a in "${positionals[@]}"
-  do
-    lower=${a,,}
-    case $lower in
-      https://github.com/?*|http://github.com/?*|https://www.github.com/?*|http://www.github.com/?*|github.com/?*|www.github.com/?*)
-        a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
-        ;;
-      git@github.com:?*)
-        a=${a#*:}
-        ;;
-      *)
-        continue
+  if [[ ${positionals[0]-} == api ]]
+  then
+    a=${positionals[1]-}
+    case $a in
+      [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
+        a=${a#*://*/}
         ;;
     esac
-    a=${a%%[?#]*}
-    owner=${a%%/*}
-    case ${owner,,} in
-      orgs|users)
-        [[ $a == */* ]] ||
-          continue
+    a=${a#/}
+    case $a in
+      repos/*/*|orgs/*|users/*)
         a=${a#*/}
-        owner=${a%%/*}
-        ;;
-      settings|notifications|login|logout|join|signup|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprise|enterprises|organizations|pulls|issues|dashboard|about|pricing|account|stars|trending|collections|security|readme|copilot|discussions|site|contact|team|events|customer-stories|watching|github-copilot)
-        continue
+        owner=${a%%[/?#]*}
+        timvisher_gh__valid_owner "$owner" &&
+          { printf '%s\n' "$owner"; return 0; }
         ;;
     esac
+  elif (( 2 < ${#positionals[@]} )) && (( ! after_bare_flag[2] ))
+  then
+    owner=$(timvisher_gh__owner_from_web_url "${positionals[2]}") &&
+      { printf '%s\n' "$owner"; return 0; }
+  fi
+
+  if [[ -n $repo_value ]]
+  then
+    owner=$(timvisher_gh__owner_from_web_url "$repo_value") ||
+      {
+        a=${repo_value#*://}
+        [[ $a == */*/* ]] &&
+          a=${a#*/}
+        owner=${a%%/*}
+      }
     timvisher_gh__valid_owner "$owner" &&
       { printf '%s\n' "$owner"; return 0; }
-  done
-
-  prev=""
-  for a in "$@"
-  do
-    case $prev in
-      --repo|-R)
-        owner=${a%%/*}
-        timvisher_gh__valid_owner "$owner" &&
-          { printf '%s\n' "$owner"; return 0; }
-        ;;
-    esac
-    case $a in
-      --repo=*|-R=*)
-        a=${a#*=}
-        owner=${a%%/*}
-        timvisher_gh__valid_owner "$owner" &&
-          { printf '%s\n' "$owner"; return 0; }
-        ;;
-    esac
-    prev=$a
-  done
-
-  for a in "${positionals[@]}"
-  do
-    case ${a,,} in
-      *github.com/*)
-        [[ ${a,,} == *api.github.com/* ]] ||
-          continue
-        ;;
-    esac
-    case $a in
-      repos/*/*|*/repos/*/*)
-        a=${a#*repos/}
-        owner=${a%%/*}
-        timvisher_gh__valid_owner "$owner" &&
-          { printf '%s\n' "$owner"; return 0; }
-        ;;
-    esac
-  done
+  fi
 
   owner=${TIMVISHER_GH_OWNER:-}
   owner=${owner%%/*}
@@ -142,7 +119,37 @@ timvisher_gh__owner_from_args() {
   return 1
 }
 
-# True if $1 is a valid GitHub user or org name.
+timvisher_gh__owner_from_web_url() {
+  local a=$1 owner
+  case $a in
+    [Hh][Tt][Tt][Pp][Ss]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp][Ss]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|ssh://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*)
+      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
+      ;;
+    git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:?*)
+      a=${a#*:}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  a=${a%%[?#]*}
+  owner=${a%%/*}
+  case $owner in
+    orgs|users)
+      [[ $a == */* ]] ||
+        return 1
+      a=${a#*/}
+      owner=${a%%/*}
+      ;;
+    settings|notifications|login|logout|join|signup|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprise|enterprises|organizations|pulls|issues|dashboard|about|pricing|account|stars|trending|collections|security|readme|copilot|discussions|site|contact|team|events|customer-stories|watching|github-copilot|advisories|home|blog|resources|solutions|premium-support|partners|education|mobile|gist|status|orgs-settings)
+      return 1
+      ;;
+  esac
+  timvisher_gh__valid_owner "$owner" ||
+    return 1
+  printf '%s\n' "$owner"
+}
+
 timvisher_gh__valid_owner() {
   [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
 }
