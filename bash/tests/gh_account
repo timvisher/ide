@@ -126,7 +126,6 @@ else
   fail "owner_from_args: TIMVISHER_GH_OWNER leaked into the shell: '$TIMVISHER_GH_OWNER'"
 fi
 
-# The argument shapes 'timvisher_gh comment' sends.
 check_owner "otherorg" api --include --method POST repos/otherorg/repo/issues/1/comments -f body=hi --hostname github.com
 check_owner "otherorg" api --include --method POST repos/otherorg/repo/pulls/1/comments -F in_reply_to=5 -f body=hi --hostname github.com
 check_owner "otherorg" api --include repos/otherorg/repo/pulls/comments/5 --hostname github.com

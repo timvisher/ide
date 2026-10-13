@@ -1113,14 +1113,15 @@ fi
 [[ $1 == api ]] ||
   exit 0
 shift
-method=GET path=''
+method=GET path='' host=''
 declare -A field=()
 while (( 0 < $# ))
 do
   case $1 in
     --include) shift ;;
     --method) method=$2; shift 2 ;;
-    --hostname|-H|--jq) shift 2 ;;
+    --hostname) host=$2; shift 2 ;;
+    -H|--jq) shift 2 ;;
     -f|-F) field[${2%%=*}]=${2#*=}; shift 2 ;;
     *) path=$1; shift ;;
   esac
@@ -1142,7 +1143,7 @@ then
 else
   echo "mock-gh api ${method} ${path} in_reply_to=${field[in_reply_to]-} body=${field[body]-}" >> "$MOCK_LOG"
 fi
-echo "${GH_TOKEN-unset} owner=${TIMVISHER_GH_OWNER-unset} ${method} ${path} ${op}" >> "${MOCK_LOG}.tokens"
+echo "${GH_TOKEN-unset} owner=${TIMVISHER_GH_OWNER-unset} host=${host:-none} ${method} ${path} ${op}" >> "${MOCK_LOG}.tokens"
 
 respond() {
   printf 'HTTP/2.0 %s Mock\n' "$1"
@@ -1159,6 +1160,9 @@ comment_json() {
 }
 
 case "$method $path" in
+  "GET user")
+    respond 200 "{\"login\":\"${MOCK_VIEWER:-me}\"}"
+    ;;
   "HEAD "/repos/*/*/*)
     case ${MOCK_HEAD_STATUS:-200} in
       none) exit 1 ;;
@@ -1203,19 +1207,31 @@ case "$method $path" in
     then
       respond "${MOCK_PATCH_STATUS:-200}" "$(comment_json "$id" "$node" "$url" "${field[body]}" "${MOCK_AUTHOR:-me}" "${MOCK_CREATED:-2026-10-12T09:08:07Z}")"
     fi
-    respond "${MOCK_GET_STATUS:-200}" "$(comment_json "$id" "$node" "$url" "${MOCK_REMOTE_BODY-remote body}" "${MOCK_AUTHOR:-someone}" "${MOCK_CREATED:-2026-10-12T09:08:07Z}")"
+    json=$(comment_json "$id" "$node" "$url" "${MOCK_REMOTE_BODY-remote body}" "${MOCK_AUTHOR:-someone}" "${MOCK_CREATED:-2026-10-12T09:08:07Z}")
+    if [[ $path == */pulls/comments/* && -n ${MOCK_IN_REPLY_TO-} && $id != "$MOCK_IN_REPLY_TO" ]]
+    then
+      json=$(jq -c --argjson root "$MOCK_IN_REPLY_TO" '. + {in_reply_to_id: $root}' <<<"$json")
+    fi
+    respond "${MOCK_GET_STATUS:-200}" "$json"
     ;;
   "POST graphql")
     case $op in
       addReaction|removeReaction)
+        if [[ -n ${MOCK_GRAPHQL_STATUS-} ]]
+        then
+          respond "$MOCK_GRAPHQL_STATUS" '{"message":"mock outage"}'
+        fi
         if [[ " ${MOCK_REACTION_FAIL-} " == *" ${field[content]} "* ]]
         then
           respond 200 '{"errors":[{"message":"mock reaction failure"}]}'
         fi
         respond 200 '{"data":{"x":{"reaction":{"content":"X"}}}}'
         ;;
-      resolveReviewThread|unresolveReviewThread)
+      resolveReviewThread)
         respond 200 '{"data":{"x":{"thread":{"isResolved":true}}}}'
+        ;;
+      unresolveReviewThread)
+        respond 200 '{"data":{"x":{"thread":{"isResolved":false}}}}'
         ;;
       reviewThreads)
         if [[ -n ${MOCK_THREAD_MISS-} ]]
@@ -1224,11 +1240,15 @@ case "$method $path" in
         fi
         if [[ -n ${MOCK_THREAD_PAGES-} && -z ${field[after]-} ]]
         then
-          respond 200 '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"id":"PRRT_other","isResolved":false,"comments":{"nodes":[{"databaseId":5}]}}]}}}}}'
+          respond 200 '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"id":"PRRT_other","isResolved":false,"comments":{"nodes":[{"id":"PRRC_5"}]}}]}}}}}'
         fi
-        respond 200 "{\"data\":{\"repository\":{\"pullRequest\":{\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[{\"id\":\"PRRT_1\",\"isResolved\":${MOCK_THREAD_RESOLVED:-false},\"comments\":{\"nodes\":[{\"databaseId\":111},{\"databaseId\":9002}]}}]}}}}}"
+        respond 200 "{\"data\":{\"repository\":{\"pullRequest\":{\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[{\"id\":\"PRRT_1\",\"isResolved\":${MOCK_THREAD_RESOLVED:-false},\"comments\":{\"nodes\":[{\"id\":\"PRRC_111\"}]}}]}}}}}"
         ;;
       reactionGroups)
+        if [[ -n ${MOCK_REACTIONS_FAIL-} ]]
+        then
+          respond 200 '{"errors":[{"message":"mock reactions failure"}]}'
+        fi
         respond 200 '{"data":{"node":{"reactionGroups":[{"content":"ROCKET","viewerHasReacted":true},{"content":"THUMBS_UP","viewerHasReacted":true},{"content":"EYES","viewerHasReacted":false}]}}}'
         ;;
     esac
@@ -1421,7 +1441,7 @@ fi
 run_test
 crun -- comment reply "$discussion_url" reply.md
 if
-  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/1#discussion_r9002 ]] && no_api
+  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/1#discussion_r9002 ]] && ! grep -q " POST " "$MOCK_LOG"
 then
   pass "comment reply doesn't post a tracked reply again"
 else
@@ -1451,7 +1471,7 @@ if
   grep -q "^mock-gh-graphql op=addReaction id=PRRC_111 content=ROCKET " "$MOCK_LOG" &&
   grep -q "^mock-gh-graphql op=addReaction id=PRRC_111 content=EYES " "$MOCK_LOG" &&
   [[ $(cjq target.md "[.posted.reactions[]] | join(\",\")") == "eyes,rocket" ]] &&
-  ! grep -q "GET repos/" "$MOCK_LOG"
+  [[ $(cjq reply.md ".in_reply_to") == 111 ]]
 then
   pass "comment reply takes a tracked target, inherits its thread and reacts to it"
 else
@@ -1474,7 +1494,14 @@ run_test
 creset reply.md
 cfile reply.md "thanks"
 crun -- comment reply "$discussion_url" reply.md --reaction thumbsup
-expect_clean_fail "comment reply rejects an unknown reaction before any API call" "'thumbsup' isn't a reaction"
+expect_clean_fail "comment reply rejects an unknown reaction" "'thumbsup' isn't a reaction"
+run_test
+if no_api
+then
+  pass "comment reply rejects an unknown reaction before any API call"
+else
+  cfail "comment reply rejects an unknown reaction before any API call"
+fi
 
 # edit
 
@@ -1561,7 +1588,14 @@ expect_clean_fail "comment react takes one target" "requires exactly one <target
 
 run_test
 crun -- comment react "$issuecomment_url" --reaction 👍🏽
-expect_clean_fail "comment react rejects a skin-tone emoji before any API call" "isn't a reaction"
+expect_clean_fail "comment react rejects a skin-tone emoji" "isn't a reaction"
+run_test
+if no_api
+then
+  pass "comment react rejects a skin-tone emoji before any API call"
+else
+  cfail "comment react rejects a skin-tone emoji before any API call"
+fi
 
 run_test
 crun -- comment react "$issuecomment_url" --reaction +1
@@ -1743,7 +1777,7 @@ run_test
 cfile their.md "my local draft"
 crun MOCK_REMOTE_BODY='updated again' -- comment get their.md
 if
-  (( c_rc == 0 )) && [[ $(< "$tmpdir/repo/their.md") == "my local draft" && $(cjq their.md ".posted.body") == "updated again" && $c_err == *"Keeping local edits"* ]]
+  (( c_rc == 0 )) && [[ $(< "$tmpdir/repo/their.md") == "my local draft" && $(cjq their.md ".posted.body") == "updated remotely" && $c_err == *"Keeping local edits"* ]]
 then
   pass "comment get keeps local edits and refreshes the sidecar"
 else
@@ -1855,6 +1889,7 @@ done <<'EOF'
 MOCK_HEAD_STATUS=404|no longer exists|gone
 MOCK_HEAD_STATUS=410|no longer exists|gone
 MOCK_DELETE_STATUS=404|Comment already gone|gone
+MOCK_DELETE_STATUS=410|Comment already gone|gone
 MOCK_HEAD_STATUS=404 MOCK_REPO_HEAD_STATUS=404|access may be the problem|keep
 MOCK_DELETE_STATUS=404 MOCK_REPO_HEAD_STATUS=404|access may be the problem|keep
 MOCK_HEAD_STATUS=500|Unable to check whether|keep
@@ -1898,20 +1933,285 @@ else
 fi
 
 run_test
-creset comment.md
-mkdir -p "$tmpdir/repo/x.readonly"
-csidecar x.readonly/comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
-chmod 555 "$tmpdir/repo/x.readonly"
-crun -- comment delete --force x.readonly/comment.md
-chmod 755 "$tmpdir/repo/x.readonly"
-if
-  (( c_rc != 0 )) && [[ $c_err == *"unable to remove"* && $c_err != *"\"level\":\"INFO\",\"caller\":\"gh_comment_delete\",\"message\":\"Deleted"* ]]
+if (( EUID == 0 ))
 then
-  pass "comment delete fails when the sidecar can't be removed after deleting"
+  pass "comment delete fails when the sidecar can't be removed after deleting (skipped: root ignores directory permissions)"
 else
-  cfail "comment delete fails when the sidecar can't be removed after deleting"
+  creset comment.md
+  mkdir -p "$tmpdir/repo/x.readonly"
+  csidecar x.readonly/comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
+  chmod 555 "$tmpdir/repo/x.readonly"
+  crun -- comment delete --force x.readonly/comment.md
+  chmod 755 "$tmpdir/repo/x.readonly"
+  if
+    (( c_rc != 0 )) && grep -q " DELETE " "$MOCK_LOG" &&
+    [[ $c_err == *"unable to remove"* && $c_err != *'"level":"INFO","caller":"gh_comment_delete","message":"Deleted'* ]]
+  then
+    pass "comment delete fails when the sidecar can't be removed after deleting"
+  else
+    cfail "comment delete fails when the sidecar can't be removed after deleting"
+  fi
+  rm -rf "$tmpdir/repo/x.readonly"
 fi
-rm -rf "$tmpdir/repo/x.readonly"
+
+# review hardening
+
+run_test
+creset comment.md
+cfile comment.md "body"
+csidecar comment.md '{"kind":"issue_comment","database_id":9001,"url":"https://github.com/testuser/testrepo/pull/42#issuecomment-9001"}'
+crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md
+expect_clean_fail "comment refuses a file already posted on another PR" "was already posted on"
+
+run_test
+creset comment.md
+crun -- comment --pull-request=https://ghe.example.com/testuser/testrepo/pull/1 nonexistent-but-checked-later.md
+expect_clean_fail "comment refuses a missing file before anything else" "is not readable"
+creset ghe.md
+cfile ghe.md "body"
+crun -- comment --pull-request=https://github.example.com/testuser/testrepo/pull/1 ghe.md
+expect_clean_fail "comment refuses a GitHub Enterprise PR URL" "isn't a github.com PR URL"
+creset ghe.md
+
+run_test
+if (( EUID == 0 ))
+then
+  pass "comment checks it can record state before posting (skipped: root ignores directory permissions)"
+else
+  mkdir -p "$tmpdir/repo/x.readonly"
+  printf 'body\n' > "$tmpdir/repo/x.readonly/c.md"
+  chmod 555 "$tmpdir/repo/x.readonly"
+  crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 x.readonly/c.md
+  chmod 755 "$tmpdir/repo/x.readonly"
+  if
+    (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"isn't a writable directory"* ]] && ! grep -q " POST " "$MOCK_LOG"
+  then
+    pass "comment checks it can record state before posting"
+  else
+    cfail "comment checks it can record state before posting"
+  fi
+  rm -rf "$tmpdir/repo/x.readonly"
+fi
+
+run_test
+creset comment.md
+cfile comment.md "body"
+ln -s "$tmpdir/no-such-dir/comment.md.url" "$tmpdir/repo/comment.md.url"
+crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md
+if
+  (( c_rc != 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/99#issuecomment-9001 ]] &&
+  [[ $c_err == *"couldn't record it"* ]]
+then
+  pass "comment prints the posted URL when recording it fails"
+else
+  cfail "comment prints the posted URL when recording it fails"
+fi
+rm -f "$tmpdir/repo/comment.md.url"
+creset comment.md
+
+run_test
+if (( EUID == 0 ))
+then
+  pass "comment refuses an unreadable sidecar (skipped: root ignores file permissions)"
+else
+  creset comment.md
+  cfile comment.md "body"
+  csidecar comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
+  chmod 000 "$tmpdir/repo/comment.md.json"
+  crun -- comment delete --force comment.md
+  chmod 644 "$tmpdir/repo/comment.md.json"
+  if
+    (( c_rc != 0 )) && [[ $c_err == *"isn't readable"* ]] && no_api
+  then
+    pass "comment refuses an unreadable sidecar"
+  else
+    cfail "comment refuses an unreadable sidecar"
+  fi
+  creset comment.md
+fi
+
+run_test
+creset reply.md
+cfile reply.md "thanks"
+csidecar reply.md '{"kind":"review_comment","database_id":9002,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r9002","in_reply_to":111}'
+crun -- comment reply https://github.com/testuser/testrepo/pull/1#discussion_r555 reply.md
+if
+  (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"isn't a reply in the thread holding"* ]] && ! grep -q " POST " "$MOCK_LOG"
+then
+  pass "comment reply refuses a file already posted in another thread"
+else
+  cfail "comment reply refuses a file already posted in another thread"
+fi
+
+run_test
+creset reply.md
+cfile reply.md "thanks"
+crun MOCK_IN_REPLY_TO=111 -- comment reply https://github.com/testuser/testrepo/pull/1#discussion_r9002 reply.md
+if
+  (( c_rc == 0 )) && grep -q "^mock-gh api POST repos/testuser/testrepo/pulls/1/comments in_reply_to=111 " "$MOCK_LOG" &&
+  [[ $(cjq reply.md ".in_reply_to") == 111 ]]
+then
+  pass "comment reply to a reply posts in the root comment's thread"
+else
+  cfail "comment reply to a reply posts in the root comment's thread"
+fi
+
+run_test
+crun MOCK_IN_REPLY_TO=111 -- comment resolve https://github.com/testuser/testrepo/pull/1#discussion_r9002
+if
+  (( c_rc == 0 )) && grep -q "op=resolveReviewThread id=PRRT_1 " "$MOCK_LOG"
+then
+  pass "comment resolve on a reply finds the thread by its root"
+else
+  cfail "comment resolve on a reply finds the thread by its root"
+fi
+
+run_test
+creset theirs.md
+csidecar theirs.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\",\"author\":\"someone\"}"
+crun MOCK_VIEWER=me -- comment delete --force theirs.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"someone's comment, not yours"* && -e $tmpdir/repo/theirs.md.json ]] && ! grep -q " DELETE " "$MOCK_LOG"
+then
+  pass "comment delete --force refuses someone else's comment"
+else
+  cfail "comment delete --force refuses someone else's comment"
+fi
+
+run_test
+c_stdin=$'y\n'
+crun MOCK_VIEWER=me -- comment delete theirs.md
+c_stdin=''
+if
+  (( c_rc == 0 )) && grep -q " DELETE " "$MOCK_LOG" && [[ ! -e $tmpdir/repo/theirs.md.json && -z $c_out ]]
+then
+  pass "comment delete deletes someone else's comment once confirmed, printing nothing"
+else
+  cfail "comment delete deletes someone else's comment once confirmed, printing nothing"
+fi
+
+run_test
+creset mine.md
+csidecar mine.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\",\"author\":\"Me\"}"
+crun MOCK_VIEWER=me -- comment delete --force mine.md
+if
+  (( c_rc == 0 )) && grep -q " DELETE " "$MOCK_LOG"
+then
+  pass "comment delete --force deletes your own comment"
+else
+  cfail "comment delete --force deletes your own comment"
+fi
+
+run_test
+creset comment.md
+cfile comment.md "new text"
+csidecar comment.md '{"kind":"issue_comment","id":"IC_222","database_id":222,"url":"https://github.com/testuser/testrepo/pull/1#issuecomment-222","posted":{"body":"old text"}}'
+crun MOCK_REMOTE_BODY='old text' MOCK_PATCH_STATUS=500 -- comment edit comment.md
+if
+  (( c_rc != 0 )) && [[ $(cjq comment.md ".posted.body") == "old text" ]]
+then
+  pass "comment edit leaves the lease alone when the PATCH fails"
+else
+  cfail "comment edit leaves the lease alone when the PATCH fails"
+fi
+
+run_test
+creset their.md
+cfile their.md "v1"
+csidecar their.md '{"kind":"review_comment","id":"PRRC_111","database_id":111,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r111","posted":{"body":"v1"}}'
+cfile their.md "my draft"
+crun MOCK_REMOTE_BODY='v2 from someone' -- comment get their.md
+crun MOCK_REMOTE_BODY='v2 from someone' -- comment edit their.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"changed since it was posted"* ]] && ! grep -q " PATCH " "$MOCK_LOG"
+then
+  pass "comment edit after a dirty refresh still refuses to overwrite remote changes"
+else
+  cfail "comment edit after a dirty refresh still refuses to overwrite remote changes"
+fi
+
+run_test
+creset their.md
+csidecar their.md '{"kind":"review_comment","database_id":222,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r222"}'
+cfile their.md "x"
+crun -- comment get "$issuecomment_url" their.md
+expect_clean_fail "comment get tells review and issue comments with the same ID apart" "already tracks"
+
+run_test
+f1="2026-10-12T09-08-07+0000-someone-first wording.md"
+creset "$f1"
+crun MOCK_REMOTE_BODY='first wording' -- comment get "$issuecomment_url"
+crun MOCK_REMOTE_BODY='second wording' -- comment get "$issuecomment_url"
+if
+  (( c_rc == 0 )) && [[ $c_out == "$f1" && $(< "$tmpdir/repo/$f1") == "second wording" ]] &&
+  [[ ! -e "$tmpdir/repo/2026-10-12T09-08-07+0000-someone-second wording.md" ]]
+then
+  pass "comment get keeps using the file it named before the comment was edited"
+else
+  cfail "comment get keeps using the file it named before the comment was edited"
+fi
+creset "$f1"
+
+run_test
+crun MOCK_CREATED='2026-10-12T11:08:07+02:00' -- comment get "$issuecomment_url"
+if
+  (( c_rc == 0 )) && [[ $c_out == "2026-10-12T11-08-07+0200-someone-remote body.md" ]]
+then
+  pass "comment get writes a non-UTC offset like %z"
+else
+  cfail "comment get writes a non-UTC offset like %z"
+fi
+creset "$c_out"
+
+run_test
+creset got.md
+crun MOCK_REACTIONS_FAIL=1 -- comment get "$issuecomment_url" got.md
+if
+  (( c_rc != 0 )) && [[ ! -e $tmpdir/repo/got.md && ! -e $tmpdir/repo/got.md.json ]]
+then
+  pass "comment get writes nothing when it can't read the reactions"
+else
+  cfail "comment get writes nothing when it can't read the reactions"
+fi
+
+run_test
+creset legacy.md
+cfile legacy.md "what I posted long ago"
+echo "$issuecomment_url" > "$tmpdir/repo/legacy.md.url"
+crun MOCK_REMOTE_BODY='edited on GitHub since' -- comment get legacy.md
+if
+  (( c_rc == 0 )) && [[ $(< "$tmpdir/repo/legacy.md") == "what I posted long ago" ]] &&
+  [[ $(cjq legacy.md ".posted.body // \"none\"") == none ]]
+then
+  pass "comment get keeps a legacy file's content when it differs, with no baseline"
+else
+  cfail "comment get keeps a legacy file's content when it differs, with no baseline"
+fi
+creset legacy.md
+
+run_test
+crun MOCK_GRAPHQL_STATUS=502 -- comment react "$issuecomment_url" --reaction +1
+expect_clean_fail "comment react fails on a GraphQL HTTP error" "rerun the same command"
+
+run_test
+crun -- comment get "$issuecomment_url" --force
+expect_clean_fail "comment get rejects unknown flags" "unknown flag '--force'"
+
+run_test
+crun -- comment reply --force "$discussion_url" reply.md
+expect_clean_fail "comment reply rejects unknown flags" "unknown flag '--force'"
+
+run_test
+crun -- comment resolve "$discussion_url"
+crun -- comment react "$issuecomment_url" --reaction +1
+if
+  ! grep -qv " host=github.com " "${MOCK_LOG}.tokens"
+then
+  pass "every comment API call is bound to github.com"
+else
+  cfail "every comment API call is bound to github.com"
+fi
+creset reply.md their.md theirs.md mine.md got.md comment.md
 
 # accounts
 
@@ -1921,8 +2221,8 @@ echo testacct > "$tmpdir/ghconfig/orgs/testuser/account"
 crun -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 --reaction +1
 if
   (( c_rc == 0 )) && ! grep -qv "^unset " "${MOCK_LOG}.tokens" &&
-  grep -q "^unset owner=unset GET repos/otherorg/repo/issues/comments/5 " "${MOCK_LOG}.tokens" &&
-  grep -q "^unset owner=otherorg POST graphql addReaction" "${MOCK_LOG}.tokens"
+  grep -q "^unset owner=unset host=github.com GET repos/otherorg/repo/issues/comments/5 " "${MOCK_LOG}.tokens" &&
+  grep -q "^unset owner=otherorg host=github.com POST graphql addReaction" "${MOCK_LOG}.tokens"
 then
   pass "comment verbs leave REST account choice to the shim and name the owner for GraphQL"
 else
