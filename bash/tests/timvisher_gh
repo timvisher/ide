@@ -1242,6 +1242,18 @@ case "$method $path" in
         then
           respond 200 '{"errors":[{"message":"mock reaction failure"}]}'
         fi
+        state="${MOCK_STATE_DIR}/${field[id]}"
+        touch "$state"
+        if [[ $op == addReaction ]]
+        then
+          grep -qx "${field[content]}" "$state" ||
+            echo "${field[content]}" >> "$state"
+        else
+          grep -qx "${field[content]}" "$state" ||
+            respond 200 '{"data":{"removeReaction":null},"errors":[{"type":"FORBIDDEN","message":"mock: does not have the correct permissions to execute `RemoveReaction`"}]}'
+          grep -vx "${field[content]}" "$state" > "${state}.new"
+          mv "${state}.new" "$state"
+        fi
         respond 200 '{"data":{"x":{"reaction":{"content":"X"}}}}'
         ;;
       resolveReviewThread)
@@ -1266,7 +1278,13 @@ case "$method $path" in
         then
           respond 200 '{"errors":[{"message":"mock reactions failure"}]}'
         fi
-        respond 200 '{"data":{"node":{"reactionGroups":[{"content":"ROCKET","viewerHasReacted":true},{"content":"THUMBS_UP","viewerHasReacted":true},{"content":"EYES","viewerHasReacted":false}]}}}'
+        state="${MOCK_STATE_DIR}/${field[id]}"
+        groups='[]'
+        if [[ -r $state ]]
+        then
+          groups=$(jq -R '{content: ., viewerHasReacted: true}' "$state" | jq -sc .)
+        fi
+        respond 200 "{\"data\":{\"node\":{\"reactionGroups\":${groups}}}}"
         ;;
     esac
     ;;
@@ -1281,12 +1299,30 @@ issuecomment_url=https://github.com/testuser/testrepo/pull/1#issuecomment-222
 
 crun() {
   local -a envs=()
+  local keep_state=0 e pair node
   while [[ ${1-} != -- ]]
   do
+    [[ $1 == MOCK_STATE_KEEP=1 ]] && keep_state=1
     envs+=("$1")
     shift
   done
   shift
+  if (( ! keep_state ))
+  then
+    rm -rf "$tmpdir/mock_state"
+    mkdir -p "$tmpdir/mock_state"
+    for e in "${envs[@]}"
+    do
+      [[ $e == MOCK_REACTED=* ]] ||
+        continue
+      for pair in ${e#MOCK_REACTED=}
+      do
+        node=${pair%%=*}
+        tr ',' '\n' <<<"${pair#*=}" > "$tmpdir/mock_state/$node"
+      done
+    done
+  fi
+  envs+=(MOCK_STATE_DIR="$tmpdir/mock_state")
   export MOCK_LOG="$tmpdir/log_comment"
   : > "$MOCK_LOG"
   : > "${MOCK_LOG}.tokens"
@@ -1627,7 +1663,7 @@ else
 fi
 
 run_test
-crun -- comment react --delete "$discussion_url" --reaction=heart
+crun MOCK_REACTED=PRRC_111=HEART -- comment react --delete "$discussion_url" --reaction=heart
 if
   (( c_rc == 0 )) && grep -q "^mock-gh-graphql op=removeReaction id=PRRC_111 content=HEART " "$MOCK_LOG"
 then
@@ -1660,7 +1696,7 @@ run_test
 creset target.md
 cfile target.md "their comment"
 csidecar target.md '{"kind":"issue_comment","id":"IC_222","database_id":222,"url":"https://github.com/testuser/testrepo/pull/1#issuecomment-222","posted":{"reactions":["eyes"]}}'
-crun -- comment react target.md --reaction rocket --reaction +1
+crun MOCK_REACTED=IC_222=EYES -- comment react target.md --reaction rocket --reaction +1
 if
   (( c_rc == 0 )) && ! grep -q "GET repos/" "$MOCK_LOG" &&
   [[ $(cjq target.md "[.posted.reactions[]] | join(\",\")") == "+1,eyes,rocket" ]]
@@ -1671,7 +1707,7 @@ else
 fi
 
 run_test
-crun -- comment react --delete target.md --reaction eyes
+crun MOCK_STATE_KEEP=1 -- comment react --delete target.md --reaction eyes
 if
   (( c_rc == 0 )) && [[ $(cjq target.md "[.posted.reactions[]] | join(\",\")") == "+1,rocket" ]]
 then
@@ -1681,7 +1717,7 @@ else
 fi
 
 run_test
-crun MOCK_REACTION_FAIL=LAUGH -- comment react target.md --reaction laugh --reaction hooray
+crun MOCK_STATE_KEEP=1 MOCK_REACTION_FAIL=LAUGH -- comment react target.md --reaction laugh --reaction hooray
 if
   (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"rerun the same command"* ]] &&
   [[ $(cjq target.md "[.posted.reactions[]] | join(\",\")") == "+1,hooray,rocket" ]]
@@ -1689,6 +1725,26 @@ then
   pass "comment react records what converged and fails on the rest"
 else
   cfail "comment react records what converged and fails on the rest"
+fi
+
+run_test
+crun MOCK_REACTED=IC_222=ROCKET -- comment react "$issuecomment_url" --reaction rocket
+if
+  (( c_rc == 0 )) && ! grep -q "op=addReaction" "$MOCK_LOG"
+then
+  pass "comment react skips a reaction you've already made"
+else
+  cfail "comment react skips a reaction you've already made"
+fi
+
+run_test
+crun -- comment react --delete "$issuecomment_url" --reaction eyes
+if
+  (( c_rc == 0 )) && ! grep -q "op=removeReaction" "$MOCK_LOG"
+then
+  pass "comment react --delete skips a reaction you haven't made (GitHub refuses it)"
+else
+  cfail "comment react --delete skips a reaction you haven't made (GitHub refuses it)"
 fi
 
 run_test
@@ -1755,7 +1811,7 @@ fi
 
 run_test
 creset "2026-10-12T09-08-07+0000-someone-remote body.md"
-crun -- comment get "$issuecomment_url"
+crun MOCK_REACTED=IC_222=THUMBS_UP,ROCKET -- comment get "$issuecomment_url"
 if
   f="2026-10-12T09-08-07+0000-someone-remote body.md"
   (( c_rc == 0 )) && [[ $c_out == "$f" && $(< "$tmpdir/repo/$f") == "remote body" ]] &&
