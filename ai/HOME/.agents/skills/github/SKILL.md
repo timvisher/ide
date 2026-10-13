@@ -119,7 +119,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 A `<target>` is either a comment URL or a tracked file. A URL is `https://github.com/O/R/pull/N`, optionally followed by `/files` or `/changes` and a `?query` (as in notification links), ending in `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level comment). The PR itself and review summaries aren't comments, so these verbs don't act on them.
 
-Every verb is safe to rerun, prints the comment's URL on stdout (`get` prints the file it wrote), and exits non-zero if anything didn't converge, so rerun the same command after fixing the cause.
+Rerunning a verb converges instead of repeating it: a tracked comment isn't posted twice, and repeated reactions and resolutions are no-ops. Verbs print the comment's URL on stdout (`get` prints the file it wrote; `delete` prints nothing) and exit non-zero if anything didn't converge, so rerun the same command after fixing the cause. If a post succeeds but its state can't be recorded, the URL is printed with an error; save it in `<file>.url` before rerunning. Only github.com is supported, not GitHub Enterprise hosts.
 
 ### Post a top-level comment
 
@@ -137,7 +137,7 @@ timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' re
 timvisher_gh comment reply their-comment.md reply.md --reaction +1   # tracked target; react to it too
 ```
 
-Only review comments (`#discussion_r<ID>`) have threads to reply in. `--reaction` (repeatable) reacts to the comment being replied to. A reply whose `reply.md.json` exists isn't posted again.
+Only review comments (`#discussion_r<ID>`) have threads to reply in; replying to a reply posts in its thread. One reply file is one reply: a file already posted in another thread is refused. `--reaction` (repeatable) reacts to the comment being replied to. A reply whose `reply.md.json` exists isn't posted again.
 
 ### Edit a posted comment
 
@@ -146,7 +146,7 @@ timvisher_gh comment edit comment.md
 timvisher_gh comment edit --force comment.md   # overwrite GitHub's copy anyway
 ```
 
-Edits are leased: if GitHub's copy no longer matches what was last posted (someone else edited it), `edit` prints a diff and refuses. Fold their changes into the file, or use `--force`.
+Edits are leased: if GitHub's copy no longer matches what was last posted (someone else edited it), `edit` prints a diff and refuses. Fold their changes into the file, then rerun with `--force`. A file adopted from a legacy `.url` has no recorded body yet, so its first edit isn't leased.
 
 ### React to a comment
 
@@ -172,7 +172,7 @@ timvisher_gh comment get 'https://github.com/o/r/pull/1#discussion_r123456' thei
 timvisher_gh comment get their.md                                                     # refresh it
 ```
 
-Without a file name, `get` names it `<ts>-<author>-<slug>.md`: `<ts>` is the comment's UTC creation time as `+%FT%H-%M-%S%z`, and `<slug>` is the first 60 characters of the body with whitespace collapsed to single spaces. The fetched file is a tracked target for `reply`, `react` and `resolve`. Refreshing keeps local edits you haven't pushed.
+Without a file name, `get` names it `<ts>-<author>-<slug>.md`: `<ts>` is the comment's UTC creation time as `+%FT%H-%M-%S%z`, and `<slug>` is the first 60 characters of the body with whitespace collapsed to single spaces. The fetched file is a tracked target for `reply`, `react` and `resolve`. Fetching the same comment again reuses that file, even after the comment's body changes. Refreshing keeps local edits you haven't pushed, along with their lease, so `edit` still notices if GitHub's copy changed meanwhile.
 
 ### Delete a comment
 
@@ -181,7 +181,7 @@ timvisher_gh comment delete comment.md          # prompts first
 timvisher_gh comment delete --force comment.md  # batch cleanup
 ```
 
-A comment counts as already gone only when GitHub says so (404/410) and its repository is still reachable; any other failure keeps the state and exits non-zero.
+`--force` refuses comments someone else wrote, such as ones fetched with `get`; delete those interactively. A comment counts as already gone only when GitHub says so (404/410) and its repository is still reachable; any other failure keeps the state and exits non-zero.
 
 ## General GitHub interactions
 
