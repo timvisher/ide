@@ -37,7 +37,7 @@ check_spec "git@ddoghq.github.com:ddoghq/dd-source.git"       "ddoghq/dd-source"
 check_spec "git@ddoghq.github.com:ddoghq/dd-source"           "ddoghq/dd-source"
 check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
 
-# --- owner_from_args: --repo/-R, = forms, api paths, miss ---
+# --- owner_from_args: TIMVISHER_GH_OWNER, --repo/-R, = forms, api paths, web URLs, miss ---
 check_owner() {
   local want=$1; shift
   local got rc
@@ -61,8 +61,25 @@ check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
 check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
 check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
 check_owner "DataDog" pr view 1 --repo DataDog/appgate
-check_owner "-"       pr view https://github.com/ddoghq/dd-source/pull/691
+check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/691
 check_owner "-"       repo list
+check_owner "otherorg" pr comment https://github.com/otherorg/repo/pull/1 --body-file x
+check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1#issuecomment-5
+check_owner "ddoghq"  repo clone github.com/ddoghq/dd-source
+check_owner "ddoghq"  browse http://github.com/ddoghq/dd-source
+check_owner "ddoghq"  repo list https://github.com/ddoghq?tab=repositories
+check_owner "myorg"   project view https://github.com/orgs/myorg/projects/1
+check_owner "someone" api https://github.com/users/someone
+check_owner "-"       browse https://github.com/orgs
+check_owner "-"       browse https://github.com/settings/tokens
+check_owner "-"       browse https://gist.github.com/someone/abc
+check_owner "-"       pr comment 1 --body "see https://github.com/evil/x"
+check_owner "-"       pr comment 1 --body=https://github.com/evil/x
+check_owner "-"       api graphql -f query=mutation -f id=PRRC_kwDOabc
+TIMVISHER_GH_OWNER=otherorg check_owner "otherorg" api graphql -f query=mutation -f id=PRRC_kwDOabc
+TIMVISHER_GH_OWNER=otherorg check_owner "otherorg" pr view 1 --repo ddoghq/dd-source
+TIMVISHER_GH_OWNER='' check_owner "ddoghq" pr view 1 --repo ddoghq/dd-source
+check_owner "-"       api graphql -f query=mutation -f id=PRRC_kwDOabc
 
 # --- account_for_owner: config-driven via TIMVISHER_GH_CONFIG_DIR ---
 cfg="$tmpdir/cfg"

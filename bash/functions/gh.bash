@@ -22,11 +22,19 @@ timvisher_gh__repo_spec_from_url() {
 }
 
 # Echo the org owner a gh invocation targets, or return 1. Best-effort, in
-# order: --repo/-R OWNER/REPO (and = forms), then a `repos/OWNER/REPO` segment
-# anywhere (covers `gh api repos/o/r/...`). URL positionals and graphql bodies
-# are intentionally not parsed — callers fall back to the cwd remote.
+# order: an explicit TIMVISHER_GH_OWNER (for calls whose arguments can't name
+# an owner, e.g. graphql node IDs), --repo/-R OWNER/REPO (and = forms), a
+# `repos/OWNER/REPO` segment anywhere (covers `gh api repos/o/r/...`), then an
+# argument that is itself a github.com web URL (`gh pr view <url>`). A URL
+# merely mentioned inside an argument, such as a comment body, doesn't count.
+# Otherwise callers fall back to the cwd remote.
 timvisher_gh__owner_from_args() {
-  local prev="" a
+  local prev="" a owner
+  if [[ -n ${TIMVISHER_GH_OWNER:-} ]]
+  then
+    printf '%s\n' "$TIMVISHER_GH_OWNER"
+    return 0
+  fi
   for a in "$@"
   do
     case "$prev" in
@@ -43,6 +51,26 @@ timvisher_gh__owner_from_args() {
       repos/*/*|*/repos/*/*)
         a=${a#*repos/}
         [[ -n ${a%%/*} ]] && { printf '%s\n' "${a%%/*}"; return 0; }
+        ;;
+    esac
+  done
+  for a in "$@"
+  do
+    case "$a" in
+      https://github.com/?*|http://github.com/?*|github.com/?*)
+        a=${a#*github.com/}
+        owner=${a%%[/?#]*}
+        case "$owner" in
+          orgs|users)
+            [[ $a == */* ]] || continue
+            a=${a#*/}
+            owner=${a%%[/?#]*}
+            ;;
+          settings|notifications|login|logout|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprises|organizations)
+            continue
+            ;;
+        esac
+        [[ -n $owner ]] && { printf '%s\n' "$owner"; return 0; }
         ;;
     esac
   done
