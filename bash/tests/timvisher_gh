@@ -1107,12 +1107,18 @@ cat > "$tmpdir/mockbin_comment/gh" <<'MOCK'
 #!/usr/bin/env bash
 if [[ $1 == auth && $2 == token ]]
 then
+  [[ $6 == brokenacct ]] &&
+    exit 1
   echo "token-$6"
   exit 0
 fi
 [[ $1 == api ]] ||
   exit 0
 shift
+if [[ -n ${MOCK_STDERR_NOISE-} ]]
+then
+  echo '* Request to https://api.github.com/ (GH_DEBUG noise)' >&2
+fi
 method=GET path='' host=''
 declare -A field=()
 while (( 0 < $# ))
@@ -1208,9 +1214,20 @@ case "$method $path" in
       respond "${MOCK_PATCH_STATUS:-200}" "$(comment_json "$id" "$node" "$url" "${field[body]}" "${MOCK_AUTHOR:-me}" "${MOCK_CREATED:-2026-10-12T09:08:07Z}")"
     fi
     json=$(comment_json "$id" "$node" "$url" "${MOCK_REMOTE_BODY-remote body}" "${MOCK_AUTHOR:-someone}" "${MOCK_CREATED:-2026-10-12T09:08:07Z}")
-    if [[ $path == */pulls/comments/* && -n ${MOCK_IN_REPLY_TO-} && $id != "$MOCK_IN_REPLY_TO" ]]
+    parent=''
+    if [[ ${MOCK_IN_REPLY_TO-} == *=* ]]
     then
-      json=$(jq -c --argjson root "$MOCK_IN_REPLY_TO" '. + {in_reply_to_id: $root}' <<<"$json")
+      for pair in ${MOCK_IN_REPLY_TO//,/ }
+      do
+        [[ ${pair%%=*} == "$id" ]] && parent=${pair#*=}
+      done
+    elif [[ -n ${MOCK_IN_REPLY_TO-} && $id != "$MOCK_IN_REPLY_TO" ]]
+    then
+      parent=$MOCK_IN_REPLY_TO
+    fi
+    if [[ $path == */pulls/comments/* && -n $parent ]]
+    then
+      json=$(jq -c --argjson root "$parent" '. + {in_reply_to_id: $root}' <<<"$json")
     fi
     respond "${MOCK_GET_STATUS:-200}" "$json"
     ;;
@@ -1366,7 +1383,7 @@ fi
 run_test
 crun -- comment comment.md
 if
-  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/42#issuecomment-9001 ]] && no_api
+  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/42#issuecomment-9001 ]] && ! grep -q " POST " "$MOCK_LOG"
 then
   pass "comment prints an existing sidecar's URL and posts nothing"
 else
@@ -1377,9 +1394,9 @@ run_test
 creset comment.md
 cfile comment.md "body"
 echo "https://github.com/testuser/testrepo/pull/1#issuecomment-99" > "$tmpdir/repo/comment.md.url"
-crun -- comment comment.md
+crun MOCK_AUTHOR=me -- comment comment.md
 if
-  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/1#issuecomment-99 ]] && no_api &&
+  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/1#issuecomment-99 ]] && ! grep -q " POST " "$MOCK_LOG" &&
   [[ $(cjq comment.md ".kind,.database_id" | paste -sd " " -) == "issue_comment 99" ]]
 then
   pass "comment adopts a legacy .url into .json without posting"
@@ -1405,7 +1422,7 @@ creset comment.md
 cfile comment.md "body"
 crun MOCK_POST_STATUS=403 -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md
 if
-  (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"Unable to post comment (HTTP status '403')"* && ! -e $tmpdir/repo/comment.md.json ]]
+  (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"Unable to post comment (HTTP status '403'"* && ! -e $tmpdir/repo/comment.md.json ]]
 then
   pass "comment fails without a sidecar when the POST fails"
 else
@@ -1798,7 +1815,7 @@ run_test
 slug_failures=()
 long=$(printf 'abcdefghij %.0s' {1..10})
 rockets=$(printf '🚀%.0s' {1..70})
-rockets60=$(printf '🚀%.0s' {1..60})
+rockets51=$(printf '🚀%.0s' {1..51})
 while IFS='|' read -r body author want
 do
   body=$(printf '%b' "$body")
@@ -1811,7 +1828,7 @@ do
 done <<EOF
   - .Fix the /thing\n\n\tthat broke 🚀 when x/y\r\nmore|someone|someone-Fix the thing that broke 🚀 when x y more
 ${long}|someone|someone-abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcde
-${rockets}|someone|someone-${rockets60}
+${rockets}|someone|someone-${rockets51}
 ends with dots...|someone|someone-ends with dots
 |someone|someone
 looks good|github-actions[bot]|github-actions-bot-looks good
@@ -1959,7 +1976,7 @@ fi
 run_test
 creset comment.md
 cfile comment.md "body"
-csidecar comment.md '{"kind":"issue_comment","database_id":9001,"url":"https://github.com/testuser/testrepo/pull/42#issuecomment-9001"}'
+csidecar comment.md '{"kind":"issue_comment","database_id":9001,"url":"https://github.com/testuser/testrepo/pull/42#issuecomment-9001","author":"me"}'
 crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md
 expect_clean_fail "comment refuses a file already posted on another PR" "was already posted on"
 
@@ -1967,6 +1984,7 @@ run_test
 creset comment.md
 crun -- comment --pull-request=https://ghe.example.com/testuser/testrepo/pull/1 nonexistent-but-checked-later.md
 expect_clean_fail "comment refuses a missing file before anything else" "is not readable"
+run_test
 creset ghe.md
 cfile ghe.md "body"
 crun -- comment --pull-request=https://github.example.com/testuser/testrepo/pull/1 ghe.md
@@ -2033,7 +2051,7 @@ fi
 run_test
 creset reply.md
 cfile reply.md "thanks"
-csidecar reply.md '{"kind":"review_comment","database_id":9002,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r9002","in_reply_to":111}'
+csidecar reply.md '{"kind":"review_comment","database_id":9002,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r9002","in_reply_to":111,"author":"me"}'
 crun -- comment reply https://github.com/testuser/testrepo/pull/1#discussion_r555 reply.md
 if
   (( c_rc != 0 )) && [[ -z $c_out && $c_err == *"isn't a reply in the thread holding"* ]] && ! grep -q " POST " "$MOCK_LOG"
@@ -2121,9 +2139,10 @@ cfile their.md "v1"
 csidecar their.md '{"kind":"review_comment","id":"PRRC_111","database_id":111,"url":"https://github.com/testuser/testrepo/pull/1#discussion_r111","posted":{"body":"v1"}}'
 cfile their.md "my draft"
 crun MOCK_REMOTE_BODY='v2 from someone' -- comment get their.md
+get_rc=$c_rc
 crun MOCK_REMOTE_BODY='v2 from someone' -- comment edit their.md
 if
-  (( c_rc != 0 )) && [[ $c_err == *"changed since it was posted"* ]] && ! grep -q " PATCH " "$MOCK_LOG"
+  (( get_rc == 0 )) && (( c_rc != 0 )) && [[ $c_err == *"changed since it was posted"* ]] && ! grep -q " PATCH " "$MOCK_LOG"
 then
   pass "comment edit after a dirty refresh still refuses to overwrite remote changes"
 else
@@ -2202,16 +2221,210 @@ crun -- comment reply --force "$discussion_url" reply.md
 expect_clean_fail "comment reply rejects unknown flags" "unknown flag '--force'"
 
 run_test
-crun -- comment resolve "$discussion_url"
-crun -- comment react "$issuecomment_url" --reaction +1
-if
-  ! grep -qv " host=github.com " "${MOCK_LOG}.tokens"
+host_failures=()
+for verb in resolve react get delete
+do
+  creset hosted.md
+  csidecar hosted.md "{\"kind\":\"review_comment\",\"database_id\":111,\"url\":\"$discussion_url\"}"
+  case $verb in
+    resolve) crun -- comment resolve "$discussion_url" ;;
+    react) crun -- comment react "$discussion_url" --reaction +1 ;;
+    get) crun -- comment get "$discussion_url" hosted.md ;;
+    delete) crun -- comment delete --force hosted.md ;;
+  esac
+  if ! { (( c_rc == 0 )) && [[ -s ${MOCK_LOG}.tokens ]] && ! grep -qv " host=github.com " "${MOCK_LOG}.tokens"; }
+  then
+    host_failures+=("${verb}: rc=${c_rc} $(cat "${MOCK_LOG}.tokens")")
+  fi
+done
+if (( ${#host_failures[@]} == 0 ))
 then
   pass "every comment API call is bound to github.com"
 else
-  cfail "every comment API call is bound to github.com"
+  fail "every comment API call is bound to github.com: ${host_failures[*]}"
 fi
+creset hosted.md
 creset reply.md their.md theirs.md mine.md got.md comment.md
+
+# review hardening, round two
+
+run_test
+crun MOCK_STDERR_NOISE=1 -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 noisy.md
+creset noisy.md
+cfile noisy.md "body"
+crun MOCK_STDERR_NOISE=1 -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 noisy.md
+if
+  (( c_rc == 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/99#issuecomment-9001 && -e $tmpdir/repo/noisy.md.json ]]
+then
+  pass "comment records a successful post even when gh writes diagnostics to stderr"
+else
+  cfail "comment records a successful post even when gh writes diagnostics to stderr"
+fi
+creset noisy.md
+
+run_test
+creset fetched.md
+crun -- comment get "$issuecomment_url" fetched.md
+crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/1 fetched.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"not one you posted"* ]] && ! grep -q " POST " "$MOCK_LOG"
+then
+  pass "comment refuses to treat a fetched comment as one you posted"
+else
+  cfail "comment refuses to treat a fetched comment as one you posted"
+fi
+
+run_test
+creset fetched.md
+crun MOCK_IN_REPLY_TO=111 -- comment get https://github.com/testuser/testrepo/pull/1#discussion_r9002 fetched.md
+cfile fetched.md "my reply draft"
+crun MOCK_IN_REPLY_TO=111 -- comment reply "$discussion_url" fetched.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"not one you posted"* ]] && ! grep -q " POST " "$MOCK_LOG"
+then
+  pass "comment reply refuses a fetched reply as its file"
+else
+  cfail "comment reply refuses a fetched reply as its file"
+fi
+creset fetched.md
+
+run_test
+creset top.md
+cfile top.md "body"
+csidecar top.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\",\"author\":\"me\"}"
+crun -- comment reply "$discussion_url" top.md
+expect_clean_fail "comment reply refuses a top-level comment's file" "which isn't a review comment"
+creset top.md
+
+run_test
+creset legacy-reply.md
+cfile legacy-reply.md "thanks"
+echo "https://github.com/testuser/testrepo/pull/1#discussion_r9002" > "$tmpdir/repo/legacy-reply.md.url"
+crun MOCK_AUTHOR=me MOCK_IN_REPLY_TO=9002=555 -- comment reply "$discussion_url" legacy-reply.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"isn't a reply in the thread holding"* ]] && ! grep -q " POST " "$MOCK_LOG" &&
+  [[ $(cjq legacy-reply.md ".in_reply_to") == 555 ]]
+then
+  pass "comment reply learns a legacy reply's parent before deciding it was already posted"
+else
+  cfail "comment reply learns a legacy reply's parent before deciding it was already posted"
+fi
+creset legacy-reply.md
+
+run_test
+creset their.md
+crun -- comment get "$issuecomment_url" their.md
+crun -- comment get https://github.com/TestUser/TestRepo/pull/1#issuecomment-222 their.md
+if
+  (( c_rc == 0 )) && [[ $c_out == their.md ]]
+then
+  pass "comment get matches owner and repo case-insensitively"
+else
+  cfail "comment get matches owner and repo case-insensitively"
+fi
+creset their.md
+
+run_test
+mkdir -p "$tmpdir/ghconfig/orgs/testuser"
+echo brokenacct > "$tmpdir/ghconfig/orgs/testuser/account"
+crun -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 --reaction +1
+if
+  (( c_rc == 0 )) && grep -q "op=addReaction" "$MOCK_LOG"
+then
+  pass "comment verbs don't need a token for the worktree's org"
+else
+  cfail "comment verbs don't need a token for the worktree's org"
+fi
+rm -rf "$tmpdir/ghconfig/orgs/testuser"
+
+run_test
+creset noid.md
+csidecar noid.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
+crun -- comment react noid.md --reaction eyes
+if
+  (( c_rc == 0 )) && grep -q " GET repos/testuser/testrepo/issues/comments/222 " "$MOCK_LOG" && [[ $(cjq noid.md ".id") == IC_222 ]]
+then
+  pass "comment react looks up and records a tracked file's missing node id"
+else
+  cfail "comment react looks up and records a tracked file's missing node id"
+fi
+creset noid.md
+
+run_test
+crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/1 reply "$discussion_url" reply.md
+expect_clean_fail "comment reply refuses --pull-request" "--pull-request only applies to posting"
+
+run_test
+creset comment.md
+cfile comment.md "new text"
+csidecar comment.md '{"kind":"issue_comment","id":"IC_222","database_id":222,"url":"https://github.com/testuser/testrepo/pull/1#issuecomment-222","posted":{"body":"old text"}}'
+crun MOCK_REMOTE_BODY='moved' -- comment edit -f comment.md
+if
+  (( c_rc == 0 )) && grep -q " PATCH " "$MOCK_LOG"
+then
+  pass "comment edit -f is --force"
+else
+  cfail "comment edit -f is --force"
+fi
+creset comment.md
+
+run_test
+creset empty.md
+crun MOCK_REMOTE_BODY='' -- comment get "$issuecomment_url" empty.md
+get_rc=$c_rc
+cfile empty.md "filled in"
+crun MOCK_REMOTE_BODY='someone wrote this meanwhile' -- comment edit empty.md
+if
+  (( get_rc == 0 )) && (( c_rc != 0 )) && [[ $c_err == *"changed since it was posted"* ]]
+then
+  pass "comment edit leases a comment fetched while empty"
+else
+  cfail "comment edit leases a comment fetched while empty"
+fi
+creset empty.md
+
+run_test
+long_author=$(printf 'a%.0s' {1..39})
+crun MOCK_AUTHOR="$long_author" MOCK_REMOTE_BODY="$(printf '🚀%.0s' {1..70})" -- comment get "$issuecomment_url"
+if
+  (( c_rc == 0 )) && (( $(printf '%s' "${c_out}.json.XXXXXX" | wc -c) <= 255 ))
+then
+  pass "comment get keeps generated names within 255 bytes"
+else
+  cfail "comment get keeps generated names within 255 bytes ($(printf '%s' "$c_out" | wc -c) bytes)"
+fi
+creset "$c_out"
+
+run_test
+if (( EUID == 0 ))
+then
+  pass "comment refuses an unreadable .url (skipped: root ignores file permissions)"
+else
+  creset legacy.md
+  cfile legacy.md "x"
+  echo "$issuecomment_url" > "$tmpdir/repo/legacy.md.url"
+  chmod 000 "$tmpdir/repo/legacy.md.url"
+  crun -- comment edit legacy.md
+  chmod 644 "$tmpdir/repo/legacy.md.url"
+  expect_clean_fail "comment refuses an unreadable .url" "isn't readable"
+  creset legacy.md
+fi
+
+run_test
+creset comment.md
+cfile comment.md "body"
+crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/123oops comment.md
+expect_clean_fail "comment refuses a malformed PR number" "isn't a github.com PR URL"
+
+run_test
+crun -- comment react --reaction +1 -- "$issuecomment_url"
+if
+  (( c_rc == 0 )) && grep -q "op=addReaction id=IC_222 content=THUMBS_UP" "$MOCK_LOG"
+then
+  pass "comment react takes its target after --"
+else
+  cfail "comment react takes its target after --"
+fi
 
 # accounts
 
