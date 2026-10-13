@@ -22,59 +22,129 @@ timvisher_gh__repo_spec_from_url() {
 }
 
 # Echo the org owner a gh invocation targets, or return 1. Best-effort, in
-# order: an explicit TIMVISHER_GH_OWNER (for calls whose arguments can't name
-# an owner, e.g. graphql node IDs), --repo/-R OWNER/REPO (and = forms), a
-# `repos/OWNER/REPO` segment anywhere (covers `gh api repos/o/r/...`), then an
-# argument that is itself a github.com web URL (`gh pr view <url>`). A URL
-# merely mentioned inside an argument, such as a comment body, doesn't count.
-# Otherwise callers fall back to the cwd remote.
+# order, the way gh itself resolves a target:
+#   1. a positional github.com web URL (`gh pr view <url>`; also www., any
+#      host case, and git@github.com:o/r). /orgs/<o> and /users/<u> yield the
+#      org or user; GitHub's own top-level pages yield nothing.
+#   2. --repo/-R OWNER/REPO (and = forms)
+#   3. a positional `repos/OWNER/REPO` API path (`gh api repos/o/r/...`)
+#   4. TIMVISHER_GH_OWNER, for callers that know the owner but whose
+#      arguments can't name it (graphql node IDs). OWNER/REPO is cut to OWNER.
+# Values of value-taking flags (--body, -f, --jq, ...) are never read as URLs
+# or paths, so a URL in a comment body can't steer the account. Owners must be
+# valid GitHub names. Otherwise callers fall back to the cwd remote.
 timvisher_gh__owner_from_args() {
-  local prev="" a owner
-  if [[ -n ${TIMVISHER_GH_OWNER:-} ]]
-  then
-    printf '%s\n' "$TIMVISHER_GH_OWNER"
-    return 0
-  fi
+  local a lower owner skip=0 prev=""
+  local -a positionals=()
   for a in "$@"
   do
-    case "$prev" in
-      --repo|-R) printf '%s\n' "${a%%/*}"; return 0 ;;
+    if (( skip ))
+    then
+      skip=0
+      prev=$a
+      continue
+    fi
+    case $a in
+      -b|--body|-t|--title|-n|--notes|-F|--field|-f|--raw-field|-q|--jq|--template|-H|--header|--head|-B|--base|-m|--message|--milestone|-l|--label|-a|--assignee|-r|--reviewer|-p|--project|--body-file|--notes-file|--input|-X|--method|--hostname|--cache|-e|--editor)
+        skip=1
+        ;;
+      -R|--repo)
+        ;;
+      -*)
+        ;;
+      *)
+        case $prev in
+          -R|--repo) ;;
+          *) positionals+=("$a") ;;
+        esac
+        ;;
     esac
-    case "$a" in
-      --repo=*|-R=*) a=${a#*=}; printf '%s\n' "${a%%/*}"; return 0 ;;
-    esac
-    prev="$a"
+    prev=$a
   done
+
+  for a in "${positionals[@]}"
+  do
+    lower=${a,,}
+    case $lower in
+      https://github.com/?*|http://github.com/?*|https://www.github.com/?*|http://www.github.com/?*|github.com/?*|www.github.com/?*)
+        a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
+        ;;
+      git@github.com:?*)
+        a=${a#*:}
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    a=${a%%[?#]*}
+    owner=${a%%/*}
+    case ${owner,,} in
+      orgs|users)
+        [[ $a == */* ]] ||
+          continue
+        a=${a#*/}
+        owner=${a%%/*}
+        ;;
+      settings|notifications|login|logout|join|signup|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprise|enterprises|organizations|pulls|issues|dashboard|about|pricing|account|stars|trending|collections|security|readme|copilot|discussions|site|contact|team|events|customer-stories|watching|github-copilot)
+        continue
+        ;;
+    esac
+    timvisher_gh__valid_owner "$owner" &&
+      { printf '%s\n' "$owner"; return 0; }
+  done
+
+  prev=""
   for a in "$@"
   do
-    case "$a" in
+    case $prev in
+      --repo|-R)
+        owner=${a%%/*}
+        timvisher_gh__valid_owner "$owner" &&
+          { printf '%s\n' "$owner"; return 0; }
+        ;;
+    esac
+    case $a in
+      --repo=*|-R=*)
+        a=${a#*=}
+        owner=${a%%/*}
+        timvisher_gh__valid_owner "$owner" &&
+          { printf '%s\n' "$owner"; return 0; }
+        ;;
+    esac
+    prev=$a
+  done
+
+  for a in "${positionals[@]}"
+  do
+    case ${a,,} in
+      *github.com/*)
+        [[ ${a,,} == *api.github.com/* ]] ||
+          continue
+        ;;
+    esac
+    case $a in
       repos/*/*|*/repos/*/*)
         a=${a#*repos/}
-        [[ -n ${a%%/*} ]] && { printf '%s\n' "${a%%/*}"; return 0; }
+        owner=${a%%/*}
+        timvisher_gh__valid_owner "$owner" &&
+          { printf '%s\n' "$owner"; return 0; }
         ;;
     esac
   done
-  for a in "$@"
-  do
-    case "$a" in
-      https://github.com/?*|http://github.com/?*|github.com/?*)
-        a=${a#*github.com/}
-        owner=${a%%[/?#]*}
-        case "$owner" in
-          orgs|users)
-            [[ $a == */* ]] || continue
-            a=${a#*/}
-            owner=${a%%[/?#]*}
-            ;;
-          settings|notifications|login|logout|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprises|organizations)
-            continue
-            ;;
-        esac
-        [[ -n $owner ]] && { printf '%s\n' "$owner"; return 0; }
-        ;;
-    esac
-  done
+
+  owner=${TIMVISHER_GH_OWNER:-}
+  owner=${owner%%/*}
+  if [[ -n $owner ]] && timvisher_gh__valid_owner "$owner"
+  then
+    printf '%s\n' "$owner"
+    return 0
+  fi
   return 1
+}
+
+# True if $1 is a valid GitHub user or org name.
+timvisher_gh__valid_owner() {
+  [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
 }
 
 # Echo the org owner from a directory's origin remote, or return 1.
