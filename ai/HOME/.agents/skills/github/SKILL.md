@@ -128,7 +128,7 @@ timvisher_gh comment comment.md                                    # PR URL from
 timvisher_gh comment --pull-request=https://github.com/o/r/pull/1 comment.md  # explicit PR URL
 ```
 
-Running it again when `comment.md.json` exists prints the URL instead of posting a duplicate.
+Running it again when `comment.md.json` exists prints the URL instead of posting a duplicate. A file already posted on another PR, or one fetched with `get` (someone else's comment), is refused.
 
 ### Reply to a review comment
 
@@ -137,7 +137,7 @@ timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' re
 timvisher_gh comment reply their-comment.md reply.md --reaction +1   # tracked target; react to it too
 ```
 
-Only review comments (`#discussion_r<ID>`) have threads to reply in; replying to a reply posts in its thread. One reply file is one reply: a file already posted in another thread is refused. `--reaction` (repeatable) reacts to the comment being replied to. A reply whose `reply.md.json` exists isn't posted again.
+Only review comments (`#discussion_r<ID>`) have threads to reply in; replying to a reply posts in its thread. One reply file is one reply: a file already posted in another thread, a top-level comment's file, or a file fetched with `get` is refused. `--pull-request` only applies to posting. `--reaction` (repeatable) reacts to the comment being replied to. A reply whose `reply.md.json` exists isn't posted again.
 
 ### Edit a posted comment
 
@@ -172,7 +172,10 @@ timvisher_gh comment get 'https://github.com/o/r/pull/1#discussion_r123456' thei
 timvisher_gh comment get their.md                                                     # refresh it
 ```
 
-Without a file name, `get` names it `<ts>-<author>-<slug>.md`: `<ts>` is the comment's UTC creation time as `+%FT%H-%M-%S%z`, and `<slug>` is the first 60 characters of the body with whitespace collapsed to single spaces. The fetched file is a tracked target for `reply`, `react` and `resolve`. Fetching the same comment again reuses that file, even after the comment's body changes. Refreshing keeps local edits you haven't pushed, along with their lease, so `edit` still notices if GitHub's copy changed meanwhile.
+Without a file name, `get` names it `<ts>-<author>-<slug>.md`:
+- `<ts>` is the creation time GitHub reports (UTC on github.com) as `+%FT%H-%M-%S%z`.
+- `<author>` is the login with anything but letters, digits and `-` turned into `-`, so `github-actions[bot]` becomes `github-actions-bot`.
+- `<slug>` comes from the body. Control characters and `/` become spaces, whitespace runs collapse to one space, and leading spaces, `.` and `-` are dropped, as are trailing spaces and `.`. The result is cut to 60 characters and to fit a 255-byte file name. The fetched file is a tracked target for `reply`, `react` and `resolve`. Fetching the same comment again reuses that file, even after the comment's body changes. Refreshing keeps local edits you haven't pushed, along with their lease, so `edit` still notices if GitHub's copy changed meanwhile.
 
 ### Delete a comment
 
