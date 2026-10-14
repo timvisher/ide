@@ -677,6 +677,7 @@ check_help "help repo fork"            repo fork --help
 check_help "help repo delete"          repo delete --help
 check_help "help pr ready"             pr ready -h
 check_help "help repo ls"              repo ls --help
+check_help "help repo fork"            repo fork --help=true
 check_help "help repo fork"            repo fork -h
 check_help "help pr comment"           pr comment 1 --body hi --help
 check_help "help api"                  api graphql -X POST --help
@@ -693,6 +694,16 @@ then
   pass "help goes to stdout with gh's exit status and nothing on stderr"
 else
   fail "help streams: rc=${help_rc} out='${help_out}' err='$(cat "$tmpdir/help_err")'"
+fi
+
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' __complete auth token -h github.com ''" 2>&1 || true)
+if [[ $result == "real-gh __complete auth token -h github.com "* ]]
+then
+  pass "completion requests with -h pass straight through"
+else
+  fail "__complete with -h: got '${result}'"
 fi
 
 run_test

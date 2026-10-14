@@ -138,6 +138,9 @@ check_owner "otherorg" cs list -o otherorg
 check_owner "ddoghq"  repo fork ddoghq/dd-source --org otherorg
 check_owner "ddoghq"  cache delete --all --succeed-on-no-caches -R ddoghq/dd-source
 check_owner "ddoghq"  browse -c -R ddoghq/dd-source
+check_owner "ddoghq"  pr list -S= -R ddoghq/dd-source
+check_owner "otherorg" rs list -o otherorg
+check_owner "ddoghq"  pr view 1 --help=false --repo ddoghq/dd-source
 check_owner "ddoghq"  pr merge --squash https://github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr checkout --force https://github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr diff --patch https://github.com/ddoghq/dd-source/pull/1
@@ -406,6 +409,20 @@ then
 else
   fail "URL GH_REPO for the same owner was dropped; err='$err'"
 fi
+
+extra_env=(GH_REPO=DDOGHQ/dd-source)
+run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}'
+run_test
+if [[ $err != *gh_api_gh_repo_dropped* && $out == *"GH_REPO=DDOGHQ/dd-source"* ]]
+then
+  pass "a GH_REPO differing from -R only in case is kept"
+else
+  fail "case-only GH_REPO difference dropped it; out='$out' err='$err'"
+fi
+extra_env=()
+run_shim "$repo" api graphql -F owner='{owner}' -F name='{repo}'
+check_source "placeholders in -F values count as using the cwd repo" tok-acct-upstreamorg \
+  "(from git remote 'upstream')"
 
 extra_env=(GH_TOKEN=caller-token)
 run_shim "$repo" pr view 1 --repo ddoghq/dd-source

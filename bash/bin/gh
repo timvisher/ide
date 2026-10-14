@@ -1218,6 +1218,16 @@ gh_args__parse() {
       --help)
         gh_args__help=true
         ;;
+      --help=*)
+        case ${a#--help=} in
+          true|1|t|T|TRUE|True)
+            gh_args__help=true
+            ;;
+          *)
+            gh_args__help=false
+            ;;
+        esac
+        ;;
       --*=*)
         flag=${a%%=*}
         gh_args__record "$flag" "${a#*=}"
@@ -1240,14 +1250,13 @@ gh_args__parse() {
           if gh_args__in "$word" "${value_flags[@]}"
           then
             rest=${letters:i+1}
-            rest=${rest#=}
             if [[ $word == -R ]]
             then
               (( 0 < i )) &&
                 gh_args__without_repo+=("-${letters:0:i}")
               if [[ -n $rest ]]
               then
-                gh_args__record -R "$rest"
+                gh_args__record -R "${rest#=}"
               else
                 consume=-R
               fi
@@ -1255,7 +1264,7 @@ gh_args__parse() {
             fi
             if [[ -n $rest ]]
             then
-              gh_args__record "$word" "$rest"
+              gh_args__record "$word" "${rest#=}"
             else
               consume=$word
             fi
@@ -1298,7 +1307,7 @@ gh_args__record() {
       ;;
     -o)
       case ${gh_args__path%% *} in
-        secret|variable|ruleset|status|codespace|cs)
+        secret|variable|ruleset|rs|status|codespace|cs)
           gh_args__org_value=$2
           ;;
       esac
@@ -1307,7 +1316,7 @@ gh_args__record() {
 }
 
 gh_args__parse "$@"
-if [[ $gh_args__help == true ]]
+if [[ $gh_args__help == true && ${gh_args__positionals[0]-} != __complete && ${gh_args__positionals[0]-} != __completeNoDesc ]]
 then
   read -ra gh_help__topic <<< "$gh_args__path"
   exec "$(brew --prefix)"/bin/gh help ${gh_help__topic[@]+"${gh_help__topic[@]}"}
@@ -1518,9 +1527,12 @@ gh_account__from_args() {
       fi
       return 1
     fi
+    for a in ${gh_args__without_repo[@]+"${gh_args__without_repo[@]}"}
+    do
+      [[ $a == *'{owner}'* || $a == *'{repo}'* ]] &&
+        gh_account__api_placeholder=1
+    done
     a=${gh_args__positionals[1]-}
-    [[ $a == *'{owner}'* || $a == *'{repo}'* ]] &&
-      gh_account__api_placeholder=1
     case $a in
       [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
         a=${a#*://*/}
@@ -1688,7 +1700,7 @@ gh_account__gh_repo_owner_differs() {
   local owner
   owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
     return 0
-  [[ $owner != "$gh_account__owner" ]]
+  [[ ${owner,,} != "${gh_account__owner,,}" ]]
 }
 
 gh_account__github_host() {
@@ -1710,7 +1722,7 @@ gh_account__github_host() {
 }
 
 gh_account__from_remotes() {
-  local use_resolution=$1 key value name resolved='' resolved_repo='' url host owner ssh_style
+  local use_resolution=$1 key value name want resolved='' resolved_repo='' url host owner ssh_style
   local -a names=() order=()
 
   mapfile -t names < <(git remote 2>/dev/null)
@@ -1746,10 +1758,17 @@ gh_account__from_remotes() {
 
   [[ -n $resolved ]] &&
     order+=("$resolved")
-  order+=(upstream github origin)
+  for want in upstream github origin
+  do
+    for name in "${names[@]}"
+    do
+      [[ ${name,,} == "$want" ]] &&
+        order+=("$name")
+    done
+  done
   for name in "${names[@]}"
   do
-    case $name in
+    case ${name,,} in
       upstream|github|origin)
         ;;
       *)
@@ -1851,7 +1870,7 @@ gh_account__select() {
   gh_account__from_args
 
   case $gh_account__command in
-    browse|pr|issue|release|repo|ruleset|run|workflow|label|cache)
+    browse|pr|issue|release|repo|ruleset|rs|run|workflow|label|cache)
       gh_account__resolves_base=true
       ;;
     *)
