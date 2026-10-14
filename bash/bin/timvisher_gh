@@ -310,11 +310,6 @@ gh_pr_ready() {
     # Validate we got parseable JSON; empty output or error text means no checks yet
     if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
     then
-      if [[ -n $checks_json && $checks_json != *'no checks reported'* ]]
-      then
-        printf '%s\n' "$checks_json" >&2
-        die "gh couldn't read the checks for '%s'; not retrying" "$pr_url"
-      fi
       info 'No checks found yet; retrying in %ds' "$poll_interval"
       sleep "$poll_interval"
       continue
@@ -391,7 +386,7 @@ gh_pr_wait_until_merged() {
 
   while true
   do
-    # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
+    # state is MERGED|CLOSED|OPEN.
     state=$(command gh -R "$(gh_url_repo "$pr_url")" pr view "$pr_url" --json state -q .state 2>/dev/null) || true
 
     case $state in
@@ -819,20 +814,20 @@ gh_comment_delete() {
        -H "X-GitHub-Api-Version: 2022-11-28"
   ) || rc=$?
 
-  if (( rc != 0 )) && [[ -z $rj ]]
+  if [[ -n $rj && 'Not Found' == $( <<<"$rj" jq -r '.message' 2>/dev/null ) ]]
   then
-    die "Deleting '%s' failed (rc=%d); keeping '%s.url'" "$comment_path" "$rc" "$comment_file"
+    rm -v "${comment_file}.url" >&2
+    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
+  elif (( rc != 0 ))
+  then
+    die "Deleting '%s' failed (rc=%d): %s; keeping '%s.url'" "$comment_path" "$rc" "$rj" "$comment_file"
   elif [[ -z $rj ]]
   then
     # Successful DELETE returns empty body
     rm -v "${comment_file}.url" >&2
     info 'Deleted comment for '%s'' "$comment_file"
-  elif [[ 'Not Found' == $( <<<"$rj" jq -r '.message' ) ]]
-  then
-    rm -v "${comment_file}.url" >&2
-    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
   else
-    error 'Unexpected response deleting comment for '%s': %s' "$comment_file" "$rj"
+    die "Unexpected response deleting comment for '%s': %s" "$comment_file" "$rj"
   fi
 }
 

@@ -137,8 +137,12 @@ then
   fi
 elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  [[ -z ${MOCK_DELETE_FAIL-} ]] ||
+  if [[ -n ${MOCK_DELETE_FAIL-} ]]
+  then
+    [[ -n ${MOCK_DELETE_BODY-} ]] &&
+      echo "$MOCK_DELETE_BODY"
     exit 1
+  fi
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -838,13 +842,15 @@ rm -f "$tmpdir/repo/pr.md.url"
 
 run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
-result=$(MOCK_CHECKS_ERR='HTTP 401: Bad credentials (https://api.github.com/graphql)' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
-  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
-if (( rc != 0 && rc != 124 )) && [[ $result == *"Bad credentials"* && $result == *"not retrying"* ]]
+export MOCK_LOG="$tmpdir/log_pr_ready_transient"
+: > "$MOCK_LOG"
+result=$(MOCK_CHECKS_ERR='HTTP 502: Bad Gateway' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 3 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc == 124 )) && (( 1 < $(grep -c 'pr checks' "$MOCK_LOG") ))
 then
-  pass "pr ready: stops on a gh error other than 'no checks reported'"
+  pass "pr ready: keeps retrying through ordinary gh errors"
 else
-  fail "pr ready with an auth error: rc=${rc} result='${result}'"
+  fail "pr ready with a transient error: rc=${rc} result='${result:0:300}'"
 fi
 rm -f "$tmpdir/repo/pr.md.url"
 
@@ -1078,8 +1084,12 @@ then
   fi
 elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  [[ -z ${MOCK_DELETE_FAIL-} ]] ||
+  if [[ -n ${MOCK_DELETE_FAIL-} ]]
+  then
+    [[ -n ${MOCK_DELETE_BODY-} ]] &&
+      echo "$MOCK_DELETE_BODY"
     exit 1
+  fi
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -1318,6 +1328,16 @@ do
     fail "comment delete with '${head_err}' should ${want%s} the .url file"
   fi
 done
+
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+echo y | MOCK_DELETE_FAIL=1 MOCK_DELETE_BODY='{"message":"Forbidden"}' PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md --force" >/dev/null 2>&1 && rc=0 || rc=$?
+if (( rc != 0 )) && [[ -r $tmpdir/repo/comment.md.url ]]
+then
+  pass "comment delete fails and keeps the .url file when the DELETE fails with an error body"
+else
+  fail "comment delete with a failed DELETE body: rc=${rc}"
+fi
 
 run_test
 echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
