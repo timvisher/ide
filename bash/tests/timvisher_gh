@@ -81,6 +81,10 @@ then
 elif [[ $1 == pr && $2 == edit ]]
 then
   echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_REFUSE-} ]]
+then
+  echo '{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"}' >&2
+  exit 1
 elif [[ $1 == pr && $2 == checks ]]
 then
   # Return contents of MOCK_CHECKS_FILE if set, otherwise empty array
@@ -804,6 +808,20 @@ fi
 rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/x.merged"
 
 # --- pr ready tests ---
+
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_refused"
+touch "$MOCK_LOG"
+result=$(MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && [[ $result == *gh_account_token_unavailable* && $result == *"not retrying"* ]]
+then
+  pass "pr ready: stops when gh refuses instead of retrying forever"
+else
+  fail "pr ready with a refusing gh: rc=${rc} result='${result}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
 
 # Test: pr ready - exits if pr.md.url is missing
 run_test

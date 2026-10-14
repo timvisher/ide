@@ -287,11 +287,18 @@ gh_pr_ready() {
   done
 
   local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
-  local checks_json filtered_json total pending_count fail_count pass_count
+  local checks_out checks_json checks_refusal filtered_json total pending_count fail_count pass_count
 
   while true
   do
-    checks_json=$(command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>/dev/null) || true
+    checks_out=$(command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>&1) || true
+    checks_refusal=$(grep '^{"type":"instruction","level":"error"' <<<"$checks_out")
+    if [[ -n $checks_refusal ]]
+    then
+      printf '%s\n' "$checks_refusal" >&2
+      die "gh refused to check '%s'; not retrying" "$pr_url"
+    fi
+    checks_json=$(grep -v '^{"type":"instruction"' <<<"$checks_out")
 
     # Validate we got parseable JSON; empty output or error text means no checks yet
     if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
