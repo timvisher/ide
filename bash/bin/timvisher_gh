@@ -146,7 +146,8 @@ show_help() {
     - Without <file>, names it <ts>-<author>-<slug>.md: <ts> is the
       creation time GitHub reports (UTC on github.com) as
       +%FT%H-%M-%S%z; <author> is the login with anything but letters,
-      digits and - turned into -; <slug> is the body with control
+      digits and - turned into - (runs collapsed, ends trimmed);
+      <slug> is the body with control
       characters and / turned into spaces, whitespace runs collapsed to
       one space, leading spaces, . and - and trailing spaces and .
       dropped, cut to 60 characters and to fit a 255-byte file name
@@ -685,7 +686,7 @@ end run' "$issue_url"
 
 comment__url_re='^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)(/(files|changes))?(\?[^#]*)?#(discussion_r|issuecomment-)([0-9]+)$'
 
-gh_comment__http_status() {
+comment__http_status() {
   local status
   read -r _ status _ <<<"${1%%$'\n'*}"
   if [[ ${1%%$'\n'*} == HTTP/* && $status =~ ^[0-9]{3}$ ]]
@@ -715,7 +716,7 @@ comment__init() {
 comment__capture() {
   local rc=$1
   comment__stderr=$(< "${comment__tmpdir}/stderr")
-  comment__status=$(gh_comment__http_status "$comment__response")
+  comment__status=$(comment__http_status "$comment__response")
   comment__body=''
   if [[ $comment__response == *$'\r\n\r\n'* ]]
   then
@@ -740,12 +741,12 @@ comment__failure() {
   printf "HTTP status '%s': %s%s" "$comment__status" "$comment__body" "${comment__stderr:+ ($comment__stderr)}"
 }
 
-gh_comment__repo_reachable() {
+comment__repo_reachable() {
   comment__api --method HEAD "/repos/${c_owner}/${c_repo}"
 }
 
 comment__normalize() {
-  local text=${1//$'\r'/}
+  local text=${1//$'\r\n'/$'\n'}
   text=${text%"${text##*[!$'\n']}"}
   printf '%s' "$text"
 }
@@ -811,15 +812,27 @@ comment__parse_reactions() {
   done
 }
 
-comment__reject_flags() {
-  local verb=$1 a
+comment__positionals() {
+  local verb=$1
   shift
-  for a in "$@"
+  comment__args=()
+  while (( 0 < $# ))
   do
-    [[ $a == -* ]] &&
-      die "comment %s: unknown flag '%s'" "$verb" "$a"
+    case $1 in
+      --)
+        shift
+        comment__args+=("$@")
+        break
+        ;;
+      -*)
+        die "comment %s: unknown flag '%s'" "$verb" "$1"
+        ;;
+      *)
+        comment__args+=("$1")
+        shift
+        ;;
+    esac
   done
-  return 0
 }
 
 c_owner='' c_repo='' c_pr='' c_kind='' c_db='' c_url='' c_file='' c_json=''
@@ -859,22 +872,28 @@ comment__sidecar_write() {
     error "Refusing to write malformed state to '%s.json'" "$file"
     return 1
   fi
-  local tmp
-  if ! tmp=$(mktemp "${file}.json.XXXXXX" 2>/dev/null)
+  comment__write_atomic "${file}.json" "$json" ||
+    return 1
+  url=$(jq -r '.url // empty' <<<"$json")
+  if [[ -n $url ]]
   then
-    error "Unable to write '%s.json'" "$file"
+    comment__write_atomic "${file}.url" "$url" ||
+      return 1
+  fi
+}
+
+comment__write_atomic() {
+  local dest=$1 content=$2 tmp mode
+  mode=$(printf '%o' $(( 0666 & ~$(umask) )))
+  if ! tmp=$(mktemp "${dest}.XXXXXX" 2>/dev/null)
+  then
+    error "Unable to write '%s'" "$dest"
     return 1
   fi
-  if ! { printf '%s\n' "$json" > "$tmp" && mv -f -- "$tmp" "${file}.json"; }
+  if ! { printf '%s\n' "$content" > "$tmp" && chmod "$mode" "$tmp" && mv -f -- "$tmp" "$dest"; }
   then
     rm -f -- "$tmp"
-    error "Unable to write '%s.json'" "$file"
-    return 1
-  fi
-  url=$(jq -r '.url // empty' <<<"$json")
-  if [[ -n $url ]] && ! printf '%s\n' "$url" > "${file}.url"
-  then
-    error "Unable to write '%s.url'" "$file"
+    error "Unable to write '%s'" "$dest"
     return 1
   fi
 }
@@ -907,7 +926,7 @@ comment__sidecar_load() {
       die "'%s.json' holds an unexpected url: '%s'" "$file" "$url"
     if [[ ! -r ${file}.url || $(< "${file}.url") != "$url" ]]
     then
-      printf '%s\n' "$url" 2>/dev/null > "${file}.url" ||
+      comment__write_atomic "${file}.url" "$url" 2>/dev/null ||
         info "Couldn't regenerate '%s.url' from '%s.json'" "$file" "$file"
     fi
     printf '%s\n' "$json"
@@ -1211,11 +1230,12 @@ resolve_pr_url() {
 comment__pr_from_url() {
   [[ $1 =~ ^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)([/?#]|$) ]] ||
     die "'%s' isn't a github.com PR URL (GitHub Enterprise hosts aren't supported)" "$1"
-  printf '%s/%s/pull/%s' "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2],,}" "${BASH_REMATCH[3]}"
+  printf '%s/%s/pull/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 }
 
 gh_comment_post() {
-  comment__reject_flags post "$@"
+  comment__positionals post "$@"
+  set -- ${comment__args[@]+"${comment__args[@]}"}
   local comment_file=${1-}
 
   [[ -n $comment_file ]] ||
@@ -1246,7 +1266,7 @@ gh_comment_post() {
         exit 1
       have=$(comment__pr_from_url "$(jq -r '.url' <<<"$json")") ||
         exit 1
-      [[ $want == "$have" ]] ||
+      [[ ${want,,} == "${have,,}" ]] ||
         die "'%s' was already posted on '%s', not '%s'; use a separate file per comment" "$comment_file" "https://github.com/${have}" "$requested"
     fi
     info "'%s' was already posted" "$comment_file"
@@ -1263,7 +1283,6 @@ gh_comment_post() {
   c_kind=issue_comment
   comment__writable "$comment_file"
 
-
   local body
   body=$(< "$comment_file")
   comment__api --method POST "repos/${c_owner}/${c_repo}/issues/${c_pr}/comments" -f "body=${body}" ||
@@ -1277,8 +1296,10 @@ gh_comment_post() {
 
 gh_comment_reply() {
   comment__parse_reactions reply "$@"
-  set -- "${comment__args[@]}"
-  comment__reject_flags reply "$@"
+  local -a reactions=(${comment__reactions[@]+"${comment__reactions[@]}"})
+  comment__positionals reply ${comment__args[@]+"${comment__args[@]}"}
+  set -- ${comment__args[@]+"${comment__args[@]}"}
+  comment__reactions=(${reactions[@]+"${reactions[@]}"})
 
   local target=${1-}
   local reply_file=${2-}
@@ -1299,7 +1320,6 @@ gh_comment_reply() {
   [[ $c_kind == review_comment ]] ||
     die "'%s' is a top-level comment; GitHub only threads replies to review comments (#discussion_r<ID>)" "$c_url"
 
-
   local root root_db reply_json reply_url
   root=$(comment__root) ||
     exit 1
@@ -1313,8 +1333,10 @@ gh_comment_reply() {
       exit 1
     local recorded
     recorded=$(jq -r '.in_reply_to // empty' <<<"$reply_json")
+    local reply_pr
+    reply_pr=$(comment__pr_from_url "$(jq -r '.url' <<<"$reply_json")")
     if [[ $recorded != "$root_db" ]] ||
-       [[ $(comment__pr_from_url "$(jq -r '.url' <<<"$reply_json")") != "${c_owner,,}/${c_repo,,}/pull/${c_pr}" ]]
+       [[ ${reply_pr,,} != "${c_owner,,}/${c_repo,,}/pull/${c_pr}" ]]
     then
       die "'%s' was already posted as '%s', which isn't a reply in the thread holding '%s'; use a separate file per reply" "$reply_file" "$(jq -r '.url' <<<"$reply_json")" "$c_url"
     fi
@@ -1338,11 +1360,11 @@ gh_comment_reply() {
     reply_url=$(jq -r '.url' <<<"$reply_json")
   fi
 
-  comment__react_apply add "${comment__reactions[@]}" ||
-    {
-      printf '%s\n' "$reply_url"
-      die "Replied, but not every reaction converged on '%s'; rerun the same command" "$c_url"
-    }
+  if ! ( comment__react_apply add ${comment__reactions[@]+"${comment__reactions[@]}"} )
+  then
+    printf '%s\n' "$reply_url"
+    die "Replied, but not every reaction converged on '%s'; rerun the same command" "$c_url"
+  fi
 
   printf '%s\n' "$reply_url"
 }
@@ -1350,16 +1372,18 @@ gh_comment_reply() {
 # shellcheck disable=SC2016
 gh_comment_edit() {
   local force=0
+  local -a rest=()
   while (( 0 < $# ))
   do
     case $1 in
       --force|-f) force=1; shift ;;
       --pull-request=*) shift ;;
-      --) shift; break ;;
+      --) shift; rest+=("$@"); break ;;
       -*) die "comment edit: unknown flag '%s'" "$1" ;;
-      *) break ;;
+      *) rest+=("$1"); shift ;;
     esac
   done
+  set -- ${rest[@]+"${rest[@]}"}
 
   local comment_file=${1-}
 
@@ -1379,12 +1403,12 @@ gh_comment_edit() {
   c_file=$comment_file
   comment__parse_url "$(jq -r '.url' <<<"$c_json")"
 
-
-  local remote local_body remote_body posted_body
+  local raw_body local_body remote remote_body posted_body
+  raw_body=$(< "$comment_file")
+  local_body=$(comment__normalize "$raw_body")
   remote=$(comment__fetch) ||
     exit 1
   remote_body=$(comment__normalize "$(jq -r '.body // ""' <<<"$remote")")
-  local_body=$(comment__normalize "$(< "$comment_file")")
 
   if [[ $local_body == "$remote_body" ]]
   then
@@ -1406,11 +1430,17 @@ gh_comment_edit() {
     fi
   fi
 
-  comment__api --method PATCH "$(comment__endpoint)" -f "body=$(< "$comment_file")" ||
+  comment__api --method PATCH "$(comment__endpoint)" -f "body=${raw_body}" ||
     die "Unable to update comment (%s)" "$(comment__failure)"
 
-  comment__sidecar_update '. * $fresh | .posted.body = $body' \
-    --argjson fresh "$(comment__from_rest <<<"$comment__body")" --arg body "$local_body"
+  local fresh
+  fresh=$(comment__from_rest <<<"$comment__body")
+  if ! c_json=$(jq --argjson fresh "$fresh" --arg body "$local_body" '. * $fresh | .posted.body = $body' <<<"$c_json") ||
+     ! comment__sidecar_write "$c_file" "$c_json"
+  then
+    printf '%s\n' "$c_url"
+    die "Updated '%s', but couldn't record it in '%s.json'; its lease is stale until you rerun 'comment edit --force %s'" "$c_url" "$c_file" "$c_file"
+  fi
   info 'Comment updated'
   printf '%s\n' "$c_url"
 }
@@ -1463,7 +1493,6 @@ gh_comment_resolve() {
   [[ $c_kind == review_comment ]] ||
     die "'%s' is a top-level comment; only review threads (#discussion_r<ID>) can be resolved" "$c_url"
 
-
   local thread_id
   thread_id=$(jq -r '.thread_id // empty' <<<"${c_json:-{\}}")
   if [[ -z $thread_id ]]
@@ -1493,15 +1522,19 @@ gh_comment_resolve() {
 }
 
 comment__tracks_target() {
-  local json=$1
+  local json=$1 tracked_pr
   [[ $(jq -r '.kind // empty' <<<"$json") == "$c_kind" &&
-     $(jq -r '.database_id // empty' <<<"$json") == "$c_db" ]] &&
-    [[ $(comment__pr_from_url "$(jq -r '.url' <<<"$json")" 2>/dev/null) == "${c_owner,,}/${c_repo,,}/pull/${c_pr}" ]]
+     $(jq -r '.database_id // empty' <<<"$json") == "$c_db" ]] ||
+    return 1
+  tracked_pr=$(comment__pr_from_url "$(jq -r '.url' <<<"$json")" 2>/dev/null) ||
+    return 1
+  [[ ${tracked_pr,,} == "${c_owner,,}/${c_repo,,}/pull/${c_pr}" ]]
 }
 
 # shellcheck disable=SC2016
 gh_comment_get() {
-  comment__reject_flags get "$@"
+  comment__positionals get "$@"
+  set -- ${comment__args[@]+"${comment__args[@]}"}
   local target=${1-} file=${2-}
 
   [[ -n $target ]] ||
@@ -1516,7 +1549,6 @@ gh_comment_get() {
       die "comment get: '%s' is already a tracked file; refresh it with 'comment get %s'" "$c_file" "$c_file"
     file=$c_file
   fi
-
 
   local remote fresh remote_body
   remote=$(comment__fetch) ||
@@ -1606,17 +1638,18 @@ gh_comment_get() {
 
 gh_comment_delete() {
   local force=0
+  local -a rest=()
 
-  # Leading flags. --force skips the confirmation prompt (batch cleanup).
   while (( 0 < $# ))
   do
     case "$1" in
       --force|-f) force=1; shift ;;
-      --)         shift; break ;;
+      --)         shift; rest+=("$@"); break ;;
       -*)         die "comment delete: unknown flag '%s'" "$1" ;;
-      *)          break ;;
+      *)          rest+=("$1"); shift ;;
     esac
   done
+  set -- ${rest[@]+"${rest[@]}"}
 
   local comment_file=${1-}
 
@@ -1642,39 +1675,40 @@ gh_comment_delete() {
   local comment_path owner_repo="${c_owner}/${c_repo}"
   comment_path=/$(comment__endpoint)
 
-
-  local author viewer
-  author=$(jq -r '.author // empty' <<<"$c_json")
-  if [[ -n $author ]]
-  then
-    viewer=$(comment__viewer) ||
-      exit 1
-    if [[ ${author,,} != "${viewer,,}" ]] && (( force ))
-    then
-      die "'%s' is %s's comment, not yours; --force only deletes your own comments, so rerun without it to confirm" "$c_url" "$author"
-    fi
-  fi
-
-  local head_status head_failure
   comment__api --method HEAD "${comment_path}"
-  head_status=$comment__status
-  head_failure=$(comment__failure)
+  local fetch_status=$comment__status fetch_failure
+  fetch_failure=$(comment__failure)
 
-  case $head_status in
+  case $fetch_status in
     2??)
       ;;
     404|410)
-      gh_comment__repo_reachable ||
-        die "'%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.json'" "$comment_path" "$head_status" "$owner_repo" "$comment_file"
+      comment__repo_reachable ||
+        die "'%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.json'" "$comment_path" "$fetch_status" "$owner_repo" "$comment_file"
       info "Comment at '%s' no longer exists. Removing stale '%s.json'." "$comment_path" "$comment_file"
       rm -fv "${comment_file}.json" "${comment_file}.url" >&2 ||
         die "Unable to remove stale '%s.json'" "$comment_file"
       return
       ;;
     *)
-      die "Unable to check whether '%s' still exists; keeping '%s.json' (%s)" "$comment_path" "$comment_file" "$head_failure"
+      die "Unable to check whether '%s' still exists; keeping '%s.json' (%s)" "$comment_path" "$comment_file" "$fetch_failure"
       ;;
   esac
+
+  local author viewer remote
+  author=$(jq -r '.author // empty' <<<"$c_json")
+  if [[ -z $author ]]
+  then
+    remote=$(comment__fetch) ||
+      exit 1
+    author=$(jq -r '.user.login // empty' <<<"$remote")
+  fi
+  viewer=$(comment__viewer) ||
+    exit 1
+  if [[ -n $author && ${author,,} != "${viewer,,}" ]] && (( force ))
+  then
+    die "'%s' is %s's comment, not yours; --force only deletes your own comments, so rerun without it to confirm" "$c_url" "$author"
+  fi
 
   if (( ! force ))
   then
@@ -1704,7 +1738,7 @@ gh_comment_delete() {
       info "Deleted comment for '%s'" "$comment_file"
       ;;
     404|410)
-      gh_comment__repo_reachable ||
+      comment__repo_reachable ||
         die "DELETE '%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.json'" "$comment_path" "$delete_status" "$owner_repo" "$comment_file"
       rm -fv "${comment_file}.json" "${comment_file}.url" >&2 ||
         die "Comment already gone for '%s', but unable to remove '%s.json'" "$comment_file" "$comment_file"
