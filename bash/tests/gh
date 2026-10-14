@@ -730,11 +730,11 @@ done
 
 run_test
 result=$(run_agent repo fork -- --help)
-if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+if [[ $result == "real-gh help repo fork" ]]
 then
-  pass "--help after -- is not a help request"
+  pass "a trailing --help shows help even after --, so nothing runs"
 else
-  fail "--help after --: got '${result}'"
+  fail "repo fork -- --help: got '${result}'"
 fi
 
 echo ""
