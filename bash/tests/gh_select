@@ -132,7 +132,17 @@ expect "-R OWNER picks the account without setting GH_REPO" \
 run_shim "$tmpdir/norepo" --json=title -R ddoghq/dd-source pr view 1
 expect_stop "any other flag before the subcommand stops" "put flags after the subcommand"
 run_shim "$tmpdir/norepo" -R
-expect_stop "-R with no value stops"
+expect_stop "-R with no value says the value is missing" "needs a value"
+run_shim "$tmpdir/norepo"
+run_test
+if (( rc == 0 )) && [[ $out == "real-gh GH_TOKEN= GH_REPO= " && -z $err ]]
+then
+  pass "bare gh passes through silently"
+else
+  fail "bare gh: rc=$rc out='$out' err='$err'"
+fi
+run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source/pull/5 pr view 5
+expect_stop "-R longer than OWNER/REPO stops" "should name OWNER or OWNER/REPO"
 
 run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/pulls
 expect "a gh api endpoint right after api names the owner" \
@@ -219,6 +229,11 @@ done
 run_shim "$tmpdir/norepo" -R unmapped/repo pr list
 expect "an unmapped owner runs as the active account" \
   "real-gh GH_TOKEN= GH_REPO=unmapped/repo pr list" "No gh account is configured for 'unmapped'"
+mkdir -p "$tmpdir/cfg/orgs/blankorg"
+printf ' \n' > "$tmpdir/cfg/orgs/blankorg/account"
+run_shim "$tmpdir/norepo" -R blankorg/repo pr list
+expect "a blank mapping file counts as unmapped" \
+  "real-gh GH_TOKEN= GH_REPO=blankorg/repo pr list" "No gh account is configured for 'blankorg'"
 map brokenorg broken
 run_shim "$tmpdir/norepo" -R brokenorg/repo pr list
 run_test

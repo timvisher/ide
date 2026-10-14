@@ -20,6 +20,7 @@ gh_args__parse() {
   gh_args__repo_value=''
   gh_args__pre=()
   gh_args__unknown_pre=''
+  gh_args__missing_value=''
   gh_args__help=false
   gh_args__command=''
   gh_args__rest=()
@@ -31,7 +32,7 @@ gh_args__parse() {
       -R|--repo)
         if (( n <= i + 1 ))
         then
-          gh_args__unknown_pre=$a
+          gh_args__missing_value=$a
           return
         fi
         gh_args__repo_value=${args[i+1]}
@@ -65,16 +66,19 @@ gh_args__parse() {
   gh_args__command=${args[i]-}
   gh_args__rest=("${args[@]:i+1}")
 
-  case ${args[n-1]-} in
-    --help|-h)
-      [[ $gh_args__command == __complete* ]] ||
-        gh_args__help=true
-      ;;
-  esac
+  if (( 0 < n ))
+  then
+    case ${args[n-1]} in
+      --help|-h)
+        [[ $gh_args__command == __complete* ]] ||
+          gh_args__help=true
+        ;;
+    esac
+  fi
 }
 
 gh_args__parse "$@"
-if [[ -z $gh_args__unknown_pre && $gh_args__help == true ]]
+if [[ -z $gh_args__unknown_pre && -z $gh_args__missing_value && $gh_args__help == true ]]
 then
   gh_help__topic=()
   for gh_help__arg in ${gh_args__command:+"$gh_args__command"} ${gh_args__rest[@]+"${gh_args__rest[@]}"}
@@ -335,11 +339,10 @@ gh_account__select() {
   gh_account__owner=''
   gh_account__source=''
 
-  if [[ -n $gh_args__unknown_pre ]]
-  then
-    gh_account__argv=("$@")
+  [[ -n $gh_args__missing_value ]] &&
+    gh_account__stop "'${gh_args__missing_value}' needs a value: OWNER or OWNER/REPO."
+  [[ -n $gh_args__unknown_pre ]] &&
     gh_account__stop "'${gh_args__unknown_pre}' before the subcommand isn't something the shim reads; put flags after the subcommand, and -R before it."
-  fi
 
   case $gh_args__command in
     ''|auth|config|alias|extension|help|completion|version|__complete|__completeNoDesc)
@@ -351,6 +354,8 @@ gh_account__select() {
   then
     local path
     path=$(gh_account__repo_path "$gh_args__repo_value")
+    [[ $path == */*/* ]] &&
+      gh_account__stop "-R '${gh_args__repo_value}' should name OWNER or OWNER/REPO, not a longer path."
     gh_account__owner=${path%%/*}
     gh_account__valid_owner "$gh_account__owner" ||
       gh_account__stop "Can't read an owner from -R '${gh_args__repo_value}'."
@@ -395,7 +400,13 @@ gh_account__select() {
   gh_account__note_mismatches
 
   config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
-  if [[ ! -r ${config_dir}/orgs/${gh_account__owner}/account ]]
+  account=''
+  if [[ -r ${config_dir}/orgs/${gh_account__owner}/account ]]
+  then
+    account=$(< "${config_dir}/orgs/${gh_account__owner}/account")
+    account=${account//[[:space:]]/}
+  fi
+  if [[ -z $account ]]
   then
     aictl_info \
       --code gh_account_active \
@@ -403,8 +414,6 @@ gh_account__select() {
       --doc "$gh_account__doc"
     return 0
   fi
-  account=$(< "${config_dir}/orgs/${gh_account__owner}/account")
-  account=${account//[[:space:]]/}
 
   if ! token=$("$gh_account__real_gh" auth token --hostname github.com --user "$account" 2>/dev/null) ||
      [[ -z $token ]]
@@ -423,6 +432,6 @@ gh_account__select() {
     --doc "$gh_account__doc"
 }
 
-gh_account__select "$@"
+gh_account__select
 
 exec "$gh_account__real_gh" ${gh_account__argv[@]+"${gh_account__argv[@]}"}
