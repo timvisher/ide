@@ -1332,28 +1332,21 @@ else
   fail "grep -h pattern: got '${result}'"
 fi
 
-run_test
-result=$(TIMVISHER_AGENT=true PATH="$test_path" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m --help" 2>&1 || true)
-if [[ $result != *"real-git help"* && $result == *'"type":"instruction","level":"error"'* ]]
-then
-  pass "'git commit -m --help' is a commit, so the guards judge it"
-else
-  fail "commit -m --help: got '${result}'"
-fi
+check_git_help "help commit"   commit -m --help
+check_git_help "help grep"     grep -e --help
+check_git_help "help grep"     grep -ie --help
+check_git_help "help log"      log --grep --help
+check_git_help "help cleanup"  cleanup -e --help
 
-for args in "grep -e --help" "log --grep --help" "log --author --help" "grep -ie --help" "grep -iwe --help"
-do
-  run_test
-  result=$(PATH="$test_path" \
-    bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' $args" 2>&1 || true)
-  if [[ $result == *"real-git $args"* ]]
-  then
-    pass "'git $args' keeps --help as a value"
-  else
-    fail "'git $args': got '${result}'"
-  fi
-done
+run_test
+result=$(PATH="$test_path" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log --help --oneline" 2>&1 || true)
+if [[ $result == *"real-git log --help --oneline"* ]]
+then
+  pass "--help that isn't the last argument (after the subcommand) isn't a help request"
+else
+  fail "log --help --oneline: got '${result}'"
+fi
 
 run_test
 result=$(TIMVISHER_AGENT=true PATH="$test_path" \

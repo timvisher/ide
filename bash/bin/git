@@ -215,7 +215,6 @@ _timvisher_git__help=''
 _timvisher_git__help_short=false
 _timvisher_git__help_after_sub=0
 _timvisher_git__help_skip_next=false
-_timvisher_git__help_prev=''
 _timvisher_git__help_globals=()
 _timvisher_git__help_global_short=false
 for _timvisher_git__help_arg in "$@"
@@ -224,7 +223,6 @@ do
   then
     _timvisher_git__help_skip_next=false
     _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
-    _timvisher_git__help_prev=''
     continue
   fi
   if [[ -n $_timvisher_git__help_sub ]]
@@ -237,20 +235,8 @@ do
       break
       ;;
     --help)
-      if [[ -z $_timvisher_git__help_sub ]]
-      then
+      [[ -z $_timvisher_git__help_sub || $_timvisher_git__help_arg == "${!#}" ]] &&
         _timvisher_git__help=--help
-      else
-        case $_timvisher_git__help_prev in
-          -e|--regexp|--grep|--author|--committer|-m|--message|-S|-G|-F|--file|-C|-c|--format|--pretty|-O|--exec|-x)
-            ;;
-          -[A-Za-z]*[eSGFCcmOx])
-            ;;
-          *)
-            _timvisher_git__help=--help
-            ;;
-        esac
-      fi
       ;;
     -h)
       if [[ -z $_timvisher_git__help_sub ]]
@@ -277,7 +263,6 @@ do
         _timvisher_git__help_sub=$_timvisher_git__help_arg
       ;;
   esac
-  _timvisher_git__help_prev=$_timvisher_git__help_arg
 done
 [[ -z $_timvisher_git__help && $_timvisher_git__help_short == true ]] &&
   _timvisher_git__help=-h
