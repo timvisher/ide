@@ -148,21 +148,21 @@ When interacting with GitHub (github.com), always use the `gh` CLI. This include
 
 **The account comes from exactly one of these, in order:**
 
-1. `-R`/`--repo` before the subcommand: `gh -R OWNER/REPO pr view 5`, `gh -R OWNER gist list`, `gh -R OWNER api user`. `-R VALUE`, `-RVALUE`, `-R=VALUE`, `--repo VALUE` and `--repo=VALUE` all work, in any order with `--help`/`--version`. The shim removes it and sets `GH_REPO` from an `OWNER/REPO` value.
+1. `-R`/`--repo` before the subcommand: `gh -R OWNER/REPO pr view 5`, `gh -R OWNER gist list`, `gh -R OWNER api user`. The shim removes it and sets `GH_REPO` from an `OWNER/REPO` value.
 2. For `gh api`, an endpoint right after `api` that starts with `repos/OWNER/`, `orgs/OWNER` or `users/OWNER`.
-3. `GH_REPO` (`[HOST/]OWNER/REPO`).
-4. The cwd's git remotes, when they're all on github.com and all name the same owner (`gh repo set-default`'s choice counts as one).
+3. `GH_REPO`.
+4. The cwd's github.com remotes, when they all name the same owner.
 
-Otherwise the call stops with `gh_target_required`. That includes any other flag before the subcommand; put flags after it.
+Otherwise the call stops with `gh_target_required`, as does any other flag before the subcommand. The account for an owner is in `timvisher_gh.config/orgs/<owner>/account`; with no mapping, gh's active account is used.
 
-**The shim doesn't work out what gh will target beyond that.** If a call targets something other than the cwd's repo, such as a PR URL in another org, pass `-R` before the subcommand. As a best-effort aid, a `gh_target_mismatch` notice is printed when a github.com URL, a `-R`/`--repo` after the subcommand, or a `gh api` path names a different owner. The call still runs.
+**The shim doesn't work out what gh will target beyond that.** If a call targets something other than the cwd's repo, such as a PR URL in another org, pass `-R` before the subcommand. A `gh_target_mismatch` notice appears when a github.com URL or `gh api` path in the call names a different owner; the call still runs.
 
-- **`GH_REPO` only works for commands that have `--repo`.** For `gh repo view|clone|fork|...`, pass the repository as the argument too: `gh -R OWNER/REPO repo view OWNER/REPO`.
-- **The account comes from `timvisher_gh.config/orgs/<owner>/account`**, matching owners without regard to case. An owner with no mapping that is itself a configured account uses that account; otherwise gh's active account is used. A host-qualified `-R`, `GH_REPO` or `GH_HOST` on another host keeps gh's own account for that host.
-- **Calls that select an account print one account-selection instruction** (`gh_account_selected` or `gh_account_active`, plus any notices) to stderr, for every operator. Don't merge gh's stderr into output you parse. `gh auth`, `config`, `alias`, `extension`, `help`, `completion` and `version` pass straight through.
+- **`GH_REPO` only reaches commands that have `--repo`.** For `gh repo view|clone|fork|...`, pass the repository as the argument too: `gh -R OWNER/REPO repo view OWNER/REPO`.
+- **Each selecting call prints an aictl instruction** to stderr (`gh_account_selected` or `gh_account_active`). Don't merge gh's stderr into output you parse.
 - **A mapped account without a token stops the call** with `gh_account_token_unavailable`.
 - **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins**, with a `gh_account_deferred` notice.
-- **Help:** `-h`/`--help` as the last argument (or before the subcommand) runs `gh help <command> ...` and nothing else, even if it was really a flag's value. For an alias or extension, help goes to gh unchanged.
+- **`gh auth`, `config`, `alias`, `extension`, `help`, `completion` and `version` pass straight through.**
+- **Help:** `-h`/`--help` as the last argument (or before the subcommand) runs `gh help <command> ...` and nothing else.
 - **The agent guard blocks `-f`/`-F`**, so agents can't send GraphQL queries through `gh api` that way.
 
 ## Notes
