@@ -144,20 +144,21 @@ When interacting with GitHub (github.com), always use the `gh` CLI. This include
 
 ## Account selection
 
-`gh` on `PATH` is a shim that picks the gh account for every call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. Don't set `GH_TOKEN` or switch accounts yourself; name the target and let the shim choose.
+`gh` on `PATH` is a shim that picks the gh account for each call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. Don't set `GH_TOKEN` or switch accounts yourself; name the target and let the shim choose.
 
 It finds the target org in this order:
 
 1. For `gh api`: `-R OWNER` or `-R OWNER/REPO`, then the endpoint (`repos/OWNER/...`, `orgs/OWNER`, `users/OWNER`).
-2. Otherwise: a github.com URL or a `gh repo` repository given as the selector (`gh pr view <url>`, `gh repo view OWNER/REPO`), then `--repo`/`-R`, then `--owner` for `gh search` and `gh project`.
-3. `GH_REPO`, then the cwd's git remotes (the `gh repo set-default` remote, then `upstream`, `github`, `origin`).
+2. Otherwise: a github.com URL given as the target of a `gh pr`, `gh issue` or `gh repo` command, or the repository argument of `gh repo` (`gh pr view <url>`, `gh repo view OWNER/REPO`); then `--repo`/`-R`; then `--owner` for `gh search` and `gh project`.
+3. `GH_REPO`, then the cwd's git remotes on github.com, the way gh picks its base repo (the `gh repo set-default` choice, then `upstream`, `github`, `origin`, then any other remote).
 
-It then uses the account configured for that org in `timvisher_gh.config/orgs/<owner>/account`, or gh's active account if there is none.
+It then uses the account configured for that org in `timvisher_gh.config/orgs/<owner>/account`. An owner with no mapping that is itself one of the configured accounts (a user's own namespace) uses that account. Otherwise gh's active account is used.
 
-- **`gh api` needs `-R`** unless its endpoint names the owner or uses `{owner}`/`{repo}` placeholders. GraphQL, `user`, `search/...` and similar endpoints fail with `gh_api_owner_required` without it. The shim removes `-R` before running gh, and `-R OWNER/REPO` also sets `GH_REPO` for placeholders: `gh api -R OWNER graphql -f query=...`.
-- **Every call prints one aictl instruction** saying which account it used and why: `gh_account_selected`, `gh_account_active` (no target org, or no account configured for it) or `gh_account_token_unavailable`.
-- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins.** The shim uses it as-is and says so with `gh_account_deferred`.
-- **`-h`/`--help` always works**, for every command, and shows help without running anything.
+- **`gh api` needs `-R`** unless its endpoint names the owner or uses `{owner}`/`{repo}` placeholders: `gh api -R OWNER user`. GraphQL, `user`, `search/...` and similar endpoints fail with `gh_api_owner_required` without it. The shim removes `-R` before running gh, and `-R OWNER/REPO` also sets `GH_REPO` for placeholders. The agent guard blocks `-f`/`-F`, so agents can't run GraphQL queries this way.
+- **Calls that select an account print one aictl instruction** saying which account and why: `gh_account_selected` or `gh_account_active` (no target org, or no account for it). `gh auth`, `config`, `alias`, `completion`, `version` and help requests are left alone and print nothing.
+- **A mapped account without a token stops the call** with `gh_account_token_unavailable` instead of running as a different account.
+- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins.** The shim uses it as-is and says so with `gh_account_deferred`; a caller-set `GH_REPO` also satisfies `gh api` without `-R`.
+- **`--help` works for every command** and runs `gh help <command>` without running anything. `-h` does too, except where it takes a value (`gh auth ... -h HOST`, `gh repo create -h URL`). An extension's help shows gh's generic entry for it, not the extension's own usage.
 
 ## Notes
 - **No hard line breaks in paragraphs.** Write each paragraph as a single long line. Let the renderer or editor handle wrapping. Only use line breaks for list items, headings, code blocks, and between paragraphs (blank lines).
