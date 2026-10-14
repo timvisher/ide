@@ -1189,6 +1189,7 @@ gh_args__parse() {
   gh_args__help=false
   gh_args__repo_value=''
   gh_args__owner_value=''
+  gh_args__org_value=''
 
   for a in "$@"
   do
@@ -1287,6 +1288,16 @@ gh_args__record() {
       ;;
     --owner)
       gh_args__owner_value=$2
+      ;;
+    --org)
+      gh_args__org_value=$2
+      ;;
+    -o)
+      case ${gh_args__path%% *} in
+        secret|variable|ruleset|status|codespace|cs)
+          gh_args__org_value=$2
+          ;;
+      esac
       ;;
   esac
 }
@@ -1559,6 +1570,14 @@ gh_account__from_args() {
         return 0
       fi
     fi
+  fi
+
+  if [[ -n $gh_args__org_value && $gh_args__path != 'repo fork' ]] &&
+     gh_account__valid_owner "$gh_args__org_value"
+  then
+    gh_account__owner=$gh_args__org_value
+    gh_account__source="--org '${gh_args__org_value}'"
+    return 0
   fi
 
   if [[ -n $gh_args__repo_value ]] &&

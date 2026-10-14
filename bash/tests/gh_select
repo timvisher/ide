@@ -123,6 +123,10 @@ check_owner "otherorg" repo ls otherorg
 check_owner "ddoghq"  repo new ddoghq/new-repo --private
 check_owner "ddoghq"  pr --json title view https://github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr view 1 -R=ddoghq/dd-source
+check_owner "otherorg" secret list --org otherorg
+check_owner "otherorg" variable list -o otherorg
+check_owner "otherorg" cs list -o otherorg
+check_owner "ddoghq"  repo fork ddoghq/dd-source --org otherorg
 check_owner "ddoghq"  cache delete --all --succeed-on-no-caches -R ddoghq/dd-source
 check_owner "ddoghq"  browse -c -R ddoghq/dd-source
 check_owner "ddoghq"  pr merge --squash https://github.com/ddoghq/dd-source/pull/1
