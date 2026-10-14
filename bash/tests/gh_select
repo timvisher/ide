@@ -491,7 +491,7 @@ else
   fail "token failure should stop the call; rc=$rc out='$out' err='$err'"
 fi
 
-for args in "auth status" "--version" "help" "config get editor"
+for args in "auth status" "--version" "help" "config get editor" "__complete pr view" "__completeNoDesc repo"
 do
   read -ra argv <<< "$args"
   run_shim "$repo" "${argv[@]}"

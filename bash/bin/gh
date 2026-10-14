@@ -1808,7 +1808,7 @@ gh_account__select() {
   esac
 
   case $gh_account__command in
-    ''|auth|help|completion|version|config|alias)
+    ''|auth|help|completion|version|config|alias|__complete|__completeNoDesc)
       return 0
       ;;
     api)
