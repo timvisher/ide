@@ -94,6 +94,21 @@ check_owner "ddoghq"  pr view 691 --repo ghe.example.com/ddoghq/dd-source
 check_owner "ddoghq"  pr view 691 -R personal/repo -R ddoghq/dd-source
 check_owner "DataDog" pr view 1 --repo DataDog/appgate
 check_owner "-"       repo list
+check_owner "ddoghq"  repo view ddoghq/dd-source --json name
+check_owner "ddoghq"  repo view ghe.example.com/ddoghq/dd-source
+check_owner "ddoghq"  repo clone ddoghq/dd-source ./dir
+check_owner "ddoghq"  repo create ddoghq/new-repo --private
+check_owner "otherorg" repo list otherorg --limit 5
+check_owner "-"       repo view dd-source
+check_owner "-"       repo create new-repo --private
+check_owner "-"       repo rename otherorg/new-name
+check_owner "-"       repo gitignore view Go
+check_owner "-"       repo view --web ddoghq/dd-source
+check_owner "otherorg" search repos --owner otherorg topic
+check_owner "otherorg" search issues --owner=otherorg bug
+check_owner "otherorg" project list --owner otherorg
+check_owner "-"       project list --owner @me
+check_owner "-"       pr list --owner otherorg
 
 check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
 check_owner "otherorg" api --method HEAD --include /repos/otherorg/repo/pulls/comments/5 --hostname github.com

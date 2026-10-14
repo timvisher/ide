@@ -232,10 +232,11 @@ gh_account__owner_from_web_url() {
 # Set gh_account__command to the gh command group, and gh_account__owner and
 # gh_account__source to the owner the arguments target, roughly in gh's own
 # order: for 'gh api', its -R and then its endpoint; otherwise a github.com
-# URL given as the selector ('gh pr view <url>'), then the last --repo/-R.
-# Return 1 when the arguments name no owner.
+# URL or a 'gh repo' repository given as the selector ('gh pr view <url>',
+# 'gh repo view OWNER/REPO'), then the last --repo/-R, then --owner for
+# 'gh search' and 'gh project'. Return 1 when the arguments name no owner.
 gh_account__from_args() {
-  local a owner repo_value='' consume=0 bare_flag=0
+  local a owner repo_value='' owner_value='' consume=0 bare_flag=0
   local -a positionals=() after_bare_flag=()
   gh_account__args_without_repo=()
   gh_account__api_repo=''
@@ -256,6 +257,14 @@ gh_account__from_args() {
       repo_value=$a
       continue
     fi
+    if (( consume == 3 ))
+    then
+      consume=0
+      bare_flag=0
+      owner_value=$a
+      gh_account__args_without_repo+=("$a")
+      continue
+    fi
     case $a in
       -R|--repo)
         consume=2
@@ -270,6 +279,13 @@ gh_account__from_args() {
         repo_value=${a#-R}
         bare_flag=0
         continue
+        ;;
+      --owner)
+        consume=3
+        ;;
+      --owner=*)
+        owner_value=${a#*=}
+        bare_flag=0
         ;;
       -b|--body|-F|--body-file|--field|-f|--raw-field|-t|--title|--template|-c|--comment|--subject|-S|--search|--json|-q|--jq|--homepage|--notes|--notes-file|-n|--milestone|--label|-l|--assignee|--reviewer|--head|-H|--header|--base|-B|--input|-X|--method|--hostname|--cache|-p|--preview|--description)
         consume=1
@@ -327,11 +343,34 @@ gh_account__from_args() {
     esac
   elif (( 2 < ${#positionals[@]} )) && (( ! after_bare_flag[2] ))
   then
-    if owner=$(gh_account__owner_from_web_url "${positionals[2]}")
+    a=${positionals[2]}
+    if owner=$(gh_account__owner_from_web_url "$a")
     then
       gh_account__owner=$owner
-      gh_account__source="the URL '${positionals[2]}'"
+      gh_account__source="the URL '${a}'"
       return 0
+    fi
+    if [[ $gh_account__command == repo ]]
+    then
+      case ${positionals[1]} in
+        list)
+          owner=$a
+          ;;
+        view|clone|fork|delete|archive|unarchive|edit|sync|set-default|create)
+          owner=''
+          [[ $a == */* ]] &&
+            owner=$(gh_account__owner_from_repo_value "$a")
+          ;;
+        *)
+          owner=''
+          ;;
+      esac
+      if [[ -n $owner ]] && gh_account__valid_owner "$owner"
+      then
+        gh_account__owner=$owner
+        gh_account__source="the repository '${a}'"
+        return 0
+      fi
     fi
   fi
 
@@ -340,6 +379,15 @@ gh_account__from_args() {
   then
     gh_account__owner=$owner
     gh_account__source="--repo '${repo_value}'"
+    return 0
+  fi
+
+  if [[ $gh_account__command == search || $gh_account__command == project ]] &&
+     [[ -n $owner_value ]] &&
+     gh_account__valid_owner "$owner_value"
+  then
+    gh_account__owner=$owner_value
+    gh_account__source="--owner '${owner_value}'"
     return 0
   fi
   return 1
