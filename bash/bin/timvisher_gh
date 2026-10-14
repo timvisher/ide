@@ -451,7 +451,7 @@ gh_pr_merge() {
 
   local capabilities_json
   capabilities_json=$(
-    gh repo view "$repo_spec" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+    gh repo view "$repo_slug_from_url" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
   )
 
   local strategies=()
@@ -475,7 +475,7 @@ gh_pr_merge() {
   do
     local strat=${strategies[i]}
 
-    if gh pr merge "$@" "--${strat}" --repo "$repo_spec" "$pr_url"
+    if gh pr merge "$@" "--${strat}" "$pr_url"
     then
       merged=$strat
       break
