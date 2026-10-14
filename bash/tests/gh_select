@@ -387,6 +387,11 @@ check_source "a caller-set GITHUB_TOKEN is deferred to" '' \
   '"code":"gh_account_deferred"'
 extra_env=()
 
+map emuorg emu_user
+run_shim "$tmpdir/norepo" api repos/emu_user/fork
+check_source "an owner that is itself a configured account uses that account" tok-emu_user \
+  "Using gh account 'emu_user' for 'emu_user' (from the gh api endpoint)"
+
 run_shim "$tmpdir/norepo" pr view 1 --repo unmapped/repo
 check_source "an unmapped owner runs as the active account" '' \
   "No gh account is configured for 'unmapped' (from --repo 'unmapped/repo')"
