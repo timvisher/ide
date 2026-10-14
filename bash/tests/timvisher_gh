@@ -88,7 +88,7 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
-elif [[ $1 == api && $2 == user ]]
+elif [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]
 then
   echo "testuser"
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
@@ -974,7 +974,7 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
-elif [[ $1 == api && $2 == user ]]
+elif [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]
 then
   echo "testuser"
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]

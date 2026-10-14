@@ -248,15 +248,6 @@ else
     die "Could not determine repository spec for remote '%s'" "$target_remote"
 fi
 
-# Pin GH_TOKEN to the gh account configured for this repo's org, so we
-# authenticate as the identity that can see the repo on multi-account setups.
-# This is the same resolution the gh PATH shim applies to all gh calls; doing
-# it here too keeps timvisher_gh correct even if invoked without the shim
-# first on PATH. No mapping → active account (the unchanged default).
-timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
-  die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
-    "${repo_spec%%/*}"
-
 # --- subcommand: pr ---
 
 gh_pr_ready() {
@@ -460,7 +451,7 @@ gh_pr_merge() {
 
   local capabilities_json
   capabilities_json=$(
-    gh repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+    gh repo view "$repo_spec" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
   )
 
   local strategies=()
@@ -484,7 +475,7 @@ gh_pr_merge() {
   do
     local strat=${strategies[i]}
 
-    if gh pr merge "$@" "--${strat}" "$pr_url"
+    if gh pr merge "$@" "--${strat}" --repo "$repo_spec" "$pr_url"
     then
       merged=$strat
       break
@@ -946,7 +937,7 @@ gh_info() {
       printf '%s\n' "${main_repo%%/*}"
       ;;
     .me)
-      command gh api user --jq .login ||
+      command gh api -R "$repo_spec" user --jq .login ||
         die 'Unable to query authenticated user'
       ;;
     --json)

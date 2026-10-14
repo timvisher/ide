@@ -111,7 +111,7 @@ if [[ $1 == repo && $2 == view ]]; then
 fi
 
 # --- gh api user (for current_gh_user) ---
-if [[ $1 == api && $2 == user ]]; then
+if [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]; then
   jq_expr=
   while (( $# )); do
     if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
@@ -919,29 +919,6 @@ then
   pass "normalize_pr_url passes through non-PR URL"
 else
   fail "normalize_pr_url non-PR: got '${result}'"
-fi
-
-# ---------------------------------------------------------------------------
-# pr_owner_from_url tests (drives per-owner gh account pinning)
-# ---------------------------------------------------------------------------
-
-# Test: extracts owner from a PR URL (with trailing path)
-run_test
-result=$(pr_owner_from_url "https://github.com/ddoghq/dd-source/pull/14789/files")
-if [[ $result == "ddoghq" ]]
-then
-  pass "pr_owner_from_url extracts owner from PR URL"
-else
-  fail "pr_owner_from_url: expected 'ddoghq', got '${result}'"
-fi
-
-# Test: returns non-zero for a non-PR URL
-run_test
-if pr_owner_from_url "DataDog/appgate" >/dev/null 2>&1
-then
-  fail "pr_owner_from_url should return non-zero for a non-PR source"
-else
-  pass "pr_owner_from_url returns non-zero for a non-PR source"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3573,7 +3550,7 @@ fi
 
 # Test: current_gh_user returns the mocked login
 run_test
-result=$(current_gh_user)
+result=$(current_gh_user parentorg)
 if [[ $result == "myuser" ]]
 then
   pass "current_gh_user returns the configured gh login"
