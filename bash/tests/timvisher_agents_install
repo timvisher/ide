@@ -392,7 +392,6 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
-# --- Test: targets under a preferred prefix are written through it ---
 run_test
 test_home=$(setup_home)
 mkdir -p "${test_home}/git/ide/ai/HOME/.agents/skills/pref-skill"

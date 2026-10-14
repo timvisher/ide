@@ -248,10 +248,10 @@ fi
 # Leading global flags should not confuse noun/verb detection
 # ---------------------------------------------------------------------------
 
-# Test: blocks 'gh --debug pr create' — boolean flag before noun must not
+# Test: blocks 'gh --version pr create' — boolean flag before noun must not
 # hide the real noun/verb.
 run_test
-result=$(run_agent --debug pr create)
+result=$(run_agent --version pr create)
 if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
 then
   pass "leading boolean flag doesn't hide mutating noun/verb"
