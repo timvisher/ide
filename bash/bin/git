@@ -244,6 +244,8 @@ do
         case $_timvisher_git__help_prev in
           -e|--regexp|--grep|--author|--committer|-m|--message|-S|-G|-F|--file|-C|-c|--format|--pretty|-O|--exec|-x)
             ;;
+          -[A-Za-z]*[eSGFCcmOx])
+            ;;
           *)
             _timvisher_git__help=--help
             ;;
@@ -288,6 +290,11 @@ then
   exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
 elif [[ $_timvisher_git__help == -h ]]
 then
+  if [[ -n $_timvisher_git__help_sub ]] &&
+     ! "$real_git" --list-cmds=builtins 2>/dev/null | grep -qx -- "$_timvisher_git__help_sub"
+  then
+    exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help "$_timvisher_git__help_sub"
+  fi
   exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"} -h
 fi
 

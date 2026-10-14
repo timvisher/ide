@@ -30,6 +30,11 @@ trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$tmpdir/prefix/bin"
 cat > "$tmpdir/prefix/bin/git" <<'MOCK'
 #!/usr/bin/env bash
+if [[ $1 == --list-cmds=builtins ]]
+then
+  printf '%s\n' add commit grep log push
+  exit 0
+fi
 echo "real-git $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/git"
@@ -1302,6 +1307,8 @@ check_git_help "-C /tmp push -h"           -C /tmp push -h
 check_git_help "help"          --help
 check_git_help "-h"            -h
 check_git_help "-h"            -h cleanup
+check_git_help "help cleanup"  cleanup -h
+check_git_help "-C /tmp help cleanup" -C /tmp cleanup -h
 check_git_help "-C /tmp -h"    -C /tmp -h push origin
 check_git_help "-C /tmp help push" -C /tmp --help push
 
@@ -1335,7 +1342,7 @@ else
   fail "commit -m --help: got '${result}'"
 fi
 
-for args in "grep -e --help" "log --grep --help" "log --author --help"
+for args in "grep -e --help" "log --grep --help" "log --author --help" "grep -ie --help" "grep -iwe --help"
 do
   run_test
   result=$(PATH="$test_path" \
