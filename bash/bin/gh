@@ -85,1244 +85,92 @@ then
   }
 fi
 
-gh_args__value_flags() {
-  case $1 in
-    'agent create')
-      printf '%s\n' -b --base -a --custom-agent -F --from-file
-      ;;
-    'agent list')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'agent view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'agent-task create')
-      printf '%s\n' -b --base -a --custom-agent -F --from-file
-      ;;
-    'agent-task list')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'agent-task view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'agent-task')
-      :
-      ;;
-    'agent-tasks create')
-      printf '%s\n' -b --base -a --custom-agent -F --from-file
-      ;;
-    'agent-tasks list')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'agent-tasks view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'agent-tasks')
-      :
-      ;;
-    'agent')
-      :
-      ;;
-    'agents create')
-      printf '%s\n' -b --base -a --custom-agent -F --from-file
-      ;;
-    'agents list')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'agents view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'agents')
-      :
-      ;;
-    'alias delete')
-      :
-      ;;
-    'alias import')
-      :
-      ;;
-    'alias list')
-      :
-      ;;
-    'alias ls')
-      :
-      ;;
-    'alias set')
-      :
-      ;;
-    'alias')
-      :
-      ;;
-    'api')
-      printf '%s\n' --cache -F --field -H --header --hostname --input -q --jq -X --method -p --preview -f --raw-field -t --template
-      ;;
-    'at download')
-      printf '%s\n' -d --digest-alg --hostname -L --limit -o --owner --predicate-type -R --repo
-      ;;
-    'at trusted-root')
-      printf '%s\n' --hostname --tuf-root --tuf-url
-      ;;
-    'at verify')
-      printf '%s\n' -b --bundle --cert-identity -i --cert-identity-regex --cert-oidc-issuer --custom-trusted-root -d --digest-alg --format --hostname -q --jq -L --limit -o --owner --predicate-type -R --repo --signer-digest --signer-repo --signer-workflow --source-digest --source-ref -t --template
-      ;;
-    'at')
-      :
-      ;;
-    'attestation download')
-      printf '%s\n' -d --digest-alg --hostname -L --limit -o --owner --predicate-type -R --repo
-      ;;
-    'attestation trusted-root')
-      printf '%s\n' --hostname --tuf-root --tuf-url
-      ;;
-    'attestation verify')
-      printf '%s\n' -b --bundle --cert-identity -i --cert-identity-regex --cert-oidc-issuer --custom-trusted-root -d --digest-alg --format --hostname -q --jq -L --limit -o --owner --predicate-type -R --repo --signer-digest --signer-repo --signer-workflow --source-digest --source-ref -t --template
-      ;;
-    'attestation')
-      :
-      ;;
-    'auth login')
-      printf '%s\n' -p --git-protocol -h --hostname -s --scopes
-      ;;
-    'auth logout')
-      printf '%s\n' -h --hostname -u --user
-      ;;
-    'auth refresh')
-      printf '%s\n' -h --hostname -r --remove-scopes -s --scopes
-      ;;
-    'auth setup-git')
-      printf '%s\n' -h --hostname
-      ;;
-    'auth status')
-      printf '%s\n' -h --hostname --jq --json --template
-      ;;
-    'auth switch')
-      printf '%s\n' -h --hostname -u --user
-      ;;
-    'auth token')
-      printf '%s\n' -h --hostname -u --user
-      ;;
-    'auth')
-      :
-      ;;
-    'browse')
-      printf '%s\n' -b --branch
-      ;;
-    'cache delete')
-      printf '%s\n' -r --ref
-      ;;
-    'cache list')
-      printf '%s\n' -q --jq --json -k --key -L --limit -O --order -r --ref -S --sort -t --template
-      ;;
-    'cache ls')
-      printf '%s\n' -q --jq --json -k --key -L --limit -O --order -r --ref -S --sort -t --template
-      ;;
-    'cache')
-      :
-      ;;
-    'co')
-      :
-      ;;
-    'codespace code')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'codespace cp')
-      printf '%s\n' -c --codespace -p --profile -R --repo --repo-owner
-      ;;
-    'codespace create')
-      printf '%s\n' -b --branch --devcontainer-path -d --display-name --idle-timeout -l --location -m --machine -R --repo --retention-period
-      ;;
-    'codespace delete')
-      printf '%s\n' -c --codespace --days -o --org -R --repo --repo-owner -u --user
-      ;;
-    'codespace edit')
-      printf '%s\n' -c --codespace -d --display-name -m --machine -R --repo --repo-owner
-      ;;
-    'codespace jupyter')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'codespace list')
-      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
-      ;;
-    'codespace logs')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'codespace ls')
-      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
-      ;;
-    'codespace ports forward')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'codespace ports visibility')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'codespace ports')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'codespace rebuild')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'codespace ssh')
-      printf '%s\n' -c --codespace --debug-file --profile -R --repo --repo-owner --server-port
-      ;;
-    'codespace stop')
-      printf '%s\n' -c --codespace -o --org -R --repo --repo-owner -u --user
-      ;;
-    'codespace view')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'codespace')
-      :
-      ;;
-    'completion')
-      printf '%s\n' -s --shell
-      ;;
-    'config clear-cache')
-      :
-      ;;
-    'config get')
-      printf '%s\n' -h --host
-      ;;
-    'config list')
-      printf '%s\n' -h --host
-      ;;
-    'config ls')
-      printf '%s\n' -h --host
-      ;;
-    'config set')
-      printf '%s\n' -h --host
-      ;;
-    'config')
-      :
-      ;;
-    'copilot')
-      :
-      ;;
-    'cs code')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'cs cp')
-      printf '%s\n' -c --codespace -p --profile -R --repo --repo-owner
-      ;;
-    'cs create')
-      printf '%s\n' -b --branch --devcontainer-path -d --display-name --idle-timeout -l --location -m --machine -R --repo --retention-period
-      ;;
-    'cs delete')
-      printf '%s\n' -c --codespace --days -o --org -R --repo --repo-owner -u --user
-      ;;
-    'cs edit')
-      printf '%s\n' -c --codespace -d --display-name -m --machine -R --repo --repo-owner
-      ;;
-    'cs jupyter')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'cs list')
-      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
-      ;;
-    'cs logs')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'cs ls')
-      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
-      ;;
-    'cs ports forward')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'cs ports visibility')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'cs ports')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'cs rebuild')
-      printf '%s\n' -c --codespace -R --repo --repo-owner
-      ;;
-    'cs ssh')
-      printf '%s\n' -c --codespace --debug-file --profile -R --repo --repo-owner --server-port
-      ;;
-    'cs stop')
-      printf '%s\n' -c --codespace -o --org -R --repo --repo-owner -u --user
-      ;;
-    'cs view')
-      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
-      ;;
-    'cs')
-      :
-      ;;
-    'discussion comment')
-      printf '%s\n' -b --body -F --body-file
-      ;;
-    'discussion create')
-      printf '%s\n' -b --body -F --body-file -c --category -l --label -t --title
-      ;;
-    'discussion edit')
-      printf '%s\n' --add-label -b --body -F --body-file -c --category --remove-label -t --title
-      ;;
-    'discussion list')
-      printf '%s\n' --after -A --author -c --category -q --jq --json -l --label -L --limit --order -S --search --sort -s --state -t --template
-      ;;
-    'discussion ls')
-      printf '%s\n' --after -A --author -c --category -q --jq --json -l --label -L --limit --order -S --search --sort -s --state -t --template
-      ;;
-    'discussion view')
-      printf '%s\n' --after -q --jq --json -L --limit --order -t --template
-      ;;
-    'discussion')
-      :
-      ;;
-    'ext browse')
-      :
-      ;;
-    'ext create')
-      printf '%s\n' --precompiled
-      ;;
-    'ext exec')
-      :
-      ;;
-    'ext install')
-      printf '%s\n' --pin
-      ;;
-    'ext list')
-      :
-      ;;
-    'ext ls')
-      :
-      ;;
-    'ext remove')
-      :
-      ;;
-    'ext search')
-      printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
-      ;;
-    'ext uninstall')
-      :
-      ;;
-    'ext upgrade')
-      :
-      ;;
-    'ext')
-      :
-      ;;
-    'extension browse')
-      :
-      ;;
-    'extension create')
-      printf '%s\n' --precompiled
-      ;;
-    'extension exec')
-      :
-      ;;
-    'extension install')
-      printf '%s\n' --pin
-      ;;
-    'extension list')
-      :
-      ;;
-    'extension ls')
-      :
-      ;;
-    'extension remove')
-      :
-      ;;
-    'extension search')
-      printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
-      ;;
-    'extension uninstall')
-      :
-      ;;
-    'extension upgrade')
-      :
-      ;;
-    'extension')
-      :
-      ;;
-    'extensions browse')
-      :
-      ;;
-    'extensions create')
-      printf '%s\n' --precompiled
-      ;;
-    'extensions exec')
-      :
-      ;;
-    'extensions install')
-      printf '%s\n' --pin
-      ;;
-    'extensions list')
-      :
-      ;;
-    'extensions ls')
-      :
-      ;;
-    'extensions remove')
-      :
-      ;;
-    'extensions search')
-      printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
-      ;;
-    'extensions uninstall')
-      :
-      ;;
-    'extensions upgrade')
-      :
-      ;;
-    'extensions')
-      :
-      ;;
-    'gist clone')
-      :
-      ;;
-    'gist create')
-      printf '%s\n' -d --desc -f --filename
-      ;;
-    'gist delete')
-      :
-      ;;
-    'gist edit')
-      printf '%s\n' -a --add -d --desc -f --filename -r --remove
-      ;;
-    'gist list')
-      printf '%s\n' --filter -L --limit
-      ;;
-    'gist ls')
-      printf '%s\n' --filter -L --limit
-      ;;
-    'gist new')
-      printf '%s\n' -d --desc -f --filename
-      ;;
-    'gist rename')
-      :
-      ;;
-    'gist view')
-      printf '%s\n' -f --filename
-      ;;
-    'gist')
-      :
-      ;;
-    'gpg-key add')
-      printf '%s\n' -t --title
-      ;;
-    'gpg-key delete')
-      :
-      ;;
-    'gpg-key list')
-      :
-      ;;
-    'gpg-key ls')
-      :
-      ;;
-    'gpg-key')
-      :
-      ;;
-    'issue close')
-      printf '%s\n' -c --comment --duplicate-of -r --reason
-      ;;
-    'issue comment')
-      printf '%s\n' --attach -b --body -F --body-file
-      ;;
-    'issue create')
-      printf '%s\n' -a --assignee --attach --blocked-by --blocking -b --body -F --body-file -l --label -m --milestone --parent -p --project --recover -T --template -t --title --type
-      ;;
-    'issue delete')
-      :
-      ;;
-    'issue develop')
-      printf '%s\n' -b --base --branch-repo -n --name --worktree
-      ;;
-    'issue edit')
-      printf '%s\n' --add-assignee --add-blocked-by --add-blocking --add-label --add-project --add-sub-issue --attach -b --body -F --body-file -m --milestone --parent --remove-assignee --remove-blocked-by --remove-blocking --remove-label --remove-project --remove-sub-issue -t --title --type
-      ;;
-    'issue list')
-      printf '%s\n' --app -a --assignee -A --author -q --jq --json -l --label -L --limit --mention -m --milestone -S --search -s --state -t --template --type
-      ;;
-    'issue lock')
-      printf '%s\n' -r --reason
-      ;;
-    'issue ls')
-      printf '%s\n' --app -a --assignee -A --author -q --jq --json -l --label -L --limit --mention -m --milestone -S --search -s --state -t --template --type
-      ;;
-    'issue new')
-      printf '%s\n' -a --assignee --attach --blocked-by --blocking -b --body -F --body-file -l --label -m --milestone --parent -p --project --recover -T --template -t --title --type
-      ;;
-    'issue pin')
-      :
-      ;;
-    'issue reopen')
-      printf '%s\n' -c --comment
-      ;;
-    'issue status')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'issue transfer')
-      :
-      ;;
-    'issue unlock')
-      :
-      ;;
-    'issue unpin')
-      :
-      ;;
-    'issue view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'issue')
-      :
-      ;;
-    'label clone')
-      :
-      ;;
-    'label create')
-      printf '%s\n' -c --color -d --description
-      ;;
-    'label delete')
-      :
-      ;;
-    'label edit')
-      printf '%s\n' -c --color -d --description -n --name
-      ;;
-    'label list')
-      printf '%s\n' -q --jq --json -L --limit --order -S --search --sort -t --template
-      ;;
-    'label ls')
-      printf '%s\n' -q --jq --json -L --limit --order -S --search --sort -t --template
-      ;;
-    'label')
-      :
-      ;;
-    'licenses')
-      :
-      ;;
-    'org list')
-      printf '%s\n' -L --limit
-      ;;
-    'org ls')
-      printf '%s\n' -L --limit
-      ;;
-    'org')
-      :
-      ;;
-    'pr checkout')
-      printf '%s\n' -b --branch --worktree -R --repo
-      ;;
-    'pr checks')
-      printf '%s\n' -i --interval -q --jq --json -t --template -R --repo
-      ;;
-    'pr close')
-      printf '%s\n' -c --comment -R --repo
-      ;;
-    'pr co')
-      printf '%s\n' -b --branch --worktree -R --repo
-      ;;
-    'pr comment')
-      printf '%s\n' --attach -b --body -F --body-file -R --repo
-      ;;
-    'pr create')
-      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title -R --repo
-      ;;
-    'pr diff')
-      printf '%s\n' --color -e --exclude -R --repo
-      ;;
-    'pr edit')
-      printf '%s\n' --add-assignee --add-label --add-project --add-reviewer --attach -B --base -b --body -F --body-file -m --milestone --remove-assignee --remove-label --remove-project --remove-reviewer -t --title -R --repo
-      ;;
-    'pr list')
-      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template -R --repo
-      ;;
-    'pr lock')
-      printf '%s\n' -r --reason -R --repo
-      ;;
-    'pr ls')
-      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template -R --repo
-      ;;
-    'pr merge')
-      printf '%s\n' -A --author-email -b --body -F --body-file --match-head-commit -t --subject -R --repo
-      ;;
-    'pr new')
-      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title -R --repo
-      ;;
-    'pr ready')
-      printf '%s\n' -R --repo
-      ;;
-    'pr reopen')
-      printf '%s\n' -c --comment -R --repo
-      ;;
-    'pr revert')
-      printf '%s\n' -b --body -F --body-file -t --title -R --repo
-      ;;
-    'pr review')
-      printf '%s\n' -b --body -F --body-file -R --repo
-      ;;
-    'pr status')
-      printf '%s\n' -q --jq --json -t --template -R --repo
-      ;;
-    'pr unlock')
-      printf '%s\n' -R --repo
-      ;;
-    'pr update-branch')
-      printf '%s\n' -R --repo
-      ;;
-    'pr view')
-      printf '%s\n' -q --jq --json -t --template -R --repo
-      ;;
-    'pr')
-      printf '%s\n' -R --repo
-      ;;
-    'preview prompter')
-      :
-      ;;
-    'preview')
-      :
-      ;;
-    'project close')
-      printf '%s\n' --format -q --jq --owner -t --template
-      ;;
-    'project copy')
-      printf '%s\n' --format -q --jq --source-owner --target-owner -t --template --title
-      ;;
-    'project create')
-      printf '%s\n' --format -q --jq --owner -t --template --title
-      ;;
-    'project delete')
-      printf '%s\n' --format -q --jq --owner -t --template
-      ;;
-    'project edit')
-      printf '%s\n' -d --description --format -q --jq --owner --readme -t --template --title --visibility
-      ;;
-    'project field-create')
-      printf '%s\n' --data-type --format -q --jq --name --owner --single-select-options -t --template
-      ;;
-    'project field-delete')
-      printf '%s\n' --format --id -q --jq -t --template
-      ;;
-    'project field-list')
-      printf '%s\n' --format -q --jq -L --limit --owner -t --template
-      ;;
-    'project item-add')
-      printf '%s\n' --format -q --jq --owner -t --template --url
-      ;;
-    'project item-archive')
-      printf '%s\n' --format --id -q --jq --owner -t --template
-      ;;
-    'project item-create')
-      printf '%s\n' --body --format -q --jq --owner -t --template --title
-      ;;
-    'project item-delete')
-      printf '%s\n' --format --id -q --jq --owner -t --template
-      ;;
-    'project item-edit')
-      printf '%s\n' --body --date --field --field-id --format --id --iteration-id -q --jq --number --owner --project-id --single-select-option-id -t --template --text --title --url
-      ;;
-    'project item-list')
-      printf '%s\n' --field --field-id --format -q --jq -L --limit --owner --query -t --template
-      ;;
-    'project link')
-      printf '%s\n' --owner -R --repo -T --team
-      ;;
-    'project list')
-      printf '%s\n' --format -q --jq -L --limit --owner -t --template
-      ;;
-    'project ls')
-      printf '%s\n' --format -q --jq -L --limit --owner -t --template
-      ;;
-    'project mark-template')
-      printf '%s\n' --format -q --jq --owner -t --template
-      ;;
-    'project unlink')
-      printf '%s\n' --owner -R --repo -T --team
-      ;;
-    'project view')
-      printf '%s\n' --format -q --jq --owner -t --template
-      ;;
-    'project')
-      :
-      ;;
-    'release create')
-      printf '%s\n' --discussion-category -n --notes -F --notes-file --notes-start-tag --target -t --title
-      ;;
-    'release delete-asset')
-      :
-      ;;
-    'release delete')
-      :
-      ;;
-    'release download')
-      printf '%s\n' -A --archive -D --dir -O --output -p --pattern
-      ;;
-    'release edit')
-      printf '%s\n' --discussion-category -n --notes -F --notes-file --tag --target -t --title
-      ;;
-    'release list')
-      printf '%s\n' -q --jq --json -L --limit -O --order -t --template
-      ;;
-    'release ls')
-      printf '%s\n' -q --jq --json -L --limit -O --order -t --template
-      ;;
-    'release new')
-      printf '%s\n' --discussion-category -n --notes -F --notes-file --notes-start-tag --target -t --title
-      ;;
-    'release upload')
-      :
-      ;;
-    'release verify-asset')
-      printf '%s\n' --format -q --jq -t --template
-      ;;
-    'release verify')
-      printf '%s\n' --format -q --jq -t --template
-      ;;
-    'release view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'release')
-      :
-      ;;
-    'repo archive')
-      :
-      ;;
-    'repo autolink create')
-      :
-      ;;
-    'repo autolink delete')
-      :
-      ;;
-    'repo autolink list')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'repo autolink ls')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'repo autolink new')
-      :
-      ;;
-    'repo autolink view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'repo autolink')
-      :
-      ;;
-    'repo clone')
-      printf '%s\n' -u --upstream-remote-name
-      ;;
-    'repo create')
-      printf '%s\n' -d --description -g --gitignore -h --homepage -l --license -r --remote -s --source -t --team -p --template
-      ;;
-    'repo delete')
-      :
-      ;;
-    'repo deploy-key add')
-      printf '%s\n' -t --title
-      ;;
-    'repo deploy-key delete')
-      :
-      ;;
-    'repo deploy-key list')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'repo deploy-key ls')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'repo deploy-key')
-      :
-      ;;
-    'repo edit')
-      printf '%s\n' --add-topic --default-branch -d --description -h --homepage --remove-topic --squash-merge-commit-message --visibility
-      ;;
-    'repo fork')
-      printf '%s\n' --fork-name --org --remote-name
-      ;;
-    'repo gitignore list')
-      :
-      ;;
-    'repo gitignore ls')
-      :
-      ;;
-    'repo gitignore view')
-      :
-      ;;
-    'repo gitignore')
-      :
-      ;;
-    'repo license list')
-      :
-      ;;
-    'repo license ls')
-      :
-      ;;
-    'repo license view')
-      :
-      ;;
-    'repo license')
-      :
-      ;;
-    'repo list')
-      printf '%s\n' -q --jq --json -l --language -L --limit -t --template --topic --visibility
-      ;;
-    'repo ls')
-      printf '%s\n' -q --jq --json -l --language -L --limit -t --template --topic --visibility
-      ;;
-    'repo new')
-      printf '%s\n' -d --description -g --gitignore -h --homepage -l --license -r --remote -s --source -t --team -p --template
-      ;;
-    'repo read-dir')
-      printf '%s\n' -q --jq --json --ref -t --template
-      ;;
-    'repo read-file')
-      printf '%s\n' -q --jq --json -o --output --ref -t --template
-      ;;
-    'repo rename')
-      :
-      ;;
-    'repo set-default')
-      :
-      ;;
-    'repo sync')
-      printf '%s\n' -b --branch -s --source
-      ;;
-    'repo unarchive')
-      :
-      ;;
-    'repo view')
-      printf '%s\n' -b --branch -q --jq --json -t --template
-      ;;
-    'repo')
-      :
-      ;;
-    'rs check')
-      :
-      ;;
-    'rs list')
-      printf '%s\n' -L --limit -o --org
-      ;;
-    'rs ls')
-      printf '%s\n' -L --limit -o --org
-      ;;
-    'rs view')
-      printf '%s\n' -o --org
-      ;;
-    'rs')
-      :
-      ;;
-    'ruleset check')
-      :
-      ;;
-    'ruleset list')
-      printf '%s\n' -L --limit -o --org
-      ;;
-    'ruleset ls')
-      printf '%s\n' -L --limit -o --org
-      ;;
-    'ruleset view')
-      printf '%s\n' -o --org
-      ;;
-    'ruleset')
-      :
-      ;;
-    'run cancel')
-      :
-      ;;
-    'run delete')
-      :
-      ;;
-    'run download')
-      printf '%s\n' -D --dir -n --name -p --pattern
-      ;;
-    'run list')
-      printf '%s\n' -b --branch -c --commit --created -e --event -q --jq --json -L --limit -s --status -t --template -u --user -w --workflow
-      ;;
-    'run ls')
-      printf '%s\n' -b --branch -c --commit --created -e --event -q --jq --json -L --limit -s --status -t --template -u --user -w --workflow
-      ;;
-    'run rerun')
-      printf '%s\n' -j --job
-      ;;
-    'run view')
-      printf '%s\n' -a --attempt -j --job -q --jq --json -t --template
-      ;;
-    'run watch')
-      printf '%s\n' -i --interval
-      ;;
-    'run')
-      :
-      ;;
-    'search code')
-      printf '%s\n' --extension --filename -q --jq --json --language -L --limit --match --owner -R --repo --size -t --template
-      ;;
-    'search commits')
-      printf '%s\n' --author --author-date --author-email --author-name --committer --committer-date --committer-email --committer-name --hash -q --jq --json -L --limit --order --owner --parent -R --repo --sort -t --template --tree --visibility
-      ;;
-    'search issues')
-      printf '%s\n' --app --assignee --author --closed --commenter --comments --created --interactions --involves -q --jq --json --label --language -L --limit --match --mentions --milestone --order --owner --project --reactions -R --repo --search-type --sort --state --team-mentions -t --template --updated --visibility
-      ;;
-    'search prs')
-      printf '%s\n' --app --assignee --author -B --base --checks --closed --commenter --comments --created -H --head --interactions --involves -q --jq --json --label --language -L --limit --match --mentions --merged-at --milestone --order --owner --project --reactions -R --repo --review --review-requested --reviewed-by --sort --state --team-mentions -t --template --updated --visibility
-      ;;
-    'search repos')
-      printf '%s\n' --created --followers --forks --good-first-issues --help-wanted-issues --include-forks -q --jq --json --language --license -L --limit --match --number-topics --order --owner --size --sort --stars -t --template --topic --updated --visibility
-      ;;
-    'search')
-      :
-      ;;
-    'secret delete')
-      printf '%s\n' -a --app -e --env -o --org
-      ;;
-    'secret list')
-      printf '%s\n' -a --app -e --env -q --jq --json -o --org -t --template
-      ;;
-    'secret ls')
-      printf '%s\n' -a --app -e --env -q --jq --json -o --org -t --template
-      ;;
-    'secret remove')
-      printf '%s\n' -a --app -e --env -o --org
-      ;;
-    'secret set')
-      printf '%s\n' -a --app -b --body -e --env -f --env-file -o --org -r --repos -v --visibility
-      ;;
-    'secret')
-      :
-      ;;
-    'skill add')
-      printf '%s\n' --agent --dir --pin --scope
-      ;;
-    'skill install')
-      printf '%s\n' --agent --dir --pin --scope
-      ;;
-    'skill list')
-      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
-      ;;
-    'skill ls')
-      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
-      ;;
-    'skill preview')
-      :
-      ;;
-    'skill publish')
-      printf '%s\n' --tag
-      ;;
-    'skill search')
-      printf '%s\n' -q --jq --json -L --limit --owner --page -t --template
-      ;;
-    'skill show')
-      :
-      ;;
-    'skill update')
-      printf '%s\n' --dir
-      ;;
-    'skill')
-      :
-      ;;
-    'skills add')
-      printf '%s\n' --agent --dir --pin --scope
-      ;;
-    'skills install')
-      printf '%s\n' --agent --dir --pin --scope
-      ;;
-    'skills list')
-      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
-      ;;
-    'skills ls')
-      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
-      ;;
-    'skills preview')
-      :
-      ;;
-    'skills publish')
-      printf '%s\n' --tag
-      ;;
-    'skills search')
-      printf '%s\n' -q --jq --json -L --limit --owner --page -t --template
-      ;;
-    'skills show')
-      :
-      ;;
-    'skills update')
-      printf '%s\n' --dir
-      ;;
-    'skills')
-      :
-      ;;
-    'ssh-key add')
-      printf '%s\n' -t --title --type
-      ;;
-    'ssh-key delete')
-      :
-      ;;
-    'ssh-key list')
-      :
-      ;;
-    'ssh-key ls')
-      :
-      ;;
-    'ssh-key')
-      :
-      ;;
-    'status')
-      printf '%s\n' -e --exclude -o --org
-      ;;
-    'variable delete')
-      printf '%s\n' -e --env -o --org
-      ;;
-    'variable get')
-      printf '%s\n' -e --env -q --jq --json -o --org -t --template
-      ;;
-    'variable list')
-      printf '%s\n' -e --env -q --jq --json -o --org -t --template
-      ;;
-    'variable ls')
-      printf '%s\n' -e --env -q --jq --json -o --org -t --template
-      ;;
-    'variable remove')
-      printf '%s\n' -e --env -o --org
-      ;;
-    'variable set')
-      printf '%s\n' -b --body -e --env -f --env-file -o --org -r --repos -v --visibility
-      ;;
-    'variable')
-      :
-      ;;
-    'workflow disable')
-      :
-      ;;
-    'workflow enable')
-      :
-      ;;
-    'workflow list')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'workflow ls')
-      printf '%s\n' -q --jq --json -L --limit -t --template
-      ;;
-    'workflow run')
-      printf '%s\n' -F --field -f --raw-field -r --ref
-      ;;
-    'workflow view')
-      printf '%s\n' -r --ref
-      ;;
-    'workflow')
-      :
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-gh_args__keys=()
-gh_args__prefix_value_flags() {
-  local prefix=$1 key
-  (( ${#gh_args__keys[@]} )) ||
-    mapfile -t gh_args__keys < <(declare -f gh_args__value_flags | sed -n "s/^ *'\([^']*\)')\$/\1/p")
-  for key in "${gh_args__keys[@]}"
-  do
-    if [[ -z $prefix || $key == "$prefix" || $key == "$prefix "* ]]
-    then
-      gh_args__value_flags "$key"
-    fi
-  done
-}
-
 gh_args__parse() {
-  local a word flag rest i n key letters consume='' end_of_opts=false skip=false prefix=''
-  local prefix_flags_for='-'
-  local -a lead=() value_flags=() prefix_flags=()
+  local -a args=("$@")
+  local n=${#args[@]} i=0 a
 
-  for a in "$@"
+  gh_args__repo_value=''
+  gh_args__pre=()
+  gh_args__passthrough=false
+  gh_args__help=false
+  gh_args__command=''
+  gh_args__rest=()
+
+  while (( i < n ))
   do
-    if [[ $skip == true ]]
-    then
-      skip=false
-      continue
-    fi
+    a=${args[i]}
     case $a in
-      --)
+      -R|--repo)
+        if (( n <= i + 1 ))
+        then
+          gh_args__passthrough=true
+          return
+        fi
+        gh_args__repo_value=${args[i+1]}
+        (( i += 2 ))
+        continue
+        ;;
+      -R=*|--repo=*)
+        gh_args__repo_value=${a#*=}
+        ;;
+      -R?*)
+        gh_args__repo_value=${a#-R}
+        ;;
+      --help|-h)
+        gh_args__help=true
+        gh_args__pre+=("$a")
+        ;;
+      --version)
+        gh_args__pre+=("$a")
+        ;;
+      -*)
+        gh_args__passthrough=true
+        return
+        ;;
+      *)
         break
         ;;
-      --*=*)
-        ;;
-      -?*)
-        flag=$a
-        [[ $a != --* ]] &&
-          flag=${a:0:2}
-        if [[ $flag == "$a" ]]
-        then
-          if [[ $flag == -R || $flag == --repo ]]
-          then
-            skip=true
-          else
-            if [[ $prefix_flags_for != "$prefix" ]]
-            then
-              mapfile -t prefix_flags < <(gh_args__prefix_value_flags "$prefix")
-              prefix_flags_for=$prefix
-            fi
-            gh_args__in "$flag" "${prefix_flags[@]}" &&
-              skip=true
-          fi
-        fi
-        ;;
-      *)
-        lead+=("$a")
-        prefix="${lead[*]}"
-        gh_args__value_flags "$prefix" >/dev/null ||
-          break
-        (( 4 <= ${#lead[@]} )) &&
-          break
-        ;;
     esac
+    (( i += 1 ))
   done
 
-  gh_args__path=''
-  gh_args__path_len=0
-  for (( n=${#lead[@]}; 0 < n; n-=1 ))
-  do
-    key="${lead[*]:0:n}"
-    if gh_args__value_flags "$key" >/dev/null
-    then
-      gh_args__path=$key
-      gh_args__path_len=$n
-      break
-    fi
-  done
-  if [[ -z $gh_args__path ]] && (( 0 < ${#lead[@]} ))
+  gh_args__command=${args[i]-}
+  gh_args__rest=("${args[@]:i+1}")
+
+  if [[ $gh_args__help == false ]] && (( 0 < n ))
   then
-    gh_args__path=${lead[0]}
-    gh_args__path_len=1
-  fi
-
-  mapfile -t value_flags < <(gh_args__value_flags "$gh_args__path")
-  value_flags+=(-R --repo)
-
-  gh_args__positionals=()
-  gh_args__without_repo=()
-  gh_args__help=false
-  gh_args__repo_value=''
-  gh_args__owner_value=''
-  gh_args__org_value=''
-  gh_args__hostname=''
-
-  for a in "$@"
-  do
-    if [[ -n $consume ]]
-    then
-      gh_args__record "$consume" "$a"
-      [[ $consume == -R || $consume == --repo ]] ||
-        gh_args__without_repo+=("$a")
-      consume=''
-      continue
-    fi
-    if [[ $end_of_opts == true ]]
-    then
-      gh_args__positionals+=("$a")
-      gh_args__without_repo+=("$a")
-      continue
-    fi
-    case $a in
-      --)
-        end_of_opts=true
-        ;;
-      --help)
+    case ${args[n-1]} in
+      --help|-h)
         gh_args__help=true
-        ;;
-      --help=*)
-        case ${a#--help=} in
-          true|1|t|T|TRUE|True)
-            gh_args__help=true
-            ;;
-          *)
-            gh_args__help=false
-            ;;
-        esac
-        ;;
-      --*=*)
-        flag=${a%%=*}
-        gh_args__record "$flag" "${a#*=}"
-        [[ $flag == --repo ]] &&
-          continue
-        ;;
-      --*)
-        if gh_args__in "$a" "${value_flags[@]}"
-        then
-          consume=$a
-          [[ $a == --repo ]] &&
-            continue
-        fi
-        ;;
-      -?*)
-        letters=${a#-}
-        for (( i=0; i < ${#letters}; i+=1 ))
+        for a in "${args[@]:i}"
         do
-          word="-${letters:i:1}"
-          if gh_args__in "$word" "${value_flags[@]}"
-          then
-            rest=${letters:i+1}
-            if [[ $word == -R ]]
-            then
-              (( 0 < i )) &&
-                gh_args__without_repo+=("-${letters:0:i}")
-              if [[ -n $rest ]]
-              then
-                gh_args__record -R "${rest#=}"
-              else
-                consume=-R
-              fi
-              continue 2
-            fi
-            if [[ -n $rest ]]
-            then
-              gh_args__record "$word" "${rest#=}"
-            else
-              consume=$word
-            fi
-            break
-          elif [[ $word == -h ]]
-          then
-            gh_args__help=true
-          fi
+          [[ $a == -- ]] &&
+            gh_args__help=false
         done
         ;;
-      *)
-        gh_args__positionals+=("$a")
-        ;;
     esac
-    gh_args__without_repo+=("$a")
-  done
-}
-
-gh_args__in() {
-  local needle=$1 f
-  shift
-  for f in "$@"
-  do
-    [[ $f == "$needle" ]] &&
-      return 0
-  done
-  return 1
-}
-
-gh_args__record() {
-  case $1 in
-    -R|--repo)
-      gh_args__repo_value=$2
-      ;;
-    --owner)
-      gh_args__owner_value=$2
-      ;;
-    --org)
-      gh_args__org_value=$2
-      ;;
-    --hostname)
-      gh_args__hostname=$2
-      ;;
-    -o)
-      case ${gh_args__path%% *} in
-        secret|variable|ruleset|rs|status|codespace|cs)
-          gh_args__org_value=$2
-          ;;
-      esac
-      ;;
-  esac
+  fi
 }
 
 gh_args__parse "$@"
-if [[ $gh_args__help == true && ${gh_args__positionals[0]-} != __complete && ${gh_args__positionals[0]-} != __completeNoDesc ]]
+case $gh_args__command in
+  __complete|__completeNoDesc)
+    gh_args__help=false
+    ;;
+esac
+if [[ $gh_args__passthrough == false && $gh_args__help == true ]]
 then
-  read -ra gh_help__topic <<< "$gh_args__path"
+  gh_help__topic=()
+  if [[ -n $gh_args__command ]]
+  then
+    gh_help__topic=("$gh_args__command")
+    for gh_help__arg in ${gh_args__rest[@]+"${gh_args__rest[@]}"}
+    do
+      [[ $gh_help__arg == -* ]] &&
+        break
+      gh_help__topic+=("$gh_help__arg")
+    done
+  fi
   exec "$(brew --prefix)"/bin/gh help ${gh_help__topic[@]+"${gh_help__topic[@]}"}
 fi
 
@@ -1506,141 +354,6 @@ gh_account__owner_from_web_url() {
   printf '%s\n' "$owner"
 }
 
-gh_account__from_args() {
-  local a owner selector=''
-  gh_account__args_without_repo=(${gh_args__without_repo[@]+"${gh_args__without_repo[@]}"})
-  gh_account__api_repo=''
-  gh_account__api_placeholder=0
-  gh_account__command=${gh_args__positionals[0]-}
-
-  if [[ $gh_account__command == api ]]
-  then
-    if [[ -n $gh_args__repo_value ]]
-    then
-      if gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
-      then
-        gh_account__api_repo=$gh_args__repo_value
-        [[ -n $gh_args__hostname ]] ||
-          gh_account__args_without_repo+=(--hostname "$gh_account__foreign")
-        return 1
-      fi
-      if owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
-      then
-        gh_account__owner=$owner
-        gh_account__source="-R '${gh_args__repo_value}'"
-        gh_account__api_repo=$(gh_account__repo_spec_from_repo_value "$gh_args__repo_value")
-        return 0
-      fi
-      return 1
-    fi
-    for a in ${gh_args__without_repo[@]+"${gh_args__without_repo[@]}"}
-    do
-      [[ $a == *'{owner}'* || $a == *'{repo}'* ]] &&
-        gh_account__api_placeholder=1
-    done
-    a=${gh_args__positionals[1]-}
-    case $a in
-      [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
-        a=${a#*://*/}
-        ;;
-    esac
-    a=${a#/}
-    case $a in
-      repos/*/*|orgs/*|users/*)
-        a=${a#*/}
-        owner=${a%%[/?#]*}
-        if gh_account__valid_owner "$owner"
-        then
-          gh_account__owner=$owner
-          gh_account__source='the gh api endpoint'
-          return 0
-        fi
-        ;;
-    esac
-    return 1
-  fi
-
-  (( gh_args__path_len < ${#gh_args__positionals[@]} )) &&
-    selector=${gh_args__positionals[gh_args__path_len]}
-
-  if [[ -n $selector ]]
-  then
-    case $gh_account__command in
-      pr|issue|repo)
-        if owner=$(gh_account__owner_from_web_url "$selector")
-        then
-          gh_account__owner=$owner
-          gh_account__source="the URL '${selector}'"
-          return 0
-        fi
-        if [[ $selector == *://* ]] &&
-           gh_account__foreign=$(gh_account__foreign_host "$selector")
-        then
-          return 1
-        fi
-        ;;
-    esac
-    if [[ $gh_account__command == repo ]]
-    then
-      case $gh_args__path in
-        'repo list'|'repo ls')
-          owner=$selector
-          ;;
-        'repo view'|'repo clone'|'repo fork'|'repo delete'|'repo archive'|'repo unarchive'|'repo edit'|'repo sync'|'repo set-default'|'repo create'|'repo new')
-          owner=''
-          if gh_account__foreign=$(gh_account__foreign_host "$selector")
-          then
-            return 1
-          fi
-          [[ $selector == */* ]] &&
-            owner=$(gh_account__owner_from_repo_value "$selector")
-          ;;
-        *)
-          owner=''
-          ;;
-      esac
-      if [[ -n $owner ]] && gh_account__valid_owner "$owner"
-      then
-        gh_account__owner=$owner
-        gh_account__source="the repository '${selector}'"
-        return 0
-      fi
-    fi
-  fi
-
-  if [[ -n $gh_args__org_value && $gh_args__path != 'repo fork' ]] &&
-     gh_account__valid_owner "$gh_args__org_value"
-  then
-    gh_account__owner=$gh_args__org_value
-    gh_account__source="--org '${gh_args__org_value}'"
-    return 0
-  fi
-
-  if [[ -n $gh_args__repo_value ]] &&
-     gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
-  then
-    return 1
-  fi
-
-  if [[ -n $gh_args__repo_value ]] &&
-     owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
-  then
-    gh_account__owner=$owner
-    gh_account__source="--repo '${gh_args__repo_value}'"
-    return 0
-  fi
-
-  if [[ $gh_account__command == search || $gh_account__command == project ]] &&
-     [[ -n $gh_args__owner_value ]] &&
-     gh_account__valid_owner "$gh_args__owner_value"
-  then
-    gh_account__owner=$gh_args__owner_value
-    gh_account__source="--owner '${gh_args__owner_value}'"
-    return 0
-  fi
-  return 1
-}
-
 gh_account__non_github_host() {
   case $1 in
     ''|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
@@ -1706,149 +419,6 @@ gh_account__repo_spec_from_repo_value() {
   printf '%s\n' "$a"
 }
 
-gh_account__from_gh_repo() {
-  local owner
-  [[ -n ${GH_REPO-} ]] ||
-    return 1
-  if gh_account__foreign=$(gh_account__foreign_host "$GH_REPO")
-  then
-    return 1
-  fi
-  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
-    return 1
-  gh_account__owner=$owner
-  gh_account__source="GH_REPO '${GH_REPO}'"
-}
-
-gh_account__gh_repo_owner_differs() {
-  local owner
-  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
-    return 0
-  [[ ${owner,,} != "${gh_account__owner,,}" ]]
-}
-
-gh_account__github_host() {
-  local host=$1 ssh_style=$2 real
-  case $host in
-    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
-      return 0
-      ;;
-  esac
-  [[ $ssh_style == true ]] ||
-    return 1
-  real=$(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')
-  case $real in
-    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-gh_account__from_remotes() {
-  local use_resolution=$1 key value name want resolved='' resolved_repo='' url host owner ssh_style
-  local -a names=() order=()
-
-  mapfile -t names < <(git remote 2>/dev/null)
-  (( ${#names[@]} )) ||
-    return 1
-
-  if [[ $use_resolution == true ]]
-  then
-    while read -r key value
-    do
-      name=${key#remote.}
-      name=${name%.gh-resolved}
-      if [[ $value == base ]]
-      then
-        resolved=$name
-      elif [[ $value == */* ]]
-      then
-        resolved_repo=$value
-      fi
-    done < <(git config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null)
-
-    if [[ -n $resolved_repo ]]
-    then
-      owner=${resolved_repo%%/*}
-      if gh_account__valid_owner "$owner"
-      then
-        gh_account__owner=$owner
-        gh_account__source="gh repo set-default '${resolved_repo}'"
-        return 0
-      fi
-    fi
-  fi
-
-  [[ -n $resolved ]] &&
-    order+=("$resolved")
-  for want in upstream github origin
-  do
-    for name in "${names[@]}"
-    do
-      [[ ${name,,} == "$want" ]] &&
-        order+=("$name")
-    done
-  done
-  for name in "${names[@]}"
-  do
-    case ${name,,} in
-      upstream|github|origin)
-        ;;
-      *)
-        order+=("$name")
-        ;;
-    esac
-  done
-
-  for name in "${order[@]}"
-  do
-    gh_args__in "$name" "${names[@]}" ||
-      continue
-    url=$(git remote get-url "$name" 2>/dev/null) ||
-      continue
-    url=${url%.git}
-    ssh_style=false
-    case $url in
-      ssh://*)
-        ssh_style=true
-        url=${url#*://}
-        host=${url%%/*}
-        host=${host##*@}
-        host=${host%%:*}
-        url=${url#*/}
-        ;;
-      *://*)
-        url=${url#*://}
-        host=${url%%/*}
-        host=${host##*@}
-        host=${host%%:*}
-        url=${url#*/}
-        ;;
-      *:*)
-        ssh_style=true
-        host=${url%%:*}
-        host=${host##*@}
-        url=${url#*:}
-        ;;
-      *)
-        continue
-        ;;
-    esac
-    gh_account__github_host "$host" "$ssh_style" ||
-      continue
-    [[ $url == */* ]] ||
-      continue
-    owner=${url%%/*}
-    gh_account__valid_owner "$owner" ||
-      continue
-    gh_account__owner=$owner
-    gh_account__source="git remote '${name}'"
-    return 0
-  done
-  return 1
-}
-
 gh_account__account_for_owner() {
   local config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
   local want=${1,,} f org account
@@ -1883,51 +453,234 @@ gh_account__account_for_owner() {
   return 1
 }
 
-gh_account__select() {
-  local account token
-  gh_account__command=''
-  gh_account__owner=''
-  gh_account__source=''
-  gh_account__argv=("$@")
-
-  gh_account__foreign=''
-  gh_account__from_args
-  if gh_account__non_github_host "$gh_args__hostname"
-  then
-    gh_account__foreign=$gh_args__hostname
-  elif [[ -z $gh_args__hostname ]] && gh_account__non_github_host "${GH_HOST-}"
-  then
-    gh_account__foreign=$GH_HOST
-  fi
-
-  case $gh_account__command in
-    browse|pr|issue|release|repo|ruleset|rs|run|workflow|label|cache)
-      gh_account__resolves_base=true
+gh_account__owner_in_api_path() {
+  local a=${1#/}
+  case $a in
+    repos/*/*|orgs/*|users/*)
+      a=${a#*/}
+      a=${a%%[/?#]*}
+      gh_account__valid_owner "$a" ||
+        return 1
+      printf '%s\n' "$a"
       ;;
     *)
-      gh_account__resolves_base=false
+      return 1
       ;;
   esac
+}
 
-  case $gh_account__command in
-    ''|auth|help|completion|version|config|alias|__complete|__completeNoDesc)
+gh_account__owner_in_github_url() {
+  local a=$1
+  case $a in
+    *://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
+      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
+      ;;
+    *git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:*)
+      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${a%%[/?#\"\' ]*}"
+}
+
+gh_account__github_family_url() {
+  case $1 in
+    *://*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
       return 0
       ;;
-    api)
-      gh_account__argv=(${gh_account__args_without_repo[@]+"${gh_account__args_without_repo[@]}"})
-      if [[ -n $gh_account__api_repo ]]
+  esac
+  return 1
+}
+
+gh_account__stop() {
+  aictl_die \
+    --code gh_target_required \
+    --message "$1" \
+    --reason "The gh shim picks an account only when the target is obvious; otherwise it asks rather than guess and risk using the wrong account." \
+    --doc "$gh_account__doc" \
+    --suggestion "Name the target before the subcommand: gh -R OWNER/REPO ${gh_args__command:-<command>} ..." \
+    --suggestion "For calls with no repository (gh api user, gh gist list, gh search ...): gh -R OWNER ${gh_args__command:-<command>} ..."
+}
+
+gh_account__scan_rest() {
+  local a url_owner i n=${#gh_args__rest[@]}
+  for (( i=0; i < n; i+=1 ))
+  do
+    a=${gh_args__rest[i]}
+    [[ $a == -- ]] &&
+      break
+    case $a in
+      -R|-R*|--repo|--repo=*)
+        case $gh_args__command in
+          search|codespace|cs)
+            ;;
+          *)
+            gh_account__stop "'${a}' after the subcommand can't be read reliably; put -R before the subcommand."
+            ;;
+        esac
+        ;;
+      --hostname)
+        gh_account__non_github_host "${gh_args__rest[i+1]-}" &&
+          gh_account__foreign=${gh_args__rest[i+1]}
+        ;;
+      --hostname=*)
+        gh_account__non_github_host "${a#--hostname=}" &&
+          gh_account__foreign=${a#--hostname=}
+        ;;
+    esac
+    if url_owner=$(gh_account__owner_in_github_url "$a")
+    then
+      if [[ -z $gh_account__owner ]]
       then
-        export GH_REPO=$gh_account__api_repo
-      elif [[ -n $gh_args__repo_value && -n $gh_account__owner && -n ${GH_REPO-} ]] &&
-           gh_account__gh_repo_owner_differs
+        gh_account__stop "'${a}' names a github.com target the shim won't guess from; pass -R OWNER/REPO before the subcommand."
+      elif [[ ${url_owner,,} != "${gh_account__owner,,}" ]]
+      then
+        gh_account__stop "'${a}' names '${url_owner}', not '${gh_account__owner}' (from ${gh_account__source}); pass -R ${url_owner}/REPO before the subcommand."
+      fi
+    elif [[ $a == *://* ]] && ! gh_account__github_family_url "$a"
+    then
+      gh_account__stop "'${a}' is a URL on a host other than github.com; pass -R before the subcommand if this call targets github.com."
+    fi
+  done
+}
+
+gh_account__scan_named_owners() {
+  local a named
+  for a in ${gh_args__rest[@]+"${gh_args__rest[@]}"}
+  do
+    [[ $a == -- ]] &&
+      break
+    named=''
+    case $gh_args__command in
+      api)
+        named=$(gh_account__owner_in_api_path "$a")
+        ;;
+      repo)
+        [[ $a =~ ^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9._-]+$ ]] &&
+          named=${a%%/*}
+        ;;
+    esac
+    if [[ -n $named && ${named,,} != "${gh_account__owner,,}" ]]
+    then
+      gh_account__stop "'${a}' names '${named}', not '${gh_account__owner}' (from ${gh_account__source}); pass -R ${named}/... before the subcommand."
+    fi
+  done
+}
+
+gh_account__from_remotes() {
+  local name url host owner first='' unknown=''
+  local -a names=()
+  local -A owners=()
+  mapfile -t names < <(git remote 2>/dev/null)
+  (( ${#names[@]} )) ||
+    return 1
+  for name in "${names[@]}"
+  do
+    url=$(git remote get-url "$name" 2>/dev/null) ||
+      continue
+    url=${url%.git}
+    case $url in
+      *://*)
+        url=${url#*://}
+        host=${url%%/*}
+        host=${host##*@}
+        host=${host%%:*}
+        url=${url#*/}
+        ;;
+      *:*)
+        host=${url%%:*}
+        host=${host##*@}
+        url=${url#*:}
+        ;;
+      *)
+        unknown+=" ${name}"
+        continue
+        ;;
+    esac
+    if gh_account__non_github_host "$host"
+    then
+      unknown+=" ${name}"
+      continue
+    fi
+    owner=${url%%/*}
+    if [[ $url != */* ]] || ! gh_account__valid_owner "$owner"
+    then
+      unknown+=" ${name}"
+      continue
+    fi
+    owners[${owner,,}]="${owners[${owner,,}]:+${owners[${owner,,}]}, }${name}"
+    [[ -n $first ]] ||
+      first=$owner
+  done
+  if [[ -n $unknown ]]
+  then
+    gh_account__stop "Remote(s)${unknown} aren't on github.com as far as the shim can tell, so it won't guess which repository gh will use."
+  fi
+  (( ${#owners[@]} )) ||
+    return 1
+  if (( 1 < ${#owners[@]} ))
+  then
+    local summary='' o
+    for o in "${!owners[@]}"
+    do
+      summary+="${summary:+; }${o} (${owners[$o]})"
+    done
+    gh_account__stop "The cwd's remotes name different owners (${summary}); pass -R OWNER/REPO before the subcommand."
+  fi
+  gh_account__owner=$first
+  gh_account__source="the cwd's git remotes"
+}
+
+gh_account__gh_repo_owner_differs() {
+  local owner
+  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
+    return 0
+  [[ ${owner,,} != "${gh_account__owner,,}" ]]
+}
+
+gh_account__select() {
+  local account token spec
+
+  gh_account__argv=("$@")
+  gh_account__owner=''
+  gh_account__source=''
+  gh_account__foreign=''
+
+  [[ $gh_args__passthrough == true ]] &&
+    return 0
+
+  gh_account__argv=(${gh_args__pre[@]+"${gh_args__pre[@]}"} ${gh_args__command:+"$gh_args__command"} ${gh_args__rest[@]+"${gh_args__rest[@]}"})
+
+  if [[ -n $gh_args__repo_value ]]
+  then
+    if gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
+    then
+      export GH_REPO=$gh_args__repo_value
+    elif gh_account__owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
+    then
+      gh_account__source="-R '${gh_args__repo_value}'"
+      spec=$(gh_account__repo_spec_from_repo_value "$gh_args__repo_value")
+      if [[ -n $spec ]]
+      then
+        export GH_REPO=$spec
+      elif [[ -n ${GH_REPO-} ]] && gh_account__gh_repo_owner_differs
       then
         aictl_notice \
-          --code gh_api_gh_repo_dropped \
+          --code gh_gh_repo_dropped \
           --message "Ignoring GH_REPO '${GH_REPO}' for this call: -R '${gh_args__repo_value}' names a different owner." \
-          --doc "$gh_account__doc" \
-          --suggestion "Pass -R OWNER/REPO to set the repository for {owner}/{repo} placeholders"
+          --doc "$gh_account__doc"
         unset GH_REPO
       fi
+    else
+      gh_account__stop "Can't read an owner from -R '${gh_args__repo_value}'."
+    fi
+  fi
+
+  case $gh_args__command in
+    ''|auth|config|alias|extension|ext|help|completion|version|__complete|__completeNoDesc)
+      return 0
       ;;
   esac
 
@@ -1936,10 +689,37 @@ gh_account__select() {
     aictl_notice \
       --code gh_account_deferred \
       --message "Deferring to the GH_TOKEN/GITHUB_TOKEN already in the environment; gh will run as whichever account that token belongs to." \
-      --reason "A caller-set token always wins, so the gh shim did not select an account from the call's target." \
+      --reason "A caller-set token always wins, so the gh shim did not select an account." \
       --doc "$gh_account__doc" \
-      --suggestion "Unset GH_TOKEN and GITHUB_TOKEN to let the shim pick the account for the target org"
+      --suggestion "Unset GH_TOKEN and GITHUB_TOKEN to let the shim pick the account for the target"
     return 0
+  fi
+
+  if [[ -z $gh_account__owner && -z $gh_account__foreign && $gh_args__command == api ]] &&
+     gh_account__owner=$(gh_account__owner_in_api_path "${gh_args__rest[0]-}")
+  then
+    gh_account__source='the gh api endpoint'
+  fi
+
+  gh_account__scan_rest
+
+  if [[ -z $gh_account__owner && -z $gh_account__foreign && -n ${GH_REPO-} ]]
+  then
+    if gh_account__foreign=$(gh_account__foreign_host "$GH_REPO")
+    then
+      :
+    elif [[ $GH_REPO == */* ]] &&
+         gh_account__owner=$(gh_account__owner_from_repo_value "$GH_REPO")
+    then
+      gh_account__source="GH_REPO '${GH_REPO}'"
+    else
+      gh_account__stop "Can't read an owner from GH_REPO '${GH_REPO}'."
+    fi
+  fi
+
+  if [[ -z $gh_account__foreign ]] && gh_account__non_github_host "${GH_HOST-}"
+  then
+    gh_account__foreign=$GH_HOST
   fi
 
   if [[ -n $gh_account__foreign ]]
@@ -1951,37 +731,12 @@ gh_account__select() {
     return 0
   fi
 
-  if [[ $gh_account__command == api && -z $gh_account__owner && -z ${GH_REPO-} ]] &&
-     (( ! gh_account__api_placeholder ))
+  if [[ -z $gh_account__owner ]] && ! gh_account__from_remotes
   then
-    aictl_die \
-      --code gh_api_owner_required \
-      --message "'gh api' needs -R OWNER or -R OWNER/REPO to pick the gh account: its endpoint doesn't name an owner." \
-      --reason "Endpoints like graphql, user and search/... carry no owner, so the gh shim can't tell which account can see the target. The shim reads -R and removes it before running gh, which has no -R for api; -R OWNER/REPO also sets GH_REPO for {owner}/{repo} placeholders." \
-      --doc "$gh_account__doc" \
-      --suggestion "gh api -R OWNER user" \
-      --suggestion "gh api -R OWNER/REPO 'repos/{owner}/{repo}/...'"
+    gh_account__stop "No obvious target for 'gh ${gh_args__command}': no -R before the subcommand, no GH_REPO, and no github.com remote in the cwd."
   fi
 
-  if [[ -z $gh_account__owner ]] && ! gh_account__from_gh_repo && [[ -n $gh_account__foreign ]]
-  then
-    aictl_info \
-      --code gh_account_active \
-      --message "The call targets '${gh_account__foreign}', not github.com; gh will run as its account for that host." \
-      --doc "$gh_account__doc"
-    return 0
-  fi
-
-  [[ -n $gh_account__owner ]] ||
-    gh_account__from_remotes "$gh_account__resolves_base" ||
-    {
-      aictl_info \
-        --code gh_account_active \
-        --message "No target org found in the arguments, GH_REPO or git remotes; gh will run as its active account." \
-        --doc "$gh_account__doc" \
-        --suggestion "Pass --repo OWNER/REPO, or a github.com URL, to pick the account for that org"
-      return 0
-    }
+  gh_account__scan_named_owners
 
   if ! account=$(gh_account__account_for_owner "$gh_account__owner")
   then

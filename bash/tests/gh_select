@@ -36,17 +36,6 @@ fi
 echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/gh"
-cat > "$tmpdir/mockbin/ssh" <<'MOCK'
-#!/usr/bin/env bash
-if [[ $1 == -G && $2 == work-gh ]]
-then
-  echo "hostname github.com"
-elif [[ $1 == -G ]]
-then
-  echo "hostname $2"
-fi
-MOCK
-chmod +x "$tmpdir/mockbin/ssh"
 cat > "$tmpdir/mockbin/brew" <<MOCK
 #!/usr/bin/env bash
 echo "$tmpdir/prefix"
@@ -58,12 +47,13 @@ map() {
   printf '%s\n' "$2" > "$tmpdir/cfg/orgs/$1/account"
 }
 
+extra_env=()
 run_shim() {
   local dir=$1
   shift
   out=$(
     cd "$dir" &&
-      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u GH_HOST -u TIMVISHER_AGENT \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         PATH="$tmpdir/mockbin:$PATH" \
         TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
@@ -73,526 +63,289 @@ run_shim() {
   rc=$?
   err=$(< "$tmpdir/err")
 }
-extra_env=()
 
-check_owner() {
-  local want=$1
-  shift
-  run_test
-  if [[ $want == - ]]
-  then
-    run_shim "$tmpdir/norepo" "$@"
-    if [[ $out == "real-gh GH_TOKEN= "* && $err == *'"code":"gh_account_active"'*'No target org found'* ]]
-    then
-      pass "[$*] -> (none)"
-    else
-      fail "[$*]: expected no owner; out='$out' err='$err'"
-    fi
-    return
-  fi
-  map "$want" "acct-$want"
-  run_shim "$tmpdir/norepo" "$@"
-  if [[ $out == "real-gh GH_TOKEN=tok-acct-$want "* && $err == *'"code":"gh_account_selected"'*"for '$want'"* ]]
-  then
-    pass "[$*] -> '$want'"
-  else
-    fail "[$*]: want '$want'; out='$out' err='$err'"
-  fi
-}
-
-check_owner "ddoghq"  pr view 691 --repo ddoghq/dd-source --json title
-check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
-check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 -Rddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo github.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo https://github.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 -R personal/repo -R ddoghq/dd-source
-check_owner "DataDog" pr view 1 --repo DataDog/appgate
-check_owner "-"       repo list
-check_owner "ddoghq"  repo view ddoghq/dd-source --json name
-check_owner "ddoghq"  repo clone ddoghq/dd-source ./dir
-check_owner "ddoghq"  repo create ddoghq/new-repo --private
-check_owner "otherorg" repo list otherorg --limit 5
-check_owner "-"       repo view dd-source
-check_owner "-"       repo create new-repo --private
-check_owner "-"       repo rename otherorg/new-name
-check_owner "-"       repo gitignore view Go
-check_owner "ddoghq"  repo view --web ddoghq/dd-source
-check_owner "otherorg" search repos --owner otherorg topic
-check_owner "otherorg" search issues --owner=otherorg bug
-check_owner "otherorg" project list --owner otherorg
-check_owner "-"       project list --owner @me
-check_owner "-"       pr list --owner otherorg
-check_owner "ddoghq"  pr ready https://github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  pr update-branch https://github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  issue pin https://github.com/ddoghq/dd-source/issues/1
-check_owner "ddoghq"  repo delete ddoghq/dd-source --yes
-check_owner "ddoghq"  repo archive ddoghq/dd-source
-check_owner "otherorg" repo ls otherorg
-check_owner "ddoghq"  repo new ddoghq/new-repo --private
-check_owner "ddoghq"  pr --json title view https://github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  pr view 1 -R=ddoghq/dd-source
-check_owner "otherorg" secret list --org otherorg
-check_owner "otherorg" variable list -o otherorg
-check_owner "otherorg" cs list -o otherorg
-check_owner "ddoghq"  repo fork ddoghq/dd-source --org otherorg
-check_owner "ddoghq"  cache delete --all --succeed-on-no-caches -R ddoghq/dd-source
-check_owner "ddoghq"  browse -c -R ddoghq/dd-source
-check_owner "ddoghq"  pr list -S= -R ddoghq/dd-source
-check_owner "otherorg" rs list -o otherorg
-check_owner "ddoghq"  pr view 1 --help=false --repo ddoghq/dd-source
-check_owner "ddoghq"  pr merge --squash https://github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  pr checkout --force https://github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  pr diff --patch https://github.com/ddoghq/dd-source/pull/1
-check_owner "otherorg" repo list --limit 5 otherorg
-check_owner "ddoghq"  repo view -- ddoghq/dd-source
-check_owner "ddoghq"  search code https://github.com/otherorg/x --owner ddoghq
-check_owner "ddoghq"  search code --owner ddoghq -- --repo=otherorg/repo
-check_owner "-"       pr comment 1 -F --repo=evil/repo
-check_owner "ddoghq"  pr view -Rddoghq/dd-source 1
-
-check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
-check_owner "otherorg" api --method HEAD --include /repos/otherorg/repo/pulls/comments/5 --hostname github.com
-check_owner "otherorg" api https://api.github.com/repos/otherorg/repo/pulls/1
-check_owner "otherorg" api orgs/otherorg/teams
-check_owner "someone" api users/someone/repos
-check_owner "-"       api 'repos/{owner}/{repo}/pulls'
-check_owner "-"       release upload v1 ./repos/otherorg/artifact.zip
-
-check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/691
-check_owner "otherorg" pr comment https://github.com/otherorg/repo/pull/1 --body-file x
-check_owner "ddoghq"  issue view https://github.com/ddoghq/dd-source/issues/3
-check_owner "ddoghq"  pr checkout 'https://github.com/ddoghq/dd-source/pull/1?notification_referrer_id=NT_x#issuecomment-5'
-check_owner "ddoghq"  repo view github.com/ddoghq/dd-source
-check_owner "ddoghq"  repo clone git@github.com:ddoghq/dd-source.git
-check_owner "ddoghq"  repo clone ssh://git@github.com/ddoghq/dd-source.git
-check_owner "ddoghq"  pr view https://github.com/ddoghq/repos/pull/1
-check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1 --repo DataDog/appgate
-check_owner "ddoghq"  pr view http://www.github.com/ddoghq/dd-source/pull/1
-check_owner "myorg"   project view 1 --owner myorg
-
-check_owner "-"       pr view https://github.com/orgs
-check_owner "-"       pr view 'https://github.com/orgs?x=a/b'
-check_owner "-"       browse https://github.com/settings/tokens x
-check_owner "-"       pr view https://github.com/pulls
-check_owner "-"       pr view https://github.com/advisories/GHSA-xxxx
-check_owner "-"       gist view https://gist.github.com/someone/abc
-check_owner "-"       pr view https://github.com/../x
-check_owner "-"       pr view https://github.com/-bad/x
-check_owner "-"       pr view https://github.com/_bad/x
-check_owner "tim-visher_ddog" pr view 1 --repo tim-visher_ddog/x
-check_owner "tim-visher_ddog" pr view https://github.com/tim-visher_ddog/x/pull/1
-check_owner "tim-visher_ddog" repo view tim-visher_ddog/x
-check_owner "tim-visher_ddog" api repos/tim-visher_ddog/x
-check_owner "tim-visher_ddog" api -R tim-visher_ddog user
-
-check_owner "-"       pr comment 1 --body "see https://github.com/evil/x"
-check_owner "-"       pr comment 1 --body https://github.com/evil/x
-check_owner "-"       pr comment 1 -b https://github.com/evil/x
-check_owner "-"       pr comment 1 --body=https://github.com/evil/x
-check_owner "-"       issue create -t https://github.com/evil/x -b https://github.com/evil/y/issues/2
-check_owner "-"       pr close 5 -c https://github.com/evil/x/pull/2
-check_owner "-"       pr close -c https://github.com/evil/x/pull/2 5
-check_owner "-"       issue close 3 --comment https://github.com/evil/x/issues/2
-check_owner "-"       pr list --search https://github.com/evil/x
-check_owner "-"       pr merge 5 --subject https://github.com/evil/x
-check_owner "-"       gist create -d https://github.com/evil/x notes.md
-check_owner "-"       repo edit --homepage https://github.com/evil/docs
-check_owner "-"       pr review 123 -ab https://github.com/evil/x
-check_owner "ddoghq"  pr review -a https://github.com/ddoghq/dd-source/pull/1
-check_owner "-"       pr review 123 -r -b https://github.com/evil/x
-check_owner "-"       pr comment 123 --body --repo=evil/repo
-check_owner "-"       pr comment 123 --body-file
-
-check_api_dies() {
-  run_test
-  run_shim "$tmpdir/norepo" "$@"
-  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_api_owner_required"'* ]]
-  then
-    pass "[$*] dies asking for -R"
-  else
-    fail "[$*]: expected gh_api_owner_required; rc=$rc out='$out' err='$err'"
-  fi
-}
-
-check_api_dies api graphql -f query=mutation -f body=https://github.com/evil/x
-check_api_dies api graphql -f body=see/repos/evil/x
-check_api_dies api graphql -f query=mutation -f id=PRRC_kwDOabc
-check_api_dies api user --jq .login
-check_api_dies api search/issues -f q=x
-check_api_dies api -R ../x graphql -f query=x
-check_api_dies api -R '' user
-
-check_api() {
+expect() {
   local label=$1 want_out=$2 want_err=$3
-  shift 3
   run_test
-  run_shim "$tmpdir/norepo" "$@"
-  if [[ $out == "$want_out" && $err == *"$want_err"* ]]
+  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_err || $err == *"$want_err"* ]]
   then
     pass "$label"
   else
-    fail "$label; out='$out' err='$err'"
+    fail "$label; rc=$rc out='$out' err='$err'"
   fi
 }
 
-map otherorg acct-otherorg
-check_api "api -R OWNER picks the account and is removed" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api graphql -f query=x" \
-  "for 'otherorg' (from -R 'otherorg')" \
-  api -R otherorg graphql -f query=x
-check_api "api -R OWNER/REPO sets GH_REPO for placeholders" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api repos/{owner}/{repo}/pulls" \
-  "for 'otherorg' (from -R 'otherorg/repo')" \
-  api -R otherorg/repo 'repos/{owner}/{repo}/pulls'
-check_api "api --repo=OWNER/REPO" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
-  "for 'otherorg'" \
-  api --repo=otherorg/repo user
-check_api "api --repo OWNER/REPO after the endpoint" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user --jq .login" \
-  "for 'otherorg'" \
-  api user --repo otherorg/repo --jq .login
-check_api "api -ROWNER/REPO" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
-  "for 'otherorg'" \
-  api -Rotherorg/repo user
-check_api "api -R with a github.com URL" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
-  "for 'otherorg'" \
-  api -R https://github.com/otherorg/repo/pull/1 user
-check_api "api -R HOST/OWNER/REPO for another host keeps the host and picks no account" \
-  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/otherorg/repo api user --hostname ghe.example.com" \
-  "targets 'ghe.example.com', not github.com" \
-  api -R ghe.example.com/otherorg/repo user
-check_api "api -R beats the endpoint" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/otherorg/x" \
-  "for 'ddoghq' (from -R 'ddoghq')" \
-  api -R ddoghq repos/otherorg/x
-check_api "api keeps -R inside a flag value" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api graphql -f x=-R -f -R" \
-  "for 'otherorg'" \
-  api -R otherorg graphql -f x=-R -f -R
-check_api "api -iR OWNER keeps -i" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api -i user" \
-  "for 'otherorg'" \
-  api -iR otherorg user
-check_api "api -R=OWNER" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" \
-  "for 'otherorg'" \
-  api -R=otherorg user
-check_api "a non-api --repo is passed through to gh" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr view 1 --repo otherorg/repo" \
-  "for 'otherorg'" \
-  pr view 1 --repo otherorg/repo
+expect_stop() {
+  local label=$1 want_err=${2-}
+  run_test
+  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_target_required"'* ]] &&
+     [[ -z $want_err || $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err'"
+  fi
+}
 
+new_repo() {
+  local dir=$1
+  shift
+  if ! git init -q "$dir" 2>/dev/null
+  then
+    echo "setup failed: git init '$dir'" >&2
+    exit 1
+  fi
+  while (( 1 < $# ))
+  do
+    if ! git -C "$dir" remote add "$1" "$2" 2>/dev/null
+    then
+      echo "setup failed: remote '$1' in '$dir'" >&2
+      exit 1
+    fi
+    shift 2
+  done
+}
+
+map ddoghq acct-ddoghq
+map otherorg acct-otherorg
 map DataDog acct-DataDog
-map upstreamorg acct-upstreamorg
-map pickedorg acct-pickedorg
+
+for form in "-R ddoghq/dd-source" "-Rddoghq/dd-source" "-R=ddoghq/dd-source" "--repo ddoghq/dd-source" "--repo=ddoghq/dd-source"
+do
+  read -ra pre <<< "$form"
+  run_shim "$tmpdir/norepo" "${pre[@]}" pr view 5
+  expect "'${form}' before the subcommand picks the account, sets GH_REPO and is removed" \
+    "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view 5" \
+    "for 'ddoghq' (from -R"
+done
+
+run_shim "$tmpdir/norepo" --version -R ddoghq/dd-source pr list
+expect "-R after another root flag still counts" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source --version pr list" ""
+
+run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source pr list
+expect "-R with a github.com URL sets GH_REPO to OWNER/REPO" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" ""
+
+run_shim "$tmpdir/norepo" -R tim-visher_ddog/x pr list
+expect "-R accepts an EMU owner with an underscore" \
+  "real-gh GH_TOKEN= GH_REPO=tim-visher_ddog/x pr list" \
+  "No gh account is configured for 'tim-visher_ddog'"
+
+run_shim "$tmpdir/norepo" -R otherorg gist list
+expect "-R OWNER picks the account for a command with no repository" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= gist list" "for 'otherorg' (from -R 'otherorg')"
+
+run_shim "$tmpdir/norepo" -R otherorg api user
+expect "-R OWNER works for gh api with no owner in the endpoint" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" ""
+
+run_shim "$tmpdir/norepo" --web -R ddoghq/dd-source pr view
+expect "a pre-subcommand flag gh doesn't have passes the call through untouched" \
+  "real-gh GH_TOKEN= GH_REPO= --web -R ddoghq/dd-source pr view" ""
+run_test
+if [[ -z $err ]]
+then
+  pass "pass-through prints nothing"
+else
+  fail "pass-through printed: '$err'"
+fi
+
+run_shim "$tmpdir/norepo" pr view 5 --repo ddoghq/dd-source
+expect_stop "--repo after the subcommand stops" "put -R before the subcommand"
+run_shim "$tmpdir/norepo" pr view 5 -R ddoghq/dd-source
+expect_stop "-R after the subcommand stops"
+run_shim "$tmpdir/norepo" pr comment 1 --body -R
+expect_stop "a flag value that looks like -R stops rather than guess"
+
+run_shim "$tmpdir/norepo" -R ddoghq search issues --repo otherorg/x bug
+expect "search keeps its own --repo filter; the account comes from -R" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= search issues --repo otherorg/x bug" ""
+
+run_shim "$tmpdir/norepo" pr view https://github.com/ddoghq/dd-source/pull/1
+expect_stop "a github.com URL without -R stops" "won't guess"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
+expect "a github.com URL agreeing with -R is fine" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1" ""
+run_shim "$tmpdir/norepo" -R DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
+expect "URL agreement ignores case" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1" ""
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view https://github.com/otherorg/x/pull/1
+expect_stop "a github.com URL naming another owner than -R stops" "names 'otherorg', not 'ddoghq'"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr comment 1 --body "see https://example.com/x"
+expect_stop "a URL on another host stops" "host other than github.com"
+
+run_shim "$tmpdir/norepo" -R ddoghq gist edit https://gist.github.com/someone/abc123 plan.txt
+expect "a gist.github.com URL neither names an owner nor stops" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= gist edit https://gist.github.com/someone/abc123 plan.txt" ""
+
+run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/pulls
+expect "a gh api endpoint right after api names the owner" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/dd-source/pulls" \
+  "(from the gh api endpoint)"
+run_shim "$tmpdir/norepo" api /orgs/otherorg/teams
+expect "an orgs/ endpoint names the owner" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api /orgs/otherorg/teams" ""
+run_shim "$tmpdir/norepo" api user
+expect_stop "gh api with no owner anywhere stops" "No obvious target"
+run_shim "$tmpdir/norepo" api graphql -f query=x
+expect_stop "gh api graphql without -R stops"
+run_shim "$tmpdir/norepo" -R ddoghq api repos/otherorg/x
+expect_stop "an api path naming another owner than -R stops" "names 'otherorg', not 'ddoghq'"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source api repos/ddoghq/dd-source/pulls/1/comments
+expect "an api path agreeing with -R is fine" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source api repos/ddoghq/dd-source/pulls/1/comments" ""
 
 repo="$tmpdir/repo"
-git init -q "$repo" 2>/dev/null
-git -C "$repo" remote add origin git@github.com:DataDog/dd-source.git 2>/dev/null
-
-check_source() {
-  local label=$1 want_token=$2 want_err=$3
-  shift 3
-  run_test
-  if [[ $out == "real-gh GH_TOKEN=${want_token} "* && $err == *"$want_err"* ]]
-  then
-    pass "$label"
-  else
-    fail "$label; out='$out' err='$err'"
-  fi
-}
-
+new_repo "$repo" origin git@github.com:DataDog/dd-source.git
 run_shim "$repo" pr list
-check_source "origin remote selects its owner" tok-acct-DataDog \
-  "for 'DataDog' (from git remote 'origin')"
-
+expect "a single github.com remote names the owner" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" "(from the cwd's git remotes)"
 run_shim "$repo" api 'repos/{owner}/{repo}/pulls'
-check_source "an api {owner} placeholder uses the cwd remote" tok-acct-DataDog \
-  "for 'DataDog' (from git remote 'origin')"
+expect "api placeholders use the agreeing remotes" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= api repos/{owner}/{repo}/pulls" ""
+run_shim "$repo" api --method PATCH /repos/otherorg/x/issues/comments/1
+expect_stop "an api path after flags naming another owner than the remotes stops" "names 'otherorg', not 'DataDog'"
+run_shim "$repo" api --method PATCH /repos/DataDog/x/issues/comments/1
+expect "an api path after flags agreeing with the remotes is fine" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= api --method PATCH /repos/DataDog/x/issues/comments/1" ""
 
-run_shim "$repo" pr view 1 --repo ddoghq/dd-source
-check_source "--repo beats the cwd remote" tok-acct-ddoghq \
-  "for 'ddoghq' (from --repo 'ddoghq/dd-source')"
+run_shim "$repo" repo view otherorg/x --json name
+expect_stop "a gh repo OWNER/REPO argument naming another owner stops" "names 'otherorg', not 'DataDog'"
+run_shim "$repo" repo view DataDog/dd-source --json name
+expect "a gh repo OWNER/REPO argument agreeing with the remotes is fine" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= repo view DataDog/dd-source --json name" ""
+run_shim "$tmpdir/norepo" -R otherorg/x repo fork otherorg/x --clone=false
+expect "a gh repo argument agreeing with -R is fine" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/x repo fork otherorg/x --clone=false" ""
+run_shim "$repo" release upload v1 dist/x.zip
+expect "an OWNER/REPO-shaped path outside gh repo isn't read as an owner" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= release upload v1 dist/x.zip" ""
 
-run_shim "$repo" pr view https://github.com/ddoghq/dd-source/pull/1
-check_source "a selector URL beats the cwd remote" tok-acct-ddoghq \
-  "for 'ddoghq' (from the URL 'https://github.com/ddoghq/dd-source/pull/1')"
-
-run_shim "$repo" api repos/ddoghq/dd-source/pulls
-check_source "a gh api endpoint beats the cwd remote" tok-acct-ddoghq \
-  "for 'ddoghq' (from the gh api endpoint)"
-
-git -C "$repo" remote add upstream https://github.com/upstreamorg/dd-source.git 2>/dev/null
+git -C "$repo" remote add upstream https://github.com/datadog/dd-source.git 2>/dev/null
 run_shim "$repo" pr list
-check_source "upstream remote beats origin" tok-acct-upstreamorg \
-  "for 'upstreamorg' (from git remote 'upstream')"
+expect "remotes naming the same owner (in any case) agree" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" ""
 
-git -C "$repo" remote add picked ssh://git@github.com/pickedorg/dd-source.git 2>/dev/null
-git -C "$repo" config remote.picked.gh-resolved base 2>/dev/null
+git -C "$repo" remote add mine git@github.com:otherorg/dd-source.git 2>/dev/null
 run_shim "$repo" pr list
-check_source "the gh repo set-default remote beats upstream" tok-acct-pickedorg \
-  "for 'pickedorg' (from git remote 'picked')"
-
-map workorg acct-workorg
-map parentorg acct-parentorg
+expect_stop "remotes naming different owners stop" "name different owners"
+run_shim "$repo" -R ddoghq/dd-source pr list
+expect "-R overrides conflicting remotes" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" ""
 
 repo2="$tmpdir/repo2"
-git init -q "$repo2" 2>/dev/null
-git -C "$repo2" remote add work git@ddoghq.github.com:workorg/x.git 2>/dev/null
+new_repo "$repo2" origin git@github.com:ddoghq/x.git gl https://gitlab.com/g/x.git
 run_shim "$repo2" pr list
-check_source "a custom remote name and an SSH host alias count" tok-acct-workorg \
-  "for 'workorg' (from git remote 'work')"
+expect_stop "a remote not on github.com stops" "aren't on github.com"
 
-git -C "$repo2" remote add upstream https://gitlab.com/gitlaborg/x.git 2>/dev/null
-run_shim "$repo2" pr list
-check_source "a non-GitHub upstream is skipped" tok-acct-workorg \
-  "for 'workorg' (from git remote 'work')"
-
-git -C "$repo2" config remote.work.gh-resolved parentorg/x 2>/dev/null
-run_shim "$repo2" pr list
-check_source "gh repo set-default's OWNER/REPO form wins" tok-acct-parentorg \
-  "for 'parentorg' (from gh repo set-default 'parentorg/x')"
-
-run_shim "$repo2" secret list
-check_source "gh secret ignores gh repo set-default, like gh" tok-acct-workorg \
-  "for 'workorg' (from git remote 'work')"
-run_shim "$repo2" api 'repos/{owner}/{repo}'
-check_source "gh api placeholders ignore gh repo set-default, like gh" tok-acct-workorg \
-  "for 'workorg' (from git remote 'work')"
-
-map caporg acct-caporg
-repo5="$tmpdir/repo5"
-git init -q "$repo5" 2>/dev/null
-git -C "$repo5" remote add origin git@github.com:otherorg/x.git 2>/dev/null
-git -C "$repo5" remote add Upstream git@github.com:caporg/x.git 2>/dev/null
-run_shim "$repo5" pr list
-check_source "remote priority ignores case, like gh ('Upstream' beats origin)" tok-acct-caporg \
-  "for 'caporg' (from git remote 'Upstream')"
-
-map aliasorg acct-aliasorg
 repo3="$tmpdir/repo3"
-git init -q "$repo3" 2>/dev/null
-git -C "$repo3" remote add origin git@work-gh:aliasorg/x.git 2>/dev/null
+new_repo "$repo3" origin git@ddoghq.github.com:ddoghq/x.git
 run_shim "$repo3" pr list
-check_source "an SSH host alias for github.com counts" tok-acct-aliasorg \
-  "for 'aliasorg' (from git remote 'origin')"
+expect "a *.github.com SSH alias counts" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr list" ""
 
-map rewriteorg acct-rewriteorg
 repo4="$tmpdir/repo4"
-git init -q "$repo4" 2>/dev/null
-git -C "$repo4" remote add origin work:x 2>/dev/null
-git -C "$repo4" config url.https://github.com/rewriteorg/.insteadOf work: 2>/dev/null
+new_repo "$repo4" origin work:x
+git -C "$repo4" config url.https://github.com/otherorg/.insteadOf work: 2>/dev/null
 run_shim "$repo4" pr list
-check_source "a remote rewritten by url.insteadOf counts" tok-acct-rewriteorg \
-  "for 'rewriteorg' (from git remote 'origin')"
+expect "a remote rewritten by url.insteadOf counts" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr list" ""
 
 extra_env=(GH_REPO=ddoghq/dd-source)
 run_shim "$repo" pr list
-check_source "GH_REPO beats the cwd remote" tok-acct-ddoghq \
-  "for 'ddoghq' (from GH_REPO 'ddoghq/dd-source' in the environment)"
-run_test
-if [[ $err == *'"level":"warning","code":"gh_account_selected"'* ]]
-then
-  pass "selecting from GH_REPO is a warning-level notice"
-else
-  fail "selecting from GH_REPO should be a warning-level notice; err='$err'"
-fi
-
-run_shim "$repo" pr view 1 --repo DataDog/appgate
-check_source "--repo beats GH_REPO" tok-acct-DataDog \
-  "for 'DataDog' (from --repo 'DataDog/appgate')"
-
-extra_env=(GH_REPO=https://github.com/ddoghq/dd-source)
-run_shim "$repo" pr list
-check_source "a URL-valued GH_REPO names its owner" tok-acct-ddoghq \
-  "for 'ddoghq' (from GH_REPO 'https://github.com/ddoghq/dd-source' in the environment)"
-run_shim "$tmpdir/norepo" api -R ddoghq user
-run_test
-if [[ $err != *gh_api_gh_repo_dropped* ]]
-then
-  pass "a URL-valued GH_REPO for the -R owner is kept"
-else
-  fail "URL GH_REPO for the same owner was dropped; err='$err'"
-fi
-
-extra_env=(GH_REPO=DDOGHQ/dd-source)
-run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}'
-run_test
-if [[ $err != *gh_api_gh_repo_dropped* && $out == *"GH_REPO=DDOGHQ/dd-source"* ]]
-then
-  pass "a GH_REPO differing from -R only in case is kept"
-else
-  fail "case-only GH_REPO difference dropped it; out='$out' err='$err'"
-fi
-extra_env=()
-run_shim "$repo" api graphql -F owner='{owner}' -F name='{repo}'
-check_source "placeholders in -F values count as using the cwd repo" tok-acct-upstreamorg \
-  "(from git remote 'upstream')"
-
-extra_env=(GH_TOKEN=caller-token)
-run_shim "$repo" pr view 1 --repo ddoghq/dd-source
-check_source "a caller-set GH_TOKEN is deferred to" caller-token \
-  '"level":"warning","code":"gh_account_deferred"'
-
-run_shim "$tmpdir/norepo" api graphql -f query=x
-check_source "a caller-set GH_TOKEN satisfies api without -R" caller-token \
-  '"code":"gh_account_deferred"'
-
-run_shim "$tmpdir/norepo" api -R otherorg/repo user
-check_source "api -R is still removed under a caller-set GH_TOKEN" caller-token \
-  '"code":"gh_account_deferred"'
-run_test
-if [[ $out == "real-gh GH_TOKEN=caller-token GH_REPO=otherorg/repo api user" ]]
-then
-  pass "api -R OWNER/REPO still sets GH_REPO under a caller-set GH_TOKEN"
-else
-  fail "api -R under GH_TOKEN; out='$out'"
-fi
-
-extra_env=(GH_REPO=ddoghq/dd-source)
-run_shim "$tmpdir/norepo" api -R otherorg 'repos/{owner}/{repo}'
-check_source "api -R OWNER drops a GH_REPO for another owner" tok-acct-otherorg \
-  '"code":"gh_api_gh_repo_dropped"'
-run_test
-if [[ $out == "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api repos/{owner}/{repo}" ]]
-then
-  pass "the dropped GH_REPO doesn't reach gh"
-else
-  fail "GH_REPO should be unset for gh; out='$out'"
-fi
-
-run_shim "$tmpdir/norepo" api 'repos/otherorg/{repo}/pulls'
-run_test
-if [[ $out == "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=ddoghq/dd-source api repos/otherorg/{repo}/pulls" && $err != *gh_api_gh_repo_dropped* ]]
-then
-  pass "GH_REPO is kept when the owner comes from the endpoint, not -R"
-else
-  fail "GH_REPO should be kept without -R; out='$out' err='$err'"
-fi
-
-run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}'
-run_test
-if [[ $out == "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source api repos/{owner}/{repo}" && $err != *gh_api_gh_repo_dropped* ]]
-then
-  pass "api -R OWNER keeps a GH_REPO for the same owner"
-else
-  fail "same-owner GH_REPO should be kept; out='$out' err='$err'"
-fi
-
-extra_env=(GH_REPO=ddoghq/dd-source)
-run_shim "$tmpdir/norepo" api graphql -f query=x
-check_source "GH_REPO satisfies api without -R" tok-acct-ddoghq \
-  "for 'ddoghq' (from GH_REPO 'ddoghq/dd-source' in the environment)"
-
-extra_env=(GITHUB_TOKEN=caller-token)
-run_shim "$repo" pr view 1 --repo ddoghq/dd-source
-check_source "a caller-set GITHUB_TOKEN is deferred to" '' \
-  '"code":"gh_account_deferred"'
+expect "GH_REPO wins over the remotes" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" \
+  '"level":"warning","code":"gh_account_selected"'
+run_shim "$tmpdir/norepo" -R otherorg api 'repos/{owner}/{repo}'
+expect "-R OWNER drops a GH_REPO for another owner" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api repos/{owner}/{repo}" \
+  '"code":"gh_gh_repo_dropped"'
+run_shim "$tmpdir/norepo" -R DDOGHQ api user
+expect "-R OWNER keeps a GH_REPO for the same owner in another case" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source api user" ""
+extra_env=(GH_REPO=https://github.com/otherorg/x)
+run_shim "$tmpdir/norepo" pr list
+expect "a URL-valued GH_REPO names its owner" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=https://github.com/otherorg/x pr list" ""
+extra_env=(GH_REPO=nonsense)
+run_shim "$tmpdir/norepo" pr list
+expect_stop "an unreadable GH_REPO stops" "Can't read an owner from GH_REPO"
 extra_env=()
 
-map emuorg emu_user
-run_shim "$tmpdir/norepo" api repos/emu_user/fork
-check_source "an owner that is itself a configured account uses that account" tok-emu_user \
-  "Using gh account 'emu_user' for 'emu_user' (from the gh api endpoint)"
-
-run_shim "$tmpdir/norepo" pr view 1 --repo DDOGHQ/dd-source
-check_source "owner matching ignores case" tok-acct-ddoghq \
-  "Using gh account 'acct-ddoghq' for 'DDOGHQ'"
-run_shim "$tmpdir/norepo" api repos/EMU_USER/fork
-check_source "own-namespace matching ignores case" tok-emu_user \
-  "Using gh account 'emu_user' for 'EMU_USER'"
-
-run_shim "$repo" pr view 1 --repo ghe.example.com/ddoghq/dd-source
-check_source "--repo on another host picks no github.com account" '' \
-  "targets 'ghe.example.com', not github.com"
-run_shim "$repo" repo view https://ghe.example.com/ddoghq/dd-source
-check_source "a repo URL on another host picks no github.com account" '' \
-  "targets 'ghe.example.com', not github.com"
+run_shim "$tmpdir/norepo" -R ghe.example.com/ddoghq/x pr list
+expect "-R on another host picks no github.com account" \
+  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/ddoghq/x pr list" "targets 'ghe.example.com', not github.com"
 run_shim "$tmpdir/norepo" api --hostname acme.ghe.com repos/ddoghq/x
-check_source "gh api --hostname for another host picks no github.com account" '' \
-  "targets 'acme.ghe.com', not github.com"
+expect "gh api --hostname for another host picks no github.com account" \
+  "real-gh GH_TOKEN= GH_REPO= api --hostname acme.ghe.com repos/ddoghq/x" "targets 'acme.ghe.com'"
+run_shim "$tmpdir/norepo" api repos/ddoghq/x --hostname=github.com
+expect "--hostname github.com still selects" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/x --hostname=github.com" ""
 extra_env=(GH_HOST=acme.ghe.com)
-run_shim "$repo" pr list
-check_source "GH_HOST for another host picks no github.com account" '' \
-  "targets 'acme.ghe.com', not github.com"
-extra_env=(GH_REPO=acme.ghe.com/ddoghq/repo)
-run_shim "$repo" pr list
-check_source "a GH_REPO on another host picks no github.com account" '' \
-  "targets 'acme.ghe.com', not github.com"
+run_shim "$repo3" pr list
+expect "GH_HOST for another host picks no github.com account" \
+  "real-gh GH_TOKEN= GH_REPO= pr list" "targets 'acme.ghe.com'"
+extra_env=(GH_REPO=acme.ghe.com/ddoghq/x)
+run_shim "$repo3" pr list
+expect "a GH_REPO on another host picks no github.com account" \
+  "real-gh GH_TOKEN= GH_REPO=acme.ghe.com/ddoghq/x pr list" "targets 'acme.ghe.com'"
+
+extra_env=(GH_TOKEN=caller)
+run_shim "$tmpdir/norepo" pr view https://github.com/otherorg/x/pull/1
+expect "a caller-set GH_TOKEN is used as-is without stopping" \
+  "real-gh GH_TOKEN=caller GH_REPO= pr view https://github.com/otherorg/x/pull/1" \
+  '"code":"gh_account_deferred"'
+extra_env=(GITHUB_TOKEN=caller)
+run_shim "$tmpdir/norepo" api user
+expect "a caller-set GITHUB_TOKEN is used as-is" \
+  "real-gh GH_TOKEN= GH_REPO= api user" '"code":"gh_account_deferred"'
 extra_env=()
-run_shim "$repo" pr view https://acme.ghe.com/ddoghq/repo/pull/1
-check_source "a PR URL on another host picks no github.com account" '' \
-  "targets 'acme.ghe.com', not github.com"
-run_shim "$tmpdir/norepo" api -R ddoghq --hostname github.com user
-check_source "--hostname github.com still selects" tok-acct-ddoghq \
-  "for 'ddoghq'"
 
-run_shim "$tmpdir/norepo" pr view 1 --repo github.com/ddoghq/dd-source
-check_source "--repo github.com/OWNER/REPO still counts" tok-acct-ddoghq \
-  "for 'ddoghq'"
+for args in "auth status" "--version" "help" "config get editor" "alias list" "extension list" "completion -s bash" "__complete pr view" "__completeNoDesc repo"
+do
+  read -ra argv <<< "$args"
+  run_shim "$tmpdir/norepo" "${argv[@]}"
+  run_test
+  if (( rc == 0 )) && [[ $out == "real-gh GH_TOKEN= GH_REPO= $args" && -z $err ]]
+  then
+    pass "'gh $args' selects nothing and says nothing"
+  else
+    fail "'gh $args' should pass through silently; rc=$rc out='$out' err='$err'"
+  fi
+done
 
-run_shim "$tmpdir/norepo" pr view 1 --repo unmapped/repo
-check_source "an unmapped owner runs as the active account" '' \
-  "No gh account is configured for 'unmapped' (from --repo 'unmapped/repo')"
-
+run_shim "$tmpdir/norepo" -R unmapped/repo pr list
+expect "an unmapped owner runs as the active account" \
+  "real-gh GH_TOKEN= GH_REPO=unmapped/repo pr list" \
+  "No gh account is configured for 'unmapped' (from -R 'unmapped/repo')"
+run_shim "$tmpdir/norepo" -R DDOGHQ/dd-source pr list
+expect "account mapping ignores case" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=DDOGHQ/dd-source pr list" "Using gh account 'acct-ddoghq' for 'DDOGHQ'"
+map emuorg emu_user
+run_shim "$tmpdir/norepo" -R emu_user/fork pr list
+expect "an owner that is itself a configured account uses that account" \
+  "real-gh GH_TOKEN=tok-emu_user GH_REPO=emu_user/fork pr list" "Using gh account 'emu_user' for 'emu_user'"
 map brokenorg broken
-run_shim "$tmpdir/norepo" pr view 1 --repo brokenorg/repo
+run_shim "$tmpdir/norepo" -R brokenorg/repo pr list
 run_test
 if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_account_token_unavailable"'* ]]
 then
-  pass "a token failure for a mapped account stops the call"
+  pass "a mapped account without a token stops the call"
 else
   fail "token failure should stop the call; rc=$rc out='$out' err='$err'"
 fi
 
-for args in "auth status" "--version" "help" "config get editor" "__complete pr view" "__completeNoDesc repo"
-do
-  read -ra argv <<< "$args"
-  run_shim "$repo" "${argv[@]}"
-  run_test
-  if [[ $out == "real-gh GH_TOKEN= GH_REPO= $args" && -z $err ]]
-  then
-    pass "'gh $args' selects nothing and says nothing"
-  else
-    fail "'gh $args' should select nothing and say nothing; out='$out' err='$err'"
-  fi
-done
-
-run_shim "$tmpdir/norepo" pr comment 1 --repo ddoghq/dd-source --body 'a  b "c"'
-run_test
-if [[ $out == "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr comment 1 --repo ddoghq/dd-source --body a  b \"c\"" ]]
-then
-  pass "argv reaches the real gh unchanged, messages stay off stdout"
-else
-  fail "argv or stdout changed: '$out'"
-fi
-
 extra_env=(MOCK_ARGV="$tmpdir/argv")
-run_shim "$tmpdir/norepo" pr comment 1 --repo ddoghq/dd-source --body 'a  b' '' 'c d'
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr comment 1 --body-file 'a  b' '' 'c d'
 extra_env=()
 run_test
-expected=$(printf '%s\0' pr comment 1 --repo ddoghq/dd-source --body 'a  b' '' 'c d' | od -c)
+expected=$(printf '%s\0' pr comment 1 --body-file 'a  b' '' 'c d' | od -c)
 if [[ $(od -c < "$tmpdir/argv") == "$expected" ]]
 then
-  pass "every argument reaches gh with its boundaries intact"
+  pass "every argument reaches gh with its boundaries intact once -R is removed"
 else
   fail "argument boundaries changed: $(od -c < "$tmpdir/argv")"
-fi
-
-extra_env=(MOCK_ARGV="$tmpdir/argv")
-run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}' -f 'q=a b' --jq '.x | .y'
-extra_env=()
-run_test
-expected=$(printf '%s\0' api 'repos/{owner}/{repo}' -f 'q=a b' --jq '.x | .y' | od -c)
-if [[ $(od -c < "$tmpdir/argv") == "$expected" ]]
-then
-  pass "api arguments keep their boundaries once -R is removed"
-else
-  fail "api argument boundaries changed: $(od -c < "$tmpdir/argv")"
 fi
 
 stub_home="$tmpdir/stub-home"
@@ -604,7 +357,7 @@ stub_err=$(
     env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
       HOME="$stub_home" PATH="$tmpdir/mockbin:$PATH" \
       TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
-      "$script" pr view 1 --repo $'unmapped/r"e\\po\r\x01' 2>&1 >/dev/null
+      "$script" -R $'unmapped/r"e\\po\r\x01' pr list 2>&1 >/dev/null
 )
 if [[ -n $stub_err ]] && jq -e . >/dev/null 2>&1 <<< "$stub_err"
 then

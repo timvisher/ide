@@ -597,7 +597,7 @@ fi
 
 # Test: allows 'gh api -X POST …' ONLY when timvisher_gh is an ancestor
 run_test
-result=$(run_agent_under_tgh api -X POST /repos/foo/bar/issues)
+result=$(run_agent_under_tgh -R foo/bar api -X POST /repos/foo/bar/issues)
 if [[ $result == *"real-gh api"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
 then
   pass "allows 'gh api -X POST …' under timvisher_gh ancestor"
@@ -639,7 +639,7 @@ fi
 run_test
 result=$(
   PATH="$tmpdir/mockbin:$PATH" \
-  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' api -X POST /repos/foo/bar/issues" 2>&1
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' -R foo/bar api -X POST /repos/foo/bar/issues" 2>&1
 )
 if [[ $result == *"real-gh api -X POST"* ]]
 then
@@ -677,10 +677,9 @@ check_help "help repo fork"            repo fork --help
 check_help "help repo delete"          repo delete --help
 check_help "help pr ready"             pr ready -h
 check_help "help repo ls"              repo ls --help
-check_help "help repo fork"            repo fork --help=true
 check_help "help repo fork"            repo fork -h
-check_help "help pr comment"           pr comment 1 --body hi --help
-check_help "help api"                  api graphql -X POST --help
+check_help "help pr comment 1"         pr comment 1 --body hi --help
+check_help "help api graphql"          api graphql -X POST --help
 check_help "help auth token"           auth token --help
 check_help "help repo create"          repo create --help
 check_help "help pr create"            -R o/r pr create --help
@@ -708,9 +707,9 @@ fi
 
 run_test
 result=$(run_agent pr comment 1 --body --help)
-if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+if [[ $result == "real-gh help pr comment 1" ]]
 then
-  pass "--help as the value of --body is not a help request"
+  pass "a trailing --help shows help even when it was a flag's value, so nothing is posted"
 else
   fail "pr comment 1 --body --help: got '${result}'"
 fi
