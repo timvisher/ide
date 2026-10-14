@@ -210,6 +210,56 @@ real_git=$(resolve_next_git "${BASH_SOURCE[0]}") ||
   }
 _timvisher_git__phase resolve
 
+_timvisher_git__help_sub=''
+_timvisher_git__help=''
+_timvisher_git__help_short=false
+_timvisher_git__help_after_sub=0
+_timvisher_git__help_skip_next=false
+for _timvisher_git__help_arg in "$@"
+do
+  if [[ $_timvisher_git__help_skip_next == true ]]
+  then
+    _timvisher_git__help_skip_next=false
+    continue
+  fi
+  if [[ -n $_timvisher_git__help_sub ]]
+  then
+    (( _timvisher_git__help_after_sub += 1 ))
+    _timvisher_git__help_short=false
+  fi
+  case $_timvisher_git__help_arg in
+    --)
+      break
+      ;;
+    --help)
+      _timvisher_git__help=--help
+      ;;
+    -h)
+      (( _timvisher_git__help_after_sub <= 1 )) &&
+        _timvisher_git__help_short=true
+      ;;
+    -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)
+      [[ -z $_timvisher_git__help_sub ]] &&
+        _timvisher_git__help_skip_next=true
+      ;;
+    -*)
+      ;;
+    *)
+      [[ -n $_timvisher_git__help_sub ]] ||
+        _timvisher_git__help_sub=$_timvisher_git__help_arg
+      ;;
+  esac
+done
+[[ -z $_timvisher_git__help && $_timvisher_git__help_short == true ]] &&
+  _timvisher_git__help=-h
+if [[ $_timvisher_git__help == --help ]]
+then
+  exec "$real_git" help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
+elif [[ $_timvisher_git__help == -h ]]
+then
+  exec "$real_git" ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"} -h
+fi
+
 # ---------------------------------------------------------------------------
 # Selective-fetch machinery
 #

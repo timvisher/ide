@@ -1277,6 +1277,60 @@ else
   fail "wrapper rewrote a current sentinel (${rc_before} -> ${rc_after})"
 fi
 
+check_git_help() {
+  local want=$1
+  shift
+  run_test
+  result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+    bash -c "source '${funcs_dir}/logging.bash'; '$script' \"\$@\"" _ "$@" 2>&1 || true)
+  if [[ $result == *"real-git $want" && $result != *'"type":"instruction"'* ]]
+  then
+    pass "[$*] shows help as 'git $want'"
+  else
+    fail "[$*]: want 'real-git $want', got '${result}'"
+  fi
+}
+check_git_help "help push"     push --help
+check_git_help "help push"     push --force origin main --help
+check_git_help "push -h"       push -h
+check_git_help "help commit"   commit -m --help
+check_git_help "commit -h"     commit -h
+check_git_help "help worktree" worktree add --help
+check_git_help "help add"      add -f --help
+check_git_help "help commit"   -C /tmp -c a=b commit --amend --help
+check_git_help "help"          --help
+check_git_help "-h"            -h
+
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' push origin -h" 2>&1 || true)
+if [[ $result == *'"code":"git_push_blocked"'* ]]
+then
+  pass "-h that isn't the only argument isn't a help request"
+else
+  fail "push origin -h: got '${result}'"
+fi
+
+run_test
+result=$(PATH="$test_path" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' grep -h pattern" 2>&1 || true)
+if [[ $result == *"real-git grep -h pattern"* ]]
+then
+  pass "'git grep -h pattern' keeps -h as grep's flag"
+else
+  fail "grep -h pattern: got '${result}'"
+fi
+
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' add -f -- --help" 2>&1 || true)
+if [[ $result == *'"code":"git_add_force_blocked"'* ]]
+then
+  pass "--help after -- is not a help request"
+else
+  fail "add -f -- --help: got '${result}'"
+fi
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))
