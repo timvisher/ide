@@ -16,7 +16,7 @@ then
     }
 fi
 gh_shim__json_escape() {
-  local s=$1 i c
+  local s=$1 i c hex esc
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   s=${s//$'\n'/\\n}
@@ -24,9 +24,13 @@ gh_shim__json_escape() {
   s=${s//$'\r'/\\r}
   for (( i=1; i < 32; i+=1 ))
   do
-    printf -v c "\\x$(printf '%02x' "$i")"
-    [[ $s == *"$c"* ]] &&
-      s=${s//"$c"/$(printf '\\u%04x' "$i")}
+    printf -v hex '%02x' "$i"
+    printf -v c '%b' "\\x${hex}"
+    if [[ $s == *"$c"* ]]
+    then
+      printf -v esc '\\u00%s' "$hex"
+      s=${s//"$c"/$esc}
+    fi
   done
   printf '%s' "$s"
 }
@@ -91,7 +95,8 @@ gh_args__parse() {
 
   gh_args__repo_value=''
   gh_args__pre=()
-  gh_args__passthrough=false
+  gh_args__unknown_pre=''
+  gh_args__builtin=false
   gh_args__help=false
   gh_args__command=''
   gh_args__rest=()
@@ -103,7 +108,7 @@ gh_args__parse() {
       -R|--repo)
         if (( n <= i + 1 ))
         then
-          gh_args__passthrough=true
+          gh_args__unknown_pre=$a
           return
         fi
         gh_args__repo_value=${args[i+1]}
@@ -124,7 +129,7 @@ gh_args__parse() {
         gh_args__pre+=("$a")
         ;;
       -*)
-        gh_args__passthrough=true
+        gh_args__unknown_pre=$a
         return
         ;;
       *)
@@ -136,6 +141,11 @@ gh_args__parse() {
 
   gh_args__command=${args[i]-}
   gh_args__rest=("${args[@]:i+1}")
+  case $gh_args__command in
+    ''|agent-task|agent-tasks|agent|agents|alias|api|attestation|at|auth|browse|cache|co|codespace|cs|completion|config|copilot|discussion|extension|extensions|ext|exts|gist|gpg-key|help|issue|label|licenses|org|pr|preview|project|release|repo|ruleset|rs|run|search|secret|skill|skills|ssh-key|status|variable|version|workflow|__complete|__completeNoDesc)
+      gh_args__builtin=true
+      ;;
+  esac
 
   if [[ $gh_args__help == false ]] && (( 0 < n ))
   then
@@ -158,7 +168,7 @@ case $gh_args__command in
     gh_args__help=false
     ;;
 esac
-if [[ $gh_args__passthrough == false && $gh_args__help == true ]]
+if [[ -z $gh_args__unknown_pre && $gh_args__help == true && $gh_args__builtin == true ]]
 then
   gh_help__topic=()
   if [[ -n $gh_args__command ]]
@@ -363,32 +373,6 @@ gh_account__non_github_host() {
   return 0
 }
 
-gh_account__foreign_host() {
-  local a=$1 host=''
-  case $a in
-    *://*)
-      a=${a#*://}
-      host=${a%%/*}
-      host=${host##*@}
-      ;;
-    *@*:*)
-      host=${a#*@}
-      host=${host%%:*}
-      ;;
-    */*/*)
-      host=${a%%/*}
-      ;;
-  esac
-  [[ -n $host ]] ||
-    return 1
-  case $host in
-    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
-      return 1
-      ;;
-  esac
-  printf '%s\n' "$host"
-}
-
 gh_account__owner_from_repo_value() {
   local a=$1 owner
   owner=$(gh_account__owner_from_web_url "$a") ||
@@ -421,7 +405,8 @@ gh_account__repo_spec_from_repo_value() {
 
 gh_account__account_for_owner() {
   local config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
-  local want=${1,,} f org account
+  local want=${1,,} f org account found=''
+  gh_account__account=''
   for f in "${config_dir}"/orgs/*/account
   do
     [[ -r $f ]] ||
@@ -432,12 +417,22 @@ gh_account__account_for_owner() {
       continue
     account=$(< "$f")
     account=${account//[[:space:]]/}
-    if [[ -n $account ]]
+    [[ -n $account ]] ||
+      continue
+    if [[ -n $found && $found != "$account" ]]
     then
-      printf '%s\n' "$account"
-      return 0
+      aictl_die \
+        --code gh_account_mapping_ambiguous \
+        --message "More than one account mapping matches '${1}' (${found}, ${account}); config dirs under ${config_dir}/orgs differ only in case." \
+        --doc "$gh_account__doc"
     fi
+    found=$account
   done
+  if [[ -n $found ]]
+  then
+    gh_account__account=$found
+    return 0
+  fi
   for f in "${config_dir}"/orgs/*/account
   do
     [[ -r $f ]] ||
@@ -446,7 +441,7 @@ gh_account__account_for_owner() {
     account=${account//[[:space:]]/}
     if [[ -n $account && ${account,,} == "$want" ]]
     then
-      printf '%s\n' "$account"
+      gh_account__account=$account
       return 0
     fi
   done
@@ -469,108 +464,84 @@ gh_account__owner_in_api_path() {
   esac
 }
 
-gh_account__owner_in_github_url() {
-  local a=$1
-  case $a in
-    *://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
-      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
-      ;;
-    *git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:*)
-      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:}
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-  printf '%s\n' "${a%%[/?#\"\' ]*}"
-}
-
-gh_account__github_family_url() {
-  case $1 in
-    *://*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*|*://*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
-      return 0
-      ;;
-  esac
-  return 1
-}
-
 gh_account__stop() {
   aictl_die \
     --code gh_target_required \
     --message "$1" \
-    --reason "The gh shim picks an account only when the target is obvious; otherwise it asks rather than guess and risk using the wrong account." \
+    --reason "The gh shim picks an account only from -R before the subcommand, GH_REPO, or the cwd's agreeing github.com remotes; otherwise it asks rather than guess." \
     --doc "$gh_account__doc" \
     --suggestion "Name the target before the subcommand: gh -R OWNER/REPO ${gh_args__command:-<command>} ..." \
     --suggestion "For calls with no repository (gh api user, gh gist list, gh search ...): gh -R OWNER ${gh_args__command:-<command>} ..."
 }
 
-gh_account__scan_rest() {
-  local a url_owner i n=${#gh_args__rest[@]}
+gh_account__note_mismatches() {
+  local a i n=${#gh_args__rest[@]} named
+  local -a mentions=()
   for (( i=0; i < n; i+=1 ))
   do
     a=${gh_args__rest[i]}
-    [[ $a == -- ]] &&
-      break
-    case $a in
-      -R|-R*|--repo|--repo=*)
-        case $gh_args__command in
-          search|codespace|cs)
-            ;;
-          *)
-            gh_account__stop "'${a}' after the subcommand can't be read reliably; put -R before the subcommand."
-            ;;
-        esac
-        ;;
-      --hostname)
-        gh_account__non_github_host "${gh_args__rest[i+1]-}" &&
-          gh_account__foreign=${gh_args__rest[i+1]}
-        ;;
-      --hostname=*)
-        gh_account__non_github_host "${a#--hostname=}" &&
-          gh_account__foreign=${a#--hostname=}
-        ;;
-    esac
-    if url_owner=$(gh_account__owner_in_github_url "$a")
-    then
-      if [[ -z $gh_account__owner ]]
-      then
-        gh_account__stop "'${a}' names a github.com target the shim won't guess from; pass -R OWNER/REPO before the subcommand."
-      elif [[ ${url_owner,,} != "${gh_account__owner,,}" ]]
-      then
-        gh_account__stop "'${a}' names '${url_owner}', not '${gh_account__owner}' (from ${gh_account__source}); pass -R ${url_owner}/REPO before the subcommand."
-      fi
-    elif [[ $a == *://* ]] && ! gh_account__github_family_url "$a"
-    then
-      gh_account__stop "'${a}' is a URL on a host other than github.com; pass -R before the subcommand if this call targets github.com."
-    fi
-  done
-}
-
-gh_account__scan_named_owners() {
-  local a named
-  for a in ${gh_args__rest[@]+"${gh_args__rest[@]}"}
-  do
-    [[ $a == -- ]] &&
-      break
     named=''
-    case $gh_args__command in
-      api)
-        named=$(gh_account__owner_in_api_path "$a")
+    case $a in
+      -R|--repo)
+        named=$(gh_account__owner_from_repo_value "${gh_args__rest[i+1]-}")
         ;;
-      repo)
-        [[ $a =~ ^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9._-]+$ ]] &&
-          named=${a%%/*}
+      -R=*|--repo=*)
+        named=$(gh_account__owner_from_repo_value "${a#*=}")
+        ;;
+      -R?*)
+        named=$(gh_account__owner_from_repo_value "${a#-R}")
+        ;;
+      *)
+        named=$(gh_account__owner_from_web_url "$a") ||
+          { [[ $gh_args__command == api ]] && named=$(gh_account__owner_in_api_path "$a"); }
         ;;
     esac
     if [[ -n $named && ${named,,} != "${gh_account__owner,,}" ]]
     then
-      gh_account__stop "'${a}' names '${named}', not '${gh_account__owner}' (from ${gh_account__source}); pass -R ${named}/... before the subcommand."
+      mentions+=("'${a}'")
     fi
   done
+  (( ${#mentions[@]} )) ||
+    return 0
+  aictl_notice \
+    --code gh_target_mismatch \
+    --message "This call mentions ${mentions[*]}, but the account is for '${gh_account__owner}' (from ${gh_account__source}); the shim doesn't check what gh will target beyond that." \
+    --doc "$gh_account__doc" \
+    --suggestion "If the call targets another owner, name it before the subcommand: gh -R OWNER/REPO ${gh_args__command} ..."
+}
+
+gh_account__remote_host_owner() {
+  local url=$1
+  url=${url%.git}
+  case $url in
+    *://*)
+      url=${url#*://}
+      gh_account__remote_host=${url%%/*}
+      gh_account__remote_host=${gh_account__remote_host##*@}
+      gh_account__remote_host=${gh_account__remote_host%%:*}
+      url=${url#*/}
+      ;;
+    *@*:*|[A-Za-z0-9]*:*)
+      gh_account__remote_host=${url%%:*}
+      gh_account__remote_host=${gh_account__remote_host##*@}
+      url=${url#*:}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  [[ -n $gh_account__remote_host ]] ||
+    return 1
+  gh_account__non_github_host "$gh_account__remote_host" &&
+    return 1
+  [[ $url == */* ]] ||
+    return 1
+  gh_account__remote_owner=${url%%/*}
+  gh_account__valid_owner "$gh_account__remote_owner"
 }
 
 gh_account__from_remotes() {
-  local name url host owner first='' unknown=''
+  local name url value first='' unknown=''
   local -a names=()
   local -A owners=()
   mapfile -t names < <(git remote 2>/dev/null)
@@ -580,40 +551,24 @@ gh_account__from_remotes() {
   do
     url=$(git remote get-url "$name" 2>/dev/null) ||
       continue
-    url=${url%.git}
-    case $url in
-      *://*)
-        url=${url#*://}
-        host=${url%%/*}
-        host=${host##*@}
-        host=${host%%:*}
-        url=${url#*/}
-        ;;
-      *:*)
-        host=${url%%:*}
-        host=${host##*@}
-        url=${url#*:}
-        ;;
-      *)
-        unknown+=" ${name}"
-        continue
-        ;;
-    esac
-    if gh_account__non_github_host "$host"
+    if ! gh_account__remote_host_owner "$url"
     then
       unknown+=" ${name}"
       continue
     fi
-    owner=${url%%/*}
-    if [[ $url != */* ]] || ! gh_account__valid_owner "$owner"
-    then
-      unknown+=" ${name}"
-      continue
-    fi
-    owners[${owner,,}]="${owners[${owner,,}]:+${owners[${owner,,}]}, }${name}"
+    owners[${gh_account__remote_owner,,}]="${owners[${gh_account__remote_owner,,}]:+${owners[${gh_account__remote_owner,,}]}, }${name}"
     [[ -n $first ]] ||
-      first=$owner
+      first=$gh_account__remote_owner
   done
+  while read -r _ value
+  do
+    [[ $value == */* ]] ||
+      continue
+    value=${value%%/*}
+    gh_account__valid_owner "$value" ||
+      continue
+    owners[${value,,}]="${owners[${value,,}]:+${owners[${value,,}]}, }gh repo set-default"
+  done < <(git config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null)
   if [[ -n $unknown ]]
   then
     gh_account__stop "Remote(s)${unknown} aren't on github.com as far as the shim can tell, so it won't guess which repository gh will use."
@@ -633,43 +588,72 @@ gh_account__from_remotes() {
   gh_account__source="the cwd's git remotes"
 }
 
-gh_account__gh_repo_owner_differs() {
-  local owner
-  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
-    return 0
-  [[ ${owner,,} != "${gh_account__owner,,}" ]]
+gh_account__repo_value_host() {
+  local a=$1
+  case $a in
+    *://*)
+      a=${a#*://}
+      a=${a%%/*}
+      printf '%s\n' "${a##*@}"
+      ;;
+    git@*:*)
+      a=${a#git@}
+      printf '%s\n' "${a%%:*}"
+      ;;
+    */*/*)
+      printf '%s\n' "${a%%/*}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 gh_account__select() {
-  local account token spec
-
-  gh_account__argv=("$@")
-  gh_account__owner=''
-  gh_account__source=''
-  gh_account__foreign=''
-
-  [[ $gh_args__passthrough == true ]] &&
-    return 0
+  local account token spec host='' host_from=''
 
   gh_account__argv=(${gh_args__pre[@]+"${gh_args__pre[@]}"} ${gh_args__command:+"$gh_args__command"} ${gh_args__rest[@]+"${gh_args__rest[@]}"})
+  gh_account__owner=''
+  gh_account__source=''
+
+  if [[ -n $gh_args__unknown_pre ]]
+  then
+    gh_account__argv=("$@")
+    gh_account__stop "'${gh_args__unknown_pre}' before the subcommand isn't something the shim can read; put flags after the subcommand, and -R before it."
+  fi
+
+  case $gh_args__command in
+    ''|auth|config|alias|extension|extensions|ext|exts|help|completion|version|__complete|__completeNoDesc)
+      return 0
+      ;;
+  esac
+  [[ $gh_args__help == true && $gh_args__builtin == false ]] &&
+    return 0
 
   if [[ -n $gh_args__repo_value ]]
   then
-    if gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
+    if host=$(gh_account__repo_value_host "$gh_args__repo_value")
+    then
+      host_from="-R '${gh_args__repo_value}'"
+    fi
+    if [[ -n $host ]] && gh_account__non_github_host "$host"
     then
       export GH_REPO=$gh_args__repo_value
+      export GH_HOST=$host
     elif gh_account__owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
     then
       gh_account__source="-R '${gh_args__repo_value}'"
       spec=$(gh_account__repo_spec_from_repo_value "$gh_args__repo_value")
       if [[ -n $spec ]]
       then
+        [[ -n $host ]] &&
+          spec="github.com/${spec}"
         export GH_REPO=$spec
-      elif [[ -n ${GH_REPO-} ]] && gh_account__gh_repo_owner_differs
+      elif [[ -n ${GH_REPO-} ]]
       then
         aictl_notice \
           --code gh_gh_repo_dropped \
-          --message "Ignoring GH_REPO '${GH_REPO}' for this call: -R '${gh_args__repo_value}' names a different owner." \
+          --message "Ignoring GH_REPO '${GH_REPO}' for this call: -R '${gh_args__repo_value}' names only an owner." \
           --doc "$gh_account__doc"
         unset GH_REPO
       fi
@@ -678,11 +662,15 @@ gh_account__select() {
     fi
   fi
 
-  case $gh_args__command in
-    ''|auth|config|alias|extension|ext|help|completion|version|__complete|__completeNoDesc)
-      return 0
-      ;;
-  esac
+  if [[ -z $host && -n ${GH_REPO-} ]] && host=$(gh_account__repo_value_host "$GH_REPO")
+  then
+    host_from="GH_REPO '${GH_REPO}'"
+  fi
+  if [[ -z $host && -n ${GH_HOST-} ]]
+  then
+    host=$GH_HOST
+    host_from="GH_HOST '${GH_HOST}'"
+  fi
 
   if [[ -n ${GH_TOKEN-} || -n ${GITHUB_TOKEN-} ]]
   then
@@ -695,21 +683,25 @@ gh_account__select() {
     return 0
   fi
 
-  if [[ -z $gh_account__owner && -z $gh_account__foreign && $gh_args__command == api ]] &&
+  if [[ -n $host ]] && gh_account__non_github_host "$host"
+  then
+    aictl_info \
+      --code gh_account_active \
+      --message "The call targets '${host}' (from ${host_from}), not github.com; gh will run as its account for that host." \
+      --doc "$gh_account__doc"
+    return 0
+  fi
+
+  if [[ -z $gh_account__owner && $gh_args__command == api ]] &&
      gh_account__owner=$(gh_account__owner_in_api_path "${gh_args__rest[0]-}")
   then
     gh_account__source='the gh api endpoint'
   fi
 
-  gh_account__scan_rest
-
-  if [[ -z $gh_account__owner && -z $gh_account__foreign && -n ${GH_REPO-} ]]
+  if [[ -z $gh_account__owner && -n ${GH_REPO-} ]]
   then
-    if gh_account__foreign=$(gh_account__foreign_host "$GH_REPO")
-    then
-      :
-    elif [[ $GH_REPO == */* ]] &&
-         gh_account__owner=$(gh_account__owner_from_repo_value "$GH_REPO")
+    if [[ $GH_REPO == */* ]] &&
+       gh_account__owner=$(gh_account__owner_from_repo_value "$GH_REPO")
     then
       gh_account__source="GH_REPO '${GH_REPO}'"
     else
@@ -717,29 +709,17 @@ gh_account__select() {
     fi
   fi
 
-  if [[ -z $gh_account__foreign ]] && gh_account__non_github_host "${GH_HOST-}"
-  then
-    gh_account__foreign=$GH_HOST
-  fi
-
-  if [[ -n $gh_account__foreign ]]
-  then
-    aictl_info \
-      --code gh_account_active \
-      --message "The call targets '${gh_account__foreign}', not github.com; gh will run as its account for that host." \
-      --doc "$gh_account__doc"
-    return 0
-  fi
-
   if [[ -z $gh_account__owner ]] && ! gh_account__from_remotes
   then
-    gh_account__stop "No obvious target for 'gh ${gh_args__command}': no -R before the subcommand, no GH_REPO, and no github.com remote in the cwd."
+    gh_account__stop "No target for 'gh ${gh_args__command}': no -R before the subcommand, no GH_REPO, and no github.com remote in the cwd."
   fi
 
-  gh_account__scan_named_owners
+  gh_account__note_mismatches
 
-  if ! account=$(gh_account__account_for_owner "$gh_account__owner")
+  if gh_account__account_for_owner "$gh_account__owner"
   then
+    account=$gh_account__account
+  else
     aictl_info \
       --code gh_account_active \
       --message "No gh account is configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \

@@ -33,7 +33,7 @@ if [[ -n ${MOCK_ARGV-} ]]
 then
   printf '%s\0' "$@" > "$MOCK_ARGV"
 fi
-echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
+echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-}${GH_HOST:+ GH_HOST=$GH_HOST} $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/gh"
 cat > "$tmpdir/mockbin/brew" <<MOCK
@@ -87,6 +87,28 @@ expect_stop() {
   fi
 }
 
+expect_notice() {
+  local label=$1 want_out=$2 want_err=$3
+  run_test
+  if (( rc == 0 )) && [[ $out == "$want_out" && $err == *'"code":"gh_target_mismatch"'* && $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; expected gh_target_mismatch and the call to run; rc=$rc out='$out' err='$err'"
+  fi
+}
+
+expect_no_notice() {
+  local label=$1 want_out=$2
+  run_test
+  if (( rc == 0 )) && [[ $out == "$want_out" && $err != *gh_target_mismatch* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; rc=$rc out='$out' err='$err'"
+  fi
+}
+
 new_repo() {
   local dir=$1
   shift
@@ -124,8 +146,8 @@ expect "-R after another root flag still counts" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source --version pr list" ""
 
 run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source pr list
-expect "-R with a github.com URL sets GH_REPO to OWNER/REPO" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" ""
+expect "-R with a github.com URL keeps github.com in GH_REPO" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=github.com/ddoghq/dd-source pr list" ""
 
 run_shim "$tmpdir/norepo" -R tim-visher_ddog/x pr list
 expect "-R accepts an EMU owner with an underscore" \
@@ -140,44 +162,35 @@ run_shim "$tmpdir/norepo" -R otherorg api user
 expect "-R OWNER works for gh api with no owner in the endpoint" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" ""
 
-run_shim "$tmpdir/norepo" --web -R ddoghq/dd-source pr view
-expect "a pre-subcommand flag gh doesn't have passes the call through untouched" \
-  "real-gh GH_TOKEN= GH_REPO= --web -R ddoghq/dd-source pr view" ""
-run_test
-if [[ -z $err ]]
-then
-  pass "pass-through prints nothing"
-else
-  fail "pass-through printed: '$err'"
-fi
-
-run_shim "$tmpdir/norepo" pr view 5 --repo ddoghq/dd-source
-expect_stop "--repo after the subcommand stops" "put -R before the subcommand"
-run_shim "$tmpdir/norepo" pr view 5 -R ddoghq/dd-source
-expect_stop "-R after the subcommand stops"
-run_shim "$tmpdir/norepo" pr comment 1 --body -R
-expect_stop "a flag value that looks like -R stops rather than guess"
-
-run_shim "$tmpdir/norepo" -R ddoghq search issues --repo otherorg/x bug
-expect "search keeps its own --repo filter; the account comes from -R" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= search issues --repo otherorg/x bug" ""
+run_shim "$tmpdir/norepo" --json=title -R ddoghq/dd-source pr view 1
+expect_stop "any other flag before the subcommand stops" "put flags after the subcommand"
+run_shim "$tmpdir/norepo" -R
+expect_stop "-R with no value stops"
 
 run_shim "$tmpdir/norepo" pr view https://github.com/ddoghq/dd-source/pull/1
-expect_stop "a github.com URL without -R stops" "won't guess"
-run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
-expect "a github.com URL agreeing with -R is fine" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1" ""
-run_shim "$tmpdir/norepo" -R DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
-expect "URL agreement ignores case" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1" ""
+expect_stop "with no -R, GH_REPO or remote, a URL alone doesn't pick the account" "No target"
 run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view https://github.com/otherorg/x/pull/1
-expect_stop "a github.com URL naming another owner than -R stops" "names 'otherorg', not 'ddoghq'"
-run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr comment 1 --body "see https://example.com/x"
-expect_stop "a URL on another host stops" "host other than github.com"
-
+expect_notice "a github.com URL naming another owner is noted, and the call runs" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view https://github.com/otherorg/x/pull/1" \
+  "'https://github.com/otherorg/x/pull/1'"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
+expect_no_notice "a github.com URL agreeing with the account isn't noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view https://github.com/ddoghq/dd-source/pull/1"
+run_shim "$tmpdir/norepo" -R DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1
+expect_no_notice "the comparison ignores case" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=DDOGHQ/dd-source pr view https://github.com/ddoghq/dd-source/pull/1"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view 5 --repo otherorg/x
+expect_notice "--repo after the subcommand naming another owner is noted and passed to gh" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view 5 --repo otherorg/x" "'--repo'"
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr comment 1 --body "see https://example.com/x and https://github.com/settings/tokens"
+expect_no_notice "other hosts and github.com's own pages aren't noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr comment 1 --body see https://example.com/x and https://github.com/settings/tokens"
 run_shim "$tmpdir/norepo" -R ddoghq gist edit https://gist.github.com/someone/abc123 plan.txt
-expect "a gist.github.com URL neither names an owner nor stops" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= gist edit https://gist.github.com/someone/abc123 plan.txt" ""
+expect_no_notice "a gist URL isn't noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= gist edit https://gist.github.com/someone/abc123 plan.txt"
+run_shim "$tmpdir/norepo" -R ddoghq search issues --repo otherorg/x bug
+expect_notice "search's own --repo naming another owner is only noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= search issues --repo otherorg/x bug" ""
 
 run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/pulls
 expect "a gh api endpoint right after api names the owner" \
@@ -187,14 +200,12 @@ run_shim "$tmpdir/norepo" api /orgs/otherorg/teams
 expect "an orgs/ endpoint names the owner" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api /orgs/otherorg/teams" ""
 run_shim "$tmpdir/norepo" api user
-expect_stop "gh api with no owner anywhere stops" "No obvious target"
+expect_stop "gh api with no target stops" "No target"
 run_shim "$tmpdir/norepo" api graphql -f query=x
 expect_stop "gh api graphql without -R stops"
 run_shim "$tmpdir/norepo" -R ddoghq api repos/otherorg/x
-expect_stop "an api path naming another owner than -R stops" "names 'otherorg', not 'ddoghq'"
-run_shim "$tmpdir/norepo" -R ddoghq/dd-source api repos/ddoghq/dd-source/pulls/1/comments
-expect "an api path agreeing with -R is fine" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source api repos/ddoghq/dd-source/pulls/1/comments" ""
+expect_notice "an api path naming another owner than -R is noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/otherorg/x" "'repos/otherorg/x'"
 
 repo="$tmpdir/repo"
 new_repo "$repo" origin git@github.com:DataDog/dd-source.git
@@ -205,22 +216,14 @@ run_shim "$repo" api 'repos/{owner}/{repo}/pulls'
 expect "api placeholders use the agreeing remotes" \
   "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= api repos/{owner}/{repo}/pulls" ""
 run_shim "$repo" api --method PATCH /repos/otherorg/x/issues/comments/1
-expect_stop "an api path after flags naming another owner than the remotes stops" "names 'otherorg', not 'DataDog'"
-run_shim "$repo" api --method PATCH /repos/DataDog/x/issues/comments/1
-expect "an api path after flags agreeing with the remotes is fine" \
-  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= api --method PATCH /repos/DataDog/x/issues/comments/1" ""
-
-run_shim "$repo" repo view otherorg/x --json name
-expect_stop "a gh repo OWNER/REPO argument naming another owner stops" "names 'otherorg', not 'DataDog'"
-run_shim "$repo" repo view DataDog/dd-source --json name
-expect "a gh repo OWNER/REPO argument agreeing with the remotes is fine" \
-  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= repo view DataDog/dd-source --json name" ""
-run_shim "$tmpdir/norepo" -R otherorg/x repo fork otherorg/x --clone=false
-expect "a gh repo argument agreeing with -R is fine" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/x repo fork otherorg/x --clone=false" ""
+expect_notice "an api path naming another owner than the remotes is noted" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= api --method PATCH /repos/otherorg/x/issues/comments/1" "from the cwd's git remotes"
+run_shim "$repo" pr view https://github.com/otherorg/x/pull/1
+expect_notice "a URL for another owner inside a checkout is noted; the remotes still pick the account" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr view https://github.com/otherorg/x/pull/1" "gh -R OWNER/REPO pr"
 run_shim "$repo" release upload v1 dist/x.zip
-expect "an OWNER/REPO-shaped path outside gh repo isn't read as an owner" \
-  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= release upload v1 dist/x.zip" ""
+expect_no_notice "an OWNER/REPO-shaped path isn't read as an owner" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= release upload v1 dist/x.zip"
 
 git -C "$repo" remote add upstream https://github.com/datadog/dd-source.git 2>/dev/null
 run_shim "$repo" pr list
@@ -238,6 +241,21 @@ repo2="$tmpdir/repo2"
 new_repo "$repo2" origin git@github.com:ddoghq/x.git gl https://gitlab.com/g/x.git
 run_shim "$repo2" pr list
 expect_stop "a remote not on github.com stops" "aren't on github.com"
+
+repo5="$tmpdir/repo5"
+new_repo "$repo5" origin git@github.com:otherorg/fork.git
+git -C "$repo5" config remote.origin.gh-resolved DataDog/dd-source 2>/dev/null
+run_shim "$repo5" pr list
+expect_stop "gh repo set-default naming another owner than the remotes stops" "gh repo set-default"
+git -C "$repo5" config remote.origin.gh-resolved base 2>/dev/null
+run_shim "$repo5" pr list
+expect "gh repo set-default's 'base' marker agrees with its remote" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr list" ""
+
+repo6="$tmpdir/repo6"
+new_repo "$repo6" origin file:///tmp/somewhere.git
+run_shim "$repo6" pr list
+expect_stop "a file:// remote stops" "aren't on github.com"
 
 repo3="$tmpdir/repo3"
 new_repo "$repo3" origin git@ddoghq.github.com:ddoghq/x.git
@@ -257,13 +275,13 @@ run_shim "$repo" pr list
 expect "GH_REPO wins over the remotes" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" \
   '"level":"warning","code":"gh_account_selected"'
-run_shim "$tmpdir/norepo" -R otherorg api 'repos/{owner}/{repo}'
-expect "-R OWNER drops a GH_REPO for another owner" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api repos/{owner}/{repo}" \
-  '"code":"gh_gh_repo_dropped"'
-run_shim "$tmpdir/norepo" -R DDOGHQ api user
-expect "-R OWNER keeps a GH_REPO for the same owner in another case" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source api user" ""
+run_shim "$tmpdir/norepo" -R otherorg api user
+expect "-R OWNER drops GH_REPO, since it names only an owner" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" '"code":"gh_gh_repo_dropped"'
+extra_env=(GH_REPO=acme.ghe.com/ddoghq/x)
+run_shim "$tmpdir/norepo" -R ddoghq api user
+expect "-R OWNER drops a GH_REPO on another host before picking a github.com account" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api user" '"code":"gh_gh_repo_dropped"'
 extra_env=(GH_REPO=https://github.com/otherorg/x)
 run_shim "$tmpdir/norepo" pr list
 expect "a URL-valued GH_REPO names its owner" \
@@ -274,18 +292,18 @@ expect_stop "an unreadable GH_REPO stops" "Can't read an owner from GH_REPO"
 extra_env=()
 
 run_shim "$tmpdir/norepo" -R ghe.example.com/ddoghq/x pr list
-expect "-R on another host picks no github.com account" \
-  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/ddoghq/x pr list" "targets 'ghe.example.com', not github.com"
-run_shim "$tmpdir/norepo" api --hostname acme.ghe.com repos/ddoghq/x
-expect "gh api --hostname for another host picks no github.com account" \
-  "real-gh GH_TOKEN= GH_REPO= api --hostname acme.ghe.com repos/ddoghq/x" "targets 'acme.ghe.com'"
-run_shim "$tmpdir/norepo" api repos/ddoghq/x --hostname=github.com
-expect "--hostname github.com still selects" \
-  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/x --hostname=github.com" ""
+expect "-R on another host picks no github.com account and sets GH_HOST too" \
+  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/ddoghq/x GH_HOST=ghe.example.com pr list" "targets 'ghe.example.com'"
+run_shim "$tmpdir/norepo" -R ghe.example.com/ddoghq/x api user
+expect "-R on another host routes gh api there through GH_HOST" \
+  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/ddoghq/x GH_HOST=ghe.example.com api user" ""
 extra_env=(GH_HOST=acme.ghe.com)
 run_shim "$repo3" pr list
 expect "GH_HOST for another host picks no github.com account" \
-  "real-gh GH_TOKEN= GH_REPO= pr list" "targets 'acme.ghe.com'"
+  "real-gh GH_TOKEN= GH_REPO= GH_HOST=acme.ghe.com pr list" "targets 'acme.ghe.com'"
+run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source pr list
+expect "a host-qualified github.com -R wins over a foreign GH_HOST" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=github.com/ddoghq/dd-source GH_HOST=acme.ghe.com pr list" ""
 extra_env=(GH_REPO=acme.ghe.com/ddoghq/x)
 run_shim "$repo3" pr list
 expect "a GH_REPO on another host picks no github.com account" \
@@ -293,7 +311,7 @@ expect "a GH_REPO on another host picks no github.com account" \
 
 extra_env=(GH_TOKEN=caller)
 run_shim "$tmpdir/norepo" pr view https://github.com/otherorg/x/pull/1
-expect "a caller-set GH_TOKEN is used as-is without stopping" \
+expect "a caller-set GH_TOKEN is used as-is" \
   "real-gh GH_TOKEN=caller GH_REPO= pr view https://github.com/otherorg/x/pull/1" \
   '"code":"gh_account_deferred"'
 extra_env=(GITHUB_TOKEN=caller)
@@ -302,7 +320,7 @@ expect "a caller-set GITHUB_TOKEN is used as-is" \
   "real-gh GH_TOKEN= GH_REPO= api user" '"code":"gh_account_deferred"'
 extra_env=()
 
-for args in "auth status" "--version" "help" "config get editor" "alias list" "extension list" "completion -s bash" "__complete pr view" "__completeNoDesc repo"
+for args in "auth status" "--version" "help" "config get editor" "alias list" "extension list" "completion -s bash" "__complete pr view" "__completeNoDesc repo" "myalias --help"
 do
   read -ra argv <<< "$args"
   run_shim "$tmpdir/norepo" "${argv[@]}"
