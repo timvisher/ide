@@ -144,21 +144,33 @@ When interacting with GitHub (github.com), always use the `gh` CLI. This include
 
 ## Account selection
 
-`gh` on `PATH` is a shim that picks the gh account for each call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. Don't set `GH_TOKEN` or switch accounts yourself; name the target and let the shim choose.
+`gh` on `PATH` is a shim that picks the gh account for each call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. It picks an account only when the target is obvious, and otherwise stops and asks you to name it. Don't set `GH_TOKEN` or switch accounts yourself.
 
-It finds the target org in this order:
+**Name the target with `-R` before the subcommand:** `gh -R OWNER/REPO pr view 5`, `gh -R OWNER gist list`, `gh -R OWNER api user`. `-R VALUE`, `-RVALUE`, `-R=VALUE`, `--repo VALUE` and `--repo=VALUE` all work, in any order with `--help`/`--version`. The shim removes it and sets `GH_REPO` from an `OWNER/REPO` value, so it works for every command, including ones gh gives no `-R` (`api`, `gist`, `search`, ...).
 
-1. For `gh api`: `-R OWNER` or `-R OWNER/REPO`, then the endpoint (`repos/OWNER/...`, `orgs/OWNER`, `users/OWNER`).
-2. Otherwise: a github.com URL given as the target of a `gh pr`, `gh issue` or `gh repo` command, or the repository argument of `gh repo` (`gh pr view <url>`, `gh repo view OWNER/REPO`); then `--org` for `gh secret`, `variable`, `ruleset`, `status` and `codespace`; then `--repo`/`-R`; then `--owner` for `gh search` and `gh project`.
-3. `GH_REPO`, then the cwd's github.com remotes the way gh picks its base repo: `gh repo set-default`'s choice (for the commands gh applies it to: `pr`, `issue`, `repo`, `release`, `run`, `workflow`, `label`, `cache`, `ruleset`, `browse`), then `upstream`, `github`, `origin`, then any other remote. Remote URLs are read after `url.*.insteadOf` rewriting, and SSH host aliases count when `ssh -G` resolves them to github.com.
+The obvious targets, in order:
 
-It then uses the account configured for that org in `timvisher_gh.config/orgs/<owner>/account`, matching owners without regard to case. An owner with no mapping that is itself one of the configured accounts (a user's own namespace) uses that account. Otherwise gh's active account is used. A call aimed at another host (`--hostname`, `GH_HOST`, or a `-R`, `--repo`, `GH_REPO` or URL naming that host) keeps gh's own account for it; `gh api -R HOST/OWNER/REPO` also gets `--hostname HOST`.
+1. `-R`/`--repo` before the subcommand.
+2. For `gh api`, an endpoint right after `api` that starts with `repos/OWNER/`, `orgs/OWNER` or `users/OWNER`.
+3. `GH_REPO` (`[HOST/]OWNER/REPO`).
+4. The cwd's git remotes, when they're all on github.com and all name the same owner.
 
-- **`gh api` needs `-R`** unless its endpoint names the owner or it uses `{owner}`/`{repo}` placeholders (in the endpoint or a `-f`/`-F` value): `gh api -R OWNER user`. GraphQL, `user`, `search/...` and similar endpoints fail with `gh_api_owner_required` without it. The shim removes `-R` before running gh, and `-R OWNER/REPO` also sets `GH_REPO` for placeholders. The agent guard blocks `-f`/`-F`, so agents can't run GraphQL queries this way.
-- **Calls that select an account print one account-selection instruction** (plus any notices, such as a dropped `GH_REPO`) saying which account and why: `gh_account_selected` or `gh_account_active` (no target org, or no account for it). `gh auth`, `config`, `alias`, `completion`, `version`, shell completion (`__complete`) and help requests are left alone and print nothing. The line goes to stderr for every operator, not only agents.
-- **A mapped account without a token stops the call** with `gh_account_token_unavailable` instead of running as a different account.
-- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins.** The shim uses it as-is and says so with `gh_account_deferred`; a caller-set `GH_REPO` also satisfies `gh api` without `-R`.
-- **`--help` works for every command** and runs `gh help <command>` without running anything. `-h` does too, except where it takes a value (`gh auth ... -h HOST`, `gh repo create -h URL`). An extension's help shows gh's generic entry for it, not the extension's own usage.
+It then uses the account configured for that owner in `timvisher_gh.config/orgs/<owner>/account` (owners match without regard to case; an owner that is itself a configured account uses that account), or gh's active account if there's no mapping. A target on another host (`-R`, `GH_REPO`, `GH_HOST` or `--hostname` naming it) keeps gh's own account for that host.
+
+**It stops with `gh_target_required`** when there's no obvious target, or when something after the subcommand might name a different one:
+
+- `-R`/`--repo` after the subcommand (except `gh search`'s and `gh codespace`'s own `--repo`);
+- a github.com URL whose owner isn't the one picked (a URL with no `-R` at all counts), or any URL on another host;
+- for `gh api`, a `repos/`, `orgs/` or `users/` path naming a different owner; for `gh repo`, an `OWNER/REPO` argument naming a different owner;
+- remotes naming different owners, or a remote the shim can't place on github.com.
+
+These checks match loosely on purpose: a false match (say, a URL inside `--body`) costs a stop, never a wrong account. Fix any stop by putting `-R` before the subcommand.
+
+- **Calls that select an account print one account-selection instruction** (`gh_account_selected` or `gh_account_active`, plus any notices) to stderr, for every operator. `gh auth`, `config`, `alias`, `extension`, `help`, `completion` and `version` pass straight through.
+- **A mapped account without a token stops the call** with `gh_account_token_unavailable`.
+- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins**, with a `gh_account_deferred` notice.
+- **Help:** `-h`/`--help` as the last argument (or before the subcommand) runs `gh help <command> ...` and nothing else, even if it was really a flag's value.
+- **The agent guard blocks `-f`/`-F`**, so agents can't run GraphQL queries through `gh api`.
 
 ## Notes
 - **No hard line breaks in paragraphs.** Write each paragraph as a single long line. Let the renderer or editor handle wrapping. Only use line breaks for list items, headings, code blocks, and between paragraphs (blank lines).
