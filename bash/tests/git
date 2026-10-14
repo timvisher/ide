@@ -1301,6 +1301,9 @@ check_git_help "--no-pager help push"      --no-pager push --help
 check_git_help "-C /tmp push -h"           -C /tmp push -h
 check_git_help "help"          --help
 check_git_help "-h"            -h
+check_git_help "-h"            -h cleanup
+check_git_help "-C /tmp -h"    -C /tmp -h push origin
+check_git_help "-C /tmp help push" -C /tmp --help push
 
 run_test
 result=$(TIMVISHER_AGENT=true PATH="$test_path" \

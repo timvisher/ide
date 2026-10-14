@@ -217,12 +217,14 @@ _timvisher_git__help_after_sub=0
 _timvisher_git__help_skip_next=false
 _timvisher_git__help_prev=''
 _timvisher_git__help_globals=()
+_timvisher_git__help_global_short=false
 for _timvisher_git__help_arg in "$@"
 do
   if [[ $_timvisher_git__help_skip_next == true ]]
   then
     _timvisher_git__help_skip_next=false
     _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
+    _timvisher_git__help_prev=''
     continue
   fi
   if [[ -n $_timvisher_git__help_sub ]]
@@ -235,17 +237,27 @@ do
       break
       ;;
     --help)
-      case $_timvisher_git__help_prev in
-        -e|--regexp|--grep|--author|--committer|-m|--message|-S|-G|-F|--file|-C|-c|--format|--pretty|-O|--exec|-x)
-          ;;
-        *)
-          _timvisher_git__help=--help
-          ;;
-      esac
+      if [[ -z $_timvisher_git__help_sub ]]
+      then
+        _timvisher_git__help=--help
+      else
+        case $_timvisher_git__help_prev in
+          -e|--regexp|--grep|--author|--committer|-m|--message|-S|-G|-F|--file|-C|-c|--format|--pretty|-O|--exec|-x)
+            ;;
+          *)
+            _timvisher_git__help=--help
+            ;;
+        esac
+      fi
       ;;
     -h)
-      (( _timvisher_git__help_after_sub <= 1 )) &&
+      if [[ -z $_timvisher_git__help_sub ]]
+      then
+        _timvisher_git__help_global_short=true
+      elif (( _timvisher_git__help_after_sub <= 1 ))
+      then
         _timvisher_git__help_short=true
+      fi
       ;;
     -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)
       if [[ -z $_timvisher_git__help_sub ]]
@@ -267,6 +279,10 @@ do
 done
 [[ -z $_timvisher_git__help && $_timvisher_git__help_short == true ]] &&
   _timvisher_git__help=-h
+if [[ -z $_timvisher_git__help && $_timvisher_git__help_global_short == true ]]
+then
+  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} -h
+fi
 if [[ $_timvisher_git__help == --help ]]
 then
   exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
