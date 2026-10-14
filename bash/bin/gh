@@ -1763,9 +1763,15 @@ gh_account__from_remotes() {
 
 gh_account__account_for_owner() {
   local config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
-  local f="${config_dir}/orgs/${1}/account" account
-  if [[ -r $f ]]
-  then
+  local want=${1,,} f org account
+  for f in "${config_dir}"/orgs/*/account
+  do
+    [[ -r $f ]] ||
+      continue
+    org=${f%/account}
+    org=${org##*/}
+    [[ ${org,,} == "$want" ]] ||
+      continue
     account=$(< "$f")
     account=${account//[[:space:]]/}
     if [[ -n $account ]]
@@ -1773,14 +1779,14 @@ gh_account__account_for_owner() {
       printf '%s\n' "$account"
       return 0
     fi
-  fi
+  done
   for f in "${config_dir}"/orgs/*/account
   do
     [[ -r $f ]] ||
       continue
     account=$(< "$f")
     account=${account//[[:space:]]/}
-    if [[ $account == "$1" ]]
+    if [[ -n $account && ${account,,} == "$want" ]]
     then
       printf '%s\n' "$account"
       return 0
