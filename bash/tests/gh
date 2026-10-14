@@ -683,6 +683,16 @@ check_help "help pr create"            -R o/r pr create --help
 check_help "help"                      --help
 
 run_test
+help_out=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' repo fork --help" 2>"$tmpdir/help_err") && help_rc=0 || help_rc=$?
+if (( help_rc == 0 )) && [[ $help_out == "real-gh help repo fork" && ! -s $tmpdir/help_err ]]
+then
+  pass "help goes to stdout with gh's exit status and nothing on stderr"
+else
+  fail "help streams: rc=${help_rc} out='${help_out}' err='$(cat "$tmpdir/help_err")'"
+fi
+
+run_test
 result=$(run_agent pr comment 1 --body --help)
 if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
 then

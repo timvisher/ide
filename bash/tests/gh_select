@@ -29,6 +29,10 @@ then
   echo "tok-${user}"
   exit 0
 fi
+if [[ -n ${MOCK_ARGV-} ]]
+then
+  printf '%s\0' "$@" > "$MOCK_ARGV"
+fi
 echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/gh"
@@ -427,6 +431,30 @@ then
   pass "argv reaches the real gh unchanged, messages stay off stdout"
 else
   fail "argv or stdout changed: '$out'"
+fi
+
+extra_env=(MOCK_ARGV="$tmpdir/argv")
+run_shim "$tmpdir/norepo" pr comment 1 --repo ddoghq/dd-source --body 'a  b' '' 'c d'
+extra_env=()
+run_test
+expected=$(printf '%s\0' pr comment 1 --repo ddoghq/dd-source --body 'a  b' '' 'c d' | od -c)
+if [[ $(od -c < "$tmpdir/argv") == "$expected" ]]
+then
+  pass "every argument reaches gh with its boundaries intact"
+else
+  fail "argument boundaries changed: $(od -c < "$tmpdir/argv")"
+fi
+
+extra_env=(MOCK_ARGV="$tmpdir/argv")
+run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}' -f 'q=a b' --jq '.x | .y'
+extra_env=()
+run_test
+expected=$(printf '%s\0' api 'repos/{owner}/{repo}' -f 'q=a b' --jq '.x | .y' | od -c)
+if [[ $(od -c < "$tmpdir/argv") == "$expected" ]]
+then
+  pass "api arguments keep their boundaries once -R is removed"
+else
+  fail "api argument boundaries changed: $(od -c < "$tmpdir/argv")"
 fi
 
 stub_home="$tmpdir/stub-home"
