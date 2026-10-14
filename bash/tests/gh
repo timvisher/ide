@@ -674,6 +674,9 @@ check_help() {
   fi
 }
 check_help "help repo fork"            repo fork --help
+check_help "help repo delete"          repo delete --help
+check_help "help pr ready"             pr ready -h
+check_help "help repo ls"              repo ls --help
 check_help "help repo fork"            repo fork -h
 check_help "help pr comment"           pr comment 1 --body hi --help
 check_help "help api"                  api graphql -X POST --help

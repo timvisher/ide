@@ -114,6 +114,17 @@ check_owner "otherorg" search issues --owner=otherorg bug
 check_owner "otherorg" project list --owner otherorg
 check_owner "-"       project list --owner @me
 check_owner "-"       pr list --owner otherorg
+check_owner "ddoghq"  pr ready https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr update-branch https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  issue pin https://github.com/ddoghq/dd-source/issues/1
+check_owner "ddoghq"  repo delete ddoghq/dd-source --yes
+check_owner "ddoghq"  repo archive ddoghq/dd-source
+check_owner "otherorg" repo ls otherorg
+check_owner "ddoghq"  repo new ddoghq/new-repo --private
+check_owner "ddoghq"  pr --json title view https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr view 1 -R=ddoghq/dd-source
+check_owner "ddoghq"  cache delete --all --succeed-on-no-caches -R ddoghq/dd-source
+check_owner "ddoghq"  browse -c -R ddoghq/dd-source
 check_owner "ddoghq"  pr merge --squash https://github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr checkout --force https://github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr diff --patch https://github.com/ddoghq/dd-source/pull/1
@@ -248,6 +259,14 @@ check_api "api keeps -R inside a flag value" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api graphql -f x=-R -f -R" \
   "for 'otherorg'" \
   api -R otherorg graphql -f x=-R -f -R
+check_api "api -iR OWNER keeps -i" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api -i user" \
+  "for 'otherorg'" \
+  api -iR otherorg user
+check_api "api -R=OWNER" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" \
+  "for 'otherorg'" \
+  api -R=otherorg user
 check_api "a non-api --repo is passed through to gh" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr view 1 --repo otherorg/repo" \
   "for 'otherorg'" \

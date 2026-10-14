@@ -80,6 +80,15 @@ fi
 
 gh_args__value_flags() {
   case $1 in
+    'agent create')
+      printf '%s\n' -b --base -a --custom-agent -F --from-file
+      ;;
+    'agent list')
+      printf '%s\n' -q --jq --json -L --limit -t --template
+      ;;
+    'agent view')
+      printf '%s\n' -q --jq --json -t --template
+      ;;
     'agent-task create')
       printf '%s\n' -b --base -a --custom-agent -F --from-file
       ;;
@@ -89,8 +98,68 @@ gh_args__value_flags() {
     'agent-task view')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'agent-task')
+      :
+      ;;
+    'agent-tasks create')
+      printf '%s\n' -b --base -a --custom-agent -F --from-file
+      ;;
+    'agent-tasks list')
+      printf '%s\n' -q --jq --json -L --limit -t --template
+      ;;
+    'agent-tasks view')
+      printf '%s\n' -q --jq --json -t --template
+      ;;
+    'agent-tasks')
+      :
+      ;;
+    'agent')
+      :
+      ;;
+    'agents create')
+      printf '%s\n' -b --base -a --custom-agent -F --from-file
+      ;;
+    'agents list')
+      printf '%s\n' -q --jq --json -L --limit -t --template
+      ;;
+    'agents view')
+      printf '%s\n' -q --jq --json -t --template
+      ;;
+    'agents')
+      :
+      ;;
+    'alias delete')
+      :
+      ;;
+    'alias import')
+      :
+      ;;
+    'alias list')
+      :
+      ;;
+    'alias ls')
+      :
+      ;;
+    'alias set')
+      :
+      ;;
+    'alias')
+      :
+      ;;
     'api')
       printf '%s\n' --cache -F --field -H --header --hostname --input -q --jq -X --method -p --preview -f --raw-field -t --template
+      ;;
+    'at download')
+      printf '%s\n' -d --digest-alg --hostname -L --limit -o --owner --predicate-type -R --repo
+      ;;
+    'at trusted-root')
+      printf '%s\n' --hostname --tuf-root --tuf-url
+      ;;
+    'at verify')
+      printf '%s\n' -b --bundle --cert-identity -i --cert-identity-regex --cert-oidc-issuer --custom-trusted-root -d --digest-alg --format --hostname -q --jq -L --limit -o --owner --predicate-type -R --repo --signer-digest --signer-repo --signer-workflow --source-digest --source-ref -t --template
+      ;;
+    'at')
+      :
       ;;
     'attestation download')
       printf '%s\n' -d --digest-alg --hostname -L --limit -o --owner --predicate-type -R --repo
@@ -100,6 +169,9 @@ gh_args__value_flags() {
       ;;
     'attestation verify')
       printf '%s\n' -b --bundle --cert-identity -i --cert-identity-regex --cert-oidc-issuer --custom-trusted-root -d --digest-alg --format --hostname -q --jq -L --limit -o --owner --predicate-type -R --repo --signer-digest --signer-repo --signer-workflow --source-digest --source-ref -t --template
+      ;;
+    'attestation')
+      :
       ;;
     'auth login')
       printf '%s\n' -p --git-protocol -h --hostname -s --scopes
@@ -111,7 +183,7 @@ gh_args__value_flags() {
       printf '%s\n' -h --hostname -r --remove-scopes -s --scopes
       ;;
     'auth setup-git')
-      printf '%s\n' -f --force -h --hostname
+      printf '%s\n' -h --hostname
       ;;
     'auth status')
       printf '%s\n' -h --hostname --jq --json --template
@@ -122,14 +194,26 @@ gh_args__value_flags() {
     'auth token')
       printf '%s\n' -h --hostname -u --user
       ;;
+    'auth')
+      :
+      ;;
     'browse')
-      printf '%s\n' -b --branch -c --commit
+      printf '%s\n' -b --branch
       ;;
     'cache delete')
-      printf '%s\n' -r --ref --succeed-on-no-caches
+      printf '%s\n' -r --ref
       ;;
     'cache list')
       printf '%s\n' -q --jq --json -k --key -L --limit -O --order -r --ref -S --sort -t --template
+      ;;
+    'cache ls')
+      printf '%s\n' -q --jq --json -k --key -L --limit -O --order -r --ref -S --sort -t --template
+      ;;
+    'cache')
+      :
+      ;;
+    'co')
+      :
       ;;
     'codespace code')
       printf '%s\n' -c --codespace -R --repo --repo-owner
@@ -155,6 +239,15 @@ gh_args__value_flags() {
     'codespace logs')
       printf '%s\n' -c --codespace -R --repo --repo-owner
       ;;
+    'codespace ls')
+      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
+      ;;
+    'codespace ports forward')
+      :
+      ;;
+    'codespace ports visibility')
+      :
+      ;;
     'codespace ports')
       printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
@@ -170,8 +263,14 @@ gh_args__value_flags() {
     'codespace view')
       printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
+    'codespace')
+      :
+      ;;
     'completion')
       printf '%s\n' -s --shell
+      ;;
+    'config clear-cache')
+      :
       ;;
     'config get')
       printf '%s\n' -h --host
@@ -179,8 +278,68 @@ gh_args__value_flags() {
     'config list')
       printf '%s\n' -h --host
       ;;
+    'config ls')
+      printf '%s\n' -h --host
+      ;;
     'config set')
       printf '%s\n' -h --host
+      ;;
+    'config')
+      :
+      ;;
+    'copilot')
+      :
+      ;;
+    'cs code')
+      printf '%s\n' -c --codespace -R --repo --repo-owner
+      ;;
+    'cs cp')
+      printf '%s\n' -c --codespace -p --profile -R --repo --repo-owner
+      ;;
+    'cs create')
+      printf '%s\n' -b --branch --devcontainer-path -d --display-name --idle-timeout -l --location -m --machine -R --repo --retention-period
+      ;;
+    'cs delete')
+      printf '%s\n' -c --codespace --days -o --org -R --repo --repo-owner -u --user
+      ;;
+    'cs edit')
+      printf '%s\n' -c --codespace -d --display-name -m --machine -R --repo --repo-owner
+      ;;
+    'cs jupyter')
+      printf '%s\n' -c --codespace -R --repo --repo-owner
+      ;;
+    'cs list')
+      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
+      ;;
+    'cs logs')
+      printf '%s\n' -c --codespace -R --repo --repo-owner
+      ;;
+    'cs ls')
+      printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
+      ;;
+    'cs ports forward')
+      :
+      ;;
+    'cs ports visibility')
+      :
+      ;;
+    'cs ports')
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
+      ;;
+    'cs rebuild')
+      printf '%s\n' -c --codespace -R --repo --repo-owner
+      ;;
+    'cs ssh')
+      printf '%s\n' -c --codespace --debug-file --profile -R --repo --repo-owner --server-port
+      ;;
+    'cs stop')
+      printf '%s\n' -c --codespace -o --org -R --repo --repo-owner -u --user
+      ;;
+    'cs view')
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
+      ;;
+    'cs')
+      :
       ;;
     'discussion comment')
       printf '%s\n' -b --body -F --body-file
@@ -194,20 +353,122 @@ gh_args__value_flags() {
     'discussion list')
       printf '%s\n' --after -A --author -c --category -q --jq --json -l --label -L --limit --order -S --search --sort -s --state -t --template
       ;;
+    'discussion ls')
+      printf '%s\n' --after -A --author -c --category -q --jq --json -l --label -L --limit --order -S --search --sort -s --state -t --template
+      ;;
     'discussion view')
       printf '%s\n' --after -q --jq --json -L --limit --order -t --template
+      ;;
+    'discussion')
+      :
+      ;;
+    'ext browse')
+      :
+      ;;
+    'ext create')
+      printf '%s\n' --precompiled
+      ;;
+    'ext exec')
+      :
+      ;;
+    'ext install')
+      printf '%s\n' --pin
+      ;;
+    'ext list')
+      :
+      ;;
+    'ext ls')
+      :
+      ;;
+    'ext remove')
+      :
+      ;;
+    'ext search')
+      printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
+      ;;
+    'ext uninstall')
+      :
+      ;;
+    'ext upgrade')
+      :
+      ;;
+    'ext')
+      :
+      ;;
+    'extension browse')
+      :
       ;;
     'extension create')
       printf '%s\n' --precompiled
       ;;
+    'extension exec')
+      :
+      ;;
     'extension install')
       printf '%s\n' --pin
+      ;;
+    'extension list')
+      :
+      ;;
+    'extension ls')
+      :
+      ;;
+    'extension remove')
+      :
       ;;
     'extension search')
       printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
       ;;
+    'extension uninstall')
+      :
+      ;;
+    'extension upgrade')
+      :
+      ;;
+    'extension')
+      :
+      ;;
+    'extensions browse')
+      :
+      ;;
+    'extensions create')
+      printf '%s\n' --precompiled
+      ;;
+    'extensions exec')
+      :
+      ;;
+    'extensions install')
+      printf '%s\n' --pin
+      ;;
+    'extensions list')
+      :
+      ;;
+    'extensions ls')
+      :
+      ;;
+    'extensions remove')
+      :
+      ;;
+    'extensions search')
+      printf '%s\n' -q --jq --json --license -L --limit --order --owner --sort -t --template
+      ;;
+    'extensions uninstall')
+      :
+      ;;
+    'extensions upgrade')
+      :
+      ;;
+    'extensions')
+      :
+      ;;
+    'gist clone')
+      :
+      ;;
     'gist create')
       printf '%s\n' -d --desc -f --filename
+      ;;
+    'gist delete')
+      :
       ;;
     'gist edit')
       printf '%s\n' -a --add -d --desc -f --filename -r --remove
@@ -215,11 +476,35 @@ gh_args__value_flags() {
     'gist list')
       printf '%s\n' --filter -L --limit
       ;;
+    'gist ls')
+      printf '%s\n' --filter -L --limit
+      ;;
+    'gist new')
+      printf '%s\n' -d --desc -f --filename
+      ;;
+    'gist rename')
+      :
+      ;;
     'gist view')
       printf '%s\n' -f --filename
       ;;
+    'gist')
+      :
+      ;;
     'gpg-key add')
       printf '%s\n' -t --title
+      ;;
+    'gpg-key delete')
+      :
+      ;;
+    'gpg-key list')
+      :
+      ;;
+    'gpg-key ls')
+      :
+      ;;
+    'gpg-key')
+      :
       ;;
     'issue close')
       printf '%s\n' -c --comment --duplicate-of -r --reason
@@ -229,6 +514,9 @@ gh_args__value_flags() {
       ;;
     'issue create')
       printf '%s\n' -a --assignee --attach --blocked-by --blocking -b --body -F --body-file -l --label -m --milestone --parent -p --project --recover -T --template -t --title --type
+      ;;
+    'issue delete')
+      :
       ;;
     'issue develop')
       printf '%s\n' -b --base --branch-repo -n --name --worktree
@@ -242,17 +530,44 @@ gh_args__value_flags() {
     'issue lock')
       printf '%s\n' -r --reason
       ;;
+    'issue ls')
+      printf '%s\n' --app -a --assignee -A --author -q --jq --json -l --label -L --limit --mention -m --milestone -S --search -s --state -t --template --type
+      ;;
+    'issue new')
+      printf '%s\n' -a --assignee --attach --blocked-by --blocking -b --body -F --body-file -l --label -m --milestone --parent -p --project --recover -T --template -t --title --type
+      ;;
+    'issue pin')
+      :
+      ;;
     'issue reopen')
       printf '%s\n' -c --comment
       ;;
     'issue status')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'issue transfer')
+      :
+      ;;
+    'issue unlock')
+      :
+      ;;
+    'issue unpin')
+      :
+      ;;
     'issue view')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'issue')
+      :
+      ;;
+    'label clone')
+      :
+      ;;
     'label create')
       printf '%s\n' -c --color -d --description
+      ;;
+    'label delete')
+      :
       ;;
     'label edit')
       printf '%s\n' -c --color -d --description -n --name
@@ -260,8 +575,23 @@ gh_args__value_flags() {
     'label list')
       printf '%s\n' -q --jq --json -L --limit --order -S --search --sort -t --template
       ;;
+    'label ls')
+      printf '%s\n' -q --jq --json -L --limit --order -S --search --sort -t --template
+      ;;
+    'label')
+      :
+      ;;
+    'licenses')
+      :
+      ;;
     'org list')
       printf '%s\n' -L --limit
+      ;;
+    'org ls')
+      printf '%s\n' -L --limit
+      ;;
+    'org')
+      :
       ;;
     'pr checkout')
       printf '%s\n' -b --branch --worktree
@@ -271,6 +601,9 @@ gh_args__value_flags() {
       ;;
     'pr close')
       printf '%s\n' -c --comment
+      ;;
+    'pr co')
+      printf '%s\n' -b --branch --worktree
       ;;
     'pr comment')
       printf '%s\n' --attach -b --body -F --body-file
@@ -290,8 +623,17 @@ gh_args__value_flags() {
     'pr lock')
       printf '%s\n' -r --reason
       ;;
+    'pr ls')
+      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template
+      ;;
     'pr merge')
       printf '%s\n' -A --author-email -b --body -F --body-file --match-head-commit -t --subject
+      ;;
+    'pr new')
+      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title
+      ;;
+    'pr ready')
+      :
       ;;
     'pr reopen')
       printf '%s\n' -c --comment
@@ -305,11 +647,26 @@ gh_args__value_flags() {
     'pr status')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'pr unlock')
+      :
+      ;;
+    'pr update-branch')
+      :
+      ;;
     'pr view')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'pr-comment-thumbsup')
+      :
+      ;;
     'pr')
       printf '%s\n' -R --repo
+      ;;
+    'preview prompter')
+      :
+      ;;
+    'preview')
+      :
       ;;
     'project close')
       printf '%s\n' --format -q --jq --owner -t --template
@@ -348,7 +705,7 @@ gh_args__value_flags() {
       printf '%s\n' --format --id -q --jq --owner -t --template
       ;;
     'project item-edit')
-      printf '%s\n' --body --date --field --field-id --format --id --iteration-id -q --jq --number --owner --project-id --single-select-option-id -t --template --text --title --url --value
+      printf '%s\n' --body --date --field --field-id --format --id --iteration-id -q --jq --number --owner --project-id --single-select-option-id -t --template --text --title --url
       ;;
     'project item-list')
       printf '%s\n' --field --field-id --format -q --jq -L --limit --owner --query -t --template
@@ -357,6 +714,9 @@ gh_args__value_flags() {
       printf '%s\n' --owner -R --repo -T --team
       ;;
     'project list')
+      printf '%s\n' --format -q --jq -L --limit --owner -t --template
+      ;;
+    'project ls')
       printf '%s\n' --format -q --jq -L --limit --owner -t --template
       ;;
     'project mark-template')
@@ -368,8 +728,17 @@ gh_args__value_flags() {
     'project view')
       printf '%s\n' --format -q --jq --owner -t --template
       ;;
+    'project')
+      :
+      ;;
     'release create')
       printf '%s\n' --discussion-category -n --notes -F --notes-file --notes-start-tag --target -t --title
+      ;;
+    'release delete-asset')
+      :
+      ;;
+    'release delete')
+      :
       ;;
     'release download')
       printf '%s\n' -A --archive -D --dir -O --output -p --pattern
@@ -380,6 +749,15 @@ gh_args__value_flags() {
     'release list')
       printf '%s\n' -q --jq --json -L --limit -O --order -t --template
       ;;
+    'release ls')
+      printf '%s\n' -q --jq --json -L --limit -O --order -t --template
+      ;;
+    'release new')
+      printf '%s\n' --discussion-category -n --notes -F --notes-file --notes-start-tag --target -t --title
+      ;;
+    'release upload')
+      :
+      ;;
     'release verify-asset')
       printf '%s\n' --format -q --jq -t --template
       ;;
@@ -389,11 +767,32 @@ gh_args__value_flags() {
     'release view')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'release')
+      :
+      ;;
+    'repo archive')
+      :
+      ;;
+    'repo autolink create')
+      :
+      ;;
+    'repo autolink delete')
+      :
+      ;;
     'repo autolink list')
       printf '%s\n' -q --jq --json -t --template
       ;;
+    'repo autolink ls')
+      printf '%s\n' -q --jq --json -t --template
+      ;;
+    'repo autolink new')
+      :
+      ;;
     'repo autolink view')
       printf '%s\n' -q --jq --json -t --template
+      ;;
+    'repo autolink')
+      :
       ;;
     'repo clone')
       printf '%s\n' -u --upstream-remote-name
@@ -401,11 +800,23 @@ gh_args__value_flags() {
     'repo create')
       printf '%s\n' -d --description -g --gitignore -h --homepage -l --license -r --remote -s --source -t --team -p --template
       ;;
+    'repo delete')
+      :
+      ;;
     'repo deploy-key add')
       printf '%s\n' -t --title
       ;;
+    'repo deploy-key delete')
+      :
+      ;;
     'repo deploy-key list')
       printf '%s\n' -q --jq --json -t --template
+      ;;
+    'repo deploy-key ls')
+      printf '%s\n' -q --jq --json -t --template
+      ;;
+    'repo deploy-key')
+      :
       ;;
     'repo edit')
       printf '%s\n' --add-topic --default-branch -d --description -h --homepage --remove-topic --squash-merge-commit-message --visibility
@@ -413,8 +824,38 @@ gh_args__value_flags() {
     'repo fork')
       printf '%s\n' --fork-name --org --remote-name
       ;;
+    'repo gitignore list')
+      :
+      ;;
+    'repo gitignore ls')
+      :
+      ;;
+    'repo gitignore view')
+      :
+      ;;
+    'repo gitignore')
+      :
+      ;;
+    'repo license list')
+      :
+      ;;
+    'repo license ls')
+      :
+      ;;
+    'repo license view')
+      :
+      ;;
+    'repo license')
+      :
+      ;;
     'repo list')
       printf '%s\n' -q --jq --json -l --language -L --limit -t --template --topic --visibility
+      ;;
+    'repo ls')
+      printf '%s\n' -q --jq --json -l --language -L --limit -t --template --topic --visibility
+      ;;
+    'repo new')
+      printf '%s\n' -d --description -g --gitignore -h --homepage -l --license -r --remote -s --source -t --team -p --template
       ;;
     'repo read-dir')
       printf '%s\n' -q --jq --json --ref -t --template
@@ -422,22 +863,67 @@ gh_args__value_flags() {
     'repo read-file')
       printf '%s\n' -q --jq --json -o --output --ref -t --template
       ;;
+    'repo rename')
+      :
+      ;;
+    'repo set-default')
+      :
+      ;;
     'repo sync')
       printf '%s\n' -b --branch -s --source
+      ;;
+    'repo unarchive')
+      :
       ;;
     'repo view')
       printf '%s\n' -b --branch -q --jq --json -t --template
       ;;
+    'repo')
+      :
+      ;;
+    'rs check')
+      :
+      ;;
+    'rs list')
+      printf '%s\n' -L --limit -o --org
+      ;;
+    'rs ls')
+      printf '%s\n' -L --limit -o --org
+      ;;
+    'rs view')
+      printf '%s\n' -o --org
+      ;;
+    'rs')
+      :
+      ;;
+    'ruleset check')
+      :
+      ;;
     'ruleset list')
+      printf '%s\n' -L --limit -o --org
+      ;;
+    'ruleset ls')
       printf '%s\n' -L --limit -o --org
       ;;
     'ruleset view')
       printf '%s\n' -o --org
       ;;
+    'ruleset')
+      :
+      ;;
+    'run cancel')
+      :
+      ;;
+    'run delete')
+      :
+      ;;
     'run download')
       printf '%s\n' -D --dir -n --name -p --pattern
       ;;
     'run list')
+      printf '%s\n' -b --branch -c --commit --created -e --event -q --jq --json -L --limit -s --status -t --template -u --user -w --workflow
+      ;;
+    'run ls')
       printf '%s\n' -b --branch -c --commit --created -e --event -q --jq --json -L --limit -s --status -t --template -u --user -w --workflow
       ;;
     'run rerun')
@@ -448,6 +934,9 @@ gh_args__value_flags() {
       ;;
     'run watch')
       printf '%s\n' -i --interval
+      ;;
+    'run')
+      :
       ;;
     'search code')
       printf '%s\n' --extension --filename -q --jq --json --language -L --limit --match --owner -R --repo --size -t --template
@@ -464,14 +953,29 @@ gh_args__value_flags() {
     'search repos')
       printf '%s\n' --created --followers --forks --good-first-issues --help-wanted-issues --include-forks -q --jq --json --language --license -L --limit --match --number-topics --order --owner --size --sort --stars -t --template --topic --updated --visibility
       ;;
+    'search')
+      :
+      ;;
     'secret delete')
       printf '%s\n' -a --app -e --env -o --org
       ;;
     'secret list')
       printf '%s\n' -a --app -e --env -q --jq --json -o --org -t --template
       ;;
+    'secret ls')
+      printf '%s\n' -a --app -e --env -q --jq --json -o --org -t --template
+      ;;
+    'secret remove')
+      printf '%s\n' -a --app -e --env -o --org
+      ;;
     'secret set')
       printf '%s\n' -a --app -b --body -e --env -f --env-file -o --org -r --repos -v --visibility
+      ;;
+    'secret')
+      :
+      ;;
+    'skill add')
+      printf '%s\n' --agent --dir --pin --scope
       ;;
     'skill install')
       printf '%s\n' --agent --dir --pin --scope
@@ -479,17 +983,71 @@ gh_args__value_flags() {
     'skill list')
       printf '%s\n' --agent --dir -q --jq --json --scope -t --template
       ;;
+    'skill ls')
+      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
+      ;;
+    'skill preview')
+      :
+      ;;
     'skill publish')
       printf '%s\n' --tag
       ;;
     'skill search')
       printf '%s\n' -q --jq --json -L --limit --owner --page -t --template
       ;;
+    'skill show')
+      :
+      ;;
     'skill update')
       printf '%s\n' --dir
       ;;
+    'skill')
+      :
+      ;;
+    'skills add')
+      printf '%s\n' --agent --dir --pin --scope
+      ;;
+    'skills install')
+      printf '%s\n' --agent --dir --pin --scope
+      ;;
+    'skills list')
+      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
+      ;;
+    'skills ls')
+      printf '%s\n' --agent --dir -q --jq --json --scope -t --template
+      ;;
+    'skills preview')
+      :
+      ;;
+    'skills publish')
+      printf '%s\n' --tag
+      ;;
+    'skills search')
+      printf '%s\n' -q --jq --json -L --limit --owner --page -t --template
+      ;;
+    'skills show')
+      :
+      ;;
+    'skills update')
+      printf '%s\n' --dir
+      ;;
+    'skills')
+      :
+      ;;
     'ssh-key add')
       printf '%s\n' -t --title --type
+      ;;
+    'ssh-key delete')
+      :
+      ;;
+    'ssh-key list')
+      :
+      ;;
+    'ssh-key ls')
+      :
+      ;;
+    'ssh-key')
+      :
       ;;
     'status')
       printf '%s\n' -e --exclude -o --org
@@ -503,10 +1061,28 @@ gh_args__value_flags() {
     'variable list')
       printf '%s\n' -e --env -q --jq --json -o --org -t --template
       ;;
+    'variable ls')
+      printf '%s\n' -e --env -q --jq --json -o --org -t --template
+      ;;
+    'variable remove')
+      printf '%s\n' -e --env -o --org
+      ;;
     'variable set')
       printf '%s\n' -b --body -e --env -f --env-file -o --org -r --repos -v --visibility
       ;;
+    'variable')
+      :
+      ;;
+    'workflow disable')
+      :
+      ;;
+    'workflow enable')
+      :
+      ;;
     'workflow list')
+      printf '%s\n' -q --jq --json -L --limit -t --template
+      ;;
+    'workflow ls')
       printf '%s\n' -q --jq --json -L --limit -t --template
       ;;
     'workflow run')
@@ -515,16 +1091,33 @@ gh_args__value_flags() {
     'workflow view')
       printf '%s\n' -r --ref
       ;;
+    'workflow')
+      :
+      ;;
     *)
       return 1
       ;;
   esac
 }
 
+gh_args__keys=()
+gh_args__prefix_value_flags() {
+  local prefix=$1 key
+  (( ${#gh_args__keys[@]} )) ||
+    mapfile -t gh_args__keys < <(declare -f gh_args__value_flags | sed -n "s/^ *'\([^']*\)')\$/\1/p")
+  for key in "${gh_args__keys[@]}"
+  do
+    if [[ -z $prefix || $key == "$prefix" || $key == "$prefix "* ]]
+    then
+      gh_args__value_flags "$key"
+    fi
+  done
+}
+
 gh_args__parse() {
-  local a word flag rest i n key
-  local -a lead=() value_flags=()
-  local skip=false end_of_opts=false consume='' letters
+  local a word flag rest i n key letters consume='' end_of_opts=false skip=false prefix=''
+  local prefix_flags_for='-'
+  local -a lead=() value_flags=() prefix_flags=()
 
   for a in "$@"
   do
@@ -537,14 +1130,34 @@ gh_args__parse() {
       --)
         break
         ;;
-      -R|--repo|--hostname)
-        skip=true
+      --*=*)
         ;;
-      -*)
+      -?*)
+        flag=$a
+        [[ $a != --* ]] &&
+          flag=${a:0:2}
+        if [[ $flag == "$a" ]]
+        then
+          if [[ $flag == -R || $flag == --repo ]]
+          then
+            skip=true
+          else
+            if [[ $prefix_flags_for != "$prefix" ]]
+            then
+              mapfile -t prefix_flags < <(gh_args__prefix_value_flags "$prefix")
+              prefix_flags_for=$prefix
+            fi
+            gh_args__in "$flag" "${prefix_flags[@]}" &&
+              skip=true
+          fi
+        fi
         ;;
       *)
         lead+=("$a")
-        (( 3 <= ${#lead[@]} )) &&
+        prefix="${lead[*]}"
+        gh_args__value_flags "$prefix" >/dev/null ||
+          break
+        (( 4 <= ${#lead[@]} )) &&
           break
         ;;
     esac
@@ -571,27 +1184,6 @@ gh_args__parse() {
   mapfile -t value_flags < <(gh_args__value_flags "$gh_args__path")
   value_flags+=(-R --repo)
 
-  gh_args__is_value_flag() {
-    local f
-    for f in "${value_flags[@]}"
-    do
-      [[ $f == "$1" ]] &&
-        return 0
-    done
-    return 1
-  }
-
-  gh_args__record() {
-    case $1 in
-      -R|--repo)
-        gh_args__repo_value=$2
-        ;;
-      --owner)
-        gh_args__owner_value=$2
-        ;;
-    esac
-  }
-
   gh_args__positionals=()
   gh_args__without_repo=()
   gh_args__help=false
@@ -617,8 +1209,6 @@ gh_args__parse() {
     case $a in
       --)
         end_of_opts=true
-        gh_args__without_repo+=("$a")
-        continue
         ;;
       --help)
         gh_args__help=true
@@ -630,7 +1220,7 @@ gh_args__parse() {
           continue
         ;;
       --*)
-        if gh_args__is_value_flag "$a"
+        if gh_args__in "$a" "${value_flags[@]}"
         then
           consume=$a
           [[ $a == --repo ]] &&
@@ -639,13 +1229,25 @@ gh_args__parse() {
         ;;
       -?*)
         letters=${a#-}
-        rest=''
         for (( i=0; i < ${#letters}; i+=1 ))
         do
           word="-${letters:i:1}"
-          if gh_args__is_value_flag "$word"
+          if gh_args__in "$word" "${value_flags[@]}"
           then
             rest=${letters:i+1}
+            rest=${rest#=}
+            if [[ $word == -R ]]
+            then
+              (( 0 < i )) &&
+                gh_args__without_repo+=("-${letters:0:i}")
+              if [[ -n $rest ]]
+              then
+                gh_args__record -R "$rest"
+              else
+                consume=-R
+              fi
+              continue 2
+            fi
             if [[ -n $rest ]]
             then
               gh_args__record "$word" "$rest"
@@ -658,8 +1260,6 @@ gh_args__parse() {
             gh_args__help=true
           fi
         done
-        [[ ${letters:0:1} == R ]] &&
-          continue
         ;;
       *)
         gh_args__positionals+=("$a")
@@ -667,6 +1267,28 @@ gh_args__parse() {
     esac
     gh_args__without_repo+=("$a")
   done
+}
+
+gh_args__in() {
+  local needle=$1 f
+  shift
+  for f in "$@"
+  do
+    [[ $f == "$needle" ]] &&
+      return 0
+  done
+  return 1
+}
+
+gh_args__record() {
+  case $1 in
+    -R|--repo)
+      gh_args__repo_value=$2
+      ;;
+    --owner)
+      gh_args__owner_value=$2
+      ;;
+  esac
 }
 
 gh_args__parse "$@"
@@ -918,10 +1540,10 @@ gh_account__from_args() {
     if [[ $gh_account__command == repo ]]
     then
       case $gh_args__path in
-        'repo list')
+        'repo list'|'repo ls')
           owner=$selector
           ;;
-        'repo view'|'repo clone'|'repo fork'|'repo delete'|'repo archive'|'repo unarchive'|'repo edit'|'repo sync'|'repo set-default'|'repo create')
+        'repo view'|'repo clone'|'repo fork'|'repo delete'|'repo archive'|'repo unarchive'|'repo edit'|'repo sync'|'repo set-default'|'repo create'|'repo new')
           owner=''
           [[ $selector == */* ]] &&
             owner=$(gh_account__owner_from_repo_value "$selector")
