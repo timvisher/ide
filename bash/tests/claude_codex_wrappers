@@ -63,22 +63,22 @@ then
   pass "all wrappers source agents.bash"
 fi
 
-# Test 3: claude sets TIMVISHER_AGENT
+# Test 3: agents.bash, which every wrapper sources, sets TIMVISHER_AGENT
 run_test
-if grep -q 'TIMVISHER_AGENT=true' "$bin_dir/claude"
+if env -u TIMVISHER_AGENT bash -c 'source "$1" >/dev/null 2>&1; [[ -n ${TIMVISHER_AGENT-} ]]' _ "$bin_dir/../ai/agents.bash"
 then
-  pass "claude sets TIMVISHER_AGENT"
+  pass "agents.bash sets TIMVISHER_AGENT"
 else
-  fail "claude does not set TIMVISHER_AGENT"
+  fail "agents.bash does not set TIMVISHER_AGENT"
 fi
 
-# Test 4: codex sets TIMVISHER_AGENT and TIMVISHER_CODEX
+# Test 4: codex sets TIMVISHER_CODEX
 run_test
-if grep -q 'TIMVISHER_AGENT=true' "$bin_dir/codex" && grep -q 'TIMVISHER_CODEX=true' "$bin_dir/codex"
+if grep -q 'TIMVISHER_CODEX=true' "$bin_dir/codex"
 then
-  pass "codex sets TIMVISHER_AGENT and TIMVISHER_CODEX"
+  pass "codex sets TIMVISHER_CODEX"
 else
-  fail "codex missing agent env vars"
+  fail "codex does not set TIMVISHER_CODEX"
 fi
 
 # Test 5: claude uses ANTHROPIC_API_KEY with op:// fallback
