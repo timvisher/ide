@@ -372,8 +372,13 @@ check_source "an unmapped owner runs as the active account" '' \
 
 map brokenorg broken
 run_shim "$tmpdir/norepo" pr view 1 --repo brokenorg/repo
-check_source "a token failure runs as the active account" '' \
-  '"code":"gh_account_token_unavailable"'
+run_test
+if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_account_token_unavailable"'* ]]
+then
+  pass "a token failure for a mapped account stops the call"
+else
+  fail "token failure should stop the call; rc=$rc out='$out' err='$err'"
+fi
 
 for args in "auth status" "--version" "help" "config get editor"
 do

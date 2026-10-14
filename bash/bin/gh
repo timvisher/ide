@@ -1174,12 +1174,13 @@ gh_account__select() {
   if ! token=$("$gh_account__real_gh" auth token --hostname github.com --user "$account" 2>/dev/null) ||
      [[ -z $token ]]
   then
-    aictl_notice \
+    aictl_die \
       --code gh_account_token_unavailable \
-      --message "Could not get a token for gh account '${account}', configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \
+      --message "Could not get a token for gh account '${account}', configured for '${gh_account__owner}' (from ${gh_account__source}); refusing to run as a different account." \
+      --reason "Running as gh's active account instead could read or change '${gh_account__owner}' under the wrong identity." \
       --doc "$gh_account__doc" \
-      --suggestion "Authenticate it: gh auth login --hostname github.com"
-    return 0
+      --suggestion "Authenticate it: gh auth login --hostname github.com" \
+      --suggestion "Or set GH_TOKEN yourself to run this call as a specific account"
   fi
 
   export GH_TOKEN=$token
