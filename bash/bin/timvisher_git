@@ -406,13 +406,11 @@ probe_fork_parent() {
 }
 
 # Resolve the GitHub user of the gh account the gh shim picks for org $1
-# via `gh api -R ORG user`. Caches the result in gh's own response
-# cache for 24h — long enough that day-to-day
-# operations don't repeatedly hit the API, short enough that
-# re-authenticating against a different account (personal ↔ work) takes
-# effect within a day. Bust manually with `gh api -R ORG user --cache 0` or
-# `rm -rf ~/.cache/gh`. Prints login on stdout; returns non-zero if gh
-# isn't installed or auth fails.
+# via `gh api -R ORG user`. Caches the result in gh's own response cache
+# for 24h so day-to-day operations don't repeatedly hit the API. Bust
+# manually with `gh api -R ORG user --cache 0` or `rm -rf ~/.cache/gh`.
+# Prints login on stdout; returns non-zero if gh isn't installed or auth
+# fails.
 #
 # Captures stdout separately so a 4xx error body (which gh writes to
 # stdout, not stderr) doesn't leak as a faux "login" to the caller.

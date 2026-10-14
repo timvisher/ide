@@ -6,7 +6,7 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-# Shared gh account-selection helpers (also used by the gh PATH shim).
+# Shared gh helpers.
 # shellcheck source=/dev/null
 source ~/.functions/gh.bash ||
   {
@@ -241,8 +241,8 @@ else
     target_remote='origin'
   fi
 
-  # Get the OWNER/REPO spec from the remote's URL (host-agnostic parse shared
-  # with the gh shim, so Enterprise host aliases resolve like github.com).
+  # Get the OWNER/REPO spec from the remote's URL (host-agnostic, so
+  # Enterprise host aliases resolve like github.com).
   repo_spec=$(timvisher_gh__repo_spec_from_url "$(git remote get-url "$target_remote")")
   [[ -n $repo_spec ]] ||
     die "Could not determine repository spec for remote '%s'" "$target_remote"
