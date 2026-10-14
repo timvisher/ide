@@ -248,10 +248,10 @@ fi
 # Leading global flags should not confuse noun/verb detection
 # ---------------------------------------------------------------------------
 
-# Test: blocks 'gh --help pr create' — boolean flag before noun must not
+# Test: blocks 'gh --debug pr create' — boolean flag before noun must not
 # hide the real noun/verb.
 run_test
-result=$(run_agent --help pr create)
+result=$(run_agent --debug pr create)
 if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
 then
   pass "leading boolean flag doesn't hide mutating noun/verb"
@@ -659,6 +659,35 @@ then
   pass "passes through all args to real gh (non-agent)"
 else
   fail "passes through all args: got '${result}'"
+fi
+
+check_help() {
+  local want=$1
+  shift
+  run_test
+  result=$(run_agent "$@")
+  if [[ $result == "real-gh $want" ]]
+  then
+    pass "[$*] shows help as 'gh $want'"
+  else
+    fail "[$*]: want 'real-gh $want', got '${result}'"
+  fi
+}
+check_help "help repo fork"            repo fork --help
+check_help "help repo fork"            repo fork -h
+check_help "help pr comment 1"         pr comment 1 --body --help
+check_help "help pr comment 1 hi"      pr comment 1 --body hi --help
+check_help "help api graphql POST"     api graphql -X POST --help
+check_help "help pr create"            -R o/r pr create --help
+check_help "help"                      --help
+
+run_test
+result=$(run_agent repo fork -- --help)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "--help after -- is not a help request"
+else
+  fail "--help after --: got '${result}'"
 fi
 
 echo ""

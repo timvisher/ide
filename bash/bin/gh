@@ -49,6 +49,38 @@ then
   }
 fi
 
+gh_help__requested=false
+gh_help__skip_next=false
+gh_help__topic=()
+for gh_help__arg in "$@"
+do
+  if [[ $gh_help__skip_next == true ]]
+  then
+    gh_help__skip_next=false
+    continue
+  fi
+  case $gh_help__arg in
+    --)
+      break
+      ;;
+    -h|--help)
+      gh_help__requested=true
+      ;;
+    -R|--repo|--hostname)
+      gh_help__skip_next=true
+      ;;
+    -*)
+      ;;
+    *)
+      gh_help__topic+=("$gh_help__arg")
+      ;;
+  esac
+done
+if [[ $gh_help__requested == true ]]
+then
+  exec "$(brew --prefix)"/bin/gh help ${gh_help__topic[@]+"${gh_help__topic[@]}"}
+fi
+
 if [[ -n $TIMVISHER_AGENT ]]
 then
   # --- Noun / verb detection ---
