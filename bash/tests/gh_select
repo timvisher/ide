@@ -363,6 +363,19 @@ run_shim "$repo" pr view 1 --repo DataDog/appgate
 check_source "--repo beats GH_REPO" tok-acct-DataDog \
   "for 'DataDog' (from --repo 'DataDog/appgate')"
 
+extra_env=(GH_REPO=https://github.com/ddoghq/dd-source)
+run_shim "$repo" pr list
+check_source "a URL-valued GH_REPO names its owner" tok-acct-ddoghq \
+  "for 'ddoghq' (from GH_REPO 'https://github.com/ddoghq/dd-source' in the environment)"
+run_shim "$tmpdir/norepo" api -R ddoghq user
+run_test
+if [[ $err != *gh_api_gh_repo_dropped* ]]
+then
+  pass "a URL-valued GH_REPO for the -R owner is kept"
+else
+  fail "URL GH_REPO for the same owner was dropped; err='$err'"
+fi
+
 extra_env=(GH_TOKEN=caller-token)
 run_shim "$repo" pr view 1 --repo ddoghq/dd-source
 check_source "a caller-set GH_TOKEN is deferred to" caller-token \
@@ -393,6 +406,15 @@ then
   pass "the dropped GH_REPO doesn't reach gh"
 else
   fail "GH_REPO should be unset for gh; out='$out'"
+fi
+
+run_shim "$tmpdir/norepo" api 'repos/otherorg/{repo}/pulls'
+run_test
+if [[ $out == "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=ddoghq/dd-source api repos/otherorg/{repo}/pulls" && $err != *gh_api_gh_repo_dropped* ]]
+then
+  pass "GH_REPO is kept when the owner comes from the endpoint, not -R"
+else
+  fail "GH_REPO should be kept without -R; out='$out' err='$err'"
 fi
 
 run_shim "$tmpdir/norepo" api -R ddoghq 'repos/{owner}/{repo}'

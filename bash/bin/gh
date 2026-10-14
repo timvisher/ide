@@ -1630,23 +1630,20 @@ gh_account__repo_spec_from_repo_value() {
 }
 
 gh_account__from_gh_repo() {
-  local a=${GH_REPO-}
-  [[ -n $a ]] ||
+  local owner
+  [[ -n ${GH_REPO-} ]] ||
     return 1
-  [[ $a == */*/* ]] &&
-    a=${a#*/}
-  a=${a%%/*}
-  gh_account__valid_owner "$a" ||
+  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
     return 1
-  gh_account__owner=$a
+  gh_account__owner=$owner
   gh_account__source="GH_REPO '${GH_REPO}'"
 }
 
 gh_account__gh_repo_owner_differs() {
-  local a=$GH_REPO
-  [[ $a == */*/* ]] &&
-    a=${a#*/}
-  [[ ${a%%/*} != "$gh_account__owner" ]]
+  local owner
+  owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
+    return 0
+  [[ $owner != "$gh_account__owner" ]]
 }
 
 gh_account__from_remotes() {
@@ -1789,7 +1786,7 @@ gh_account__select() {
       if [[ -n $gh_account__api_repo ]]
       then
         export GH_REPO=$gh_account__api_repo
-      elif [[ -n $gh_account__owner && -n ${GH_REPO-} ]] &&
+      elif [[ -n $gh_args__repo_value && -n $gh_account__owner && -n ${GH_REPO-} ]] &&
            gh_account__gh_repo_owner_differs
       then
         aictl_notice \
