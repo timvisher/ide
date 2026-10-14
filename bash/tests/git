@@ -1335,6 +1335,16 @@ check_git_help "help cleanup"  cleanup -e --help
 
 run_test
 result=$(PATH="$test_path" \
+  bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' grep -e --help -- --help" 2>&1 || true)
+if [[ $result == *"real-git grep -e --help -- --help"* ]]
+then
+  pass "a --help repeated after -- doesn't make an earlier one count"
+else
+  fail "grep -e --help -- --help: got '${result}'"
+fi
+
+run_test
+result=$(PATH="$test_path" \
   bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' log --help --oneline" 2>&1 || true)
 if [[ $result == *"real-git log --help --oneline"* ]]
 then

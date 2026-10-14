@@ -230,8 +230,10 @@ do
       break
       ;;
     --help)
-      [[ -z $_timvisher_git__help_sub || $_timvisher_git__help_arg == "${!#}" ]] &&
+      if [[ -z $_timvisher_git__help_sub ]] || (( _timvisher_git__help_pos == $# ))
+      then
         _timvisher_git__help=--help
+      fi
       ;;
     -h)
       if [[ -z $_timvisher_git__help_sub ]]
