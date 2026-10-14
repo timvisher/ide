@@ -1191,6 +1191,10 @@ case "$method $path" in
     esac
     ;;
   "POST "repos/*/*/issues/*/comments)
+    if [[ -n ${MOCK_LOCK_DIR-} ]]
+    then
+      chmod 555 "$MOCK_LOCK_DIR"
+    fi
     spec=${path#repos/}
     spec=${spec%%/issues/*}
     pr=${path%/comments}
@@ -1925,7 +1929,7 @@ run_test
 creset comment.md
 csidecar comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
 echo "$issuecomment_url" > "$tmpdir/repo/comment.md.url"
-crun -- comment delete --force comment.md
+crun MOCK_AUTHOR=me -- comment delete --force comment.md
 if
   (( c_rc == 0 )) && grep -q "^mock-gh api DELETE /repos/testuser/testrepo/issues/comments/222 " "$MOCK_LOG" &&
   [[ ! -e $tmpdir/repo/comment.md.json && ! -e $tmpdir/repo/comment.md.url && $c_err == *"Deleted comment for 'comment.md'"* ]]
@@ -1938,7 +1942,7 @@ fi
 run_test
 creset comment.md
 echo "https://github.com/testuser/testrepo/pull/1#discussion_r555" > "$tmpdir/repo/comment.md.url"
-crun -- comment delete --force comment.md
+crun MOCK_AUTHOR=me -- comment delete --force comment.md
 if
   (( c_rc == 0 )) && grep -q "^mock-gh api DELETE /repos/testuser/testrepo/pulls/comments/555 " "$MOCK_LOG" &&
   [[ ! -e $tmpdir/repo/comment.md.json && ! -e $tmpdir/repo/comment.md.url ]]
@@ -1955,7 +1959,7 @@ do
   creset comment.md
   csidecar comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
   read -ra env_array <<<"$envs"
-  crun "${env_array[@]}" -- comment delete --force comment.md
+  crun MOCK_AUTHOR=me "${env_array[@]}" -- comment delete --force comment.md
   if [[ $keep == keep ]]
   then
     { (( c_rc != 0 )) && [[ -e $tmpdir/repo/comment.md.json && $c_err == *"$want"* ]]; } ||
@@ -2020,7 +2024,7 @@ else
   mkdir -p "$tmpdir/repo/x.readonly"
   csidecar x.readonly/comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\"}"
   chmod 555 "$tmpdir/repo/x.readonly"
-  crun -- comment delete --force x.readonly/comment.md
+  crun MOCK_AUTHOR=me -- comment delete --force x.readonly/comment.md
   chmod 755 "$tmpdir/repo/x.readonly"
   if
     (( c_rc != 0 )) && grep -q " DELETE " "$MOCK_LOG" &&
@@ -2033,7 +2037,7 @@ else
   rm -rf "$tmpdir/repo/x.readonly"
 fi
 
-# review hardening
+# ownership, recovery and lease edge cases
 
 run_test
 creset comment.md
@@ -2044,7 +2048,7 @@ expect_clean_fail "comment refuses a file already posted on another PR" "was alr
 
 run_test
 creset comment.md
-crun -- comment --pull-request=https://ghe.example.com/testuser/testrepo/pull/1 nonexistent-but-checked-later.md
+crun -- comment --pull-request=https://ghe.example.com/testuser/testrepo/pull/1 no-such-file.md
 expect_clean_fail "comment refuses a missing file before anything else" "is not readable"
 run_test
 creset ghe.md
@@ -2074,20 +2078,25 @@ else
 fi
 
 run_test
-creset comment.md
-cfile comment.md "body"
-ln -s "$tmpdir/no-such-dir/comment.md.url" "$tmpdir/repo/comment.md.url"
-crun -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md
-if
-  (( c_rc != 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/99#issuecomment-9001 ]] &&
-  [[ $c_err == *"couldn't record it"* ]]
+if (( EUID == 0 ))
 then
-  pass "comment prints the posted URL when recording it fails"
+  pass "comment prints the posted URL when recording it fails (skipped: root ignores directory permissions)"
 else
-  cfail "comment prints the posted URL when recording it fails"
+  rm -rf "$tmpdir/repo/x.locked"
+  mkdir -p "$tmpdir/repo/x.locked"
+  printf 'body\n' > "$tmpdir/repo/x.locked/c.md"
+  crun MOCK_LOCK_DIR="$tmpdir/repo/x.locked" -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 x.locked/c.md
+  chmod 755 "$tmpdir/repo/x.locked"
+  if
+    (( c_rc != 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/99#issuecomment-9001 ]] &&
+    [[ $c_err == *"couldn't record it"* ]]
+  then
+    pass "comment prints the posted URL when recording it fails"
+  else
+    cfail "comment prints the posted URL when recording it fails"
+  fi
+  rm -rf "$tmpdir/repo/x.locked"
 fi
-rm -f "$tmpdir/repo/comment.md.url"
-creset comment.md
 
 run_test
 if (( EUID == 0 ))
@@ -2292,7 +2301,7 @@ do
     resolve) crun -- comment resolve "$discussion_url" ;;
     react) crun -- comment react "$discussion_url" --reaction +1 ;;
     get) crun -- comment get "$discussion_url" hosted.md ;;
-    delete) crun -- comment delete --force hosted.md ;;
+    delete) crun MOCK_AUTHOR=me -- comment delete --force hosted.md ;;
   esac
   if ! { (( c_rc == 0 )) && [[ -s ${MOCK_LOG}.tokens ]] && ! grep -qv " host=github.com " "${MOCK_LOG}.tokens"; }
   then
@@ -2308,10 +2317,9 @@ fi
 creset hosted.md
 creset reply.md their.md theirs.md mine.md got.md comment.md
 
-# review hardening, round two
+# rerun safety, account targeting and naming edge cases
 
 run_test
-crun MOCK_STDERR_NOISE=1 -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 noisy.md
 creset noisy.md
 cfile noisy.md "body"
 crun MOCK_STDERR_NOISE=1 -- comment --pull-request=https://github.com/testuser/testrepo/pull/99 noisy.md
@@ -2487,6 +2495,57 @@ then
 else
   cfail "comment react takes its target after --"
 fi
+
+run_test
+creset legacy-theirs.md
+echo "$issuecomment_url" > "$tmpdir/repo/legacy-theirs.md.url"
+crun MOCK_AUTHOR=someone MOCK_VIEWER=me -- comment delete --force legacy-theirs.md
+if
+  (( c_rc != 0 )) && [[ $c_err == *"someone's comment, not yours"* ]] && ! grep -q " DELETE " "$MOCK_LOG"
+then
+  pass "comment delete --force refuses someone else's comment tracked by a legacy .url"
+else
+  cfail "comment delete --force refuses someone else's comment tracked by a legacy .url"
+fi
+creset legacy-theirs.md
+
+run_test
+creset comment.md
+csidecar comment.md "{\"kind\":\"issue_comment\",\"database_id\":222,\"url\":\"$issuecomment_url\",\"author\":\"me\"}"
+crun -- comment delete comment.md --force
+if
+  (( c_rc == 0 )) && grep -q " DELETE " "$MOCK_LOG" && [[ ! -e $tmpdir/repo/comment.md.json ]]
+then
+  pass "comment delete accepts --force after the file"
+else
+  cfail "comment delete accepts --force after the file"
+fi
+
+run_test
+creset reply.md
+cfile reply.md "thanks"
+crun MOCK_REACTIONS_FAIL=1 -- comment reply "$discussion_url" reply.md --reaction rocket
+if
+  (( c_rc != 0 )) && [[ $c_out == https://github.com/testuser/testrepo/pull/1#discussion_r9002 && $c_err == *"rerun the same command"* ]]
+then
+  pass "comment reply prints the reply URL when reading reactions fails"
+else
+  cfail "comment reply prints the reply URL when reading reactions fails"
+fi
+creset reply.md
+
+run_test
+creset comment.md
+cfile comment.md "body"
+crun -- comment --pull-request=https://github.com/TestUser/TestRepo/pull/99 comment.md
+if
+  (( c_rc == 0 )) && grep -q "^unset repo=TestUser/TestRepo " "${MOCK_LOG}.tokens"
+then
+  pass "comment keeps the URL's owner and repo case in -R"
+else
+  cfail "comment keeps the URL's owner and repo case in -R"
+fi
+creset comment.md
 
 # accounts
 
