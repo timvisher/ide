@@ -149,6 +149,12 @@ check_owner "-"       pr view https://github.com/advisories/GHSA-xxxx
 check_owner "-"       gist view https://gist.github.com/someone/abc
 check_owner "-"       pr view https://github.com/../x
 check_owner "-"       pr view https://github.com/-bad/x
+check_owner "-"       pr view https://github.com/_bad/x
+check_owner "tim-visher_ddog" pr view 1 --repo tim-visher_ddog/x
+check_owner "tim-visher_ddog" pr view https://github.com/tim-visher_ddog/x/pull/1
+check_owner "tim-visher_ddog" repo view tim-visher_ddog/x
+check_owner "tim-visher_ddog" api repos/tim-visher_ddog/x
+check_owner "tim-visher_ddog" api -R tim-visher_ddog user
 
 check_owner "-"       pr comment 1 --body "see https://github.com/evil/x"
 check_owner "-"       pr comment 1 --body https://github.com/evil/x

@@ -816,7 +816,7 @@ gh_account__real_gh="$(brew --prefix)"/bin/gh
 gh_account__doc='ai/HOME/.agents/skills/github/SKILL.md'
 
 gh_account__valid_owner() {
-  [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
 }
 
 gh_account__path_from_web_url() {
