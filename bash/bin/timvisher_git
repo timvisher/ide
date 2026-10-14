@@ -1204,7 +1204,8 @@ configure_remotes_and_tracking() {
   # Always query fork status and push permissions via API.
   info "Checking fork status and permissions for '%s'..." "$repo_spec"
 
-  if ! gh -R "$repo_spec" repo set-default "$repo_spec" >&2; then
+  if ! gh -R "$repo_spec" repo set-default "$repo_spec" >&2
+  then
     warn "Failed to set default gh repo, fork detection might fail."
   fi
 

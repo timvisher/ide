@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared gh helpers for timvisher_gh and timvisher_git. The gh PATH shim
-# (bash/bin/gh) selects the gh account for every gh call on its own.
+# Shared gh helpers for timvisher_gh and timvisher_git.
 
 # Echo OWNER/REPO from a git remote URL — https, scp-style (git@host:o/r), and
 # ssh:// forms. Host-agnostic, so GitHub Enterprise host aliases (a host other
@@ -15,14 +14,13 @@ timvisher_gh__repo_spec_from_url() {
   printf '%s\n' "$url"
 }
 
-# Resolve which of an alias's candidate orgs hosts a repo. Probes each
-# candidate ($3, preferred-first comma-separated) through gh, whose shim picks
-# each candidate's account; the first HTTP 200 wins. Caches the answer at
-# $cache_root/<alias>/<repo>; cache hits never probe. Args: $1 alias, $2 repo,
-# $3 candidates, $4 gh binary (default gh). Prints the owner and returns 0 on
-# success; returns non-zero with no output when no candidate hosts the repo or
-# GitHub can't be reached (caller decides whether that is fatal). No automatic
-# invalidation — bust the cache by hand.
+# Resolve which of an alias's candidate orgs hosts a repo. Probes each candidate
+# ($3, preferred-first comma-separated); the first
+# HTTP 200 wins. Caches the answer at $cache_root/<alias>/<repo>; cache hits
+# never probe. Args: $1 alias, $2 repo, $3 candidates, $4 gh binary (default gh).
+# Prints the owner and returns 0 on success; returns non-zero with no output
+# when no candidate hosts the repo or GitHub can't be reached (caller decides
+# whether that is fatal). No automatic invalidation — bust the cache by hand.
 timvisher_gh__owner_for_repo() {
   local alias="$1" repo="$2" candidates="$3" gh_bin="${4:-gh}"
   [[ -n $alias && -n $repo && -n $candidates ]] || return 1
