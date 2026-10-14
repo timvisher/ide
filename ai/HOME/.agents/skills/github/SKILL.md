@@ -119,7 +119,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 A `<target>` is either a comment URL or a tracked file. A URL is `https://github.com/O/R/pull/N`, optionally followed by `/files` or `/changes` and a `?query` (as in notification links), ending in `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level comment). The PR itself and review summaries aren't comments, so these verbs don't act on them.
 
-Rerunning a verb converges instead of repeating it: a tracked comment isn't posted twice, and repeated reactions and resolutions are no-ops. Verbs print the comment's URL on stdout (`get` prints the file it wrote; `delete` prints nothing) and exit non-zero if anything didn't converge, so rerun the same command after fixing the cause. If a post succeeds but its state can't be recorded, the URL is printed with an error; save it in `<file>.url` before rerunning. Only github.com is supported, not GitHub Enterprise hosts.
+Rerunning a verb converges instead of repeating it: a tracked comment isn't posted twice, a repeated reaction isn't sent again, and resolving a resolved thread is harmless. Reruns ask GitHub who you are, so they need network access. Verbs print the comment's URL on stdout (`get` prints the file it wrote; `delete` prints nothing) and exit non-zero if anything didn't converge, so rerun the same command after fixing the cause. If a post succeeds but its state can't be recorded, the URL is printed with an error; save it in `<file>.url` before rerunning. Only github.com is supported, not GitHub Enterprise hosts.
 
 ### Post a top-level comment
 
@@ -146,7 +146,7 @@ timvisher_gh comment edit comment.md
 timvisher_gh comment edit --force comment.md   # overwrite GitHub's copy anyway
 ```
 
-Edits are leased: if GitHub's copy no longer matches what was last posted (someone else edited it), `edit` prints a diff and refuses. Fold their changes into the file, then rerun with `--force`. A file adopted from a legacy `.url` has no recorded body yet, so its first edit isn't leased.
+Edits are leased: if GitHub's copy no longer matches what was last posted (someone else edited it), `edit` prints a diff and refuses. Fold their changes into the file, then rerun with `--force`. The check is a read just before the update, not an atomic swap, so an edit landing in between can still be overwritten. A file adopted from a legacy `.url` has no recorded body yet, so its first edit isn't leased.
 
 ### React to a comment
 
@@ -174,7 +174,7 @@ timvisher_gh comment get their.md                                               
 
 Without a file name, `get` names it `<ts>-<author>-<slug>.md`:
 - `<ts>` is the creation time GitHub reports (UTC on github.com) as `+%FT%H-%M-%S%z`.
-- `<author>` is the login with anything but letters, digits and `-` turned into `-`, so `github-actions[bot]` becomes `github-actions-bot`.
+- `<author>` is the login with anything but letters, digits and `-` turned into `-`, runs of `-` collapsed and ends trimmed, so `github-actions[bot]` becomes `github-actions-bot`.
 - `<slug>` comes from the body. Control characters and `/` become spaces, whitespace runs collapse to one space, and leading spaces, `.` and `-` are dropped, as are trailing spaces and `.`. The result is cut to 60 characters and to fit a 255-byte file name. The fetched file is a tracked target for `reply`, `react` and `resolve`. Fetching the same comment again reuses that file, even after the comment's body changes. Refreshing keeps local edits you haven't pushed, along with their lease, so `edit` still notices if GitHub's copy changed meanwhile.
 
 ### Delete a comment
