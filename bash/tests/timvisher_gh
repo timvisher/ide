@@ -1112,6 +1112,12 @@ then
   echo "token-$6"
   exit 0
 fi
+repo=''
+if [[ $1 == -R ]]
+then
+  repo=$2
+  shift 2
+fi
 [[ $1 == api ]] ||
   exit 0
 shift
@@ -1145,11 +1151,11 @@ then
       break
     fi
   done
-  echo "mock-gh-graphql op=${op} id=${field[id]-} content=${field[content]-} after=${field[after]-} owner=${TIMVISHER_GH_OWNER-unset}" >> "$MOCK_LOG"
+  echo "mock-gh-graphql op=${op} id=${field[id]-} content=${field[content]-} after=${field[after]-} repo=${repo:-none}" >> "$MOCK_LOG"
 else
   echo "mock-gh api ${method} ${path} in_reply_to=${field[in_reply_to]-} body=${field[body]-}" >> "$MOCK_LOG"
 fi
-echo "${GH_TOKEN-unset} owner=${TIMVISHER_GH_OWNER-unset} host=${host:-none} ${method} ${path} ${op}" >> "${MOCK_LOG}.tokens"
+echo "${GH_TOKEN-unset} repo=${repo:-none} host=${host:-none} ${method} ${path} ${op}" >> "${MOCK_LOG}.tokens"
 
 respond() {
   printf 'HTTP/2.0 %s Mock\n' "$1"
@@ -1655,7 +1661,7 @@ crun -- comment react "$issuecomment_url" --reaction +1
 if
   (( c_rc == 0 )) && [[ $c_out == "$issuecomment_url" ]] &&
   grep -q "^mock-gh api GET repos/testuser/testrepo/issues/comments/222 " "$MOCK_LOG" &&
-  grep -q "^mock-gh-graphql op=addReaction id=IC_222 content=THUMBS_UP after= owner=testuser$" "$MOCK_LOG"
+  grep -q "^mock-gh-graphql op=addReaction id=IC_222 content=THUMBS_UP after= repo=testuser/testrepo$" "$MOCK_LOG"
 then
   pass "comment react adds a reaction by node id with the URL owner's account"
 else
@@ -1757,7 +1763,7 @@ run_test
 crun -- comment resolve "$discussion_url"
 if
   (( c_rc == 0 )) && [[ $c_out == "$discussion_url" ]] &&
-  grep -q "^mock-gh-graphql op=reviewThreads .* owner=testuser$" "$MOCK_LOG" &&
+  grep -q "^mock-gh-graphql op=reviewThreads .* repo=testuser/testrepo$" "$MOCK_LOG" &&
   grep -q "^mock-gh-graphql op=resolveReviewThread id=PRRT_1 " "$MOCK_LOG"
 then
   pass "comment resolve finds the thread and resolves it"
@@ -2489,13 +2495,12 @@ mkdir -p "$tmpdir/ghconfig/orgs/testuser"
 echo testacct > "$tmpdir/ghconfig/orgs/testuser/account"
 crun -- comment react https://github.com/otherorg/repo/pull/1#issuecomment-5 --reaction +1
 if
-  (( c_rc == 0 )) && ! grep -qv "^unset " "${MOCK_LOG}.tokens" &&
-  grep -q "^unset owner=unset host=github.com GET repos/otherorg/repo/issues/comments/5 " "${MOCK_LOG}.tokens" &&
-  grep -q "^unset owner=otherorg host=github.com POST graphql addReaction" "${MOCK_LOG}.tokens"
+  (( c_rc == 0 )) && [[ -s ${MOCK_LOG}.tokens ]] && ! grep -qv "^unset repo=otherorg/repo host=github.com " "${MOCK_LOG}.tokens" &&
+  grep -q " POST graphql addReaction" "${MOCK_LOG}.tokens"
 then
-  pass "comment verbs leave REST account choice to the shim and name the owner for GraphQL"
+  pass "comment verbs name the comment's repo with -R on every call, REST and GraphQL"
 else
-  cfail "comment verbs leave REST account choice to the shim and name the owner for GraphQL"
+  cfail "comment verbs name the comment's repo with -R on every call, REST and GraphQL"
 fi
 
 run_test
