@@ -22,6 +22,9 @@ run_test() {
 
 bin_dir="$(cd "$(dirname "$0")/.." && pwd)/bin"
 
+fixture_home=''
+trap '[[ -z $fixture_home ]] || rm -rf "$fixture_home"' EXIT
+
 # Test 1: no employer-specific references
 # Patterns to guard against are read from system extensions config.
 # If no config exists, the test is a no-op (nothing to guard against).
@@ -65,7 +68,11 @@ fi
 
 # Test 3: agents.bash, which every wrapper sources, exports TIMVISHER_AGENT
 run_test
-if env -u TIMVISHER_AGENT bash -c "source \"\$1\" >/dev/null 2>&1; bash -c '[[ -n \${TIMVISHER_AGENT-} ]]'" _ "$bin_dir/../ai/agents.bash"
+fixture_home=$(mktemp -d)
+mkdir -p "$fixture_home/.functions" "$fixture_home/.config"
+cp "$bin_dir/../functions/logging.bash" "$fixture_home/.functions/logging.bash"
+if env -u TIMVISHER_AGENT -u XDG_CONFIG_HOME HOME="$fixture_home" \
+     bash -c "source \"\$1\" >/dev/null 2>&1; bash -c '[[ -n \${TIMVISHER_AGENT-} ]]'" _ "$bin_dir/../ai/agents.bash"
 then
   pass "agents.bash exports TIMVISHER_AGENT to child processes"
 else
