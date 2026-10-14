@@ -262,7 +262,7 @@ check_api "api -R with a github.com URL" \
   "for 'otherorg'" \
   api -R https://github.com/otherorg/repo/pull/1 user
 check_api "api -R HOST/OWNER/REPO for another host keeps the host and picks no account" \
-  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/otherorg/repo api user" \
+  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/otherorg/repo api user --hostname ghe.example.com" \
   "targets 'ghe.example.com', not github.com" \
   api -R ghe.example.com/otherorg/repo user
 check_api "api -R beats the endpoint" \
@@ -503,6 +503,25 @@ check_source "--repo on another host picks no github.com account" '' \
 run_shim "$repo" repo view https://ghe.example.com/ddoghq/dd-source
 check_source "a repo URL on another host picks no github.com account" '' \
   "targets 'ghe.example.com', not github.com"
+run_shim "$tmpdir/norepo" api --hostname acme.ghe.com repos/ddoghq/x
+check_source "gh api --hostname for another host picks no github.com account" '' \
+  "targets 'acme.ghe.com', not github.com"
+extra_env=(GH_HOST=acme.ghe.com)
+run_shim "$repo" pr list
+check_source "GH_HOST for another host picks no github.com account" '' \
+  "targets 'acme.ghe.com', not github.com"
+extra_env=(GH_REPO=acme.ghe.com/ddoghq/repo)
+run_shim "$repo" pr list
+check_source "a GH_REPO on another host picks no github.com account" '' \
+  "targets 'acme.ghe.com', not github.com"
+extra_env=()
+run_shim "$repo" pr view https://acme.ghe.com/ddoghq/repo/pull/1
+check_source "a PR URL on another host picks no github.com account" '' \
+  "targets 'acme.ghe.com', not github.com"
+run_shim "$tmpdir/norepo" api -R ddoghq --hostname github.com user
+check_source "--hostname github.com still selects" tok-acct-ddoghq \
+  "for 'ddoghq'"
+
 run_shim "$tmpdir/norepo" pr view 1 --repo github.com/ddoghq/dd-source
 check_source "--repo github.com/OWNER/REPO still counts" tok-acct-ddoghq \
   "for 'ddoghq'"

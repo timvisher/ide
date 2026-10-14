@@ -1194,6 +1194,7 @@ gh_args__parse() {
   gh_args__repo_value=''
   gh_args__owner_value=''
   gh_args__org_value=''
+  gh_args__hostname=''
 
   for a in "$@"
   do
@@ -1304,6 +1305,9 @@ gh_args__record() {
       ;;
     --org)
       gh_args__org_value=$2
+      ;;
+    --hostname)
+      gh_args__hostname=$2
       ;;
     -o)
       case ${gh_args__path%% *} in
@@ -1516,6 +1520,8 @@ gh_account__from_args() {
       if gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
       then
         gh_account__api_repo=$gh_args__repo_value
+        [[ -n $gh_args__hostname ]] ||
+          gh_account__args_without_repo+=(--hostname "$gh_account__foreign")
         return 1
       fi
       if owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
@@ -1566,6 +1572,11 @@ gh_account__from_args() {
           gh_account__owner=$owner
           gh_account__source="the URL '${selector}'"
           return 0
+        fi
+        if [[ $selector == *://* ]] &&
+           gh_account__foreign=$(gh_account__foreign_host "$selector")
+        then
+          return 1
         fi
         ;;
     esac
@@ -1630,6 +1641,15 @@ gh_account__from_args() {
   return 1
 }
 
+gh_account__non_github_host() {
+  case $1 in
+    ''|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 gh_account__foreign_host() {
   local a=$1 host=''
   case $a in
@@ -1690,6 +1710,10 @@ gh_account__from_gh_repo() {
   local owner
   [[ -n ${GH_REPO-} ]] ||
     return 1
+  if gh_account__foreign=$(gh_account__foreign_host "$GH_REPO")
+  then
+    return 1
+  fi
   owner=$(gh_account__owner_from_repo_value "$GH_REPO") ||
     return 1
   gh_account__owner=$owner
@@ -1868,6 +1892,13 @@ gh_account__select() {
 
   gh_account__foreign=''
   gh_account__from_args
+  if gh_account__non_github_host "$gh_args__hostname"
+  then
+    gh_account__foreign=$gh_args__hostname
+  elif [[ -z $gh_args__hostname ]] && gh_account__non_github_host "${GH_HOST-}"
+  then
+    gh_account__foreign=$GH_HOST
+  fi
 
   case $gh_account__command in
     browse|pr|issue|release|repo|ruleset|rs|run|workflow|label|cache)
@@ -1932,8 +1963,16 @@ gh_account__select() {
       --suggestion "gh api -R OWNER/REPO 'repos/{owner}/{repo}/...'"
   fi
 
+  if [[ -z $gh_account__owner ]] && ! gh_account__from_gh_repo && [[ -n $gh_account__foreign ]]
+  then
+    aictl_info \
+      --code gh_account_active \
+      --message "The call targets '${gh_account__foreign}', not github.com; gh will run as its account for that host." \
+      --doc "$gh_account__doc"
+    return 0
+  fi
+
   [[ -n $gh_account__owner ]] ||
-    gh_account__from_gh_repo ||
     gh_account__from_remotes "$gh_account__resolves_base" ||
     {
       aictl_info \
