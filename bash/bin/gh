@@ -1180,7 +1180,7 @@ gh_account__select() {
       --message "'gh api' needs -R OWNER or -R OWNER/REPO to pick the gh account: its endpoint doesn't name an owner." \
       --reason "Endpoints like graphql, user and search/... carry no owner, so the gh shim can't tell which account can see the target. The shim reads -R and removes it before running gh, which has no -R for api; -R OWNER/REPO also sets GH_REPO for {owner}/{repo} placeholders." \
       --doc "$gh_account__doc" \
-      --suggestion "gh api -R OWNER graphql -f query=..." \
+      --suggestion "gh api -R OWNER user" \
       --suggestion "gh api -R OWNER/REPO 'repos/{owner}/{repo}/...'"
   fi
 
