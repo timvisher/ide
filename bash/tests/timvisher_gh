@@ -811,7 +811,7 @@ touch "$MOCK_LOG"
 result=$(printf 'y\n' | PATH="$test_path" TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' pr merge" 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
-   grep -qx 'mock-gh -R upstreamorg/testrepo repo view --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod' "$MOCK_LOG" &&
+   grep -qx 'mock-gh -R upstreamorg/testrepo repo view upstreamorg/testrepo --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod' "$MOCK_LOG" &&
    grep -qx 'mock-gh -R upstreamorg/testrepo pr merge --squash https://github.com/upstreamorg/testrepo/pull/9' "$MOCK_LOG"
 then
   pass "pr merge: reads strategies from the PR's repo and merges by URL"

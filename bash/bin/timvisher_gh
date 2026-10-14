@@ -469,7 +469,7 @@ gh_pr_merge() {
 
   local capabilities_json
   capabilities_json=$(
-    gh -R "$repo_slug_from_url" repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+    gh -R "$repo_slug_from_url" repo view "$repo_slug_from_url" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
   )
 
   local strategies=()
@@ -546,7 +546,7 @@ end run' "$(< pr.md.url)"
   fi
 
   local base_branch
-  base_branch=$(gh -R "$repo_spec" repo view --json defaultBranchRef --jq .defaultBranchRef.name) ||
+  base_branch=$(gh -R "$repo_spec" repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
   [[ -r pr.md ]] ||

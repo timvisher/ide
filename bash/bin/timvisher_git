@@ -1194,7 +1194,7 @@ configure_remotes_and_tracking() {
         git remote add upstream "https://github.com/${override_repo}.git"
       fi
       git fetch upstream >&2 || die "Unable to fetch from upstream remote"
-      default_branch=$(gh -R "$override_repo" repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(gh -R "$override_repo" repo view "$override_repo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       return
@@ -1234,12 +1234,12 @@ configure_remotes_and_tracking() {
 
     if [[ $soft_fork == true ]]; then
       local origin_default
-      origin_default=$(gh -R "$repo_spec" repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
+      origin_default=$(gh -R "$repo_spec" repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
       info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${origin_default}'"
       git branch -u "origin/${origin_default}" >&2 || die "Unable to track origin/${origin_default}"
       touch x.timvisher_git.soft-fork
     else
-      default_branch=$(gh -R "$parent" repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(gh -R "$parent" repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       rm -f x.timvisher_git.soft-fork
