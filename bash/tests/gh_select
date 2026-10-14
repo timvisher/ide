@@ -103,12 +103,21 @@ check_owner "-"       repo view dd-source
 check_owner "-"       repo create new-repo --private
 check_owner "-"       repo rename otherorg/new-name
 check_owner "-"       repo gitignore view Go
-check_owner "-"       repo view --web ddoghq/dd-source
+check_owner "ddoghq"  repo view --web ddoghq/dd-source
 check_owner "otherorg" search repos --owner otherorg topic
 check_owner "otherorg" search issues --owner=otherorg bug
 check_owner "otherorg" project list --owner otherorg
 check_owner "-"       project list --owner @me
 check_owner "-"       pr list --owner otherorg
+check_owner "ddoghq"  pr merge --squash https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr checkout --force https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr diff --patch https://github.com/ddoghq/dd-source/pull/1
+check_owner "otherorg" repo list --limit 5 otherorg
+check_owner "ddoghq"  repo view -- ddoghq/dd-source
+check_owner "ddoghq"  search code https://github.com/otherorg/x --owner ddoghq
+check_owner "ddoghq"  search code --owner ddoghq -- --repo=otherorg/repo
+check_owner "-"       pr comment 1 -F --repo=evil/repo
+check_owner "ddoghq"  pr view -Rddoghq/dd-source 1
 
 check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
 check_owner "otherorg" api --method HEAD --include /repos/otherorg/repo/pulls/comments/5 --hostname github.com
@@ -129,7 +138,7 @@ check_owner "ddoghq"  pr view https://github.com/ddoghq/repos/pull/1
 check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1 --repo DataDog/appgate
 check_owner "ddoghq"  pr view http://www.github.com/ddoghq/dd-source/pull/1
 check_owner "ddoghq"  pr view HTTPS://GitHub.com/ddoghq/dd-source/pull/1
-check_owner "myorg"   project view https://github.com/orgs/myorg/projects/1
+check_owner "myorg"   project view 1 --owner myorg
 check_owner "someone" repo list https://github.com/users/someone
 
 check_owner "-"       pr view https://github.com/orgs
@@ -154,7 +163,7 @@ check_owner "-"       pr merge 5 --subject https://github.com/evil/x
 check_owner "-"       gist create -d https://github.com/evil/x notes.md
 check_owner "-"       repo edit --homepage https://github.com/evil/docs
 check_owner "-"       pr review 123 -ab https://github.com/evil/x
-check_owner "-"       pr review -a https://github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr review -a https://github.com/ddoghq/dd-source/pull/1
 check_owner "-"       pr review 123 -r -b https://github.com/evil/x
 check_owner "-"       pr comment 123 --body --repo=evil/repo
 check_owner "-"       pr comment 123 --body-file

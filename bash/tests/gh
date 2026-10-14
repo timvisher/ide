@@ -675,11 +675,35 @@ check_help() {
 }
 check_help "help repo fork"            repo fork --help
 check_help "help repo fork"            repo fork -h
-check_help "help pr comment 1"         pr comment 1 --body --help
-check_help "help pr comment 1 hi"      pr comment 1 --body hi --help
-check_help "help api graphql POST"     api graphql -X POST --help
+check_help "help pr comment"           pr comment 1 --body hi --help
+check_help "help api"                  api graphql -X POST --help
+check_help "help auth token"           auth token --help
+check_help "help repo create"          repo create --help
 check_help "help pr create"            -R o/r pr create --help
 check_help "help"                      --help
+
+run_test
+result=$(run_agent pr comment 1 --body --help)
+if [[ $result == *'"code":"gh_mutation_blocked"'* ]]
+then
+  pass "--help as the value of --body is not a help request"
+else
+  fail "pr comment 1 --body --help: got '${result}'"
+fi
+
+for args in "auth token -h github.com" "auth status -h github.com" "repo create x -h https://example.com" "config get editor -h github.com"
+do
+  read -ra argv <<< "$args"
+  run_test
+  result=$(run_agent "${argv[@]}")
+  if [[ $result != *"real-gh help"* ]] &&
+     [[ $result == *"real-gh $args"* || $result == *'"code":"gh_mutation_blocked"'* ]]
+  then
+    pass "'gh $args' treats -h as a value, not help"
+  else
+    fail "'gh $args': got '${result}'"
+  fi
+done
 
 run_test
 result=$(run_agent repo fork -- --help)
