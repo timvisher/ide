@@ -14,6 +14,13 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+gh_url_repo() {
+  local spec owner repo _
+  spec=$(timvisher_gh__repo_spec_from_url "$1")
+  IFS=/ read -r owner repo _ <<< "$spec"
+  printf '%s/%s\n' "$owner" "$repo"
+}
+
 show_help() {
   cat <<'USAGE'
   timvisher_gh - GitHub workflow commands
@@ -291,7 +298,7 @@ gh_pr_ready() {
 
   while true
   do
-    checks_out=$(command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>&1) || true
+    checks_out=$(command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket 2>&1) || true
     checks_refusal=$(grep '^{"type":"instruction","level":"error"' <<<"$checks_out")
     if [[ -n $checks_refusal ]]
     then
@@ -343,7 +350,7 @@ gh_pr_ready() {
     sleep "$poll_interval"
   done
 
-  command gh pr ready "$pr_url" --repo "$repo_spec" ||
+  command gh -R "$(gh_url_repo "$pr_url")" pr ready "$pr_url" ||
     die 'Unable to mark PR as ready'
 
   info 'PR marked as ready for review: %s' "$pr_url"
@@ -356,9 +363,8 @@ gh_pr_edit() {
   [[ -r pr.md ]] ||
     die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
 
-  command gh pr edit \
+  command gh -R "$(gh_url_repo "$(< pr.md.url)")" pr edit \
           "$(< pr.md.url)" \
-          --repo "$repo_spec" \
           --title "$(head -n1 pr.md)" \
           -F <(tail -n+3 pr.md) ||
     die 'Unable to edit PR'
@@ -381,7 +387,7 @@ gh_pr_wait_until_merged() {
   while true
   do
     # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
-    state=$(command gh pr view "$pr_url" --json state -q .state 2>/dev/null) || true
+    state=$(command gh -R "$(gh_url_repo "$pr_url")" pr view "$pr_url" --json state -q .state 2>/dev/null) || true
 
     case $state in
       MERGED)
@@ -446,7 +452,7 @@ gh_pr_merge() {
       return
     fi
 
-    gh pr comment "$pr_url" --body "/merge" ||
+    gh -R "$repo_slug_from_url" pr comment "$pr_url" --body "/merge" ||
       die "Couldn't post /merge comment to '%s'" "$pr_url"
 
     info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
@@ -458,7 +464,7 @@ gh_pr_merge() {
 
   local capabilities_json
   capabilities_json=$(
-    gh repo view "$repo_slug_from_url" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+    gh -R "$repo_slug_from_url" repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
   )
 
   local strategies=()
@@ -482,7 +488,7 @@ gh_pr_merge() {
   do
     local strat=${strategies[i]}
 
-    if gh pr merge "$@" "--${strat}" "$pr_url"
+    if gh -R "$repo_slug_from_url" pr merge "$@" "--${strat}" "$pr_url"
     then
       merged=$strat
       break
@@ -535,7 +541,7 @@ end run' "$(< pr.md.url)"
   fi
 
   local base_branch
-  base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+  base_branch=$(gh -R "$repo_spec" repo view --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
   [[ -r pr.md ]] ||
@@ -554,8 +560,7 @@ end run' "$(< pr.md.url)"
 
   local pr_url
   pr_url=$(
-    command gh pr create \
-            --repo "$repo_spec" \
+    command gh -R "$repo_spec" pr create \
             --draft \
             --base "$base_branch" \
             --title "$(head -n1 pr.md)" \
@@ -579,9 +584,8 @@ gh_issue_edit() {
   [[ -r issue.md ]] ||
     die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
 
-  command gh issue edit \
+  command gh -R "$(gh_url_repo "$(< issue.md.url)")" issue edit \
           "$(< issue.md.url)" \
-          --repo "$repo_spec" \
           --title "$(head -n1 issue.md)" \
           -F <(tail -n+3 issue.md) ||
     die 'Unable to edit issue'
@@ -614,8 +618,7 @@ end run' "$(< issue.md.url)"
 
   local issue_url
   issue_url=$(
-    command gh issue create \
-            --repo "$repo_spec" \
+    command gh -R "$repo_spec" issue create \
             --title "$(head -n1 issue.md)" \
             -F <(tail -n+3 issue.md)
         ) ||
@@ -681,8 +684,8 @@ gh_comment_edit() {
   fi
 
   gh api \
-     --method PATCH \
      "$comment_path" \
+     --method PATCH \
      -f "body=$(< "$comment_file")" \
      --jq '.html_url' ||
     die 'Unable to update comment'
@@ -724,8 +727,8 @@ gh_comment_reply() {
   local reply_url
   reply_url=$(
     gh api \
-       --method POST \
        "repos/${owner_repo}/pulls/${pr_number}/comments" \
+       --method POST \
        -F "in_reply_to=${comment_id}" \
        -f "body=$(< "$comment_file")" \
        --jq '.html_url'
@@ -779,7 +782,7 @@ gh_comment_delete() {
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
   fi
 
-  if ! gh api --method HEAD "${comment_path}" 2>/dev/null
+  if ! gh api "${comment_path}" --method HEAD 2>/dev/null
   then
     info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
     rm -v "${comment_file}.url" >&2
@@ -799,10 +802,10 @@ gh_comment_delete() {
   local rj
   rj=$(
     gh api \
+       "${comment_path}" \
        --method DELETE \
        -H "Accept: application/vnd.github+json" \
-       -H "X-GitHub-Api-Version: 2022-11-28" \
-       "${comment_path}"
+       -H "X-GitHub-Api-Version: 2022-11-28"
   ) || true
 
   if [[ -z $rj ]]
@@ -888,7 +891,7 @@ gh_comment() {
 
   local comment_url
   comment_url=$(
-    command gh pr comment "$pr_url" --body-file "$comment_file"
+    command gh -R "$(gh_url_repo "$pr_url")" pr comment "$pr_url" --body-file "$comment_file"
   ) ||
     die 'Unable to post comment'
 
@@ -944,7 +947,7 @@ gh_info() {
       printf '%s\n' "${main_repo%%/*}"
       ;;
     .me)
-      command gh api -R "$repo_spec" user --jq .login ||
+      command gh -R "$repo_spec" api user --jq .login ||
         die 'Unable to query authenticated user'
       ;;
     --json)

@@ -46,6 +46,12 @@ mkdir -p "$tmpdir/mockbin" ||
   die "cannot create mockbin dir"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
 #!/usr/bin/env bash
+target_repo=''
+if [[ $1 == -R ]]
+then
+  target_repo=$2
+  shift 2
+fi
 
 # --- gh repo set-default: no-op ---
 if [[ $1 == repo && $2 == set-default ]]; then
@@ -75,7 +81,7 @@ fi
 # --- gh repo view --json ... --jq ... ---
 if [[ $1 == repo && $2 == view ]]; then
   shift 2
-  repo_arg=
+  repo_arg=$target_repo
   jq_expr=
   for arg in "$@"; do
     case $arg in
@@ -111,7 +117,7 @@ if [[ $1 == repo && $2 == view ]]; then
 fi
 
 # --- gh api user (for current_gh_user) ---
-if [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]
+if [[ $1 == api && $2 == user && -n $target_repo ]]
 then
   jq_expr=
   while (( $# )); do
