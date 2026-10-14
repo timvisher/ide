@@ -142,6 +142,23 @@ The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the 
 
 When interacting with GitHub (github.com), always use the `gh` CLI. This includes viewing PRs, checking CI status, browsing releases, and querying repo metadata.
 
+## Account selection
+
+`gh` on `PATH` is a shim that picks the gh account for every call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. Don't set `GH_TOKEN` or switch accounts yourself; name the target and let the shim choose.
+
+It finds the target org in this order:
+
+1. For `gh api`: `-R OWNER` or `-R OWNER/REPO`, then the endpoint (`repos/OWNER/...`, `orgs/OWNER`, `users/OWNER`).
+2. Otherwise: a github.com URL or a `gh repo` repository given as the selector (`gh pr view <url>`, `gh repo view OWNER/REPO`), then `--repo`/`-R`, then `--owner` for `gh search` and `gh project`.
+3. `GH_REPO`, then the cwd's git remotes (the `gh repo set-default` remote, then `upstream`, `github`, `origin`).
+
+It then uses the account configured for that org in `timvisher_gh.config/orgs/<owner>/account`, or gh's active account if there is none.
+
+- **`gh api` needs `-R`** unless its endpoint names the owner or uses `{owner}`/`{repo}` placeholders. GraphQL, `user`, `search/...` and similar endpoints fail with `gh_api_owner_required` without it. The shim removes `-R` before running gh, and `-R OWNER/REPO` also sets `GH_REPO` for placeholders: `gh api -R OWNER graphql -f query=...`.
+- **Every call prints one aictl instruction** saying which account it used and why: `gh_account_selected`, `gh_account_active` (no target org, or no account configured for it) or `gh_account_token_unavailable`.
+- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins.** The shim uses it as-is and says so with `gh_account_deferred`.
+- **`-h`/`--help` always works**, for every command, and shows help without running anything.
+
 ## Notes
 - **No hard line breaks in paragraphs.** Write each paragraph as a single long line. Let the renderer or editor handle wrapping. Only use line breaks for list items, headings, code blocks, and between paragraphs (blank lines).
 - Prefer `<=`/`<` comparisons in any pseudocode or scripts.
