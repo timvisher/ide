@@ -16,8 +16,9 @@ funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" ||
 source "${funcs_dir}/gh.bash" ||
   { echo "cannot source gh.bash" >&2; exit 1; }
 
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$tmpdir"' EXIT
 
 # --- repo_spec_from_url: host-agnostic parsing ---
 check_spec() {
@@ -25,8 +26,10 @@ check_spec() {
   run_test
   got=$(timvisher_gh__repo_spec_from_url "$url")
   if [[ $got == "$want" ]]
-  then pass "repo_spec '$url' -> '$want'"
-  else fail "repo_spec '$url': want '$want', got '$got'"
+  then
+    pass "repo_spec '$url' -> '$want'"
+  else
+    fail "repo_spec '$url': want '$want', got '$got'"
   fi
 }
 check_spec "https://github.com/DataDog/dd-source.git"         "DataDog/dd-source"
@@ -41,10 +44,15 @@ check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
 mkdir -p "$tmpdir/mockbin2"
 cat > "$tmpdir/mockbin2/gh" <<'MOCK'
 #!/usr/bin/env bash
-if [[ $1 == api && $2 == /repos/* ]]; then
+if [[ $1 == api && $2 == /repos/* ]]
+then
   case "${2#/repos/}" in
-    ddoghq/dd-source|ddoghq/both|DataDog/appgate|DataDog/both|DataDog/dd-source) exit 0 ;;
-    *) exit 1 ;;
+    ddoghq/dd-source|ddoghq/both|DataDog/appgate|DataDog/both|DataDog/dd-source)
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
   esac
 fi
 exit 1
@@ -60,8 +68,10 @@ owner_is() { # want alias repo candidates
   got=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
         timvisher_gh__owner_for_repo "$alias" "$repo" "$cands" "$mgh") && rc=0 || rc=$?
   if [[ $rc -eq 0 && $got == "$want" ]]
-  then pass "owner_for_repo $alias/$repo [$cands] -> $want"
-  else fail "owner_for_repo $alias/$repo [$cands]: want '$want', got '$got' (rc=$rc)"
+  then
+    pass "owner_for_repo $alias/$repo [$cands] -> $want"
+  else
+    fail "owner_for_repo $alias/$repo [$cands]: want '$want', got '$got' (rc=$rc)"
   fi
 }
 
@@ -77,11 +87,14 @@ owner_is ddoghq  dd both      "ddoghq,DataDog"
 run_test
 if out=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
          timvisher_gh__owner_for_repo dd ghost "ddoghq,DataDog" "$mgh" 2>/dev/null)
-then fail "owner_for_repo: absent repo should return non-zero (got '$out')"
+then
+  fail "owner_for_repo: absent repo should return non-zero (got '$out')"
 else
   if [[ -z ${out:-} ]]
-  then pass "owner_for_repo: absent repo returns non-zero with no output"
-  else fail "owner_for_repo: absent repo printed '$out'"
+  then
+    pass "owner_for_repo: absent repo returns non-zero with no output"
+  else
+    fail "owner_for_repo: absent repo printed '$out'"
   fi
 fi
 
@@ -91,8 +104,10 @@ mkdir -p "$tmpdir/ghcache/repo_owner/dd"
 printf 'DataDog' > "$tmpdir/ghcache/repo_owner/dd/cached-repo"
 if [[ $(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
         timvisher_gh__owner_for_repo dd cached-repo "ddoghq,DataDog" /bin/false) == "DataDog" ]]
-then pass "owner_for_repo: cache hit returns without probing"
-else fail "owner_for_repo: cache hit should return cached owner without probing"
+then
+  pass "owner_for_repo: cache hit returns without probing"
+else
+  fail "owner_for_repo: cache hit should return cached owner without probing"
 fi
 
 # a successful probe caches the answer: a second call with a gh that always
@@ -104,8 +119,10 @@ first=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
 second=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
   timvisher_gh__owner_for_repo dd dd-source "ddoghq,DataDog" /bin/false)
 if [[ $first == "ddoghq" && $second == "ddoghq" ]]
-then pass "owner_for_repo: successful probe caches the answer"
-else fail "owner_for_repo: probe should cache (first='$first' second='$second')"
+then
+  pass "owner_for_repo: successful probe caches the answer"
+else
+  fail "owner_for_repo: probe should cache (first='$first' second='$second')"
 fi
 
 echo ""

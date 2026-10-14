@@ -10,8 +10,9 @@ run_test() { (( tests += 1 )); }
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/gh" ||
   { echo "cannot resolve script" >&2; exit 1; }
 
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/prefix/bin" "$tmpdir/mockbin" "$tmpdir/cfg/orgs" "$tmpdir/norepo"
 cat > "$tmpdir/prefix/bin/gh" <<'MOCK'
