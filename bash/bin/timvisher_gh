@@ -310,6 +310,11 @@ gh_pr_ready() {
     # Validate we got parseable JSON; empty output or error text means no checks yet
     if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
     then
+      if [[ -n $checks_json && $checks_json != *'no checks reported'* ]]
+      then
+        printf '%s\n' "$checks_json" >&2
+        die "gh couldn't read the checks for '%s'; not retrying" "$pr_url"
+      fi
       info 'No checks found yet; retrying in %ds' "$poll_interval"
       sleep "$poll_interval"
       continue
@@ -782,11 +787,17 @@ gh_comment_delete() {
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
   fi
 
-  if ! gh api "${comment_path}" --method HEAD 2>/dev/null
+  local head_err
+  if ! head_err=$(gh api "${comment_path}" --method HEAD 2>&1 >/dev/null)
   then
-    info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
-    rm -v "${comment_file}.url" >&2
-    return
+    if [[ $head_err == *'HTTP 404'* ]]
+    then
+      info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
+      rm -v "${comment_file}.url" >&2
+      return
+    fi
+    printf '%s\n' "$head_err" >&2
+    die "Couldn't check whether '%s' still exists; keeping '%s.url'" "$comment_path" "$comment_file"
   fi
 
   if (( ! force ))
@@ -799,16 +810,19 @@ gh_comment_delete() {
     fi
   fi
 
-  local rj
+  local rj rc=0
   rj=$(
     gh api \
        "${comment_path}" \
        --method DELETE \
        -H "Accept: application/vnd.github+json" \
        -H "X-GitHub-Api-Version: 2022-11-28"
-  ) || true
+  ) || rc=$?
 
-  if [[ -z $rj ]]
+  if (( rc != 0 )) && [[ -z $rj ]]
+  then
+    die "Deleting '%s' failed (rc=%d); keeping '%s.url'" "$comment_path" "$rc" "$comment_file"
+  elif [[ -z $rj ]]
   then
     # Successful DELETE returns empty body
     rm -v "${comment_file}.url" >&2

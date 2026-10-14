@@ -87,6 +87,10 @@ then
 elif [[ $1 == pr && $2 == edit ]]
 then
   echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_ERR-} ]]
+then
+  echo "$MOCK_CHECKS_ERR" >&2
+  exit 1
 elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_REFUSE-} ]]
 then
   echo '{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"}' >&2
@@ -126,12 +130,15 @@ then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
 elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  # Simulate comment exists (HEAD check)
-  true
+  if [[ -n ${MOCK_HEAD_ERR-} ]]
+  then
+    echo "$MOCK_HEAD_ERR" >&2
+    exit 1
+  fi
 elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  # Successful DELETE returns empty body
-  true
+  [[ -z ${MOCK_DELETE_FAIL-} ]] ||
+    exit 1
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -829,6 +836,18 @@ else
 fi
 rm -f "$tmpdir/repo/pr.md.url"
 
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+result=$(MOCK_CHECKS_ERR='HTTP 401: Bad credentials (https://api.github.com/graphql)' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && [[ $result == *"Bad credentials"* && $result == *"not retrying"* ]]
+then
+  pass "pr ready: stops on a gh error other than 'no checks reported'"
+else
+  fail "pr ready with an auth error: rc=${rc} result='${result}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+
 # Test: pr ready - exits if pr.md.url is missing
 run_test
 rm -f "$tmpdir/repo/pr.md.url"
@@ -1052,10 +1071,15 @@ then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
 elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  true
+  if [[ -n ${MOCK_HEAD_ERR-} ]]
+  then
+    echo "$MOCK_HEAD_ERR" >&2
+    exit 1
+  fi
 elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  true
+  [[ -z ${MOCK_DELETE_FAIL-} ]] ||
+    exit 1
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -1277,6 +1301,34 @@ then
 else
   fail "comment delete removes .url file after deletion: .url file still exists"
 fi
+
+for case in "HTTP 401: Bad credentials:keeps" "HTTP 404: Not Found:removes"
+do
+  head_err=${case%:*}
+  want=${case##*:}
+  run_test
+  echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+  export MOCK_LOG="$tmpdir/log_comment_delete_head"
+  touch "$MOCK_LOG"
+  echo y | MOCK_HEAD_ERR="$head_err" PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" >/dev/null 2>&1
+  if [[ $want == keeps && -r $tmpdir/repo/comment.md.url ]] || [[ $want == removes && ! -r $tmpdir/repo/comment.md.url ]]
+  then
+    pass "comment delete ${want} the .url file when the existence check fails with '${head_err}'"
+  else
+    fail "comment delete with '${head_err}' should ${want%s} the .url file"
+  fi
+done
+
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+echo y | MOCK_DELETE_FAIL=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md --force" >/dev/null 2>&1
+if [[ -r $tmpdir/repo/comment.md.url ]]
+then
+  pass "comment delete keeps the .url file when the DELETE fails"
+else
+  fail "comment delete removed the .url file after a failed DELETE"
+fi
+rm -f "$tmpdir/repo/comment.md.url"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
