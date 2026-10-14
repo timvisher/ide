@@ -30,11 +30,6 @@ trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$tmpdir/prefix/bin"
 cat > "$tmpdir/prefix/bin/git" <<'MOCK'
 #!/usr/bin/env bash
-if [[ $1 == --list-cmds=builtins ]]
-then
-  printf '%s\n' add commit grep log push
-  exit 0
-fi
 echo "real-git $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/git"
@@ -1297,20 +1292,20 @@ check_git_help() {
 }
 check_git_help "help push"     push --help
 check_git_help "help push"     push --force origin main --help
-check_git_help "push -h"       push -h
-check_git_help "commit -h"     commit -h
+check_git_help "help push"     push -h
+check_git_help "help commit"   commit -h
 check_git_help "help worktree" worktree add --help
 check_git_help "help add"      add -f --help
-check_git_help "-C /tmp -c a=b help commit" -C /tmp -c a=b commit --amend --help
-check_git_help "--no-pager help push"      --no-pager push --help
-check_git_help "-C /tmp push -h"           -C /tmp push -h
+check_git_help "help commit"   -C /tmp -c a=b commit --amend --help
+check_git_help "help push"     --no-pager push --help
+check_git_help "help push"     -C /tmp push -h
 check_git_help "help"          --help
 check_git_help "-h"            -h
 check_git_help "-h"            -h cleanup
 check_git_help "help cleanup"  cleanup -h
-check_git_help "-C /tmp help cleanup" -C /tmp cleanup -h
-check_git_help "-C /tmp -h"    -C /tmp -h push origin
-check_git_help "-C /tmp help push" -C /tmp --help push
+check_git_help "help cleanup"  -C /tmp cleanup -h
+check_git_help "-h"            -C /tmp -h push origin
+check_git_help "help push"     -C /tmp --help push
 
 run_test
 result=$(TIMVISHER_AGENT=true PATH="$test_path" \

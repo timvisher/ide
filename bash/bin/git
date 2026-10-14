@@ -212,24 +212,19 @@ _timvisher_git__phase resolve
 
 _timvisher_git__help_sub=''
 _timvisher_git__help=''
-_timvisher_git__help_short=false
 _timvisher_git__help_after_sub=0
 _timvisher_git__help_skip_next=false
-_timvisher_git__help_globals=()
-_timvisher_git__help_global_short=false
+_timvisher_git__help_pos=0
 for _timvisher_git__help_arg in "$@"
 do
+  (( _timvisher_git__help_pos += 1 ))
   if [[ $_timvisher_git__help_skip_next == true ]]
   then
     _timvisher_git__help_skip_next=false
-    _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
     continue
   fi
-  if [[ -n $_timvisher_git__help_sub ]]
-  then
+  [[ -n $_timvisher_git__help_sub ]] &&
     (( _timvisher_git__help_after_sub += 1 ))
-    _timvisher_git__help_short=false
-  fi
   case $_timvisher_git__help_arg in
     --)
       break
@@ -241,22 +236,17 @@ do
     -h)
       if [[ -z $_timvisher_git__help_sub ]]
       then
-        _timvisher_git__help_global_short=true
-      elif (( _timvisher_git__help_after_sub <= 1 ))
+        _timvisher_git__help=global
+      elif (( _timvisher_git__help_after_sub == 1 && _timvisher_git__help_pos == $# ))
       then
-        _timvisher_git__help_short=true
+        _timvisher_git__help=--help
       fi
       ;;
     -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)
-      if [[ -z $_timvisher_git__help_sub ]]
-      then
+      [[ -z $_timvisher_git__help_sub ]] &&
         _timvisher_git__help_skip_next=true
-        _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
-      fi
       ;;
     -*)
-      [[ -z $_timvisher_git__help_sub ]] &&
-        _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
       ;;
     *)
       [[ -n $_timvisher_git__help_sub ]] ||
@@ -264,23 +254,12 @@ do
       ;;
   esac
 done
-[[ -z $_timvisher_git__help && $_timvisher_git__help_short == true ]] &&
-  _timvisher_git__help=-h
-if [[ -z $_timvisher_git__help && $_timvisher_git__help_global_short == true ]]
+if [[ $_timvisher_git__help == global ]]
 then
-  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} -h
-fi
-if [[ $_timvisher_git__help == --help ]]
+  exec "$real_git" -h
+elif [[ $_timvisher_git__help == --help ]]
 then
-  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
-elif [[ $_timvisher_git__help == -h ]]
-then
-  if [[ -n $_timvisher_git__help_sub ]] &&
-     ! "$real_git" --list-cmds=builtins 2>/dev/null | grep -qx -- "$_timvisher_git__help_sub"
-  then
-    exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help "$_timvisher_git__help_sub"
-  fi
-  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"} -h
+  exec "$real_git" help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
 fi
 
 # ---------------------------------------------------------------------------
