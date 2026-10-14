@@ -1001,6 +1001,13 @@ gh_account__from_gh_repo() {
   gh_account__source="GH_REPO '${GH_REPO}'"
 }
 
+gh_account__gh_repo_owner_differs() {
+  local a=$GH_REPO
+  [[ $a == */*/* ]] &&
+    a=${a#*/}
+  [[ ${a%%/*} != "$gh_account__owner" ]]
+}
+
 gh_account__from_remotes() {
   local key value name resolved='' resolved_repo='' url host owner
   local -a names=() order=()
@@ -1122,8 +1129,19 @@ gh_account__select() {
       ;;
     api)
       gh_account__argv=(${gh_account__args_without_repo[@]+"${gh_account__args_without_repo[@]}"})
-      [[ -n $gh_account__api_repo ]] &&
+      if [[ -n $gh_account__api_repo ]]
+      then
         export GH_REPO=$gh_account__api_repo
+      elif [[ -n $gh_account__owner && -n ${GH_REPO-} ]] &&
+           gh_account__gh_repo_owner_differs
+      then
+        aictl_notice \
+          --code gh_api_gh_repo_dropped \
+          --message "Ignoring GH_REPO '${GH_REPO}' for this call: -R '${gh_args__repo_value}' names a different owner." \
+          --doc "$gh_account__doc" \
+          --suggestion "Pass -R OWNER/REPO to set the repository for {owner}/{repo} placeholders"
+        unset GH_REPO
+      fi
       ;;
   esac
 
