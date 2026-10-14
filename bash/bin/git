@@ -215,11 +215,14 @@ _timvisher_git__help=''
 _timvisher_git__help_short=false
 _timvisher_git__help_after_sub=0
 _timvisher_git__help_skip_next=false
+_timvisher_git__help_prev=''
+_timvisher_git__help_globals=()
 for _timvisher_git__help_arg in "$@"
 do
   if [[ $_timvisher_git__help_skip_next == true ]]
   then
     _timvisher_git__help_skip_next=false
+    _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
     continue
   fi
   if [[ -n $_timvisher_git__help_sub ]]
@@ -232,32 +235,44 @@ do
       break
       ;;
     --help)
-      _timvisher_git__help=--help
+      case $_timvisher_git__help_prev in
+        -e|--regexp|--grep|--author|--committer|-m|--message|-S|-G|-F|--file|-C|-c|--format|--pretty|-O|--exec|-x)
+          ;;
+        *)
+          _timvisher_git__help=--help
+          ;;
+      esac
       ;;
     -h)
       (( _timvisher_git__help_after_sub <= 1 )) &&
         _timvisher_git__help_short=true
       ;;
     -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)
-      [[ -z $_timvisher_git__help_sub ]] &&
+      if [[ -z $_timvisher_git__help_sub ]]
+      then
         _timvisher_git__help_skip_next=true
+        _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
+      fi
       ;;
     -*)
+      [[ -z $_timvisher_git__help_sub ]] &&
+        _timvisher_git__help_globals+=("$_timvisher_git__help_arg")
       ;;
     *)
       [[ -n $_timvisher_git__help_sub ]] ||
         _timvisher_git__help_sub=$_timvisher_git__help_arg
       ;;
   esac
+  _timvisher_git__help_prev=$_timvisher_git__help_arg
 done
 [[ -z $_timvisher_git__help && $_timvisher_git__help_short == true ]] &&
   _timvisher_git__help=-h
 if [[ $_timvisher_git__help == --help ]]
 then
-  exec "$real_git" help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
+  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
 elif [[ $_timvisher_git__help == -h ]]
 then
-  exec "$real_git" ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"} -h
+  exec "$real_git" ${_timvisher_git__help_globals[@]+"${_timvisher_git__help_globals[@]}"} ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"} -h
 fi
 
 # ---------------------------------------------------------------------------

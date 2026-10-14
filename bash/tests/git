@@ -1293,11 +1293,12 @@ check_git_help() {
 check_git_help "help push"     push --help
 check_git_help "help push"     push --force origin main --help
 check_git_help "push -h"       push -h
-check_git_help "help commit"   commit -m --help
 check_git_help "commit -h"     commit -h
 check_git_help "help worktree" worktree add --help
 check_git_help "help add"      add -f --help
-check_git_help "help commit"   -C /tmp -c a=b commit --amend --help
+check_git_help "-C /tmp -c a=b help commit" -C /tmp -c a=b commit --amend --help
+check_git_help "--no-pager help push"      --no-pager push --help
+check_git_help "-C /tmp push -h"           -C /tmp push -h
 check_git_help "help"          --help
 check_git_help "-h"            -h
 
@@ -1320,6 +1321,29 @@ then
 else
   fail "grep -h pattern: got '${result}'"
 fi
+
+run_test
+result=$(TIMVISHER_AGENT=true PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m --help" 2>&1 || true)
+if [[ $result != *"real-git help"* && $result == *'"type":"instruction","level":"error"'* ]]
+then
+  pass "'git commit -m --help' is a commit, so the guards judge it"
+else
+  fail "commit -m --help: got '${result}'"
+fi
+
+for args in "grep -e --help" "log --grep --help" "log --author --help"
+do
+  run_test
+  result=$(PATH="$test_path" \
+    bash -c "unset TIMVISHER_AGENT; source '${funcs_dir}/logging.bash'; '$script' $args" 2>&1 || true)
+  if [[ $result == *"real-git $args"* ]]
+  then
+    pass "'git $args' keeps --help as a value"
+  else
+    fail "'git $args': got '${result}'"
+  fi
+done
 
 run_test
 result=$(TIMVISHER_AGENT=true PATH="$test_path" \
