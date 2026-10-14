@@ -1500,6 +1500,11 @@ gh_account__from_args() {
   then
     if [[ -n $gh_args__repo_value ]]
     then
+      if gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
+      then
+        gh_account__api_repo=$gh_args__repo_value
+        return 1
+      fi
       if owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
       then
         gh_account__owner=$owner
@@ -1556,6 +1561,10 @@ gh_account__from_args() {
           ;;
         'repo view'|'repo clone'|'repo fork'|'repo delete'|'repo archive'|'repo unarchive'|'repo edit'|'repo sync'|'repo set-default'|'repo create'|'repo new')
           owner=''
+          if gh_account__foreign=$(gh_account__foreign_host "$selector")
+          then
+            return 1
+          fi
           [[ $selector == */* ]] &&
             owner=$(gh_account__owner_from_repo_value "$selector")
           ;;
@@ -1581,6 +1590,12 @@ gh_account__from_args() {
   fi
 
   if [[ -n $gh_args__repo_value ]] &&
+     gh_account__foreign=$(gh_account__foreign_host "$gh_args__repo_value")
+  then
+    return 1
+  fi
+
+  if [[ -n $gh_args__repo_value ]] &&
      owner=$(gh_account__owner_from_repo_value "$gh_args__repo_value")
   then
     gh_account__owner=$owner
@@ -1597,6 +1612,32 @@ gh_account__from_args() {
     return 0
   fi
   return 1
+}
+
+gh_account__foreign_host() {
+  local a=$1 host=''
+  case $a in
+    *://*)
+      a=${a#*://}
+      host=${a%%/*}
+      host=${host##*@}
+      ;;
+    *@*:*)
+      host=${a#*@}
+      host=${host%%:*}
+      ;;
+    */*/*)
+      host=${a%%/*}
+      ;;
+  esac
+  [[ -n $host ]] ||
+    return 1
+  case $host in
+    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$host"
 }
 
 gh_account__owner_from_repo_value() {
@@ -1802,6 +1843,7 @@ gh_account__select() {
   gh_account__source=''
   gh_account__argv=("$@")
 
+  gh_account__foreign=''
   gh_account__from_args
 
   case $gh_account__command in
@@ -1843,6 +1885,15 @@ gh_account__select() {
       --reason "A caller-set token always wins, so the gh shim did not select an account from the call's target." \
       --doc "$gh_account__doc" \
       --suggestion "Unset GH_TOKEN and GITHUB_TOKEN to let the shim pick the account for the target org"
+    return 0
+  fi
+
+  if [[ -n $gh_account__foreign ]]
+  then
+    aictl_info \
+      --code gh_account_active \
+      --message "The call targets '${gh_account__foreign}', not github.com; gh will run as its account for that host." \
+      --doc "$gh_account__doc"
     return 0
   fi
 

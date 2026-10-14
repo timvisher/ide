@@ -106,12 +106,10 @@ check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
 check_owner "ddoghq"  pr view 691 -Rddoghq/dd-source
 check_owner "ddoghq"  pr view 691 --repo github.com/ddoghq/dd-source
 check_owner "ddoghq"  pr view 691 --repo https://github.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo ghe.example.com/ddoghq/dd-source
 check_owner "ddoghq"  pr view 691 -R personal/repo -R ddoghq/dd-source
 check_owner "DataDog" pr view 1 --repo DataDog/appgate
 check_owner "-"       repo list
 check_owner "ddoghq"  repo view ddoghq/dd-source --json name
-check_owner "ddoghq"  repo view ghe.example.com/ddoghq/dd-source
 check_owner "ddoghq"  repo clone ddoghq/dd-source ./dir
 check_owner "ddoghq"  repo create ddoghq/new-repo --private
 check_owner "otherorg" repo list otherorg --limit 5
@@ -262,9 +260,9 @@ check_api "api -R with a github.com URL" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
   "for 'otherorg'" \
   api -R https://github.com/otherorg/repo/pull/1 user
-check_api "api -R HOST/OWNER/REPO keeps the host in GH_REPO" \
-  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=ghe.example.com/otherorg/repo api user" \
-  "for 'otherorg'" \
+check_api "api -R HOST/OWNER/REPO for another host keeps the host and picks no account" \
+  "real-gh GH_TOKEN= GH_REPO=ghe.example.com/otherorg/repo api user" \
+  "targets 'ghe.example.com', not github.com" \
   api -R ghe.example.com/otherorg/repo user
 check_api "api -R beats the endpoint" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/otherorg/x" \
@@ -483,6 +481,16 @@ check_source "owner matching ignores case" tok-acct-ddoghq \
 run_shim "$tmpdir/norepo" api repos/EMU_USER/fork
 check_source "own-namespace matching ignores case" tok-emu_user \
   "Using gh account 'emu_user' for 'EMU_USER'"
+
+run_shim "$repo" pr view 1 --repo ghe.example.com/ddoghq/dd-source
+check_source "--repo on another host picks no github.com account" '' \
+  "targets 'ghe.example.com', not github.com"
+run_shim "$repo" repo view https://ghe.example.com/ddoghq/dd-source
+check_source "a repo URL on another host picks no github.com account" '' \
+  "targets 'ghe.example.com', not github.com"
+run_shim "$tmpdir/norepo" pr view 1 --repo github.com/ddoghq/dd-source
+check_source "--repo github.com/OWNER/REPO still counts" tok-acct-ddoghq \
+  "for 'ddoghq'"
 
 run_shim "$tmpdir/norepo" pr view 1 --repo unmapped/repo
 check_source "an unmapped owner runs as the active account" '' \
