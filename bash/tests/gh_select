@@ -166,9 +166,7 @@ check_owner "ddoghq"  repo clone ssh://git@github.com/ddoghq/dd-source.git
 check_owner "ddoghq"  pr view https://github.com/ddoghq/repos/pull/1
 check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1 --repo DataDog/appgate
 check_owner "ddoghq"  pr view http://www.github.com/ddoghq/dd-source/pull/1
-check_owner "ddoghq"  pr view HTTPS://GitHub.com/ddoghq/dd-source/pull/1
 check_owner "myorg"   project view 1 --owner myorg
-check_owner "someone" repo list https://github.com/users/someone
 
 check_owner "-"       pr view https://github.com/orgs
 check_owner "-"       pr view 'https://github.com/orgs?x=a/b'

@@ -787,7 +787,6 @@ else
   fail "pr merge: exits if pr.md.url missing: got '${result}'"
 fi
 
-# Test: pr merge - a fork checkout merges the upstream PR with the upstream's strategies
 run_test
 printf 'https://github.com/upstreamorg/testrepo/pull/9\n' > "$tmpdir/repo/pr.md.url"
 export MOCK_LOG="$tmpdir/log_pr_merge_fork"

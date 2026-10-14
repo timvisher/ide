@@ -111,7 +111,8 @@ if [[ $1 == repo && $2 == view ]]; then
 fi
 
 # --- gh api user (for current_gh_user) ---
-if [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]; then
+if [[ $1 == api && $2 == -R && -n $3 && $4 == user ]]
+then
   jq_expr=
   while (( $# )); do
     if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
