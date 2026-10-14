@@ -1646,41 +1646,56 @@ gh_account__gh_repo_owner_differs() {
   [[ $owner != "$gh_account__owner" ]]
 }
 
-gh_account__from_remotes() {
-  local key value name resolved='' resolved_repo='' url host owner
-  local -a names=() order=()
-  local -A urls=()
-  while read -r key value
-  do
-    name=${key#remote.}
-    case $key in
-      remote.*.url)
-        name=${name%.url}
-        [[ -n ${urls[$name]+x} ]] ||
-          names+=("$name")
-        urls[$name]=$value
-        ;;
-      remote.*.gh-resolved)
-        name=${name%.gh-resolved}
-        if [[ $value == base ]]
-        then
-          resolved=$name
-        elif [[ $value == */* ]]
-        then
-          resolved_repo=$value
-        fi
-        ;;
-    esac
-  done < <(git config --get-regexp '^remote\..*\.(url|gh-resolved)$' 2>/dev/null)
-
-  if [[ -n $resolved_repo ]]
-  then
-    owner=${resolved_repo%%/*}
-    if gh_account__valid_owner "$owner"
-    then
-      gh_account__owner=$owner
-      gh_account__source="gh repo set-default '${resolved_repo}'"
+gh_account__github_host() {
+  local host=$1 ssh_style=$2 real
+  case $host in
+    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
       return 0
+      ;;
+  esac
+  [[ $ssh_style == true ]] ||
+    return 1
+  real=$(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')
+  case $real in
+    [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+gh_account__from_remotes() {
+  local use_resolution=$1 key value name resolved='' resolved_repo='' url host owner ssh_style
+  local -a names=() order=()
+
+  mapfile -t names < <(git remote 2>/dev/null)
+  (( ${#names[@]} )) ||
+    return 1
+
+  if [[ $use_resolution == true ]]
+  then
+    while read -r key value
+    do
+      name=${key#remote.}
+      name=${name%.gh-resolved}
+      if [[ $value == base ]]
+      then
+        resolved=$name
+      elif [[ $value == */* ]]
+      then
+        resolved_repo=$value
+      fi
+    done < <(git config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null)
+
+    if [[ -n $resolved_repo ]]
+    then
+      owner=${resolved_repo%%/*}
+      if gh_account__valid_owner "$owner"
+      then
+        gh_account__owner=$owner
+        gh_account__source="gh repo set-default '${resolved_repo}'"
+        return 0
+      fi
     fi
   fi
 
@@ -1700,11 +1715,21 @@ gh_account__from_remotes() {
 
   for name in "${order[@]}"
   do
-    url=${urls[$name]-}
-    [[ -n $url ]] ||
+    gh_args__in "$name" "${names[@]}" ||
+      continue
+    url=$(git remote get-url "$name" 2>/dev/null) ||
       continue
     url=${url%.git}
+    ssh_style=false
     case $url in
+      ssh://*)
+        ssh_style=true
+        url=${url#*://}
+        host=${url%%/*}
+        host=${host##*@}
+        host=${host%%:*}
+        url=${url#*/}
+        ;;
       *://*)
         url=${url#*://}
         host=${url%%/*}
@@ -1712,22 +1737,18 @@ gh_account__from_remotes() {
         host=${host%%:*}
         url=${url#*/}
         ;;
-      *@*:*)
-        host=${url#*@}
-        host=${host%%:*}
+      *:*)
+        ssh_style=true
+        host=${url%%:*}
+        host=${host##*@}
         url=${url#*:}
         ;;
       *)
         continue
         ;;
     esac
-    case $host in
-      [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
-        ;;
-      *)
-        continue
-        ;;
-    esac
+    gh_account__github_host "$host" "$ssh_style" ||
+      continue
     [[ $url == */* ]] ||
       continue
     owner=${url%%/*}
@@ -1778,6 +1799,15 @@ gh_account__select() {
   gh_account__from_args
 
   case $gh_account__command in
+    browse|pr|issue|release|repo|ruleset|run|workflow|label|cache)
+      gh_account__resolves_base=true
+      ;;
+    *)
+      gh_account__resolves_base=false
+      ;;
+  esac
+
+  case $gh_account__command in
     ''|auth|help|completion|version|config|alias)
       return 0
       ;;
@@ -1824,7 +1854,7 @@ gh_account__select() {
 
   [[ -n $gh_account__owner ]] ||
     gh_account__from_gh_repo ||
-    gh_account__from_remotes ||
+    gh_account__from_remotes "$gh_account__resolves_base" ||
     {
       aictl_info \
         --code gh_account_active \

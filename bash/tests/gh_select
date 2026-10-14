@@ -36,6 +36,17 @@ fi
 echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/gh"
+cat > "$tmpdir/mockbin/ssh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == -G && $2 == work-gh ]]
+then
+  echo "hostname github.com"
+elif [[ $1 == -G ]]
+then
+  echo "hostname $2"
+fi
+MOCK
+chmod +x "$tmpdir/mockbin/ssh"
 cat > "$tmpdir/mockbin/brew" <<MOCK
 #!/usr/bin/env bash
 echo "$tmpdir/prefix"
@@ -346,6 +357,30 @@ git -C "$repo2" config remote.work.gh-resolved parentorg/x 2>/dev/null
 run_shim "$repo2" pr list
 check_source "gh repo set-default's OWNER/REPO form wins" tok-acct-parentorg \
   "for 'parentorg' (from gh repo set-default 'parentorg/x')"
+
+run_shim "$repo2" secret list
+check_source "gh secret ignores gh repo set-default, like gh" tok-acct-workorg \
+  "for 'workorg' (from git remote 'work')"
+run_shim "$repo2" api 'repos/{owner}/{repo}'
+check_source "gh api placeholders ignore gh repo set-default, like gh" tok-acct-workorg \
+  "for 'workorg' (from git remote 'work')"
+
+map aliasorg acct-aliasorg
+repo3="$tmpdir/repo3"
+git init -q "$repo3" 2>/dev/null
+git -C "$repo3" remote add origin git@work-gh:aliasorg/x.git 2>/dev/null
+run_shim "$repo3" pr list
+check_source "an SSH host alias for github.com counts" tok-acct-aliasorg \
+  "for 'aliasorg' (from git remote 'origin')"
+
+map rewriteorg acct-rewriteorg
+repo4="$tmpdir/repo4"
+git init -q "$repo4" 2>/dev/null
+git -C "$repo4" remote add origin work:x 2>/dev/null
+git -C "$repo4" config url.https://github.com/rewriteorg/.insteadOf work: 2>/dev/null
+run_shim "$repo4" pr list
+check_source "a remote rewritten by url.insteadOf counts" tok-acct-rewriteorg \
+  "for 'rewriteorg' (from git remote 'origin')"
 
 extra_env=(GH_REPO=ddoghq/dd-source)
 run_shim "$repo" pr list
