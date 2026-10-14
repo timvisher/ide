@@ -243,10 +243,10 @@ gh_args__value_flags() {
       printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
       ;;
     'codespace ports forward')
-      :
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
     'codespace ports visibility')
-      :
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
     'codespace ports')
       printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
@@ -318,10 +318,10 @@ gh_args__value_flags() {
       printf '%s\n' -q --jq --json -L --limit -o --org -R --repo -t --template -u --user
       ;;
     'cs ports forward')
-      :
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
     'cs ports visibility')
-      :
+      printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
       ;;
     'cs ports')
       printf '%s\n' -c --codespace -q --jq --json -R --repo --repo-owner -t --template
@@ -594,70 +594,67 @@ gh_args__value_flags() {
       :
       ;;
     'pr checkout')
-      printf '%s\n' -b --branch --worktree
+      printf '%s\n' -b --branch --worktree -R --repo
       ;;
     'pr checks')
-      printf '%s\n' -i --interval -q --jq --json -t --template
+      printf '%s\n' -i --interval -q --jq --json -t --template -R --repo
       ;;
     'pr close')
-      printf '%s\n' -c --comment
+      printf '%s\n' -c --comment -R --repo
       ;;
     'pr co')
-      printf '%s\n' -b --branch --worktree
+      printf '%s\n' -b --branch --worktree -R --repo
       ;;
     'pr comment')
-      printf '%s\n' --attach -b --body -F --body-file
+      printf '%s\n' --attach -b --body -F --body-file -R --repo
       ;;
     'pr create')
-      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title
+      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title -R --repo
       ;;
     'pr diff')
-      printf '%s\n' --color -e --exclude
+      printf '%s\n' --color -e --exclude -R --repo
       ;;
     'pr edit')
-      printf '%s\n' --add-assignee --add-label --add-project --add-reviewer --attach -B --base -b --body -F --body-file -m --milestone --remove-assignee --remove-label --remove-project --remove-reviewer -t --title
+      printf '%s\n' --add-assignee --add-label --add-project --add-reviewer --attach -B --base -b --body -F --body-file -m --milestone --remove-assignee --remove-label --remove-project --remove-reviewer -t --title -R --repo
       ;;
     'pr list')
-      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template
+      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template -R --repo
       ;;
     'pr lock')
-      printf '%s\n' -r --reason
+      printf '%s\n' -r --reason -R --repo
       ;;
     'pr ls')
-      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template
+      printf '%s\n' --app -a --assignee -A --author -B --base -H --head -q --jq --json -l --label -L --limit -S --search -s --state -t --template -R --repo
       ;;
     'pr merge')
-      printf '%s\n' -A --author-email -b --body -F --body-file --match-head-commit -t --subject
+      printf '%s\n' -A --author-email -b --body -F --body-file --match-head-commit -t --subject -R --repo
       ;;
     'pr new')
-      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title
+      printf '%s\n' -a --assignee --attach -B --base -b --body -F --body-file -H --head -l --label -m --milestone -p --project --recover -r --reviewer -T --template -t --title -R --repo
       ;;
     'pr ready')
-      :
+      printf '%s\n' -R --repo
       ;;
     'pr reopen')
-      printf '%s\n' -c --comment
+      printf '%s\n' -c --comment -R --repo
       ;;
     'pr revert')
-      printf '%s\n' -b --body -F --body-file -t --title
+      printf '%s\n' -b --body -F --body-file -t --title -R --repo
       ;;
     'pr review')
-      printf '%s\n' -b --body -F --body-file
+      printf '%s\n' -b --body -F --body-file -R --repo
       ;;
     'pr status')
-      printf '%s\n' -q --jq --json -t --template
+      printf '%s\n' -q --jq --json -t --template -R --repo
       ;;
     'pr unlock')
-      :
+      printf '%s\n' -R --repo
       ;;
     'pr update-branch')
-      :
+      printf '%s\n' -R --repo
       ;;
     'pr view')
-      printf '%s\n' -q --jq --json -t --template
-      ;;
-    'pr-comment-thumbsup')
-      :
+      printf '%s\n' -q --jq --json -t --template -R --repo
       ;;
     'pr')
       printf '%s\n' -R --repo

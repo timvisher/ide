@@ -6,7 +6,10 @@ script="$(cd "$(dirname "$0")/.." && pwd)/bin/gh" ||
 real_gh="$(brew --prefix 2>/dev/null)/bin/gh"
 
 generate() {
-  "$real_gh" help reference 2>/dev/null |
+  local isolated
+  isolated=$(mktemp -d) || return 1
+  GH_CONFIG_DIR="$isolated" XDG_DATA_HOME="$isolated" XDG_CONFIG_HOME="$isolated" \
+    "$real_gh" help reference 2>/dev/null |
     awk '
       /^##+ gh / {
         line = $0
@@ -58,6 +61,15 @@ generate() {
       }
       END {
         for (p in paths)
+        {
+          parent = p
+          while (sub(/ [^ ]+$/, "", parent))
+          {
+            if (parent in paths)
+              flags[p] = flags[p] flags[parent]
+          }
+        }
+        for (p in paths)
           print p ":" flags[p]
         for (a in alias_of)
         {
@@ -73,6 +85,7 @@ generate() {
       }
     ' |
     LC_ALL=C sort -u
+  rm -rf "$isolated"
 }
 
 current() {
