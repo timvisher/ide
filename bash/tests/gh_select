@@ -54,6 +54,7 @@ run_shim() {
         ${extra_env[@]+"${extra_env[@]}"} \
         "$script" "$@" 2>"$tmpdir/err"
   )
+  rc=$?
   err=$(< "$tmpdir/err")
 }
 extra_env=()
@@ -142,9 +143,80 @@ check_owner "-"       pr review -a https://github.com/ddoghq/dd-source/pull/1
 check_owner "-"       pr review 123 -r -b https://github.com/evil/x
 check_owner "-"       pr comment 123 --body --repo=evil/repo
 check_owner "-"       pr comment 123 --body-file
-check_owner "-"       api graphql -f query=mutation -f body=https://github.com/evil/x
-check_owner "-"       api graphql -f body=see/repos/evil/x
-check_owner "-"       api graphql -f query=mutation -f id=PRRC_kwDOabc
+
+check_api_dies() {
+  run_test
+  run_shim "$tmpdir/norepo" "$@"
+  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_api_owner_required"'* ]]
+  then
+    pass "[$*] dies asking for -R"
+  else
+    fail "[$*]: expected gh_api_owner_required; rc=$rc out='$out' err='$err'"
+  fi
+}
+
+check_api_dies api graphql -f query=mutation -f body=https://github.com/evil/x
+check_api_dies api graphql -f body=see/repos/evil/x
+check_api_dies api graphql -f query=mutation -f id=PRRC_kwDOabc
+check_api_dies api user --jq .login
+check_api_dies api search/issues -f q=x
+check_api_dies api -R ../x graphql -f query=x
+check_api_dies api -R '' user
+
+check_api() {
+  local label=$1 want_out=$2 want_err=$3
+  shift 3
+  run_test
+  run_shim "$tmpdir/norepo" "$@"
+  if [[ $out == "$want_out" && $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; out='$out' err='$err'"
+  fi
+}
+
+map otherorg acct-otherorg
+check_api "api -R OWNER picks the account and is removed" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api graphql -f query=x" \
+  "for 'otherorg' (from -R 'otherorg')" \
+  api -R otherorg graphql -f query=x
+check_api "api -R OWNER/REPO sets GH_REPO for placeholders" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api repos/{owner}/{repo}/pulls" \
+  "for 'otherorg' (from -R 'otherorg/repo')" \
+  api -R otherorg/repo 'repos/{owner}/{repo}/pulls'
+check_api "api --repo=OWNER/REPO" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
+  "for 'otherorg'" \
+  api --repo=otherorg/repo user
+check_api "api --repo OWNER/REPO after the endpoint" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user --jq .login" \
+  "for 'otherorg'" \
+  api user --repo otherorg/repo --jq .login
+check_api "api -ROWNER/REPO" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
+  "for 'otherorg'" \
+  api -Rotherorg/repo user
+check_api "api -R with a github.com URL" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=otherorg/repo api user" \
+  "for 'otherorg'" \
+  api -R https://github.com/otherorg/repo/pull/1 user
+check_api "api -R HOST/OWNER/REPO keeps the host in GH_REPO" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO=ghe.example.com/otherorg/repo api user" \
+  "for 'otherorg'" \
+  api -R ghe.example.com/otherorg/repo user
+check_api "api -R beats the endpoint" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/otherorg/x" \
+  "for 'ddoghq' (from -R 'ddoghq')" \
+  api -R ddoghq repos/otherorg/x
+check_api "api keeps -R inside a flag value" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api graphql -f x=-R -f -R" \
+  "for 'otherorg'" \
+  api -R otherorg graphql -f x=-R -f -R
+check_api "a non-api --repo is passed through to gh" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr view 1 --repo otherorg/repo" \
+  "for 'otherorg'" \
+  pr view 1 --repo otherorg/repo
 
 map DataDog acct-DataDog
 map upstreamorg acct-upstreamorg
@@ -168,6 +240,10 @@ check_source() {
 
 run_shim "$repo" pr list
 check_source "origin remote selects its owner" tok-acct-DataDog \
+  "for 'DataDog' (from git remote 'origin')"
+
+run_shim "$repo" api 'repos/{owner}/{repo}/pulls'
+check_source "an api {owner} placeholder uses the cwd remote" tok-acct-DataDog \
   "for 'DataDog' (from git remote 'origin')"
 
 run_shim "$repo" pr view 1 --repo ddoghq/dd-source
@@ -213,6 +289,26 @@ extra_env=(GH_TOKEN=caller-token)
 run_shim "$repo" pr view 1 --repo ddoghq/dd-source
 check_source "a caller-set GH_TOKEN is deferred to" caller-token \
   '"level":"warning","code":"gh_account_deferred"'
+
+run_shim "$tmpdir/norepo" api graphql -f query=x
+check_source "a caller-set GH_TOKEN satisfies api without -R" caller-token \
+  '"code":"gh_account_deferred"'
+
+run_shim "$tmpdir/norepo" api -R otherorg/repo user
+check_source "api -R is still removed under a caller-set GH_TOKEN" caller-token \
+  '"code":"gh_account_deferred"'
+run_test
+if [[ $out == "real-gh GH_TOKEN=caller-token GH_REPO=otherorg/repo api user" ]]
+then
+  pass "api -R OWNER/REPO still sets GH_REPO under a caller-set GH_TOKEN"
+else
+  fail "api -R under GH_TOKEN; out='$out'"
+fi
+
+extra_env=(GH_REPO=ddoghq/dd-source)
+run_shim "$tmpdir/norepo" api graphql -f query=x
+check_source "GH_REPO satisfies api without -R" tok-acct-ddoghq \
+  "for 'ddoghq' (from GH_REPO 'ddoghq/dd-source' in the environment)"
 
 extra_env=(GITHUB_TOKEN=caller-token)
 run_shim "$repo" pr view 1 --repo ddoghq/dd-source

@@ -192,8 +192,8 @@ gh_account__valid_owner() {
   [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
 }
 
-gh_account__owner_from_web_url() {
-  local a=$1 owner
+gh_account__path_from_web_url() {
+  local a=$1
   case $a in
     [Hh][Tt][Tt][Pp][Ss]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp][Ss]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|ssh://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*)
       a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
@@ -205,7 +205,13 @@ gh_account__owner_from_web_url() {
       return 1
       ;;
   esac
-  a=${a%%[?#]*}
+  printf '%s\n' "${a%%[?#]*}"
+}
+
+gh_account__owner_from_web_url() {
+  local a owner
+  a=$(gh_account__path_from_web_url "$1") ||
+    return 1
   owner=${a%%/*}
   case $owner in
     orgs|users)
@@ -225,18 +231,22 @@ gh_account__owner_from_web_url() {
 
 # Set gh_account__command to the gh command group, and gh_account__owner and
 # gh_account__source to the owner the arguments target, roughly in gh's own
-# order: the 'gh api' endpoint or a github.com URL given as the selector
-# ('gh pr view <url>'), then the last --repo/-R. Return 1 when the arguments
-# name no owner.
+# order: for 'gh api', its -R and then its endpoint; otherwise a github.com
+# URL given as the selector ('gh pr view <url>'), then the last --repo/-R.
+# Return 1 when the arguments name no owner.
 gh_account__from_args() {
   local a owner repo_value='' consume=0 bare_flag=0
   local -a positionals=() after_bare_flag=()
+  gh_account__args_without_repo=()
+  gh_account__api_repo=''
+  gh_account__api_placeholder=0
   for a in "$@"
   do
     if (( consume == 1 ))
     then
       consume=0
       bare_flag=0
+      gh_account__args_without_repo+=("$a")
       continue
     fi
     if (( consume == 2 ))
@@ -249,14 +259,17 @@ gh_account__from_args() {
     case $a in
       -R|--repo)
         consume=2
+        continue
         ;;
       --repo=*|-R=*)
         repo_value=${a#*=}
         bare_flag=0
+        continue
         ;;
       -R?*)
         repo_value=${a#-R}
         bare_flag=0
+        continue
         ;;
       -b|--body|-F|--body-file|--field|-f|--raw-field|-t|--title|--template|-c|--comment|--subject|-S|--search|--json|-q|--jq|--homepage|--notes|--notes-file|-n|--milestone|--label|-l|--assignee|--reviewer|--head|-H|--header|--base|-B|--input|-X|--method|--hostname|--cache|-p|--preview|--description)
         consume=1
@@ -273,13 +286,27 @@ gh_account__from_args() {
         bare_flag=0
         ;;
     esac
+    gh_account__args_without_repo+=("$a")
   done
 
   gh_account__command=${positionals[0]-}
 
   if [[ $gh_account__command == api ]]
   then
+    if [[ -n $repo_value ]]
+    then
+      if owner=$(gh_account__owner_from_repo_value "$repo_value")
+      then
+        gh_account__owner=$owner
+        gh_account__source="-R '${repo_value}'"
+        gh_account__api_repo=$(gh_account__repo_spec_from_repo_value "$repo_value")
+        return 0
+      fi
+      return 1
+    fi
     a=${positionals[1]-}
+    [[ $a == *'{owner}'* || $a == *'{repo}'* ]] &&
+      gh_account__api_placeholder=1
     case $a in
       [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
         a=${a#*://*/}
@@ -308,23 +335,44 @@ gh_account__from_args() {
     fi
   fi
 
-  if [[ -n $repo_value ]]
+  if [[ -n $repo_value ]] &&
+     owner=$(gh_account__owner_from_repo_value "$repo_value")
   then
-    owner=$(gh_account__owner_from_web_url "$repo_value") ||
-      {
-        a=${repo_value#*://}
-        [[ $a == */*/* ]] &&
-          a=${a#*/}
-        owner=${a%%/*}
-      }
-    if gh_account__valid_owner "$owner"
-    then
-      gh_account__owner=$owner
-      gh_account__source="--repo '${repo_value}'"
-      return 0
-    fi
+    gh_account__owner=$owner
+    gh_account__source="--repo '${repo_value}'"
+    return 0
   fi
   return 1
+}
+
+gh_account__owner_from_repo_value() {
+  local a=$1 owner
+  owner=$(gh_account__owner_from_web_url "$a") ||
+    {
+      a=${a#*://}
+      [[ $a == */*/* ]] &&
+        a=${a#*/}
+      owner=${a%%/*}
+    }
+  gh_account__valid_owner "$owner" ||
+    return 1
+  printf '%s\n' "$owner"
+}
+
+gh_account__repo_spec_from_repo_value() {
+  local a=$1 o r rest
+  if a=$(gh_account__path_from_web_url "$a")
+  then
+    IFS=/ read -r o r rest <<< "$a"
+    [[ -n $r ]] ||
+      return 0
+    printf '%s/%s\n' "$o" "${r%.git}"
+    return 0
+  fi
+  a=$1
+  [[ $a == */* ]] ||
+    return 0
+  printf '%s\n' "$a"
 }
 
 gh_account__from_gh_repo() {
@@ -404,12 +452,18 @@ gh_account__select() {
   gh_account__command=''
   gh_account__owner=''
   gh_account__source=''
+  gh_account__argv=("$@")
 
   gh_account__from_args "$@"
 
   case $gh_account__command in
     ''|auth|help|completion|version|config|alias)
       return 0
+      ;;
+    api)
+      gh_account__argv=(${gh_account__args_without_repo[@]+"${gh_account__args_without_repo[@]}"})
+      [[ -n $gh_account__api_repo ]] &&
+        export GH_REPO=$gh_account__api_repo
       ;;
   esac
 
@@ -422,6 +476,18 @@ gh_account__select() {
       --doc "$gh_account__doc" \
       --suggestion "Unset GH_TOKEN and GITHUB_TOKEN to let the shim pick the account for the target org"
     return 0
+  fi
+
+  if [[ $gh_account__command == api && -z $gh_account__owner && -z ${GH_REPO-} ]] &&
+     (( ! gh_account__api_placeholder ))
+  then
+    aictl_die \
+      --code gh_api_owner_required \
+      --message "'gh api' needs -R OWNER or -R OWNER/REPO to pick the gh account: its endpoint doesn't name an owner." \
+      --reason "Endpoints like graphql, user and search/... carry no owner, so the gh shim can't tell which account can see the target. The shim reads -R and removes it before running gh, which has no -R for api; -R OWNER/REPO also sets GH_REPO for {owner}/{repo} placeholders." \
+      --doc "$gh_account__doc" \
+      --suggestion "gh api -R OWNER graphql -f query=..." \
+      --suggestion "gh api -R OWNER/REPO 'repos/{owner}/{repo}/...'"
   fi
 
   [[ -n $gh_account__owner ]] ||
@@ -473,4 +539,4 @@ gh_account__select() {
 
 gh_account__select "$@"
 
-exec "$gh_account__real_gh" "$@"
+exec "$gh_account__real_gh" ${gh_account__argv[@]+"${gh_account__argv[@]}"}
