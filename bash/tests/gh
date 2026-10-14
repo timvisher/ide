@@ -236,7 +236,7 @@ fi
 # Test: allows 'gh repo clone OWNER/REPO' — read-only, 'clone' excluded
 # from mutating-verb regex
 run_test
-result=$(run_agent repo clone someorg/otherrepo)
+result=$(run_agent -R someorg/otherrepo repo clone someorg/otherrepo)
 if [[ $result == *"real-gh repo clone someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
 then
   pass "passes 'gh repo clone' (clone is not a mutating verb)"
@@ -349,7 +349,7 @@ fi
 
 # Test: 'gh repo view OWNER/REPO' passes through when agent
 run_test
-result=$(run_agent repo view someorg/otherrepo)
+result=$(run_agent -R someorg/otherrepo repo view someorg/otherrepo)
 if [[ $result == *"real-gh repo view someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
 then
   pass "passes 'gh repo view' when agent"
@@ -359,7 +359,7 @@ fi
 
 # Test: 'gh repo set-default' passes through when agent
 run_test
-result=$(run_agent repo set-default someorg/otherrepo)
+result=$(run_agent -R someorg/otherrepo repo set-default someorg/otherrepo)
 if [[ $result == *"real-gh repo set-default someorg/otherrepo"* ]] && [[ $result != *'"code":"gh_'*'_blocked"'* ]]
 then
   pass "passes 'gh repo set-default' when agent"
