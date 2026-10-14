@@ -15,21 +15,50 @@ then
       exit 1
     }
 fi
-aictl__stub_parse() {
-  _sc="" _sm=""
-  while (( 0 < $# )); do
+gh_shim__json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\t'/\\t}
+  printf '%s' "$s"
+}
+gh_shim__stub_parse() {
+  _sc=''
+  _sm=''
+  while (( 0 < $# ))
+  do
     case "$1" in
-      --code) _sc=$2; shift 2 ;;
-      --message) _sm=$2; shift 2 ;;
-      --*) shift 2 ;;
-      *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
+      --code)
+        _sc=$2
+        shift 2
+        ;;
+      --message)
+        _sm=$2
+        shift 2
+        ;;
+      --*)
+        shift 2
+        ;;
+      *)
+        if [[ -z $_sc ]]
+        then
+          _sc=$1
+        elif [[ -z $_sm ]]
+        then
+          _sm=$1
+        fi
+        shift
+        ;;
     esac
   done
+  _sc=$(gh_shim__json_escape "$_sc")
+  _sm=$(gh_shim__json_escape "$_sm")
 }
 if ! declare -F aictl_die &>/dev/null
 then
   aictl_die() {
-    aictl__stub_parse "$@"
+    gh_shim__stub_parse "$@"
     printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$_sc" "$_sm" >&2
     exit 1
   }
@@ -37,14 +66,14 @@ fi
 if ! declare -F aictl_info &>/dev/null
 then
   aictl_info() {
-    aictl__stub_parse "$@"
+    gh_shim__stub_parse "$@"
     printf '{"type":"instruction","level":"info","code":"%s","message":"%s"}\n' "$_sc" "$_sm" >&2
   }
 fi
 if ! declare -F aictl_notice &>/dev/null
 then
   aictl_notice() {
-    aictl__stub_parse "$@"
+    gh_shim__stub_parse "$@"
     printf '{"type":"instruction","level":"warning","code":"%s","message":"%s"}\n' "$_sc" "$_sm" >&2
   }
 fi

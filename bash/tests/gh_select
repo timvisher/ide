@@ -371,6 +371,24 @@ else
   fail "argv or stdout changed: '$out'"
 fi
 
+stub_home="$tmpdir/stub-home"
+mkdir -p "$stub_home/.functions"
+cp "$(dirname "$script")/../functions/logging.bash" "$stub_home/.functions/logging.bash"
+run_test
+stub_err=$(
+  cd "$tmpdir/norepo" &&
+    env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+      HOME="$stub_home" PATH="$tmpdir/mockbin:$PATH" \
+      TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+      "$script" pr view 1 --repo 'unmapped/r"e\po' 2>&1 >/dev/null
+)
+if [[ -n $stub_err ]] && jq -e . >/dev/null 2>&1 <<< "$stub_err"
+then
+  pass "fallback aictl stubs emit valid JSON for values with quotes and backslashes"
+else
+  fail "fallback aictl stubs emitted invalid JSON: '$stub_err'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 (( failures == 0 ))
