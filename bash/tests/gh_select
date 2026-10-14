@@ -364,6 +364,15 @@ run_shim "$repo2" api 'repos/{owner}/{repo}'
 check_source "gh api placeholders ignore gh repo set-default, like gh" tok-acct-workorg \
   "for 'workorg' (from git remote 'work')"
 
+map caporg acct-caporg
+repo5="$tmpdir/repo5"
+git init -q "$repo5" 2>/dev/null
+git -C "$repo5" remote add origin git@github.com:otherorg/x.git 2>/dev/null
+git -C "$repo5" remote add Upstream git@github.com:caporg/x.git 2>/dev/null
+run_shim "$repo5" pr list
+check_source "remote priority ignores case, like gh ('Upstream' beats origin)" tok-acct-caporg \
+  "for 'caporg' (from git remote 'Upstream')"
+
 map aliasorg acct-aliasorg
 repo3="$tmpdir/repo3"
 git init -q "$repo3" 2>/dev/null
