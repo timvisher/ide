@@ -65,7 +65,7 @@ fi
 
 # Test 3: agents.bash, which every wrapper sources, exports TIMVISHER_AGENT
 run_test
-if env -u TIMVISHER_AGENT bash -c 'source "$1" >/dev/null 2>&1; bash -c "[[ -n \${TIMVISHER_AGENT-} ]]"' _ "$bin_dir/../ai/agents.bash"
+if env -u TIMVISHER_AGENT bash -c "source \"\$1\" >/dev/null 2>&1; bash -c '[[ -n \${TIMVISHER_AGENT-} ]]'" _ "$bin_dir/../ai/agents.bash"
 then
   pass "agents.bash exports TIMVISHER_AGENT to child processes"
 else
