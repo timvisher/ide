@@ -242,11 +242,11 @@ normalize_pr_url() {
   printf '%s' "$source"
 }
 
-pr_owner_from_url() {
-  local source
-  source=$(normalize_pr_url "$1")
-  [[ $source =~ ^https://github.com/([^/]+)/[^/]+/pull/[0-9]+$ ]] || return 1
-  printf '%s' "${BASH_REMATCH[1]}"
+pr_url_repo() {
+  local spec
+  spec=$(normalize_pr_url "$1")
+  spec=${spec#https://github.com/}
+  printf '%s' "${spec%%/pull/*}"
 }
 
 pr_head_ref_name() {
@@ -256,8 +256,7 @@ pr_head_ref_name() {
 
   source=$(normalize_pr_url "$source")
   head_ref=$(
-    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
-    gh pr view "$source" --json headRefName --jq .headRefName 2>/dev/null
+    gh -R "$(pr_url_repo "$source")" pr view "$source" --json headRefName --jq .headRefName 2>/dev/null
   ) ||
     return 1
 
@@ -273,8 +272,7 @@ pr_base_ref_name() {
 
   source=$(normalize_pr_url "$source")
   base_ref=$(
-    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
-    gh pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null
+    gh -R "$(pr_url_repo "$source")" pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null
   ) ||
     return 1
 
@@ -316,8 +314,7 @@ pr_head_repo_spec() {
 
   source=$(normalize_pr_url "$source")
   head_repo_spec=$(
-    owner=$(pr_owner_from_url "$source") && timvisher_gh__pin_token_for_owner "$owner" >/dev/null 2>&1
-    gh pr view "$source" --json headRepository,headRepositoryOwner \
+    gh -R "$(pr_url_repo "$source")" pr view "$source" --json headRepository,headRepositoryOwner \
       --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null
   ) ||
     return 1
@@ -415,22 +412,22 @@ probe_fork_parent() {
   printf '%s' "$out"
 }
 
-# Resolve the current GitHub user via `gh api user`. Caches the result
-# in gh's own response cache for 24h — long enough that day-to-day
-# operations don't repeatedly hit the API, short enough that
-# re-authenticating against a different account (personal ↔ work) takes
-# effect within a day. Bust manually with `gh api user --cache 0` or
-# `rm -rf ~/.cache/gh`. Prints login on stdout; returns non-zero if gh
-# isn't installed or auth fails.
+# Resolve the GitHub user of the gh account the gh shim picks for org $1
+# via `gh -R ORG api user`. Caches the result in gh's own response cache
+# for 24h so day-to-day operations don't repeatedly hit the API. Bust
+# manually with `gh -R ORG api user --cache 0` or `rm -rf ~/.cache/gh`.
+# Prints login on stdout; returns non-zero if gh isn't installed or auth
+# fails.
 #
 # Captures stdout separately so a 4xx error body (which gh writes to
 # stdout, not stderr) doesn't leak as a faux "login" to the caller.
 current_gh_user() {
+  local org=$1
   command -v gh >/dev/null 2>&1 ||
     { error "current_gh_user: gh is not installed"; return 1; }
 
   local out rc
-  out=$(command gh api user --cache 24h --jq .login 2>/dev/null)
+  out=$(command gh -R "$org" api user --cache 24h --jq .login 2>/dev/null)
   rc=$?
   if (( rc != 0 ))
   then
@@ -479,7 +476,7 @@ should_auto_fork() {
 
   # Already operating in our own namespace — push rights guaranteed.
   local gh_user
-  gh_user=$(current_gh_user 2>/dev/null) || return 1
+  gh_user=$(current_gh_user "$spec_org" 2>/dev/null) || return 1
   [[ $gh_user != "$spec_org" ]] || return 1
 
   # Branch existence — short cache to avoid hammering the API on
@@ -1197,7 +1194,7 @@ configure_remotes_and_tracking() {
         git remote add upstream "https://github.com/${override_repo}.git"
       fi
       git fetch upstream >&2 || die "Unable to fetch from upstream remote"
-      default_branch=$(gh repo view "$override_repo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(gh -R "$override_repo" repo view "$override_repo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       return
@@ -1207,7 +1204,8 @@ configure_remotes_and_tracking() {
   # Always query fork status and push permissions via API.
   info "Checking fork status and permissions for '%s'..." "$repo_spec"
 
-  if ! gh repo set-default "$repo_spec" >&2; then
+  if ! gh -R "$repo_spec" repo set-default "$repo_spec" >&2
+  then
     warn "Failed to set default gh repo, fork detection might fail."
   fi
 
@@ -1237,12 +1235,12 @@ configure_remotes_and_tracking() {
 
     if [[ $soft_fork == true ]]; then
       local origin_default
-      origin_default=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
+      origin_default=$(gh -R "$repo_spec" repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
       info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${origin_default}'"
       git branch -u "origin/${origin_default}" >&2 || die "Unable to track origin/${origin_default}"
       touch x.timvisher_git.soft-fork
     else
-      default_branch=$(gh repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(gh -R "$parent" repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       rm -f x.timvisher_git.soft-fork
@@ -1628,13 +1626,9 @@ ensure_worktree() {
         # the local branch has diverged from the remote PR tip.
         info "PR branch ‘%s’ already checked out; skipping gh pr checkout" "$current_branch"
       else
-        local pr_url pr_owner
+        local pr_url
         pr_url=$(normalize_pr_url "$source")
-        pr_owner=$(pr_owner_from_url "$source") || pr_owner=
-        (
-          [[ -n $pr_owner ]] && timvisher_gh__pin_token_for_owner "$pr_owner" >/dev/null 2>&1
-          gh pr checkout "$pr_url" >&2
-        ) ||
+        gh -R "$(pr_url_repo "$pr_url")" pr checkout "$pr_url" >&2 ||
           {
             error "Failed to checkout PR source ‘${source}’"
             errors=1
@@ -3153,7 +3147,7 @@ fork() {
   esac
 
   local gh_user
-  gh_user=$(current_gh_user) ||
+  gh_user=$(current_gh_user "$parent_org") ||
     die "fork: unable to determine gh user; ensure 'gh auth login' has been run"
 
   if [[ $gh_user == "$parent_org" ]]
@@ -3191,7 +3185,7 @@ fork() {
       info "fork: %s already exists; skipping gh repo fork" "$fork_spec"
     else
       info "fork: forking %s/%s as %s" "$parent_org" "$parent_repo" "$fork_spec"
-      command gh repo fork "${parent_org}/${parent_repo}" --clone=false >&2 ||
+      command gh -R "${parent_org}/${parent_repo}" repo fork "${parent_org}/${parent_repo}" --clone=false >&2 ||
         die "fork: 'gh repo fork %s/%s' failed" "$parent_org" "$parent_repo"
 
       # Wait for the new fork to become visible — gh creates forks
@@ -3465,8 +3459,7 @@ worktree_gc__reap_reason() {
     if [[ -n $pr_num ]]; then
       local state
       state=$(
-        local o; o=$(pr_owner_from_url "$url") && timvisher_gh__pin_token_for_owner "$o" >/dev/null 2>&1
-        gh pr view "$url" --json state -q .state 2>/dev/null
+        gh -R "$(pr_url_repo "$url")" pr view "$url" --json state -q .state 2>/dev/null
       )
       if [[ $state == MERGED ]]; then
         printf 'PR #%s merged' "$pr_num"
@@ -3486,8 +3479,7 @@ worktree_gc__reap_reason() {
     local branch_name="${branch_ref#refs/heads/}"
     local merged_pr
     merged_pr=$(
-      timvisher_gh__pin_token_for_owner "${gh_repo%%/*}" >/dev/null 2>&1
-      gh pr list --repo "$gh_repo" --head "$branch_name" \
+      gh -R "$gh_repo" pr list --head "$branch_name" \
         --state merged --json number -q '.[0].number' 2>/dev/null
     )
     if [[ -n $merged_pr ]]; then

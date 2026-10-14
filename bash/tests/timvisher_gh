@@ -58,7 +58,27 @@ chmod +x "$tmpdir/mockbin/git"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
 #!/usr/bin/env bash
 echo "mock-gh $*" >> "$MOCK_LOG"
-if [[ $1 == repo && $2 == view ]]
+target_repo=''
+if [[ $1 == -R ]]
+then
+  target_repo=$2
+  shift 2
+fi
+if [[ $1 == repo && $2 == view && $* == *mergeCommitAllowed* ]]
+then
+  if [[ $target_repo == upstreamorg/testrepo ]]
+  then
+    echo '{"mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":false}'
+  else
+    echo '{"mergeCommitAllowed":true,"squashMergeAllowed":false,"rebaseMergeAllowed":false}'
+  fi
+elif [[ $1 == pr && $2 == merge ]]
+then
+  true
+elif [[ $1 == pr && $2 == view && $* == *'--json state'* ]]
+then
+  echo "MERGED"
+elif [[ $1 == repo && $2 == view ]]
 then
   echo "main"
 elif [[ $1 == pr && $2 == create ]]
@@ -67,6 +87,14 @@ then
 elif [[ $1 == pr && $2 == edit ]]
 then
   echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_ERR-} ]]
+then
+  echo "$MOCK_CHECKS_ERR" >&2
+  exit 1
+elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_REFUSE-} ]]
+then
+  echo '{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"}' >&2
+  exit 1
 elif [[ $1 == pr && $2 == checks ]]
 then
   # Return contents of MOCK_CHECKS_FILE if set, otherwise empty array
@@ -88,7 +116,7 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
-elif [[ $1 == api && $2 == user ]]
+elif [[ $1 == api && $2 == user && -n $target_repo ]]
 then
   echo "testuser"
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
@@ -97,17 +125,24 @@ then
 elif [[ $1 == api && $2 == repos/* ]]
 then
   echo '{"fork":true,"source":"upstreamorg/testrepo","archived":false}'
-elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
+elif [[ $1 == api && $3 == --method && $4 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
-elif [[ $1 == api && $2 == --method && $3 == HEAD ]]
+elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  # Simulate comment exists (HEAD check)
-  true
-elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
+  if [[ -n ${MOCK_HEAD_ERR-} ]]
+  then
+    echo "$MOCK_HEAD_ERR" >&2
+    exit 1
+  fi
+elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  # Successful DELETE returns empty body
-  true
+  if [[ -n ${MOCK_DELETE_FAIL-} ]]
+  then
+    [[ -n ${MOCK_DELETE_BODY-} ]] &&
+      echo "$MOCK_DELETE_BODY"
+    exit 1
+  fi
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -527,7 +562,7 @@ PR
 export MOCK_LOG="$tmpdir/log_pr_create"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr" 2>&1 || true
-if grep -q 'mock-git-push' "$MOCK_LOG" && grep -q 'mock-gh pr create' "$MOCK_LOG"
+if grep -q 'mock-git-push' "$MOCK_LOG" && grep -q 'mock-gh -R testuser/testrepo pr create' "$MOCK_LOG"
 then
   pass "pr creates PR from pr.md"
 else
@@ -590,7 +625,7 @@ ISSUE
 export MOCK_LOG="$tmpdir/log_issue_create"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue" 2>&1 || true
-if grep -q 'mock-gh issue create' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo issue create' "$MOCK_LOG"
 then
   pass "issue creates issue from issue.md"
 else
@@ -647,7 +682,7 @@ PR
 export MOCK_LOG="$tmpdir/log_pr_edit_ok"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr edit" 2>&1 || true
-if grep -q 'mock-gh pr edit https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr edit https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
 then
   pass "pr edit calls gh pr edit with correct url"
 else
@@ -695,7 +730,7 @@ ISSUE
 export MOCK_LOG="$tmpdir/log_issue_edit_ok"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' issue edit" 2>&1 || true
-if grep -q 'mock-gh issue edit https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo issue edit https://github.com/testuser/testrepo/issues/42' "$MOCK_LOG"
 then
   pass "issue edit calls gh issue edit with correct url"
 else
@@ -773,7 +808,51 @@ else
   fail "pr merge: exits if pr.md.url missing: got '${result}'"
 fi
 
+run_test
+printf 'https://github.com/upstreamorg/testrepo/pull/9\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_merge_fork"
+touch "$MOCK_LOG"
+result=$(printf 'y\n' | PATH="$test_path" TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' pr merge" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) &&
+   grep -qx 'mock-gh -R upstreamorg/testrepo repo view upstreamorg/testrepo --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod' "$MOCK_LOG" &&
+   grep -qx 'mock-gh -R upstreamorg/testrepo pr merge --squash https://github.com/upstreamorg/testrepo/pull/9' "$MOCK_LOG"
+then
+  pass "pr merge: reads strategies from the PR's repo and merges by URL"
+else
+  fail "pr merge from a fork checkout: rc=${rc} result='${result}' log='$(cat "$MOCK_LOG")'"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/repo/x.merged"
+
 # --- pr ready tests ---
+
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_refused"
+touch "$MOCK_LOG"
+result=$(MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && [[ $result == *gh_account_token_unavailable* && $result == *"not retrying"* ]]
+then
+  pass "pr ready: stops when gh refuses instead of retrying forever"
+else
+  fail "pr ready with a refusing gh: rc=${rc} result='${result}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
+
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_transient"
+: > "$MOCK_LOG"
+result=$(MOCK_CHECKS_ERR='HTTP 502: Bad Gateway' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 3 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc == 124 )) && (( 1 < $(grep -c 'pr checks' "$MOCK_LOG") ))
+then
+  pass "pr ready: keeps retrying through ordinary gh errors"
+else
+  fail "pr ready with a transient error: rc=${rc} result='${result:0:300}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url"
 
 # Test: pr ready - exits if pr.md.url is missing
 run_test
@@ -798,7 +877,7 @@ cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"pass"}]
 JSON
 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: calls gh pr ready when all checks pass"
 else
@@ -824,7 +903,7 @@ else
   fail "pr ready: dies on failed checks: got '${result}'"
 fi
 # Should NOT have called gh pr ready
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   fail "pr ready: should not call gh pr ready on failure"
 else
@@ -850,7 +929,7 @@ cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"pass"},{"name":"mergegate","bucket":"pending"}]
 JSON
 HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: exclude patterns allow ignoring pending checks"
 else
@@ -880,7 +959,7 @@ cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pass"},{"name":"mergegate","bucket":"pending"},{"name":"other-meta-check","bucket":"pending"}]
 JSON
 HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: exclude file skips comments and blank lines"
 else
@@ -911,6 +990,10 @@ echo "0" > "$counter_file"
 cat > "$tmpdir/mockbin/gh" <<MOCK
 #!/usr/bin/env bash
 echo "mock-gh \$*" >> "\$MOCK_LOG"
+if [[ \$1 == -R ]]
+then
+  shift 2
+fi
 if [[ \$1 == pr && \$2 == checks ]]
 then
   count=\$(< "$counter_file")
@@ -934,7 +1017,7 @@ fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: recovers from non-JSON gh output"
 else
@@ -945,6 +1028,12 @@ rm -f "$tmpdir/repo/pr.md.url" "$counter_file"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
 #!/usr/bin/env bash
 echo "mock-gh $*" >> "$MOCK_LOG"
+target_repo=''
+if [[ $1 == -R ]]
+then
+  target_repo=$2
+  shift 2
+fi
 if [[ $1 == repo && $2 == view ]]
 then
   echo "main"
@@ -974,7 +1063,7 @@ then
 elif [[ $1 == pr && $2 == comment ]]
 then
   echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345"
-elif [[ $1 == api && $2 == user ]]
+elif [[ $1 == api && $2 == user && -n $target_repo ]]
 then
   echo "testuser"
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
@@ -983,15 +1072,24 @@ then
 elif [[ $1 == api && $2 == repos/* ]]
 then
   echo '{"fork":true,"source":"upstreamorg/testrepo","archived":false}'
-elif [[ $1 == api && $2 == --method && $3 == PATCH ]]
+elif [[ $1 == api && $3 == --method && $4 == PATCH ]]
 then
   echo '{"html_url":"https://github.com/testuser/testrepo/pull/1#issuecomment-12345"}'
-elif [[ $1 == api && $2 == --method && $3 == HEAD ]]
+elif [[ $1 == api && $3 == --method && $4 == HEAD ]]
 then
-  true
-elif [[ $1 == api && $2 == --method && $3 == DELETE ]]
+  if [[ -n ${MOCK_HEAD_ERR-} ]]
+  then
+    echo "$MOCK_HEAD_ERR" >&2
+    exit 1
+  fi
+elif [[ $1 == api && $3 == --method && $4 == DELETE ]]
 then
-  true
+  if [[ -n ${MOCK_DELETE_FAIL-} ]]
+  then
+    [[ -n ${MOCK_DELETE_BODY-} ]] &&
+      echo "$MOCK_DELETE_BODY"
+    exit 1
+  fi
 fi
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
@@ -1010,7 +1108,7 @@ cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pending"},{"name":"ci/test","bucket":"pending"}]
 JSON
 HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
-if grep -q 'mock-gh pr ready' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: all checks excluded proceeds immediately"
 else
@@ -1068,7 +1166,7 @@ echo "new comment body" > "$tmpdir/repo/comment.md"
 export MOCK_LOG="$tmpdir/log_comment_create"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment comment.md" 2>&1 || true
-if grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr comment https://github.com/testuser/testrepo/pull/42' "$MOCK_LOG"
 then
   pass "comment posts new comment using pr.md.url"
 else
@@ -1082,7 +1180,7 @@ echo "flag comment body" > "$tmpdir/repo/comment.md"
 export MOCK_LOG="$tmpdir/log_comment_flag"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment --pull-request=https://github.com/testuser/testrepo/pull/99 comment.md" 2>&1 || true
-if grep -q 'mock-gh pr comment https://github.com/testuser/testrepo/pull/99' "$MOCK_LOG"
+if grep -q 'mock-gh -R testuser/testrepo pr comment https://github.com/testuser/testrepo/pull/99' "$MOCK_LOG"
 then
   pass "comment posts new comment using --pull-request flag"
 else
@@ -1153,7 +1251,7 @@ echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir
 export MOCK_LOG="$tmpdir/log_comment_edit_ok"
 touch "$MOCK_LOG"
 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment edit comment.md" 2>&1 || true
-if grep -q 'mock-gh api --method PATCH /repos/testuser/testrepo/issues/comments/12345' "$MOCK_LOG"
+if grep -q 'mock-gh api /repos/testuser/testrepo/issues/comments/12345 --method PATCH' "$MOCK_LOG"
 then
   pass "comment edit calls gh api PATCH with correct path"
 else
@@ -1194,7 +1292,7 @@ echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir
 export MOCK_LOG="$tmpdir/log_comment_delete_ok"
 touch "$MOCK_LOG"
 echo y | PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" 2>&1 || true
-if grep -q 'mock-gh api --method DELETE' "$MOCK_LOG"
+if grep -q 'mock-gh api /repos/testuser/testrepo/issues/comments/12345 --method DELETE' "$MOCK_LOG"
 then
   pass "comment delete calls gh api DELETE"
 else
@@ -1213,6 +1311,44 @@ then
 else
   fail "comment delete removes .url file after deletion: .url file still exists"
 fi
+
+for case in "HTTP 401: Bad credentials:keeps" "HTTP 404: Not Found:removes"
+do
+  head_err=${case%:*}
+  want=${case##*:}
+  run_test
+  echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+  export MOCK_LOG="$tmpdir/log_comment_delete_head"
+  touch "$MOCK_LOG"
+  echo y | MOCK_HEAD_ERR="$head_err" PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md" >/dev/null 2>&1
+  if [[ $want == keeps && -r $tmpdir/repo/comment.md.url ]] || [[ $want == removes && ! -r $tmpdir/repo/comment.md.url ]]
+  then
+    pass "comment delete ${want} the .url file when the existence check fails with '${head_err}'"
+  else
+    fail "comment delete with '${head_err}' should ${want%s} the .url file"
+  fi
+done
+
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+echo y | MOCK_DELETE_FAIL=1 MOCK_DELETE_BODY='{"message":"Forbidden"}' PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md --force" >/dev/null 2>&1 && rc=0 || rc=$?
+if (( rc != 0 )) && [[ -r $tmpdir/repo/comment.md.url ]]
+then
+  pass "comment delete fails and keeps the .url file when the DELETE fails with an error body"
+else
+  fail "comment delete with a failed DELETE body: rc=${rc}"
+fi
+
+run_test
+echo "https://github.com/testuser/testrepo/pull/1#issuecomment-12345" > "$tmpdir/repo/comment.md.url"
+echo y | MOCK_DELETE_FAIL=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' comment delete comment.md --force" >/dev/null 2>&1
+if [[ -r $tmpdir/repo/comment.md.url ]]
+then
+  pass "comment delete keeps the .url file when the DELETE fails"
+else
+  fail "comment delete removed the .url file after a failed DELETE"
+fi
+rm -f "$tmpdir/repo/comment.md.url"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"

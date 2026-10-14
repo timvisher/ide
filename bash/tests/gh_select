@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+fail() { echo "FAIL: $1" >&2; (( failures += 1 )); }
+pass() { echo "PASS: $1"; }
+run_test() { (( tests += 1 )); }
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/gh" ||
+  { echo "cannot resolve script" >&2; exit 1; }
+
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+
+mkdir -p "$tmpdir/prefix/bin" "$tmpdir/mockbin" "$tmpdir/cfg/orgs" "$tmpdir/norepo"
+cat > "$tmpdir/prefix/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == auth && $2 == token ]]
+then
+  user=''
+  while (( 0 < $# ))
+  do
+    [[ $1 == --user ]] && user=$2
+    shift
+  done
+  [[ $user == broken ]] && exit 1
+  echo "tok-${user}"
+  exit 0
+fi
+if [[ -n ${MOCK_ARGV-} ]]
+then
+  printf '%s\0' "$@" > "$MOCK_ARGV"
+fi
+echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
+MOCK
+chmod +x "$tmpdir/prefix/bin/gh"
+cat > "$tmpdir/mockbin/brew" <<MOCK
+#!/usr/bin/env bash
+echo "$tmpdir/prefix"
+MOCK
+chmod +x "$tmpdir/mockbin/brew"
+
+map() {
+  mkdir -p "$tmpdir/cfg/orgs/$1"
+  printf '%s\n' "$2" > "$tmpdir/cfg/orgs/$1/account"
+}
+
+extra_env=()
+run_shim() {
+  local dir=$1
+  shift
+  out=$(
+    cd "$dir" &&
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        PATH="$tmpdir/mockbin:$PATH" \
+        TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+        ${extra_env[@]+"${extra_env[@]}"} \
+        "$script" "$@" 2>"$tmpdir/err"
+  )
+  rc=$?
+  err=$(< "$tmpdir/err")
+}
+
+expect() {
+  local label=$1 want_out=$2 want_err=$3
+  run_test
+  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_err || $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; rc=$rc out='$out' err='$err'"
+  fi
+}
+
+expect_stop() {
+  local label=$1 want_err=${2-}
+  run_test
+  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_target_required"'* ]] &&
+     [[ -z $want_err || $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err'"
+  fi
+}
+
+new_repo() {
+  local dir=$1
+  shift
+  if ! git init -q "$dir" 2>/dev/null
+  then
+    echo "setup failed: git init '$dir'" >&2
+    exit 1
+  fi
+  while (( 1 < $# ))
+  do
+    if ! git -C "$dir" remote add "$1" "$2" 2>/dev/null
+    then
+      echo "setup failed: remote '$1' in '$dir'" >&2
+      exit 1
+    fi
+    shift 2
+  done
+}
+
+map ddoghq acct-ddoghq
+map otherorg acct-otherorg
+map DataDog acct-DataDog
+
+for form in "-R ddoghq/dd-source" "-Rddoghq/dd-source" "-R=ddoghq/dd-source" "--repo ddoghq/dd-source" "--repo=ddoghq/dd-source"
+do
+  read -ra pre <<< "$form"
+  run_shim "$tmpdir/norepo" "${pre[@]}" pr view 5
+  expect "'${form}' before the subcommand picks the account, sets GH_REPO and is removed" \
+    "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view 5" \
+    "for 'ddoghq' (from -R"
+done
+
+run_shim "$tmpdir/norepo" --version -R ddoghq/dd-source pr list
+expect "-R after --version still counts" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source --version pr list" ""
+run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source pr list
+expect "-R accepts a github.com URL" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" ""
+run_shim "$tmpdir/norepo" -R otherorg api user
+expect "-R OWNER picks the account without setting GH_REPO" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" "for 'otherorg' (from -R 'otherorg')"
+
+run_shim "$tmpdir/norepo" --json=title -R ddoghq/dd-source pr view 1
+expect_stop "any other flag before the subcommand stops" "put flags after the subcommand"
+run_shim "$tmpdir/norepo" -R
+expect_stop "-R with no value says the value is missing" "needs a value"
+run_shim "$tmpdir/norepo"
+run_test
+if (( rc == 0 )) && [[ $out == "real-gh GH_TOKEN= GH_REPO= " && -z $err ]]
+then
+  pass "bare gh passes through silently"
+else
+  fail "bare gh: rc=$rc out='$out' err='$err'"
+fi
+run_shim "$tmpdir/norepo" -R https://github.com/ddoghq/dd-source/pull/5 pr view 5
+expect_stop "-R longer than OWNER/REPO stops" "should name OWNER or OWNER/REPO"
+
+run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/pulls
+expect "a gh api endpoint right after api names the owner" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/dd-source/pulls" "(from the gh api endpoint)"
+run_shim "$tmpdir/norepo" api user
+expect_stop "gh api with no target stops" "No target"
+run_shim "$tmpdir/norepo" pr view https://github.com/ddoghq/dd-source/pull/1
+expect_stop "a URL alone doesn't pick the account" "No target"
+
+extra_env=(GH_REPO=ddoghq/dd-source)
+run_shim "$tmpdir/norepo" pr list
+expect "GH_REPO names the owner" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" "(from GH_REPO 'ddoghq/dd-source')"
+run_shim "$tmpdir/norepo" -R otherorg api user
+expect "-R OWNER drops GH_REPO" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= api user" ""
+extra_env=()
+
+repo="$tmpdir/repo"
+new_repo "$repo" origin git@github.com:DataDog/dd-source.git
+run_shim "$repo" pr list
+expect "a github.com remote names the owner" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" "(from the cwd's git remotes)"
+git -C "$repo" remote add upstream https://github.com/DataDog/dd-source.git 2>/dev/null
+run_shim "$repo" pr list
+expect "remotes naming the same owner agree" \
+  "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" ""
+git -C "$repo" remote add mine git@github.com:otherorg/dd-source.git 2>/dev/null
+run_shim "$repo" pr list
+expect_stop "remotes naming different owners stop" "name different owners"
+run_shim "$repo" -R ddoghq/dd-source pr list
+expect "-R overrides the remotes" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr list" ""
+
+repo2="$tmpdir/repo2"
+new_repo "$repo2" origin git@ddoghq.github.com:ddoghq/x.git
+run_shim "$repo2" pr list
+expect "a *.github.com SSH alias counts as github.com" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr list" ""
+
+repo3="$tmpdir/repo3"
+new_repo "$repo3" origin work:x
+git -C "$repo3" config url.https://github.com/otherorg/.insteadOf work: 2>/dev/null
+run_shim "$repo3" pr list
+expect "a remote rewritten by url.insteadOf counts" \
+  "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr list" ""
+
+run_shim "$repo2" pr view https://github.com/otherorg/x/pull/1
+expect "a URL naming another owner is noted, and the call runs" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr view https://github.com/otherorg/x/pull/1" \
+  '"code":"gh_target_mismatch"'
+run_shim "$repo2" api --method PATCH /repos/otherorg/x/issues/comments/1
+expect "an api path naming another owner is noted" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api --method PATCH /repos/otherorg/x/issues/comments/1" \
+  '"code":"gh_target_mismatch"'
+run_shim "$repo2" pr view https://github.com/ddoghq/x/pull/1
+run_test
+if [[ $err != *gh_target_mismatch* ]]
+then
+  pass "a URL naming the picked owner isn't noted"
+else
+  fail "unexpected mismatch notice: '$err'"
+fi
+
+extra_env=(GH_TOKEN=caller)
+run_shim "$tmpdir/norepo" api user
+expect "a caller-set GH_TOKEN is used as-is" \
+  "real-gh GH_TOKEN=caller GH_REPO= api user" '"code":"gh_account_deferred"'
+extra_env=()
+
+for args in "auth status" "--version" "help" "config get editor" "alias list" "extension list" "completion -s bash" "__complete pr view"
+do
+  read -ra argv <<< "$args"
+  run_shim "$tmpdir/norepo" "${argv[@]}"
+  run_test
+  if (( rc == 0 )) && [[ $out == "real-gh GH_TOKEN= GH_REPO= $args" && -z $err ]]
+  then
+    pass "'gh $args' selects nothing and says nothing"
+  else
+    fail "'gh $args' should pass through silently; rc=$rc out='$out' err='$err'"
+  fi
+done
+
+run_shim "$tmpdir/norepo" -R unmapped/repo pr list
+expect "an unmapped owner runs as the active account" \
+  "real-gh GH_TOKEN= GH_REPO=unmapped/repo pr list" "No gh account is configured for 'unmapped'"
+mkdir -p "$tmpdir/cfg/orgs/blankorg"
+printf ' \n' > "$tmpdir/cfg/orgs/blankorg/account"
+run_shim "$tmpdir/norepo" -R blankorg/repo pr list
+expect "a blank mapping file counts as unmapped" \
+  "real-gh GH_TOKEN= GH_REPO=blankorg/repo pr list" "No gh account is configured for 'blankorg'"
+map brokenorg broken
+run_shim "$tmpdir/norepo" -R brokenorg/repo pr list
+run_test
+if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_account_token_unavailable"'* ]]
+then
+  pass "a mapped account without a token stops the call"
+else
+  fail "token failure should stop the call; rc=$rc out='$out' err='$err'"
+fi
+
+extra_env=(MOCK_ARGV="$tmpdir/argv")
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr comment 1 --body-file 'a  b' '' 'c d'
+extra_env=()
+run_test
+expected=$(printf '%s\0' pr comment 1 --body-file 'a  b' '' 'c d' | od -c)
+if [[ $(od -c < "$tmpdir/argv") == "$expected" ]]
+then
+  pass "every argument reaches gh with its boundaries intact once -R is removed"
+else
+  fail "argument boundaries changed: $(od -c < "$tmpdir/argv")"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))

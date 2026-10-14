@@ -142,6 +142,29 @@ The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the 
 
 When interacting with GitHub (github.com), always use the `gh` CLI. This includes viewing PRs, checking CI status, browsing releases, and querying repo metadata.
 
+## Account selection
+
+`gh` on `PATH` is a shim that picks the gh account for each call, so the same command works across orgs that only one of several accounts (e.g. a personal account and an enterprise-managed one) can see. Don't set `GH_TOKEN` or switch accounts yourself.
+
+**The account comes from exactly one of these, in order:**
+
+1. `-R`/`--repo` before the subcommand: `gh -R OWNER/REPO pr view 5`, `gh -R OWNER gist list`, `gh -R OWNER api user`. The shim removes it and sets `GH_REPO` from an `OWNER/REPO` value.
+2. For `gh api`, an endpoint right after `api` that starts with `repos/OWNER/`, `orgs/OWNER` or `users/OWNER`.
+3. `GH_REPO`.
+4. The cwd's github.com remotes, when they all name the same owner.
+
+Otherwise the call stops with `gh_target_required`, as does any flag before the subcommand other than `-R`/`--repo`, `-h`, `--help` and `--version`. The account for an owner is in `timvisher_gh.config/orgs/<owner>/account`; with no mapping, gh's active account is used.
+
+**The shim doesn't work out what gh will target beyond that.** If a call targets something other than the cwd's repo, such as a PR URL in another org, pass `-R` before the subcommand. A `gh_target_mismatch` notice appears when a github.com URL or `gh api` path in the call names a different owner; the call still runs.
+
+- **`gh repo view|clone|fork|...` ignore `GH_REPO`.** Pass the repository as the argument too: `gh -R OWNER/REPO repo view OWNER/REPO`.
+- **Each selecting call prints an aictl instruction** to stderr (`gh_account_selected` or `gh_account_active`). Don't merge gh's stderr into output you parse.
+- **A mapped account without a token stops the call** with `gh_account_token_unavailable`.
+- **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins**, with a `gh_account_deferred` notice.
+- **`gh auth`, `config`, `alias`, `extension`, `help`, `completion` and `version` pass straight through.**
+- **Help:** `-h`/`--help` as the last argument (or before the subcommand) runs `gh help <command> ...` and nothing else.
+- **The agent guard blocks `-f`/`-F`**, so agents can't send GraphQL queries through `gh api` that way.
+
 ## Notes
 - **No hard line breaks in paragraphs.** Write each paragraph as a single long line. Let the renderer or editor handle wrapping. Only use line breaks for list items, headings, code blocks, and between paragraphs (blank lines).
 - Prefer `<=`/`<` comparisons in any pseudocode or scripts.

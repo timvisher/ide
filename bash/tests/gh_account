@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Tests for ~/.functions/gh.bash (shared gh account-selection helpers, used by
-# the gh PATH shim and timvisher_gh).
+# Tests for ~/.functions/gh.bash (shared gh helpers for timvisher_gh and
+# timvisher_git).
 
 failures=0
 tests=0
@@ -16,8 +16,9 @@ funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" ||
 source "${funcs_dir}/gh.bash" ||
   { echo "cannot source gh.bash" >&2; exit 1; }
 
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$tmpdir"' EXIT
 
 # --- repo_spec_from_url: host-agnostic parsing ---
 check_spec() {
@@ -25,8 +26,10 @@ check_spec() {
   run_test
   got=$(timvisher_gh__repo_spec_from_url "$url")
   if [[ $got == "$want" ]]
-  then pass "repo_spec '$url' -> '$want'"
-  else fail "repo_spec '$url': want '$want', got '$got'"
+  then
+    pass "repo_spec '$url' -> '$want'"
+  else
+    fail "repo_spec '$url': want '$want', got '$got'"
   fi
 }
 check_spec "https://github.com/DataDog/dd-source.git"         "DataDog/dd-source"
@@ -37,112 +40,19 @@ check_spec "git@ddoghq.github.com:ddoghq/dd-source.git"       "ddoghq/dd-source"
 check_spec "git@ddoghq.github.com:ddoghq/dd-source"           "ddoghq/dd-source"
 check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
 
-# --- owner_from_args: --repo/-R, = forms, api paths, miss ---
-check_owner() {
-  local want=$1; shift
-  local got rc
-  run_test
-  got=$(timvisher_gh__owner_from_args "$@") && rc=0 || rc=$?
-  if [[ ${want} == "-" ]]
-  then
-    if (( rc != 0 ))
-    then pass "owner_from_args [$*] -> (none)"
-    else fail "owner_from_args [$*]: expected none, got '$got'"
-    fi
-  else
-    if [[ $got == "$want" ]]
-    then pass "owner_from_args [$*] -> '$want'"
-    else fail "owner_from_args [$*]: want '$want', got '$got' (rc=$rc)"
-    fi
-  fi
-}
-check_owner "ddoghq"  pr view 691 --repo ddoghq/dd-source --json title
-check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
-check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
-check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
-check_owner "DataDog" pr view 1 --repo DataDog/appgate
-check_owner "-"       pr view https://github.com/ddoghq/dd-source/pull/691
-check_owner "-"       repo list
-
-# --- account_for_owner: config-driven via TIMVISHER_GH_CONFIG_DIR ---
-cfg="$tmpdir/cfg"
-mkdir -p "$cfg/orgs/ddoghq"
-printf 'tim-visher_ddog\n' > "$cfg/orgs/ddoghq/account"
-export TIMVISHER_GH_CONFIG_DIR="$cfg"
-
-run_test
-if [[ $(timvisher_gh__account_for_owner ddoghq) == "tim-visher_ddog" ]]
-then pass "account_for_owner: mapped org -> account"
-else fail "account_for_owner: mapped org should resolve"
-fi
-
-run_test
-if timvisher_gh__account_for_owner DataDog 2>/dev/null
-then fail "account_for_owner: unmapped org should return 1"
-else pass "account_for_owner: unmapped org returns 1"
-fi
-
-# --- pin_token_for_owner: mock gh mints token; unmapped is a no-op ---
-mkdir -p "$tmpdir/mockbin"
-cat > "$tmpdir/mockbin/gh" <<'MOCK'
-#!/usr/bin/env bash
-if [[ $1 == auth && $2 == token ]]; then echo "gho_faketoken_for_emu"; exit 0; fi
-exit 1
-MOCK
-chmod +x "$tmpdir/mockbin/gh"
-
-run_test
-if ( unset GH_TOKEN
-     timvisher_gh__pin_token_for_owner ddoghq "$tmpdir/mockbin/gh" || exit 9
-     [[ ${GH_TOKEN:-} == "gho_faketoken_for_emu" ]] || exit 8 )
-then pass "pin_token_for_owner: mapped org exports GH_TOKEN"
-else fail "pin_token_for_owner: mapped org should export GH_TOKEN"
-fi
-
-run_test
-if ( unset GH_TOKEN
-     timvisher_gh__pin_token_for_owner DataDog "$tmpdir/mockbin/gh" || exit 9
-     [[ -z ${GH_TOKEN:-} ]] || exit 8 )
-then pass "pin_token_for_owner: unmapped org is a no-op (no GH_TOKEN)"
-else fail "pin_token_for_owner: unmapped org should not set GH_TOKEN"
-fi
-
-run_test
-if ( unset GH_TOKEN
-     if timvisher_gh__pin_token_for_owner ddoghq /bin/false; then exit 8; fi
-     [[ -z ${GH_TOKEN:-} ]] || exit 7 )
-then pass "pin_token_for_owner: token failure returns non-zero, no GH_TOKEN"
-else fail "pin_token_for_owner: token failure should return non-zero without setting GH_TOKEN"
-fi
-
 # --- owner_for_repo: preferred-first probe, first 200 wins, cache, die-signal ---
-# Mock gh: mints a per-account token and reports which /repos/<org>/<repo>
-# exist, scoped by the pinned token (mirrors disjoint-org accounts — the
-# ddoghq token can't see DataDog and vice versa).
-mkdir -p "$cfg/orgs/DataDog"
-printf 'timvisher-dd\n' > "$cfg/orgs/DataDog/account"
-
 mkdir -p "$tmpdir/mockbin2"
 cat > "$tmpdir/mockbin2/gh" <<'MOCK'
 #!/usr/bin/env bash
-if [[ $1 == auth && $2 == token ]]; then
-  # Echo a token naming the account so the api handler can scope visibility.
-  for ((i=1;i<=$#;i++)); do
-    [[ ${!i} == --user ]] && { j=$((i+1)); echo "tok:${!j}"; exit 0; }
-  done
-  echo "tok:active"; exit 0
-fi
-if [[ $1 == api && $2 == /repos/* ]]; then
-  spec=${2#/repos/}
-  # ddoghq account (tok:tim-visher_ddog) sees: ddoghq/dd-source, ddoghq/both
-  # DataDog account (tok:timvisher-dd)  sees: DataDog/appgate, DataDog/both, DataDog/dd-source
-  case "${GH_TOKEN:-}:${spec}" in
-    tok:tim-visher_ddog:ddoghq/dd-source) exit 0 ;;
-    tok:tim-visher_ddog:ddoghq/both)      exit 0 ;;
-    tok:timvisher-dd:DataDog/appgate)     exit 0 ;;
-    tok:timvisher-dd:DataDog/both)        exit 0 ;;
-    tok:timvisher-dd:DataDog/dd-source)   exit 0 ;;
-    *) exit 1 ;;
+if [[ $1 == api && $2 == /repos/* ]]
+then
+  case "${2#/repos/}" in
+    ddoghq/dd-source|ddoghq/both|DataDog/appgate|DataDog/both|DataDog/dd-source)
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
   esac
 fi
 exit 1
@@ -158,8 +68,10 @@ owner_is() { # want alias repo candidates
   got=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
         timvisher_gh__owner_for_repo "$alias" "$repo" "$cands" "$mgh") && rc=0 || rc=$?
   if [[ $rc -eq 0 && $got == "$want" ]]
-  then pass "owner_for_repo $alias/$repo [$cands] -> $want"
-  else fail "owner_for_repo $alias/$repo [$cands]: want '$want', got '$got' (rc=$rc)"
+  then
+    pass "owner_for_repo $alias/$repo [$cands] -> $want"
+  else
+    fail "owner_for_repo $alias/$repo [$cands]: want '$want', got '$got' (rc=$rc)"
   fi
 }
 
@@ -175,11 +87,14 @@ owner_is ddoghq  dd both      "ddoghq,DataDog"
 run_test
 if out=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
          timvisher_gh__owner_for_repo dd ghost "ddoghq,DataDog" "$mgh" 2>/dev/null)
-then fail "owner_for_repo: absent repo should return non-zero (got '$out')"
+then
+  fail "owner_for_repo: absent repo should return non-zero (got '$out')"
 else
   if [[ -z ${out:-} ]]
-  then pass "owner_for_repo: absent repo returns non-zero with no output"
-  else fail "owner_for_repo: absent repo printed '$out'"
+  then
+    pass "owner_for_repo: absent repo returns non-zero with no output"
+  else
+    fail "owner_for_repo: absent repo printed '$out'"
   fi
 fi
 
@@ -189,8 +104,10 @@ mkdir -p "$tmpdir/ghcache/repo_owner/dd"
 printf 'DataDog' > "$tmpdir/ghcache/repo_owner/dd/cached-repo"
 if [[ $(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
         timvisher_gh__owner_for_repo dd cached-repo "ddoghq,DataDog" /bin/false) == "DataDog" ]]
-then pass "owner_for_repo: cache hit returns without probing"
-else fail "owner_for_repo: cache hit should return cached owner without probing"
+then
+  pass "owner_for_repo: cache hit returns without probing"
+else
+  fail "owner_for_repo: cache hit should return cached owner without probing"
 fi
 
 # a successful probe caches the answer: a second call with a gh that always
@@ -202,8 +119,10 @@ first=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
 second=$(TIMVISHER_GH_CACHE_DIR="$tmpdir/ghcache" \
   timvisher_gh__owner_for_repo dd dd-source "ddoghq,DataDog" /bin/false)
 if [[ $first == "ddoghq" && $second == "ddoghq" ]]
-then pass "owner_for_repo: successful probe caches the answer"
-else fail "owner_for_repo: probe should cache (first='$first' second='$second')"
+then
+  pass "owner_for_repo: successful probe caches the answer"
+else
+  fail "owner_for_repo: probe should cache (first='$first' second='$second')"
 fi
 
 echo ""

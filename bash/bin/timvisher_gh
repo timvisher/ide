@@ -6,13 +6,20 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-# Shared gh account-selection helpers (also used by the gh PATH shim).
+# Shared gh helpers.
 # shellcheck source=/dev/null
 source ~/.functions/gh.bash ||
   {
     echo "Unable to source gh helpers" >&2
     exit 1
   }
+
+gh_url_repo() {
+  local spec owner repo _
+  spec=$(timvisher_gh__repo_spec_from_url "$1")
+  IFS=/ read -r owner repo _ <<< "$spec"
+  printf '%s/%s\n' "$owner" "$repo"
+}
 
 show_help() {
   cat <<'USAGE'
@@ -241,21 +248,12 @@ else
     target_remote='origin'
   fi
 
-  # Get the OWNER/REPO spec from the remote's URL (host-agnostic parse shared
-  # with the gh shim, so Enterprise host aliases resolve like github.com).
+  # Get the OWNER/REPO spec from the remote's URL (host-agnostic, so
+  # Enterprise host aliases resolve like github.com).
   repo_spec=$(timvisher_gh__repo_spec_from_url "$(git remote get-url "$target_remote")")
   [[ -n $repo_spec ]] ||
     die "Could not determine repository spec for remote '%s'" "$target_remote"
 fi
-
-# Pin GH_TOKEN to the gh account configured for this repo's org, so we
-# authenticate as the identity that can see the repo on multi-account setups.
-# This is the same resolution the gh PATH shim applies to all gh calls; doing
-# it here too keeps timvisher_gh correct even if invoked without the shim
-# first on PATH. No mapping → active account (the unchanged default).
-timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
-  die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
-    "${repo_spec%%/*}"
 
 # --- subcommand: pr ---
 
@@ -296,11 +294,18 @@ gh_pr_ready() {
   done
 
   local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
-  local checks_json filtered_json total pending_count fail_count pass_count
+  local checks_out checks_json checks_refusal filtered_json total pending_count fail_count pass_count
 
   while true
   do
-    checks_json=$(command gh pr checks "$pr_url" --repo "$repo_spec" --json name,bucket 2>/dev/null) || true
+    checks_out=$(command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket 2>&1) || true
+    checks_refusal=$(grep '^{"type":"instruction","level":"error"' <<<"$checks_out")
+    if [[ -n $checks_refusal ]]
+    then
+      printf '%s\n' "$checks_refusal" >&2
+      die "gh refused to check '%s'; not retrying" "$pr_url"
+    fi
+    checks_json=$(grep -v '^{"type":"instruction"' <<<"$checks_out")
 
     # Validate we got parseable JSON; empty output or error text means no checks yet
     if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
@@ -345,7 +350,7 @@ gh_pr_ready() {
     sleep "$poll_interval"
   done
 
-  command gh pr ready "$pr_url" --repo "$repo_spec" ||
+  command gh -R "$(gh_url_repo "$pr_url")" pr ready "$pr_url" ||
     die 'Unable to mark PR as ready'
 
   info 'PR marked as ready for review: %s' "$pr_url"
@@ -358,9 +363,8 @@ gh_pr_edit() {
   [[ -r pr.md ]] ||
     die 'Expected PR file '%s' not readable' "${toplevel}/pr.md"
 
-  command gh pr edit \
+  command gh -R "$(gh_url_repo "$(< pr.md.url)")" pr edit \
           "$(< pr.md.url)" \
-          --repo "$repo_spec" \
           --title "$(head -n1 pr.md)" \
           -F <(tail -n+3 pr.md) ||
     die 'Unable to edit PR'
@@ -382,8 +386,8 @@ gh_pr_wait_until_merged() {
 
   while true
   do
-    # gh infers the repo from the URL; state is MERGED|CLOSED|OPEN.
-    state=$(command gh pr view "$pr_url" --json state -q .state 2>/dev/null) || true
+    # state is MERGED|CLOSED|OPEN.
+    state=$(command gh -R "$(gh_url_repo "$pr_url")" pr view "$pr_url" --json state -q .state 2>/dev/null) || true
 
     case $state in
       MERGED)
@@ -448,7 +452,7 @@ gh_pr_merge() {
       return
     fi
 
-    gh pr comment "$pr_url" --body "/merge" ||
+    gh -R "$repo_slug_from_url" pr comment "$pr_url" --body "/merge" ||
       die "Couldn't post /merge comment to '%s'" "$pr_url"
 
     info "Requested merge via comment for %s; waiting for merge queue" "$pr_url"
@@ -460,7 +464,7 @@ gh_pr_merge() {
 
   local capabilities_json
   capabilities_json=$(
-    gh repo view --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
+    gh -R "$repo_slug_from_url" repo view "$repo_slug_from_url" --json 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod'
   )
 
   local strategies=()
@@ -484,7 +488,7 @@ gh_pr_merge() {
   do
     local strat=${strategies[i]}
 
-    if gh pr merge "$@" "--${strat}" "$pr_url"
+    if gh -R "$repo_slug_from_url" pr merge "$@" "--${strat}" "$pr_url"
     then
       merged=$strat
       break
@@ -537,7 +541,7 @@ end run' "$(< pr.md.url)"
   fi
 
   local base_branch
-  base_branch=$(gh repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
+  base_branch=$(gh -R "$repo_spec" repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name) ||
     die "Could not determine default branch for repository '%s'" "$repo_spec"
 
   [[ -r pr.md ]] ||
@@ -556,8 +560,7 @@ end run' "$(< pr.md.url)"
 
   local pr_url
   pr_url=$(
-    command gh pr create \
-            --repo "$repo_spec" \
+    command gh -R "$repo_spec" pr create \
             --draft \
             --base "$base_branch" \
             --title "$(head -n1 pr.md)" \
@@ -581,9 +584,8 @@ gh_issue_edit() {
   [[ -r issue.md ]] ||
     die 'Expected issue file '%s' not readable' "${toplevel}/issue.md"
 
-  command gh issue edit \
+  command gh -R "$(gh_url_repo "$(< issue.md.url)")" issue edit \
           "$(< issue.md.url)" \
-          --repo "$repo_spec" \
           --title "$(head -n1 issue.md)" \
           -F <(tail -n+3 issue.md) ||
     die 'Unable to edit issue'
@@ -616,8 +618,7 @@ end run' "$(< issue.md.url)"
 
   local issue_url
   issue_url=$(
-    command gh issue create \
-            --repo "$repo_spec" \
+    command gh -R "$repo_spec" issue create \
             --title "$(head -n1 issue.md)" \
             -F <(tail -n+3 issue.md)
         ) ||
@@ -683,8 +684,8 @@ gh_comment_edit() {
   fi
 
   gh api \
-     --method PATCH \
      "$comment_path" \
+     --method PATCH \
      -f "body=$(< "$comment_file")" \
      --jq '.html_url' ||
     die 'Unable to update comment'
@@ -726,8 +727,8 @@ gh_comment_reply() {
   local reply_url
   reply_url=$(
     gh api \
-       --method POST \
        "repos/${owner_repo}/pulls/${pr_number}/comments" \
+       --method POST \
        -F "in_reply_to=${comment_id}" \
        -f "body=$(< "$comment_file")" \
        --jq '.html_url'
@@ -781,11 +782,17 @@ gh_comment_delete() {
     die "'%s' doesn't look like a comment URL (expected #discussion_r<ID> or #issuecomment-<ID>)" "$comment_url"
   fi
 
-  if ! gh api --method HEAD "${comment_path}" 2>/dev/null
+  local head_err
+  if ! head_err=$(gh api "${comment_path}" --method HEAD 2>&1 >/dev/null)
   then
-    info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
-    rm -v "${comment_file}.url" >&2
-    return
+    if [[ $head_err == *'HTTP 404'* ]]
+    then
+      info 'Comment at '%s' no longer exists. Removing stale URL file.' "$comment_path"
+      rm -v "${comment_file}.url" >&2
+      return
+    fi
+    printf '%s\n' "$head_err" >&2
+    die "Couldn't check whether '%s' still exists; keeping '%s.url'" "$comment_path" "$comment_file"
   fi
 
   if (( ! force ))
@@ -798,26 +805,29 @@ gh_comment_delete() {
     fi
   fi
 
-  local rj
+  local rj rc=0
   rj=$(
     gh api \
+       "${comment_path}" \
        --method DELETE \
        -H "Accept: application/vnd.github+json" \
-       -H "X-GitHub-Api-Version: 2022-11-28" \
-       "${comment_path}"
-  ) || true
+       -H "X-GitHub-Api-Version: 2022-11-28"
+  ) || rc=$?
 
-  if [[ -z $rj ]]
+  if [[ -n $rj && 'Not Found' == $( <<<"$rj" jq -r '.message' 2>/dev/null ) ]]
+  then
+    rm -v "${comment_file}.url" >&2
+    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
+  elif (( rc != 0 ))
+  then
+    die "Deleting '%s' failed (rc=%d): %s; keeping '%s.url'" "$comment_path" "$rc" "$rj" "$comment_file"
+  elif [[ -z $rj ]]
   then
     # Successful DELETE returns empty body
     rm -v "${comment_file}.url" >&2
     info 'Deleted comment for '%s'' "$comment_file"
-  elif [[ 'Not Found' == $( <<<"$rj" jq -r '.message' ) ]]
-  then
-    rm -v "${comment_file}.url" >&2
-    info 'Comment already gone. Removed URL file for '%s'' "$comment_file"
   else
-    error 'Unexpected response deleting comment for '%s': %s' "$comment_file" "$rj"
+    die "Unexpected response deleting comment for '%s': %s" "$comment_file" "$rj"
   fi
 }
 
@@ -890,7 +900,7 @@ gh_comment() {
 
   local comment_url
   comment_url=$(
-    command gh pr comment "$pr_url" --body-file "$comment_file"
+    command gh -R "$(gh_url_repo "$pr_url")" pr comment "$pr_url" --body-file "$comment_file"
   ) ||
     die 'Unable to post comment'
 
@@ -946,7 +956,7 @@ gh_info() {
       printf '%s\n' "${main_repo%%/*}"
       ;;
     .me)
-      command gh api user --jq .login ||
+      command gh -R "$repo_spec" api user --jq .login ||
         die 'Unable to query authenticated user'
       ;;
     --json)
