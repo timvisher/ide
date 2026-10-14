@@ -559,11 +559,11 @@ stub_err=$(
     env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
       HOME="$stub_home" PATH="$tmpdir/mockbin:$PATH" \
       TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
-      "$script" pr view 1 --repo 'unmapped/r"e\po' 2>&1 >/dev/null
+      "$script" pr view 1 --repo $'unmapped/r"e\\po\r\x01' 2>&1 >/dev/null
 )
 if [[ -n $stub_err ]] && jq -e . >/dev/null 2>&1 <<< "$stub_err"
 then
-  pass "fallback aictl stubs emit valid JSON for values with quotes and backslashes"
+  pass "fallback aictl stubs emit valid JSON for quotes, backslashes and control characters"
 else
   fail "fallback aictl stubs emitted invalid JSON: '$stub_err'"
 fi

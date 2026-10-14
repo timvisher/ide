@@ -16,11 +16,18 @@ then
     }
 fi
 gh_shim__json_escape() {
-  local s=$1
+  local s=$1 i c
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   s=${s//$'\n'/\\n}
   s=${s//$'\t'/\\t}
+  s=${s//$'\r'/\\r}
+  for (( i=1; i < 32; i+=1 ))
+  do
+    printf -v c "\\x$(printf '%02x' "$i")"
+    [[ $s == *"$c"* ]] &&
+      s=${s//"$c"/$(printf '\\u%04x' "$i")}
+  done
   printf '%s' "$s"
 }
 gh_shim__stub_parse() {
