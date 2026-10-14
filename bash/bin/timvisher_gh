@@ -305,27 +305,6 @@ else
     die "Could not determine repository spec for remote '%s'" "$target_remote"
 fi
 
-# Pin GH_TOKEN to the gh account configured for this repo's org, so we
-# authenticate as the identity that can see the repo on multi-account setups.
-# This is the same resolution the gh PATH shim applies to all gh calls; doing
-# it here too keeps timvisher_gh correct even if invoked without the shim
-# first on PATH. No mapping → active account (the unchanged default). The
-# comment verbs restore the caller's GH_TOKEN instead and rely on the shim,
-# because their targets can be in any org.
-startup_gh_token_set=0
-startup_gh_token=
-if [[ -v GH_TOKEN ]]
-then
-  startup_gh_token_set=1
-  startup_gh_token=$GH_TOKEN
-fi
-if [[ $1 != comment ]]
-then
-  timvisher_gh__pin_token_for_owner "${repo_spec%%/*}" ||
-    die "No gh token for the account mapped to org '%s'. Authenticate it (gh auth login)." \
-      "${repo_spec%%/*}"
-fi
-
 # --- subcommand: pr ---
 
 gh_pr_ready() {
@@ -706,15 +685,6 @@ end run' "$issue_url"
 
 comment__url_re='^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)(/(files|changes))?(\?[^#]*)?#(discussion_r|issuecomment-)([0-9]+)$'
 
-gh_comment__unpin_token() {
-  if (( startup_gh_token_set ))
-  then
-    export GH_TOKEN=$startup_gh_token
-  else
-    unset GH_TOKEN
-  fi
-}
-
 gh_comment__http_status() {
   local status
   read -r _ status _ <<<"${1%%$'\n'*}"
@@ -755,21 +725,14 @@ comment__capture() {
 }
 
 comment__api() {
-  comment__response=$(gh api --include "$@" --hostname github.com 2>"${comment__tmpdir}/stderr")
-  comment__capture $?
-}
-
-comment__api_as() {
-  local owner=$1
-  shift
-  comment__response=$(TIMVISHER_GH_OWNER=$owner gh api --include "$@" --hostname github.com 2>"${comment__tmpdir}/stderr")
+  comment__response=$(gh -R "${c_owner}/${c_repo}" api --include "$@" --hostname github.com 2>"${comment__tmpdir}/stderr")
   comment__capture $?
 }
 
 comment__graphql() {
-  local owner=$1 query=$2
-  shift 2
-  comment__api_as "$owner" graphql -f query="$query" "$@" &&
+  local query=$1
+  shift
+  comment__api graphql -f query="$query" "$@" &&
     jq -e '(.errors // []) | length == 0' >/dev/null 2>&1 <<<"$comment__body"
 }
 
@@ -778,7 +741,7 @@ comment__failure() {
 }
 
 gh_comment__repo_reachable() {
-  comment__api --method HEAD "/repos/${1}"
+  comment__api --method HEAD "/repos/${c_owner}/${c_repo}"
 }
 
 comment__normalize() {
@@ -1014,7 +977,7 @@ comment__node_id() {
 }
 
 comment__viewer() {
-  comment__api_as "$c_owner" user ||
+  comment__api user ||
     die "Unable to find out who you are on GitHub (%s)" "$(comment__failure)"
   jq -r '.login // empty' <<<"$comment__body"
 }
@@ -1058,7 +1021,7 @@ comment__thread() {
   do
     local -a page_args=(-f owner="$c_owner" -f repo="$c_repo" -F number="$c_pr")
     [[ -n $cursor ]] && page_args+=(-f after="$cursor")
-    comment__graphql "$c_owner" "$query" "${page_args[@]}" ||
+    comment__graphql "$query" "${page_args[@]}" ||
       die "Unable to list review threads on '%s' (%s)" "$c_url" "$(comment__failure)"
     found=$(jq -c --arg root "$root_id" '
       .data.repository.pullRequest.reviewThreads.nodes[]
@@ -1082,7 +1045,7 @@ comment__viewer_reactions() {
   query='query($id: ID!) {
   node(id: $id) { ... on Reactable { reactionGroups { content viewerHasReacted } } }
 }'
-  comment__graphql "$c_owner" "$query" -f id="$id" ||
+  comment__graphql "$query" -f id="$id" ||
     die "Unable to read reactions on '%s' (%s)" "$c_url" "$(comment__failure)"
   jq -c '[.data.node.reactionGroups[]? | select(.viewerHasReacted) | .content
           | if . == "THUMBS_UP" then "+1" elif . == "THUMBS_DOWN" then "-1" else ascii_downcase end]
@@ -1171,7 +1134,7 @@ comment__react_apply() {
       [[ $mode == delete ]] &&
         continue
     fi
-    if comment__graphql "$c_owner" "$mutation" -f id="$id" -f content="$(comment__reaction_enum "$r")"
+    if comment__graphql "$mutation" -f id="$id" -f content="$(comment__reaction_enum "$r")"
     then
       if [[ $mode == delete ]]
       then
@@ -1269,7 +1232,6 @@ gh_comment_post() {
   then
     json=$(comment__sidecar_load "$comment_file") ||
       exit 1
-    gh_comment__unpin_token
     json=$(comment__own_posted "$comment_file" "$json" issue_comment) ||
       exit 1
     local requested=${comment_pr_url:-}
@@ -1301,7 +1263,6 @@ gh_comment_post() {
   c_kind=issue_comment
   comment__writable "$comment_file"
 
-  gh_comment__unpin_token
 
   local body
   body=$(< "$comment_file")
@@ -1338,7 +1299,6 @@ gh_comment_reply() {
   [[ $c_kind == review_comment ]] ||
     die "'%s' is a top-level comment; GitHub only threads replies to review comments (#discussion_r<ID>)" "$c_url"
 
-  gh_comment__unpin_token
 
   local root root_db reply_json reply_url
   root=$(comment__root) ||
@@ -1419,7 +1379,6 @@ gh_comment_edit() {
   c_file=$comment_file
   comment__parse_url "$(jq -r '.url' <<<"$c_json")"
 
-  gh_comment__unpin_token
 
   local remote local_body remote_body posted_body
   remote=$(comment__fetch) ||
@@ -1477,7 +1436,6 @@ gh_comment_react() {
     die 'comment react requires at least one --reaction'
 
   comment__target "${rest[0]}"
-  gh_comment__unpin_token
 
   comment__react_apply "$mode" "${comment__reactions[@]}" ||
     die "Not every reaction converged on '%s'; rerun the same command" "$c_url"
@@ -1505,7 +1463,6 @@ gh_comment_resolve() {
   [[ $c_kind == review_comment ]] ||
     die "'%s' is a top-level comment; only review threads (#discussion_r<ID>) can be resolved" "$c_url"
 
-  gh_comment__unpin_token
 
   local thread_id
   thread_id=$(jq -r '.thread_id // empty' <<<"${c_json:-{\}}")
@@ -1526,7 +1483,7 @@ gh_comment_resolve() {
   else
     mutation='mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }'
   fi
-  comment__graphql "$c_owner" "$mutation" -f id="$thread_id" ||
+  comment__graphql "$mutation" -f id="$thread_id" ||
     die "Unable to %s the thread holding '%s' (%s)" \
       "$([[ $resolved == true ]] && echo resolve || echo unresolve)" "$c_url" "$(comment__failure)"
 
@@ -1560,7 +1517,6 @@ gh_comment_get() {
     file=$c_file
   fi
 
-  gh_comment__unpin_token
 
   local remote fresh remote_body
   remote=$(comment__fetch) ||
@@ -1686,7 +1642,6 @@ gh_comment_delete() {
   local comment_path owner_repo="${c_owner}/${c_repo}"
   comment_path=/$(comment__endpoint)
 
-  gh_comment__unpin_token
 
   local author viewer
   author=$(jq -r '.author // empty' <<<"$c_json")
@@ -1709,7 +1664,7 @@ gh_comment_delete() {
     2??)
       ;;
     404|410)
-      gh_comment__repo_reachable "$owner_repo" ||
+      gh_comment__repo_reachable ||
         die "'%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.json'" "$comment_path" "$head_status" "$owner_repo" "$comment_file"
       info "Comment at '%s' no longer exists. Removing stale '%s.json'." "$comment_path" "$comment_file"
       rm -fv "${comment_file}.json" "${comment_file}.url" >&2 ||
@@ -1749,7 +1704,7 @@ gh_comment_delete() {
       info "Deleted comment for '%s'" "$comment_file"
       ;;
     404|410)
-      gh_comment__repo_reachable "$owner_repo" ||
+      gh_comment__repo_reachable ||
         die "DELETE '%s' returned %s, but repository '%s' isn't reachable either, so access may be the problem; keeping '%s.json'" "$comment_path" "$delete_status" "$owner_repo" "$comment_file"
       rm -fv "${comment_file}.json" "${comment_file}.url" >&2 ||
         die "Comment already gone for '%s', but unable to remove '%s.json'" "$comment_file" "$comment_file"
