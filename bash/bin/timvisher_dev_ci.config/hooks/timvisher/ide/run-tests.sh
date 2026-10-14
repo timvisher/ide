@@ -35,8 +35,6 @@ trap cleanup EXIT
 tmpdir=$(mktemp -d) || exit 1
 
 printf 'ide: %s\nsystem-extensions: %s\n' "$ide_root" "$sysext_root"
-export TIMVISHER_TEST_IDE_ROOT=$ide_root
-export TIMVISHER_TEST_SYSEXT_ROOT=$sysext_root
 
 labels=()
 roots=()
