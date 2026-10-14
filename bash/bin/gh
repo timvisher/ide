@@ -1002,25 +1002,57 @@ gh_account__from_gh_repo() {
 }
 
 gh_account__from_remotes() {
-  local key value name resolved='' url owner
+  local key value name resolved='' resolved_repo='' url host owner
+  local -a names=() order=()
   local -A urls=()
   while read -r key value
   do
     name=${key#remote.}
     case $key in
       remote.*.url)
-        urls[${name%.url}]=$value
+        name=${name%.url}
+        [[ -n ${urls[$name]+x} ]] ||
+          names+=("$name")
+        urls[$name]=$value
         ;;
       remote.*.gh-resolved)
-        [[ $value == base ]] &&
-          resolved=${name%.gh-resolved}
+        name=${name%.gh-resolved}
+        if [[ $value == base ]]
+        then
+          resolved=$name
+        elif [[ $value == */* ]]
+        then
+          resolved_repo=$value
+        fi
         ;;
     esac
   done < <(git config --get-regexp '^remote\..*\.(url|gh-resolved)$' 2>/dev/null)
 
-  local -a order=(upstream github origin)
+  if [[ -n $resolved_repo ]]
+  then
+    owner=${resolved_repo%%/*}
+    if gh_account__valid_owner "$owner"
+    then
+      gh_account__owner=$owner
+      gh_account__source="gh repo set-default '${resolved_repo}'"
+      return 0
+    fi
+  fi
+
   [[ -n $resolved ]] &&
-    order=("$resolved" "${order[@]}")
+    order+=("$resolved")
+  order+=(upstream github origin)
+  for name in "${names[@]}"
+  do
+    case $name in
+      upstream|github|origin)
+        ;;
+      *)
+        order+=("$name")
+        ;;
+    esac
+  done
+
   for name in "${order[@]}"
   do
     url=${urls[$name]-}
@@ -1030,10 +1062,25 @@ gh_account__from_remotes() {
     case $url in
       *://*)
         url=${url#*://}
+        host=${url%%/*}
+        host=${host##*@}
+        host=${host%%:*}
         url=${url#*/}
         ;;
-      *:*)
+      *@*:*)
+        host=${url#*@}
+        host=${host%%:*}
         url=${url#*:}
+        ;;
+      *)
+        continue
+        ;;
+    esac
+    case $host in
+      [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]|*.[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm])
+        ;;
+      *)
+        continue
         ;;
     esac
     [[ $url == */* ]] ||

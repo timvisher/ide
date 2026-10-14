@@ -299,6 +299,26 @@ run_shim "$repo" pr list
 check_source "the gh repo set-default remote beats upstream" tok-acct-pickedorg \
   "for 'pickedorg' (from git remote 'picked')"
 
+map workorg acct-workorg
+map parentorg acct-parentorg
+
+repo2="$tmpdir/repo2"
+git init -q "$repo2" 2>/dev/null
+git -C "$repo2" remote add work git@ddoghq.github.com:workorg/x.git 2>/dev/null
+run_shim "$repo2" pr list
+check_source "a custom remote name and an SSH host alias count" tok-acct-workorg \
+  "for 'workorg' (from git remote 'work')"
+
+git -C "$repo2" remote add upstream https://gitlab.com/gitlaborg/x.git 2>/dev/null
+run_shim "$repo2" pr list
+check_source "a non-GitHub upstream is skipped" tok-acct-workorg \
+  "for 'workorg' (from git remote 'work')"
+
+git -C "$repo2" config remote.work.gh-resolved parentorg/x 2>/dev/null
+run_shim "$repo2" pr list
+check_source "gh repo set-default's OWNER/REPO form wins" tok-acct-parentorg \
+  "for 'parentorg' (from gh repo set-default 'parentorg/x')"
+
 extra_env=(GH_REPO=ddoghq/dd-source)
 run_shim "$repo" pr list
 check_source "GH_REPO beats the cwd remote" tok-acct-ddoghq \
