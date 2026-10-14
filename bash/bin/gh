@@ -15,23 +15,37 @@ then
       exit 1
     }
 fi
+aictl__stub_parse() {
+  _sc="" _sm=""
+  while (( 0 < $# )); do
+    case "$1" in
+      --code) _sc=$2; shift 2 ;;
+      --message) _sm=$2; shift 2 ;;
+      --*) shift 2 ;;
+      *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
+    esac
+  done
+}
 if ! declare -F aictl_die &>/dev/null
 then
-  aictl__stub_parse() {
-    _sc="" _sm=""
-    while (( 0 < $# )); do
-      case "$1" in
-        --code) _sc=$2; shift 2 ;;
-        --message) _sm=$2; shift 2 ;;
-        --*) shift 2 ;;
-        *) if [[ -z $_sc ]]; then _sc=$1; elif [[ -z $_sm ]]; then _sm=$1; fi; shift ;;
-      esac
-    done
-  }
   aictl_die() {
     aictl__stub_parse "$@"
     printf '{"type":"instruction","level":"error","code":"%s","message":"%s","retryable":false}\n' "$_sc" "$_sm" >&2
     exit 1
+  }
+fi
+if ! declare -F aictl_info &>/dev/null
+then
+  aictl_info() {
+    aictl__stub_parse "$@"
+    printf '{"type":"instruction","level":"info","code":"%s","message":"%s"}\n' "$_sc" "$_sm" >&2
+  }
+fi
+if ! declare -F aictl_notice &>/dev/null
+then
+  aictl_notice() {
+    aictl__stub_parse "$@"
+    printf '{"type":"instruction","level":"warning","code":"%s","message":"%s"}\n' "$_sc" "$_sm" >&2
   }
 fi
 
@@ -171,4 +185,292 @@ then
   fi
 fi
 
-exec "$(brew --prefix)"/bin/gh "$@"
+gh_account__real_gh="$(brew --prefix)"/bin/gh
+gh_account__doc='ai/HOME/.agents/skills/github/SKILL.md'
+
+gh_account__valid_owner() {
+  [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
+}
+
+gh_account__owner_from_web_url() {
+  local a=$1 owner
+  case $a in
+    [Hh][Tt][Tt][Pp][Ss]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp][Ss]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|ssh://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*)
+      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
+      ;;
+    git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:?*)
+      a=${a#*:}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  a=${a%%[?#]*}
+  owner=${a%%/*}
+  case $owner in
+    orgs|users)
+      [[ $a == */* ]] ||
+        return 1
+      a=${a#*/}
+      owner=${a%%/*}
+      ;;
+    settings|notifications|login|logout|join|signup|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprise|enterprises|organizations|pulls|issues|dashboard|about|pricing|account|stars|trending|collections|security|readme|copilot|discussions|site|contact|team|events|customer-stories|watching|github-copilot|advisories|home|blog|resources|solutions|premium-support|partners|education|mobile|gist|status|orgs-settings)
+      return 1
+      ;;
+  esac
+  gh_account__valid_owner "$owner" ||
+    return 1
+  printf '%s\n' "$owner"
+}
+
+# Set gh_account__command to the gh command group, and gh_account__owner and
+# gh_account__source to the owner the arguments target, roughly in gh's own
+# order: the 'gh api' endpoint or a github.com URL given as the selector
+# ('gh pr view <url>'), then the last --repo/-R. Return 1 when the arguments
+# name no owner.
+gh_account__from_args() {
+  local a owner repo_value='' consume=0 bare_flag=0
+  local -a positionals=() after_bare_flag=()
+  for a in "$@"
+  do
+    if (( consume == 1 ))
+    then
+      consume=0
+      bare_flag=0
+      continue
+    fi
+    if (( consume == 2 ))
+    then
+      consume=0
+      bare_flag=0
+      repo_value=$a
+      continue
+    fi
+    case $a in
+      -R|--repo)
+        consume=2
+        ;;
+      --repo=*|-R=*)
+        repo_value=${a#*=}
+        bare_flag=0
+        ;;
+      -R?*)
+        repo_value=${a#-R}
+        bare_flag=0
+        ;;
+      -b|--body|-F|--body-file|--field|-f|--raw-field|-t|--title|--template|-c|--comment|--subject|-S|--search|--json|-q|--jq|--homepage|--notes|--notes-file|-n|--milestone|--label|-l|--assignee|--reviewer|--head|-H|--header|--base|-B|--input|-X|--method|--hostname|--cache|-p|--preview|--description)
+        consume=1
+        ;;
+      --*=*)
+        bare_flag=0
+        ;;
+      -*)
+        bare_flag=1
+        ;;
+      *)
+        positionals+=("$a")
+        after_bare_flag+=("$bare_flag")
+        bare_flag=0
+        ;;
+    esac
+  done
+
+  gh_account__command=${positionals[0]-}
+
+  if [[ $gh_account__command == api ]]
+  then
+    a=${positionals[1]-}
+    case $a in
+      [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
+        a=${a#*://*/}
+        ;;
+    esac
+    a=${a#/}
+    case $a in
+      repos/*/*|orgs/*|users/*)
+        a=${a#*/}
+        owner=${a%%[/?#]*}
+        if gh_account__valid_owner "$owner"
+        then
+          gh_account__owner=$owner
+          gh_account__source='the gh api endpoint'
+          return 0
+        fi
+        ;;
+    esac
+  elif (( 2 < ${#positionals[@]} )) && (( ! after_bare_flag[2] ))
+  then
+    if owner=$(gh_account__owner_from_web_url "${positionals[2]}")
+    then
+      gh_account__owner=$owner
+      gh_account__source="the URL '${positionals[2]}'"
+      return 0
+    fi
+  fi
+
+  if [[ -n $repo_value ]]
+  then
+    owner=$(gh_account__owner_from_web_url "$repo_value") ||
+      {
+        a=${repo_value#*://}
+        [[ $a == */*/* ]] &&
+          a=${a#*/}
+        owner=${a%%/*}
+      }
+    if gh_account__valid_owner "$owner"
+    then
+      gh_account__owner=$owner
+      gh_account__source="--repo '${repo_value}'"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+gh_account__from_gh_repo() {
+  local a=${GH_REPO-}
+  [[ -n $a ]] ||
+    return 1
+  [[ $a == */*/* ]] &&
+    a=${a#*/}
+  a=${a%%/*}
+  gh_account__valid_owner "$a" ||
+    return 1
+  gh_account__owner=$a
+  gh_account__source="GH_REPO '${GH_REPO}'"
+}
+
+gh_account__from_remotes() {
+  local key value name resolved='' url owner
+  local -A urls=()
+  while read -r key value
+  do
+    name=${key#remote.}
+    case $key in
+      remote.*.url)
+        urls[${name%.url}]=$value
+        ;;
+      remote.*.gh-resolved)
+        [[ $value == base ]] &&
+          resolved=${name%.gh-resolved}
+        ;;
+    esac
+  done < <(git config --get-regexp '^remote\..*\.(url|gh-resolved)$' 2>/dev/null)
+
+  local -a order=(upstream github origin)
+  [[ -n $resolved ]] &&
+    order=("$resolved" "${order[@]}")
+  for name in "${order[@]}"
+  do
+    url=${urls[$name]-}
+    [[ -n $url ]] ||
+      continue
+    url=${url%.git}
+    case $url in
+      *://*)
+        url=${url#*://}
+        url=${url#*/}
+        ;;
+      *:*)
+        url=${url#*:}
+        ;;
+    esac
+    [[ $url == */* ]] ||
+      continue
+    owner=${url%%/*}
+    gh_account__valid_owner "$owner" ||
+      continue
+    gh_account__owner=$owner
+    gh_account__source="git remote '${name}'"
+    return 0
+  done
+  return 1
+}
+
+gh_account__account_for_owner() {
+  local config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
+  local f="${config_dir}/orgs/${1}/account" account
+  [[ -r $f ]] ||
+    return 1
+  account=$(< "$f")
+  account=${account//[[:space:]]/}
+  [[ -n $account ]] ||
+    return 1
+  printf '%s\n' "$account"
+}
+
+gh_account__select() {
+  local account token
+  gh_account__command=''
+  gh_account__owner=''
+  gh_account__source=''
+
+  gh_account__from_args "$@"
+
+  case $gh_account__command in
+    ''|auth|help|completion|version|config|alias)
+      return 0
+      ;;
+  esac
+
+  if [[ -n ${GH_TOKEN-} || -n ${GITHUB_TOKEN-} ]]
+  then
+    aictl_notice \
+      --code gh_account_deferred \
+      --message "Deferring to the GH_TOKEN/GITHUB_TOKEN already in the environment; gh will run as whichever account that token belongs to." \
+      --reason "A caller-set token always wins, so the gh shim did not select an account from the call's target." \
+      --doc "$gh_account__doc" \
+      --suggestion "Unset GH_TOKEN and GITHUB_TOKEN to let the shim pick the account for the target org"
+    return 0
+  fi
+
+  [[ -n $gh_account__owner ]] ||
+    gh_account__from_gh_repo ||
+    gh_account__from_remotes ||
+    {
+      aictl_info \
+        --code gh_account_active \
+        --message "No target org found in the arguments, GH_REPO or git remotes; gh will run as its active account." \
+        --doc "$gh_account__doc" \
+        --suggestion "Pass --repo OWNER/REPO, or a github.com URL, to pick the account for that org"
+      return 0
+    }
+
+  if ! account=$(gh_account__account_for_owner "$gh_account__owner")
+  then
+    aictl_info \
+      --code gh_account_active \
+      --message "No gh account is configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \
+      --doc "$gh_account__doc"
+    return 0
+  fi
+
+  if ! token=$("$gh_account__real_gh" auth token --hostname github.com --user "$account" 2>/dev/null) ||
+     [[ -z $token ]]
+  then
+    aictl_notice \
+      --code gh_account_token_unavailable \
+      --message "Could not get a token for gh account '${account}', configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \
+      --doc "$gh_account__doc" \
+      --suggestion "Authenticate it: gh auth login --hostname github.com"
+    return 0
+  fi
+
+  export GH_TOKEN=$token
+  if [[ $gh_account__source == GH_REPO* ]]
+  then
+    aictl_notice \
+      --code gh_account_selected \
+      --message "Using gh account '${account}' for '${gh_account__owner}' (from ${gh_account__source} in the environment)." \
+      --doc "$gh_account__doc"
+  else
+    aictl_info \
+      --code gh_account_selected \
+      --message "Using gh account '${account}' for '${gh_account__owner}' (from ${gh_account__source})." \
+      --doc "$gh_account__doc"
+  fi
+}
+
+gh_account__select "$@"
+
+exec "$gh_account__real_gh" "$@"

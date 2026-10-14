@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 
-# Shared helpers for selecting the right gh account on multi-account setups —
-# a personal account and an enterprise-managed (EMU) account on the same
-# github.com host, where each can only see its own orgs. Used by the gh PATH
-# shim (so raw `gh` is transparently correct for agents and tools) and by
-# timvisher_gh, so the two can't drift.
+# Shared gh helpers for timvisher_gh and timvisher_git on multi-account
+# setups — a personal account and an enterprise-managed (EMU) account on the
+# same github.com host, where each can only see its own orgs. The gh PATH shim
+# (bash/bin/gh) selects the account for every gh call on its own.
 #
-# Account selection is config-driven and host-agnostic. Employer/org specifics
-# live in config (orgs/<owner>/account), never here.
+# Config-driven and host-agnostic. Employer/org specifics live in config
+# (orgs/<owner>/account), never here.
 
 # Echo OWNER/REPO from a git remote URL — https, scp-style (git@host:o/r), and
 # ssh:// forms. Host-agnostic, so GitHub Enterprise host aliases (a host other
@@ -19,151 +18,6 @@ timvisher_gh__repo_spec_from_url() {
     *:*)   url=${url#*:} ;;                     # user@host:owner/repo
   esac
   printf '%s\n' "$url"
-}
-
-# Echo the org owner a gh invocation targets, or return 1. Best-effort and
-# roughly in gh's own order: a github.com web URL given as the command's
-# selector (`gh pr view <url>`), the last --repo/-R, the endpoint of `gh api`
-# (repos/, orgs/ or users/ paths), then TIMVISHER_GH_OWNER for callers whose
-# arguments can't name an owner (graphql). Callers fall back to the cwd remote.
-timvisher_gh__owner_from_args() {
-  local a owner repo_value='' consume=0 bare_flag=0
-  local -a positionals=() after_bare_flag=()
-  for a in "$@"
-  do
-    if (( consume == 1 ))
-    then
-      consume=0
-      bare_flag=0
-      continue
-    fi
-    if (( consume == 2 ))
-    then
-      consume=0
-      bare_flag=0
-      repo_value=$a
-      continue
-    fi
-    case $a in
-      -R|--repo)
-        consume=2
-        ;;
-      --repo=*|-R=*)
-        repo_value=${a#*=}
-        bare_flag=0
-        ;;
-      -R?*)
-        repo_value=${a#-R}
-        bare_flag=0
-        ;;
-      -b|--body|-F|--body-file|--field|-f|--raw-field|-t|--title|--template|-c|--comment|--subject|-S|--search|--json|-q|--jq|--homepage|--notes|--notes-file|-n|--milestone|--label|-l|--assignee|--reviewer|--head|-H|--header|--base|-B|--input|-X|--method|--hostname|--cache|-p|--preview|--description)
-        consume=1
-        ;;
-      --*=*)
-        bare_flag=0
-        ;;
-      -*)
-        bare_flag=1
-        ;;
-      *)
-        positionals+=("$a")
-        after_bare_flag+=("$bare_flag")
-        bare_flag=0
-        ;;
-    esac
-  done
-
-  if [[ ${positionals[0]-} == api ]]
-  then
-    a=${positionals[1]-}
-    case $a in
-      [Hh][Tt][Tt][Pp][Ss]://[Aa][Pp][Ii].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*)
-        a=${a#*://*/}
-        ;;
-    esac
-    a=${a#/}
-    case $a in
-      repos/*/*|orgs/*|users/*)
-        a=${a#*/}
-        owner=${a%%[/?#]*}
-        timvisher_gh__valid_owner "$owner" &&
-          { printf '%s\n' "$owner"; return 0; }
-        ;;
-    esac
-  elif (( 2 < ${#positionals[@]} )) && (( ! after_bare_flag[2] ))
-  then
-    owner=$(timvisher_gh__owner_from_web_url "${positionals[2]}") &&
-      { printf '%s\n' "$owner"; return 0; }
-  fi
-
-  if [[ -n $repo_value ]]
-  then
-    owner=$(timvisher_gh__owner_from_web_url "$repo_value") ||
-      {
-        a=${repo_value#*://}
-        [[ $a == */*/* ]] &&
-          a=${a#*/}
-        owner=${a%%/*}
-      }
-    timvisher_gh__valid_owner "$owner" &&
-      { printf '%s\n' "$owner"; return 0; }
-  fi
-
-  owner=${TIMVISHER_GH_OWNER:-}
-  owner=${owner%%/*}
-  if [[ -n $owner ]] && timvisher_gh__valid_owner "$owner"
-  then
-    printf '%s\n' "$owner"
-    return 0
-  fi
-  return 1
-}
-
-timvisher_gh__owner_from_web_url() {
-  local a=$1 owner
-  case $a in
-    [Hh][Tt][Tt][Pp][Ss]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp][Ss]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Hh][Tt][Tt][Pp]://[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|[Ww][Ww][Ww].[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*|ssh://git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/?*)
-      a=${a#*[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/}
-      ;;
-    git@[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]:?*)
-      a=${a#*:}
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-  a=${a%%[?#]*}
-  owner=${a%%/*}
-  case $owner in
-    orgs|users)
-      [[ $a == */* ]] ||
-        return 1
-      a=${a#*/}
-      owner=${a%%/*}
-      ;;
-    settings|notifications|login|logout|join|signup|marketplace|apps|sponsors|topics|search|explore|new|codespaces|features|enterprise|enterprises|organizations|pulls|issues|dashboard|about|pricing|account|stars|trending|collections|security|readme|copilot|discussions|site|contact|team|events|customer-stories|watching|github-copilot|advisories|home|blog|resources|solutions|premium-support|partners|education|mobile|gist|status|orgs-settings)
-      return 1
-      ;;
-  esac
-  timvisher_gh__valid_owner "$owner" ||
-    return 1
-  printf '%s\n' "$owner"
-}
-
-timvisher_gh__valid_owner() {
-  [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
-}
-
-# Echo the org owner from a directory's origin remote, or return 1.
-# $1: directory (default cwd). $2: git binary to use (default 'git').
-timvisher_gh__owner_from_dir() {
-  local dir="${1:-$PWD}" git_bin="${2:-git}" url spec owner
-  url=$("$git_bin" -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
-  [[ -n $url ]] || return 1
-  spec=$(timvisher_gh__repo_spec_from_url "$url")
-  owner=${spec%%/*}
-  [[ -n $owner && $spec == */* ]] || return 1
-  printf '%s\n' "$owner"
 }
 
 # Echo the gh account configured for an org owner, or return 1.

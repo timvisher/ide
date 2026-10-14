@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+fail() { echo "FAIL: $1" >&2; (( failures += 1 )); }
+pass() { echo "PASS: $1"; }
+run_test() { (( tests += 1 )); }
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/gh" ||
+  { echo "cannot resolve script" >&2; exit 1; }
+
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmpdir"' EXIT
+
+mkdir -p "$tmpdir/prefix/bin" "$tmpdir/mockbin" "$tmpdir/cfg/orgs" "$tmpdir/norepo"
+cat > "$tmpdir/prefix/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == auth && $2 == token ]]
+then
+  user=''
+  while (( 0 < $# ))
+  do
+    [[ $1 == --user ]] && user=$2
+    shift
+  done
+  [[ $user == broken ]] && exit 1
+  echo "tok-${user}"
+  exit 0
+fi
+echo "real-gh GH_TOKEN=${GH_TOKEN-} GH_REPO=${GH_REPO-} $*"
+MOCK
+chmod +x "$tmpdir/prefix/bin/gh"
+cat > "$tmpdir/mockbin/brew" <<MOCK
+#!/usr/bin/env bash
+echo "$tmpdir/prefix"
+MOCK
+chmod +x "$tmpdir/mockbin/brew"
+
+map() {
+  mkdir -p "$tmpdir/cfg/orgs/$1"
+  printf '%s\n' "$2" > "$tmpdir/cfg/orgs/$1/account"
+}
+
+run_shim() {
+  local dir=$1
+  shift
+  out=$(
+    cd "$dir" &&
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        PATH="$tmpdir/mockbin:$PATH" \
+        TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+        ${extra_env[@]+"${extra_env[@]}"} \
+        "$script" "$@" 2>"$tmpdir/err"
+  )
+  err=$(< "$tmpdir/err")
+}
+extra_env=()
+
+check_owner() {
+  local want=$1
+  shift
+  run_test
+  if [[ $want == - ]]
+  then
+    run_shim "$tmpdir/norepo" "$@"
+    if [[ $out == "real-gh GH_TOKEN= "* && $err == *'"code":"gh_account_active"'*'No target org found'* ]]
+    then
+      pass "[$*] -> (none)"
+    else
+      fail "[$*]: expected no owner; out='$out' err='$err'"
+    fi
+    return
+  fi
+  map "$want" "acct-$want"
+  run_shim "$tmpdir/norepo" "$@"
+  if [[ $out == "real-gh GH_TOKEN=tok-acct-$want "* && $err == *'"code":"gh_account_selected"'*"for '$want'"* ]]
+  then
+    pass "[$*] -> '$want'"
+  else
+    fail "[$*]: want '$want'; out='$out' err='$err'"
+  fi
+}
+
+check_owner "ddoghq"  pr view 691 --repo ddoghq/dd-source --json title
+check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
+check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
+check_owner "ddoghq"  pr view 691 -Rddoghq/dd-source
+check_owner "ddoghq"  pr view 691 --repo github.com/ddoghq/dd-source
+check_owner "ddoghq"  pr view 691 --repo https://github.com/ddoghq/dd-source
+check_owner "ddoghq"  pr view 691 --repo ghe.example.com/ddoghq/dd-source
+check_owner "ddoghq"  pr view 691 -R personal/repo -R ddoghq/dd-source
+check_owner "DataDog" pr view 1 --repo DataDog/appgate
+check_owner "-"       repo list
+
+check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
+check_owner "otherorg" api --method HEAD --include /repos/otherorg/repo/pulls/comments/5 --hostname github.com
+check_owner "otherorg" api https://api.github.com/repos/otherorg/repo/pulls/1
+check_owner "otherorg" api orgs/otherorg/teams
+check_owner "someone" api users/someone/repos
+check_owner "-"       api 'repos/{owner}/{repo}/pulls'
+check_owner "-"       release upload v1 ./repos/otherorg/artifact.zip
+
+check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/691
+check_owner "otherorg" pr comment https://github.com/otherorg/repo/pull/1 --body-file x
+check_owner "ddoghq"  issue view https://github.com/ddoghq/dd-source/issues/3
+check_owner "ddoghq"  pr checkout 'https://github.com/ddoghq/dd-source/pull/1?notification_referrer_id=NT_x#issuecomment-5'
+check_owner "ddoghq"  repo view github.com/ddoghq/dd-source
+check_owner "ddoghq"  repo clone git@github.com:ddoghq/dd-source.git
+check_owner "ddoghq"  repo clone ssh://git@github.com/ddoghq/dd-source.git
+check_owner "ddoghq"  pr view https://github.com/ddoghq/repos/pull/1
+check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1 --repo DataDog/appgate
+check_owner "ddoghq"  pr view http://www.github.com/ddoghq/dd-source/pull/1
+check_owner "ddoghq"  pr view HTTPS://GitHub.com/ddoghq/dd-source/pull/1
+check_owner "myorg"   project view https://github.com/orgs/myorg/projects/1
+check_owner "someone" repo list https://github.com/users/someone
+
+check_owner "-"       pr view https://github.com/orgs
+check_owner "-"       pr view 'https://github.com/orgs?x=a/b'
+check_owner "-"       browse https://github.com/settings/tokens x
+check_owner "-"       pr view https://github.com/pulls
+check_owner "-"       pr view https://github.com/advisories/GHSA-xxxx
+check_owner "-"       gist view https://gist.github.com/someone/abc
+check_owner "-"       pr view https://github.com/../x
+check_owner "-"       pr view https://github.com/-bad/x
+
+check_owner "-"       pr comment 1 --body "see https://github.com/evil/x"
+check_owner "-"       pr comment 1 --body https://github.com/evil/x
+check_owner "-"       pr comment 1 -b https://github.com/evil/x
+check_owner "-"       pr comment 1 --body=https://github.com/evil/x
+check_owner "-"       issue create -t https://github.com/evil/x -b https://github.com/evil/y/issues/2
+check_owner "-"       pr close 5 -c https://github.com/evil/x/pull/2
+check_owner "-"       pr close -c https://github.com/evil/x/pull/2 5
+check_owner "-"       issue close 3 --comment https://github.com/evil/x/issues/2
+check_owner "-"       pr list --search https://github.com/evil/x
+check_owner "-"       pr merge 5 --subject https://github.com/evil/x
+check_owner "-"       gist create -d https://github.com/evil/x notes.md
+check_owner "-"       repo edit --homepage https://github.com/evil/docs
+check_owner "-"       pr review 123 -ab https://github.com/evil/x
+check_owner "-"       pr review -a https://github.com/ddoghq/dd-source/pull/1
+check_owner "-"       pr review 123 -r -b https://github.com/evil/x
+check_owner "-"       pr comment 123 --body --repo=evil/repo
+check_owner "-"       pr comment 123 --body-file
+check_owner "-"       api graphql -f query=mutation -f body=https://github.com/evil/x
+check_owner "-"       api graphql -f body=see/repos/evil/x
+check_owner "-"       api graphql -f query=mutation -f id=PRRC_kwDOabc
+
+map DataDog acct-DataDog
+map upstreamorg acct-upstreamorg
+map pickedorg acct-pickedorg
+
+repo="$tmpdir/repo"
+git init -q "$repo" 2>/dev/null
+git -C "$repo" remote add origin git@github.com:DataDog/dd-source.git 2>/dev/null
+
+check_source() {
+  local label=$1 want_token=$2 want_err=$3
+  shift 3
+  run_test
+  if [[ $out == "real-gh GH_TOKEN=${want_token} "* && $err == *"$want_err"* ]]
+  then
+    pass "$label"
+  else
+    fail "$label; out='$out' err='$err'"
+  fi
+}
+
+run_shim "$repo" pr list
+check_source "origin remote selects its owner" tok-acct-DataDog \
+  "for 'DataDog' (from git remote 'origin')"
+
+run_shim "$repo" pr view 1 --repo ddoghq/dd-source
+check_source "--repo beats the cwd remote" tok-acct-ddoghq \
+  "for 'ddoghq' (from --repo 'ddoghq/dd-source')"
+
+run_shim "$repo" pr view https://github.com/ddoghq/dd-source/pull/1
+check_source "a selector URL beats the cwd remote" tok-acct-ddoghq \
+  "for 'ddoghq' (from the URL 'https://github.com/ddoghq/dd-source/pull/1')"
+
+run_shim "$repo" api repos/ddoghq/dd-source/pulls
+check_source "a gh api endpoint beats the cwd remote" tok-acct-ddoghq \
+  "for 'ddoghq' (from the gh api endpoint)"
+
+git -C "$repo" remote add upstream https://github.com/upstreamorg/dd-source.git 2>/dev/null
+run_shim "$repo" pr list
+check_source "upstream remote beats origin" tok-acct-upstreamorg \
+  "for 'upstreamorg' (from git remote 'upstream')"
+
+git -C "$repo" remote add picked ssh://git@github.com/pickedorg/dd-source.git 2>/dev/null
+git -C "$repo" config remote.picked.gh-resolved base 2>/dev/null
+run_shim "$repo" pr list
+check_source "the gh repo set-default remote beats upstream" tok-acct-pickedorg \
+  "for 'pickedorg' (from git remote 'picked')"
+
+extra_env=(GH_REPO=ddoghq/dd-source)
+run_shim "$repo" pr list
+check_source "GH_REPO beats the cwd remote" tok-acct-ddoghq \
+  "for 'ddoghq' (from GH_REPO 'ddoghq/dd-source' in the environment)"
+run_test
+if [[ $err == *'"level":"warning","code":"gh_account_selected"'* ]]
+then
+  pass "selecting from GH_REPO is a warning-level notice"
+else
+  fail "selecting from GH_REPO should be a warning-level notice; err='$err'"
+fi
+
+run_shim "$repo" pr view 1 --repo DataDog/appgate
+check_source "--repo beats GH_REPO" tok-acct-DataDog \
+  "for 'DataDog' (from --repo 'DataDog/appgate')"
+
+extra_env=(GH_TOKEN=caller-token)
+run_shim "$repo" pr view 1 --repo ddoghq/dd-source
+check_source "a caller-set GH_TOKEN is deferred to" caller-token \
+  '"level":"warning","code":"gh_account_deferred"'
+
+extra_env=(GITHUB_TOKEN=caller-token)
+run_shim "$repo" pr view 1 --repo ddoghq/dd-source
+check_source "a caller-set GITHUB_TOKEN is deferred to" '' \
+  '"code":"gh_account_deferred"'
+extra_env=()
+
+run_shim "$tmpdir/norepo" pr view 1 --repo unmapped/repo
+check_source "an unmapped owner runs as the active account" '' \
+  "No gh account is configured for 'unmapped' (from --repo 'unmapped/repo')"
+
+map brokenorg broken
+run_shim "$tmpdir/norepo" pr view 1 --repo brokenorg/repo
+check_source "a token failure runs as the active account" '' \
+  '"code":"gh_account_token_unavailable"'
+
+for args in "auth status" "--version" "help" "config get editor"
+do
+  read -ra argv <<< "$args"
+  run_shim "$repo" "${argv[@]}"
+  run_test
+  if [[ $out == "real-gh GH_TOKEN= GH_REPO= $args" && -z $err ]]
+  then
+    pass "'gh $args' selects nothing and says nothing"
+  else
+    fail "'gh $args' should select nothing and say nothing; out='$out' err='$err'"
+  fi
+done
+
+run_shim "$tmpdir/norepo" pr comment 1 --repo ddoghq/dd-source --body 'a  b "c"'
+run_test
+if [[ $out == "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr comment 1 --repo ddoghq/dd-source --body a  b \"c\"" ]]
+then
+  pass "argv reaches the real gh unchanged, messages stay off stdout"
+else
+  fail "argv or stdout changed: '$out'"
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))

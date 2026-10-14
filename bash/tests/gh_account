@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Tests for ~/.functions/gh.bash (shared gh account-selection helpers, used by
-# the gh PATH shim and timvisher_gh).
+# Tests for ~/.functions/gh.bash (shared gh helpers for timvisher_gh and
+# timvisher_git).
 
 failures=0
 tests=0
@@ -36,133 +36,6 @@ check_spec "ssh://git@github.com/DataDog/dd-source.git"       "DataDog/dd-source
 check_spec "git@ddoghq.github.com:ddoghq/dd-source.git"       "ddoghq/dd-source"
 check_spec "git@ddoghq.github.com:ddoghq/dd-source"           "ddoghq/dd-source"
 check_spec "ssh://git@ddoghq.github.com/ddoghq/dd-source.git" "ddoghq/dd-source"
-
-# --- owner_from_args: selector URLs, --repo/-R, api endpoints, TIMVISHER_GH_OWNER, flag values, miss ---
-check_owner() {
-  local want=$1; shift
-  local got rc
-  run_test
-  got=$(timvisher_gh__owner_from_args "$@") && rc=0 || rc=$?
-  if [[ ${want} == "-" ]]
-  then
-    if (( rc != 0 ))
-    then pass "owner_from_args [$*] -> (none)"
-    else fail "owner_from_args [$*]: expected none, got '$got'"
-    fi
-  else
-    if [[ $got == "$want" ]]
-    then pass "owner_from_args [$*] -> '$want'"
-    else fail "owner_from_args [$*]: want '$want', got '$got' (rc=$rc)"
-    fi
-  fi
-}
-unset TIMVISHER_GH_OWNER
-
-check_owner "ddoghq"  pr view 691 --repo ddoghq/dd-source --json title
-check_owner "ddoghq"  pr view 691 -R ddoghq/dd-source
-check_owner "ddoghq"  pr view --repo=ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 -Rddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo github.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo https://github.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 --repo ghe.example.com/ddoghq/dd-source
-check_owner "ddoghq"  pr view 691 -R personal/repo -R ddoghq/dd-source
-check_owner "DataDog" pr view 1 --repo DataDog/appgate
-check_owner "-"       repo list
-
-check_owner "ddoghq"  api repos/ddoghq/dd-source/pulls/691/reviews --paginate
-check_owner "otherorg" api --method HEAD --include /repos/otherorg/repo/pulls/comments/5 --hostname github.com
-check_owner "otherorg" api https://api.github.com/repos/otherorg/repo/pulls/1
-check_owner "otherorg" api orgs/otherorg/teams
-check_owner "someone" api users/someone/repos
-check_owner "-"       api 'repos/{owner}/{repo}/pulls'
-check_owner "-"       release upload v1 ./repos/otherorg/artifact.zip
-
-check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/691
-check_owner "otherorg" pr comment https://github.com/otherorg/repo/pull/1 --body-file x
-check_owner "ddoghq"  issue view https://github.com/ddoghq/dd-source/issues/3
-check_owner "ddoghq"  pr checkout 'https://github.com/ddoghq/dd-source/pull/1?notification_referrer_id=NT_x#issuecomment-5'
-check_owner "ddoghq"  repo view github.com/ddoghq/dd-source
-check_owner "ddoghq"  repo clone git@github.com:ddoghq/dd-source.git
-check_owner "ddoghq"  repo clone ssh://git@github.com/ddoghq/dd-source.git
-check_owner "ddoghq"  pr view https://github.com/ddoghq/repos/pull/1
-check_owner "ddoghq"  pr view https://github.com/ddoghq/dd-source/pull/1 --repo DataDog/appgate
-
-check_owner "-"       pr comment 1 --body "see https://github.com/evil/x"
-check_owner "-"       pr comment 1 --body https://github.com/evil/x
-check_owner "-"       pr comment 1 -b https://github.com/evil/x
-check_owner "-"       pr comment 1 --body=https://github.com/evil/x
-check_owner "-"       issue create -t https://github.com/evil/x -b https://github.com/evil/y/issues/2
-check_owner "-"       pr close 5 -c https://github.com/evil/x/pull/2
-check_owner "-"       pr close -c https://github.com/evil/x/pull/2 5
-check_owner "-"       issue close 3 --comment https://github.com/evil/x/issues/2
-check_owner "-"       pr list --search https://github.com/evil/x
-check_owner "-"       pr merge 5 --subject https://github.com/evil/x
-check_owner "-"       gist create -d https://github.com/evil/x notes.md
-check_owner "-"       repo edit --homepage https://github.com/evil/docs
-check_owner "-"       pr review 123 -ab https://github.com/evil/x
-check_owner "-"       pr review -a https://github.com/ddoghq/dd-source/pull/1
-check_owner "-"       pr review 123 -r -b https://github.com/evil/x
-check_owner "-"       pr comment 123 --body --repo=evil/repo
-check_owner "-"       pr comment 123 --body-file
-check_owner "-"       api graphql -f query=mutation -f body=https://github.com/evil/x
-check_owner "-"       api graphql -f body=see/repos/evil/x
-check_owner "-"       api graphql -f query=mutation -f id=PRRC_kwDOabc
-
-TIMVISHER_GH_OWNER=otherorg check_owner "otherorg" api graphql -f query=mutation -f id=PRRC_kwDOabc
-TIMVISHER_GH_OWNER=otherorg/repo check_owner "otherorg" api graphql -f query=mutation -f id=PRRC_kwDOabc
-TIMVISHER_GH_OWNER=../x check_owner "-" api graphql -f query=mutation
-TIMVISHER_GH_OWNER=otherorg check_owner "ddoghq" pr view 1 --repo ddoghq/dd-source
-TIMVISHER_GH_OWNER=otherorg check_owner "ddoghq" pr view https://github.com/ddoghq/dd-source/pull/1
-TIMVISHER_GH_OWNER='' check_owner "-" api graphql -f query=mutation
-
-run_test
-if [[ -z ${TIMVISHER_GH_OWNER+x} ]]
-then
-  pass "owner_from_args: a TIMVISHER_GH_OWNER prefix doesn't leak past the call"
-else
-  fail "owner_from_args: TIMVISHER_GH_OWNER leaked into the shell: '$TIMVISHER_GH_OWNER'"
-fi
-
-# --- owner_from_web_url: URL shapes ---
-check_web_owner() {
-  local want=$1 url=$2 got rc
-  run_test
-  got=$(timvisher_gh__owner_from_web_url "$url") && rc=0 || rc=$?
-  if [[ $want == "-" ]]
-  then
-    if (( rc != 0 ))
-    then
-      pass "owner_from_web_url '$url' -> (none)"
-    else
-      fail "owner_from_web_url '$url': expected none, got '$got'"
-    fi
-  elif [[ $got == "$want" ]]
-  then
-    pass "owner_from_web_url '$url' -> '$want'"
-  else
-    fail "owner_from_web_url '$url': want '$want', got '$got' (rc=$rc)"
-  fi
-}
-check_web_owner "ddoghq"  https://github.com/ddoghq/dd-source
-check_web_owner "ddoghq"  http://github.com/ddoghq/dd-source
-check_web_owner "ddoghq"  https://www.github.com/ddoghq/dd-source
-check_web_owner "ddoghq"  HTTPS://GitHub.com/ddoghq/dd-source
-check_web_owner "ddoghq"  github.com/ddoghq/dd-source
-check_web_owner "ddoghq"  git@github.com:ddoghq/dd-source.git
-check_web_owner "ddoghq"  ssh://git@github.com/ddoghq/dd-source.git
-check_web_owner "ddoghq"  'https://github.com/ddoghq?tab=repositories'
-check_web_owner "myorg"   https://github.com/orgs/myorg/projects/1
-check_web_owner "someone" https://github.com/users/someone
-check_web_owner "-"       https://github.com/orgs
-check_web_owner "-"       'https://github.com/orgs?x=a/b'
-check_web_owner "-"       https://github.com/settings/tokens
-check_web_owner "-"       https://github.com/pulls
-check_web_owner "-"       https://github.com/dashboard
-check_web_owner "-"       https://github.com/advisories/GHSA-xxxx
-check_web_owner "-"       https://gist.github.com/someone/abc
-check_web_owner "-"       https://github.com/../x
-check_web_owner "-"       https://github.com/-bad/x
-check_web_owner "-"       ddoghq/dd-source
 
 # --- account_for_owner: config-driven via TIMVISHER_GH_CONFIG_DIR ---
 cfg="$tmpdir/cfg"
