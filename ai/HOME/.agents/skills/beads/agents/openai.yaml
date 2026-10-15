@@ -1,4 +1,4 @@
 interface:
   display_name: "Beads"
-  short_description: "Project task tracking with bd"
-  default_prompt: "Use $beads to inspect ready work and manage durable project tasks."
+  short_description: "Project task tracking, hierarchy and claiming with bd"
+  default_prompt: "Use $beads to check that beads is live, inspect ready work, and manage durable project tasks."
