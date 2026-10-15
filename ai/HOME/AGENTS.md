@@ -22,8 +22,10 @@ When starting a session, read the Beads and Topics section below and use the `be
   timvisher_bd_topics ls
   timvisher_bd_topics set <topic>
   ```
-- Beads stays local: do not run `bd dolt push`, `bd dolt pull` or
-  `bd sync` unless asked.
+- Beads is strictly local. _*NEVER*_ use Dolt remotes: no
+  `bd dolt push`, `bd dolt pull`, `bd sync` or `bd dolt remote add`.
+  If a topic has a Dolt remote configured, remove it (the `beads` skill
+  shows how).
 - Run `bd prime` for workflow context, or install hooks with
   `bd hooks install`.
 - For the full workflow and session completion rules, use the `beads` skill.
