@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2088
 
-# Tests for bash/install.bash run into a temp HOME
-
 failures=0
 tests=0
 
