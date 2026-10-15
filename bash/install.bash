@@ -2,6 +2,59 @@
 
 shopt -s extglob
 
+core=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 1
+overlay=
+force=
+
+while (( 0 < $# ))
+do
+    case $1 in
+        --core)
+            core=$(cd "$2" && pwd -P) || { echo "# No core at '$2'" >&2; exit 1; }
+            shift 2
+            ;;
+        --overlay)
+            overlay=$(cd "$2" && pwd -P) || { echo "# No overlay at '$2'" >&2; exit 1; }
+            shift 2
+            ;;
+        --force)
+            force=1
+            shift
+            ;;
+        *)
+            echo "# Usage: install.bash [--core <path>] [--overlay <path>] [--force]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+link_root() {
+    local link=$1 target=$2
+
+    if [[ -L $link && ! -e $link ]]
+    then
+        rm -- "$link" || return 1
+    fi
+    if [[ -e $link ]]
+    then
+        if [[ $link -ef $target ]]
+        then
+            return 0
+        fi
+        echo "# $link exists and isn't $target" >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$link")" &&
+        ln -v -s "$target" "$link"
+}
+
+link_root ~/git/ide "$core" || exit 1
+
+if [[ -n $overlay ]]
+then
+    link_root ~/.config/timvisher/ide "$overlay" || exit 1
+fi
+
 # Check if we're safe to install
 
 if [[ ! -e ~/git/ide/bash/install.bash ]]
@@ -44,7 +97,7 @@ then
     do
         echo "$message" >&2
     done
-    if [[ $1 == --force ]]
+    if [[ -n $force ]]
     then
         echo "# Forcing install" >&2
     else
@@ -68,6 +121,15 @@ then
 fi
 
 ~/git/ide/git/bin/install
+
+link_root ~/.config/emacs ~/git/ide/emacs/emacs.d || exit 1
+
+agent_homes=(~/git/ide/ai/HOME)
+if [[ -d ~/.config/timvisher/ide/ai/HOME ]]
+then
+    agent_homes+=(~/.config/timvisher/ide/ai/HOME)
+fi
+~/git/ide/bash/bin/timvisher_agents_install "${agent_homes[@]}" || exit 1
 
 # Enable Touch ID for sudo now if we're at a terminal on a capable Mac. The
 # command self-gates (macOS, sensor, tty, already-configured) and always exits
