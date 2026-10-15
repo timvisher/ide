@@ -30,6 +30,21 @@ tmpdir=$(mktemp -d) ||
   die "mktemp failed"
 trap 'rm -rf "$tmpdir"' EXIT
 
+real_home=$HOME
+export HOME="$tmpdir/home"
+mkdir -p "$HOME" ||
+  die "cannot create fake HOME"
+ln -s "${script_dir}/functions" "$HOME/.functions" ||
+  die "cannot link fake HOME's .functions"
+
+run_test
+if [[ $(bash -c 'printf %s ~') == "$tmpdir/home" && $HOME != "$real_home" ]]
+then
+  pass "suite runs under a fake HOME, away from the real caches"
+else
+  fail "suite HOME is '${HOME}', not under '${tmpdir}'"
+fi
+
 # Create a minimal config dir so the script can initialize
 config_dir="$tmpdir/config"
 mkdir -p "$config_dir/bash/bin/timvisher_git_hooks" ||
