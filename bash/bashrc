@@ -200,12 +200,8 @@ then
   source ~/.config/timvisher/ide/bash/path
 fi
 
-export PATH=~/bin:~/.local/bin:$PATH
-
-if [[ -d ~/.config/timvisher/ide/bash/bin ]]
-then
-  export PATH=~/.config/timvisher/ide/bash/bin:$PATH
-fi
+timvisher_ide_roots=(~/git/ide ~/.config/timvisher/ide)
+timvisher_path_prepend_ide_roots "${timvisher_ide_roots[@]}"
 
 ##########################################################################
 ### Touch ID for sudo (self-completing)

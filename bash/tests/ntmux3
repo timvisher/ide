@@ -501,7 +501,7 @@ fi
 
 run_test
 log=$(new_log history)
-result=$(TIMVISHER_AICTL_LOG="$log" TMPDIR="${t_dir}/tmp" bash -c "${preamble}
+result=$(TIMVISHER_AICTL_LOG="$log" TMPDIR="${t_dir}/tmp" HISTIGNORE=$'[ \t]*' bash -c "${preamble}
   set -o history
   ntmux3__main() { ntmux3__history someorg/fromhistory; ntmux3__fail boom; }
   ntmux3

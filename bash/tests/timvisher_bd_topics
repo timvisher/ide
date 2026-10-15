@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088
 
 # Tests for timvisher_bd_topics.
 # Currently covers the `resolve` subcommand.
@@ -127,7 +128,7 @@ mkdir -p "$fake_home/.functions" "$fake_home/topics-under-home"
 ln -s "$HOME/.functions/logging.bash" "$fake_home/.functions/logging.bash"
 mkdir -p "$fake_home/.config/timvisher/ide"
 printf '%s\n' "$fake_home/topics-under-home" > "$fake_home/.config/timvisher/ide/bd_topics_root"
-if result=$(HOME="$fake_home" "$script" resolve '~/topics-under-home/foo' 2>/dev/null) &&
+if result=$(HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" "$script" resolve '~/topics-under-home/foo' 2>/dev/null) &&
     [[ $result == "foo" ]]
 then
   pass "resolve expands tilde"

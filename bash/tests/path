@@ -71,6 +71,68 @@ check 'exports the variable it sets' \
       '/a:/b' \
       "$(PATH=/b; timvisher_path_prepend /a; "$BASH" -c 'printf "%s" "$PATH"')"
 
+roots_home=
+trap 'rm -rf -- "$roots_home"' EXIT
+roots_home=$(mktemp -d)
+
+mkdir -p "$roots_home/git/ide/bash/bin" "$roots_home/.config/timvisher/ide/bash/bin"
+ln -s git/ide/bash/bin "$roots_home/bin"
+
+roots_after() {
+  local home=$1
+  shift
+  (
+    HOME=$home
+    PATH=$home/ext:/usr/bin
+    PYTHONPATH=
+    timvisher_path_prepend_ide_roots "$@"
+    printf '%s|%s' "$PATH" "$PYTHONPATH"
+  )
+}
+
+h=$roots_home
+core=$h/git/ide
+overlay=$h/.config/timvisher/ide
+
+check 'orders overlay before core and python/bin before bash/bin, keeping ~/.local/bin after ~/bin and ahead of the extension point' \
+      "$overlay/python/bin:$overlay/bash/bin:$core/python/bin:$h/bin:$h/.local/bin:$h/ext:/usr/bin|$overlay/python/lib:$core/python/lib" \
+      "$(roots_after "$h" "$core" "$overlay")"
+
+check 'leaves no duplicates when sourced again' \
+      "$(roots_after "$h" "$core" "$overlay")" \
+      "$(
+        HOME=$h
+        PATH=$h/ext:/usr/bin
+        PYTHONPATH=
+        timvisher_path_prepend_ide_roots "$core" "$overlay"
+        timvisher_path_prepend_ide_roots "$core" "$overlay"
+        printf '%s|%s' "$PATH" "$PYTHONPATH"
+      )"
+
+check 'skips a root that does not exist' \
+      "$core/python/bin:$h/bin:$h/.local/bin:$h/ext:/usr/bin|$core/python/lib" \
+      "$(
+        HOME=$h
+        PATH=$h/ext:/usr/bin
+        PYTHONPATH=
+        timvisher_path_prepend_ide_roots "$core" "$h/missing"
+        printf '%s|%s' "$PATH" "$PYTHONPATH"
+      )"
+
+check 'exports PYTHONPATH' \
+      "$core/python/lib" \
+      "$(
+        HOME=$h
+        unset PYTHONPATH
+        timvisher_path_prepend_ide_roots "$core"
+        "$BASH" -c 'printf "%s" "$PYTHONPATH"'
+      )"
+
+check 'bashrc defines the roots, core then overlay, and loops over them' \
+      'timvisher_ide_roots=(~/git/ide ~/.config/timvisher/ide)
+timvisher_path_prepend_ide_roots "${timvisher_ide_roots[@]}"' \
+      "$(grep -A1 '^timvisher_ide_roots=' "$funcs_dir/../bashrc")"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
