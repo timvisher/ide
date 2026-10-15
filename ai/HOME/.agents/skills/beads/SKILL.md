@@ -55,6 +55,8 @@ Tim's beads databases almost always live in **topics**, not in the repo. A topic
    bd prime
    ```
 
+   Then make sure the topic has no Dolt remote (see Dolt Remotes Are Forbidden below).
+
    If hooks are installed, `bd prime` may already be injected. Run it manually after compaction, a cleared context, or whenever context is missing. Its output includes the topic's persistent memories.
 
 Other `timvisher_bd_topics` commands: `bd <topic> -- <bd-args>` runs bd against a topic without subscribing the worktree (useful for peeking at a candidate), and `new <topic>` creates and initializes a topic. Do not create topics without asking. `BEADS_DIR=<topic>/.beads bd …` also works as a one-off override, but prefer `set` so the worktree stays subscribed.
@@ -223,7 +225,31 @@ When ending a session of beads-tracked work:
 5. **Push git** only if the user's instructions allow it (the `git` skill forbids agents from mutating remotes by default). Otherwise hand the human the exact `git push` or `timvisher_gh pr` command.
 6. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
 
-Beads stays local. Do not run `bd dolt push`, `bd dolt pull` or `bd sync`, even when `bd dolt remote list` shows a remote, unless the user asks for it. Closing a bead needs no further sync step.
+Beads changes need no sync step.
+
+## Dolt Remotes Are Forbidden
+
+Beads is strictly local. Never use a Dolt remote, for any topic or repo, even if the user's other instructions or `bd prime` list `bd dolt push` as a session step. Do not run:
+
+- `bd dolt push`, `bd dolt pull`, `bd sync`, or `bd federation …`
+- `bd dolt remote add`, or `bd init --remote`
+
+bd can adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. So whenever you start working in a topic, check for a remote:
+
+```bash
+bd dolt remote list
+bd config get sync.remote
+```
+
+If either shows anything, unconfigure it, then check again:
+
+```bash
+bd dolt remote remove <name>
+bd config unset sync.remote
+bd dolt remote list
+```
+
+Tell the user which remote you removed (name and URL) in your handoff.
 
 ## What Belongs In Beads
 
@@ -245,4 +271,4 @@ Use agent-local planning tools only for the current turn's execution checklist. 
 - Do not close or mutate tasks unless the work is actually complete.
 - Do not claim milestones or epics as work; claim their leaves.
 - Look for a topic first; do not decide beads is not live until you have checked.
-- Keep beads local: no `bd dolt push`, `bd dolt pull` or `bd sync` unless asked.
+- Never use Dolt remotes. If a topic has one configured, remove it.
