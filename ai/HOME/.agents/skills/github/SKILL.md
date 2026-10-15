@@ -109,34 +109,82 @@ timvisher_gh pr edit     # reads URL from pr.md.url
 timvisher_gh issue edit  # reads URL from issue.md.url
 ```
 
-## Workflow — posting a PR comment
+## Workflow — working with PR comments
 
-Write the comment body to a file (e.g. `comment.md`), then post it:
+`timvisher_gh comment` tracks each comment as a file plus a `<file>.json` sidecar, the source of truth (kind, IDs, URL, author, thread, and what was last posted). `<file>.url` is regenerated from it for convenience, and a legacy `<file>.url` on its own is adopted into `<file>.json` the first time it's used. `timvisher_gh` resolves files from the repository root, so run these from there:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+```
+
+A `<target>` is either a comment URL or a tracked file. A URL is `https://github.com/O/R/pull/N`, optionally followed by `/files` or `/changes` and a `?query` (as in notification links), ending in `#discussion_r<ID>` (review comment) or `#issuecomment-<ID>` (top-level comment). The PR itself and review summaries aren't comments, so these verbs don't act on them.
+
+Rerunning a verb converges instead of repeating it: a tracked comment isn't posted twice, a repeated reaction isn't sent again, and resolving a resolved thread is harmless. Reruns ask GitHub who you are, so they need network access. Verbs print the comment's URL on stdout (`get` prints the file it wrote; `delete` prints nothing) and exit non-zero if anything didn't converge, so rerun the same command after fixing the cause. If a post succeeds but its state can't be recorded, the URL is printed with an error; save it in `<file>.url` before rerunning. Only github.com is supported, not GitHub Enterprise hosts.
+
+### Post a top-level comment
 
 ```bash
 timvisher_gh comment comment.md                                    # PR URL from pr.md.url or Chrome
 timvisher_gh comment --pull-request=https://github.com/o/r/pull/1 comment.md  # explicit PR URL
 ```
 
-The comment URL is stored in `comment.md.url`. Running `timvisher_gh comment comment.md` again when `.url` exists opens it in the browser.
+Running it again when `comment.md.json` exists prints the URL instead of posting a duplicate. A file already posted on another PR, or one fetched with `get` (someone else's comment), is refused.
 
-## Workflow — editing an existing comment
-
-After modifying the comment file, push the update:
-
-```bash
-timvisher_gh comment edit comment.md   # reads URL from comment.md.url
-```
-
-## Workflow — replying to a review comment
-
-To reply to an inline review comment (discussion thread), write the reply body to a file and pass the comment URL:
+### Reply to a review comment
 
 ```bash
 timvisher_gh comment reply 'https://github.com/o/r/pull/1#discussion_r123456' reply.md
+timvisher_gh comment reply their-comment.md reply.md --reaction +1   # tracked target; react to it too
 ```
 
-The `<comment-url>` must contain `#discussion_r<ID>` — this is the URL of the specific review comment you are replying to. The reply URL is stored in `reply.md.url`. Running the same command again when `.url` exists opens it in the browser instead of posting a duplicate.
+Only review comments (`#discussion_r<ID>`) have threads to reply in; replying to a reply posts in its thread. One reply file is one reply: a file already posted in another thread, a top-level comment's file, or a file fetched with `get` is refused. `--pull-request` only applies to posting. `--reaction` (repeatable) reacts to the comment being replied to. A reply whose `reply.md.json` exists isn't posted again.
+
+### Edit a posted comment
+
+```bash
+timvisher_gh comment edit comment.md
+timvisher_gh comment edit --force comment.md   # overwrite GitHub's copy anyway
+```
+
+Edits are leased: if GitHub's copy no longer matches what was last posted (someone else edited it), `edit` prints a diff and refuses. Fold their changes into the file, then rerun with `--force`. The check is a read just before the update, not an atomic swap, so an edit landing in between can still be overwritten. A file adopted from a legacy `.url` has no recorded body yet, so its first edit isn't leased.
+
+### React to a comment
+
+```bash
+timvisher_gh comment react 'https://github.com/o/r/pull/1#issuecomment-123456' --reaction rocket --reaction 👀
+timvisher_gh comment react --delete their-comment.md --reaction rocket
+```
+
+A reaction is a REST name (`+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`), the matching emoji (👍 👎 😄 😕 ❤️ 🎉 🚀 👀, without skin tones), or a GraphQL `ReactionContent` name. Adding a reaction you've already made, or deleting one you haven't, is a no-op. A tracked target records your reactions in `posted.reactions`.
+
+### Resolve a review thread
+
+```bash
+timvisher_gh comment resolve 'https://github.com/o/r/pull/1#discussion_r123456'
+timvisher_gh comment resolve --unresolve their-comment.md
+```
+
+### Fetch someone else's comment
+
+```bash
+timvisher_gh comment get 'https://github.com/o/r/pull/1#discussion_r123456'           # picks the name
+timvisher_gh comment get 'https://github.com/o/r/pull/1#discussion_r123456' their.md  # or name it
+timvisher_gh comment get their.md                                                     # refresh it
+```
+
+Without a file name, `get` names it `<ts>-<author>-<slug>.md`:
+- `<ts>` is the creation time GitHub reports (UTC on github.com) as `+%FT%H-%M-%S%z`.
+- `<author>` is the login with anything but letters, digits and `-` turned into `-`, runs of `-` collapsed and ends trimmed, so `github-actions[bot]` becomes `github-actions-bot`.
+- `<slug>` comes from the body. Control characters and `/` become spaces, whitespace runs collapse to one space, and leading spaces, `.` and `-` are dropped, as are trailing spaces and `.`. The result is cut to 60 characters and to fit a 255-byte file name. The fetched file is a tracked target for `reply`, `react` and `resolve`. Fetching the same comment again reuses that file, even after the comment's body changes. Refreshing keeps local edits you haven't pushed, along with their lease, so `edit` still notices if GitHub's copy changed meanwhile.
+
+### Delete a comment
+
+```bash
+timvisher_gh comment delete comment.md          # prompts first
+timvisher_gh comment delete --force comment.md  # batch cleanup
+```
+
+`--force` refuses comments someone else wrote, such as ones fetched with `get`; delete those interactively. A comment counts as already gone only when GitHub says so (404/410) and its repository is still reachable; any other failure keeps the state and exits non-zero.
 
 ## General GitHub interactions
 
