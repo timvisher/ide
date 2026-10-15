@@ -188,6 +188,9 @@ lock_file() {
   chmod 400 "$path" || return 1
   if command -v chflags &>/dev/null
   then
+    # uchg, not schg: only root can clear schg, so the installer would need
+    # sudo every time it rewrites the stub. The owner can clear uchg, which
+    # is acceptable: it stops accidental writes, not deliberate ones.
     chflags uchg "$path" || return 1
   fi
 }
