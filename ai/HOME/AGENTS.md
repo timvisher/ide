@@ -12,12 +12,18 @@ When starting a session, read the Beads and Topics section below and use the `be
 - Beads is "live" in a worktree when the repo root contains a `.beads`
   directory or `.timvisher_bd_topics` directory. `.beads` is always a
   directory — never read it as a file or inspect its contents.
+- Beads almost always lives in a **topic** under the topics root, not
+  in the repo. A fresh worktree has no topic set, which never means the
+  project has no beads.
 - Before doing any work, check if beads is live. If it is **not** live,
-  list topics and offer to set one:
+  look for the topic: see which topic sibling worktrees use (the
+  `beads` skill shows how), list topics, and set or offer one:
   ```bash
   timvisher_bd_topics ls
   timvisher_bd_topics set <topic>
   ```
+- Beads stays local: do not run `bd dolt push`, `bd dolt pull` or
+  `bd sync` unless asked.
 - Run `bd prime` for workflow context, or install hooks with
   `bd hooks install`.
 - For the full workflow and session completion rules, use the `beads` skill.
