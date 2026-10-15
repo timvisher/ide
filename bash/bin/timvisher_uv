@@ -160,11 +160,11 @@ timvisher_uv__upsert() {
     return 1
   fi
 
-  if ! python=$(uv python find "$requires" 2>/dev/null)
+  if ! python=$(uv python find --system "$requires" 2>/dev/null)
   then
     timvisher_uv__run "$name" uv python install "$requires" > /dev/null || return 1
     info 'installed Python "%s" for "%s"' "$requires" "$name"
-    python=$(timvisher_uv__run "$name" uv python find "$requires") || return 1
+    python=$(timvisher_uv__run "$name" uv python find --system "$requires") || return 1
   fi
 
   version=$(timvisher_uv__run "$name" "$python" -c 'import platform; print(platform.python_version())') ||
@@ -191,8 +191,16 @@ timvisher_uv__upsert() {
   then
     info 'recreated "%s": Python %s -> %s' "$name" "$current" "$version"
   fi
-  VIRTUAL_ENV=$venv timvisher_uv__run "$name" uv sync --script "$entry" --active > /dev/null ||
+  local synced line
+  synced=$(VIRTUAL_ENV=$venv timvisher_uv__run "$name" uv sync --script "$entry" --active) ||
     return 1
+  while IFS= read -r line
+  do
+    if [[ $line == ' '[-+~]' '* ]]
+    then
+      info 'synced "%s":%s' "$name" "$line"
+    fi
+  done <<< "$synced"
 }
 
 timvisher_uv__upsert_all() {

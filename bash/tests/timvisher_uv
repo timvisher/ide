@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-# Tests for timvisher_uv
 
 failures=0
 tests=0
@@ -65,6 +64,10 @@ case "$1 $2" in
     printf 'version_info = %s\n' "$version" > "$venv/pyvenv.cfg"
     ;;
   sync\ *)
+    if [[ -n ${FAKE_UV_SYNC_CHANGES-} ]]
+    then
+      printf 'Resolved 1 package in 1ms\nInstalled 1 package in 1ms\n %s\n' "$FAKE_UV_SYNC_CHANGES" >&2
+    fi
     if (( 0 != ${FAKE_UV_SYNC_RC:-0} ))
     then
       echo "error: Failed to resolve script requirements" >&2
@@ -107,10 +110,20 @@ reset_uv() {
   : > "$tmpdir/uv.log"
 }
 
+path_without_tools=$(
+  IFS=:
+  kept=()
+  for entry in $PATH
+  do
+    [[ $entry == */python/bin ]] || kept+=("$entry")
+  done
+  printf '%s' "${kept[*]}"
+)
+
 run_uv() {
   HOME="$tmpdir/home" \
   XDG_DATA_HOME="$tmpdir/data" \
-  PATH="$tmpdir/overlay/python/bin:$tmpdir/core/python/bin:$tmpdir/mockbin:$PATH" \
+  PATH="$tmpdir/overlay/python/bin:$tmpdir/core/python/bin:$tmpdir/mockbin:$path_without_tools" \
   FAKE_UV_LOG="$tmpdir/uv.log" \
   FAKE_UV_DIR="$tmpdir/fakeuv" \
   FAKE_PY_VERSION="${FAKE_PY_VERSION:-3.15.0}" \
@@ -165,6 +178,8 @@ check 'create: syncs the script into the venv' \
       logged "VIRTUAL_ENV=$venv uv sync --script $core_demo --active"
 check 'create: logs that it created the venv' stderr_has 'created'
 check 'create: skips python install when uv finds a match' not_logged 'uv python install'
+check 'create: finds Python outside any project venv' logged 'uv python find --system >=3.15'
+check 'create: never asks uv for a venv-relative Python' eval "! grep -E 'uv python find [^-]' '$tmpdir/uv.log'"
 
 : > "$tmpdir/uv.log"
 run_uv demo
@@ -172,7 +187,12 @@ rc=$?
 check 'no-op: exits 0' test "$rc" -eq 0
 check 'no-op: prints nothing on stdout' stdout_empty
 check 'no-op: does not clear the venv' not_logged '--clear'
-check 'no-op: logs no change to the venv' eval "! grep -qE 'created|recreated' '$tmpdir/stderr'"
+check 'no-op: logs no change to the venv' eval "! grep -qE 'created|recreated|synced' '$tmpdir/stderr'"
+
+: > "$tmpdir/uv.log"
+FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_uv demo
+check 'dependency change: logs what uv sync installed' stderr_has 'synced \"demo\": + six==1.17.0'
+check 'dependency change: still prints nothing on stdout' stdout_empty
 
 : > "$tmpdir/uv.log"
 FAKE_PY_VERSION=3.15.1 run_uv demo
