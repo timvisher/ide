@@ -2180,10 +2180,13 @@ else
   fail "pr pull readonly: rc=${rc} got '${result: -400}'"
 fi
 
-# Test: pr pull moves a root x.*.md tracking a comment on this PR into the tree
+# Test: the first pr pull moves root x.*.md files tracking comments on this PR into the tree
 run_test
 write_conv
+rm -rf "$pull_comments"
 printf 'Fixed, with details\n' > "$tmpdir/repo/x.reply.md"
+printf 'my note, from the root\n' > "$tmpdir/repo/x.note.md"
+jq -n '{kind: "issue_comment", database_id: 12, url: "https://github.com/testuser/testrepo/pull/50#issuecomment-12", posted: {body: "my note"}}' > "$tmpdir/repo/x.note.md.json"
 echo 'https://github.com/testuser/testrepo/pull/50#discussion_r32' > "$tmpdir/repo/x.reply.md.url"
 printf 'other PR\n' > "$tmpdir/repo/x.other.md"
 echo 'https://github.com/testuser/testrepo/pull/7#discussion_r32' > "$tmpdir/repo/x.other.md.url"
@@ -2193,6 +2196,8 @@ result=$(run_v2 pr pull 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
    [[ ! -e $tmpdir/repo/x.reply.md && ! -e $tmpdir/repo/x.reply.md.url && ! -e $tmpdir/repo/x.reply.md.json ]] &&
    [[ $(< "$reply_md") == 'Fixed, with details' ]] &&
+   [[ ! -e $tmpdir/repo/x.note.md && $(< "$mine_md") == 'my note, from the root' ]] &&
+   [[ $(jq -r .posted.body "$mine_md.json") == 'my note' ]] &&
    [[ -e $tmpdir/repo/x.other.md ]] &&
    [[ $result == *"Moved 'x.reply.md'"* ]]
 then

@@ -1589,6 +1589,8 @@ conv__reaction_rest_jq='
 '
 
 conv__query() {
+  local -
+  set -o pipefail
   local connection=$1 owner=$2 repo=$3 number=$4 nodes
   case $connection in
     comments)
@@ -1691,7 +1693,7 @@ conv__index() {
   conv__idx=()
   [[ -d $comments_dir ]] ||
     return 0
-  while IFS=$'\t' read -r file id thread kind db
+  while IFS=$'\x1f' read -r file id thread kind db
   do
     file=${file%.json}
     [[ -n $id ]] &&
@@ -1702,7 +1704,7 @@ conv__index() {
       conv__idx["db:${kind}:${db}"]=$file
   done < <(
     find "$comments_dir" -name '*.md.json' -type f -exec \
-         jq -r '[input_filename, (.id // ""), (.thread_id // ""), (.kind // ""), (.database_id // "" | tostring)] | @tsv' {} +
+         jq -r '[input_filename, (.id // ""), (.thread_id // ""), (.kind // ""), (.database_id // "" | tostring)] | join("\u001f")' {} +
   )
 }
 
@@ -1723,10 +1725,14 @@ conv__path_slug() {
 }
 
 conv__new_thread_dir() {
-  local comments_dir=$1 item=$2 prefix path line
+  local comments_dir=$1 item=$2 prefix path line budget
   prefix=$(comment__name_prefix "$(jq -r .created_at <<<"$item")" "$(jq -r .author <<<"$item")")
   path=$(conv__path_slug "$(jq -r '.path // ""' <<<"$item")")
   line=$(jq -r .line <<<"$item")
+  budget=$(( 255 - ${#prefix} - ${#line} - 32 ))
+  (( budget < ${#path} )) &&
+    path=${path: -budget}
+  path=${path#[.-]}
   conv__unique_name "${comments_dir}/${prefix}${path:+-$path}-L${line}" -thread
 }
 
@@ -1761,6 +1767,7 @@ conv__apply_item() {
 
   mine=$(jq -r .mine <<<"$item")
   body=$(desc__normalize "$(jq -r .body <<<"$item")")
+  conv__idx["db:$(jq -r '.fields.kind + ":" + (.fields.database_id | tostring)' <<<"$item")"]=${conv__idx["$key"]-}
 
   local md=${conv__idx["$key"]-} status=unchanged
   if [[ -z $md ]]
@@ -1774,6 +1781,7 @@ conv__apply_item() {
     fi
     md=$(conv__new_file "$parent_dir" "$item")
     conv__idx["$key"]=$md
+    conv__idx["db:$(jq -r '.fields.kind + ":" + (.fields.database_id | tostring)' <<<"$item")"]=$md
     status=new
   fi
 
@@ -1807,21 +1815,12 @@ conv__apply_item() {
     fi
   fi
 
-  if [[ $keep_local == false ]]
-  then
-    if [[ $have_md == false || $local_body != "$body" ]]
-    then
-      printf '%s\n' "$body" | state__write_file "$md" ||
-        die "Couldn't write '%s'" "$md"
-    fi
-  fi
-
   local merged
-  merged=$(jq --argjson item "$item" --argjson keep "$keep_local" '
+  merged=$(jq --argjson item "$item" --argjson keep "$keep_local" --arg body "$body" '
     . as $old
     | $old + $item.fields
     | .posted = (($old.posted // {}) + $item.posted
-                 + (if $keep then {} else {body: $item.body} end))' <<<"$existing") ||
+                 + (if $keep then {} else {body: $body} end))' <<<"$existing") ||
     die "Couldn't merge state for '%s'" "$md"
   if ! jq -e --argjson old "$existing" '. == $old' >/dev/null <<<"$merged"
   then
@@ -1829,6 +1828,15 @@ conv__apply_item() {
       status=updated
     comment__sidecar_write "$md" "$merged" ||
       die "Couldn't write '%s'" "$json_file"
+  fi
+
+  if [[ $keep_local == false ]]
+  then
+    if [[ $have_md == false || $local_body != "$body" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "$md" ||
+        die "Couldn't write '%s'" "$md"
+    fi
   fi
 
   case $status in
@@ -1864,6 +1872,11 @@ conv__migrate_root_pairs() {
     body=$(desc__normalize "$(< "$md")")
     if [[ $body != "$(desc__normalize "$(< "$target")")" ]]
     then
+      if jq -e '.posted.body | type == "string"' >/dev/null <<<"$json"
+      then
+        comment__sidecar_write "$target" "$(jq --arg body "$(jq -r .posted.body <<<"$json")" '.posted.body = $body' "${target}.json")" ||
+          die "Couldn't write '%s'" "${target}.json"
+      fi
       printf '%s\n' "$body" | state__write_file "$target" ||
         die "Couldn't write '%s'" "$target"
     fi
@@ -2005,7 +2018,8 @@ conv__push_thread() {
         (( failures += 1 ))
     fi
   done
-  if jq -e '.resolved == true and .posted.resolved != true' >/dev/null "${root}.json"
+  if (( failures == 0 )) &&
+     jq -e '.resolved == true and .posted.resolved != true' >/dev/null "${root}.json"
   then
     if ( gh_comment_resolve "$root" ) >/dev/null
     then
