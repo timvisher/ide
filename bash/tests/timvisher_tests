@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2088
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    (( failures += 1 ))
+  fi
+}
+
+core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+script="$core/bash/bin/timvisher_tests"
+
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
+
+overlay="$tmpdir/overlay"
+mkdir -p "$overlay/ai/HOME/.agents/skills/overlay-skill" || exit 1
+printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
+
+caller_home="$tmpdir/caller"
+mkdir -p "$caller_home/.config/timvisher" || exit 1
+ln -s "$overlay" "$caller_home/.config/timvisher/ide"
+ln -s "$core/bash/functions" "$caller_home/.functions"
+
+shell_in() {
+  (cd "$core" && HOME="$caller_home" TIMVISHER_AGENT=1 GH_TOKEN=secret \
+    TIMVISHER_TESTS_PROBE=leak \
+    "$script" "$@" </dev/null)
+}
+
+out=$(shell_in --overlay "$overlay" --shell bash -c '
+  printf "home=%s\n" "$HOME"
+  printf "git_ide=%s\n" "$(cd ~/git/ide && pwd -P)"
+  printf "overlay=%s\n" "$(cd ~/.config/timvisher/ide && pwd -P)"
+  printf "xdg_config=%s\n" "$XDG_CONFIG_HOME"
+  printf "xdg_data=%s\n" "$XDG_DATA_HOME"
+  printf "xdg_state=%s\n" "$XDG_STATE_HOME"
+  printf "xdg_cache=%s\n" "$XDG_CACHE_HOME"
+  printf "git_home=%s\n" "$TIMVISHER_GIT_HOME"
+  printf "path=%s\n" "$PATH"
+  printf "agent=%s\n" "${TIMVISHER_AGENT-unset}"
+  printf "token=%s\n" "${GH_TOKEN-unset}"
+  printf "probe=%s\n" "${TIMVISHER_TESTS_PROBE-unset}"
+  printf "hooks=%s\n" "$(git config core.hooksPath)"
+  printf "trace2=%s\n" "$(git config trace2.eventTarget)"
+  printf "author=%s\n" "$(git var GIT_AUTHOR_IDENT | cut -d" " -f1)"
+  printf "pwd=%s\n" "$(pwd -P)"
+  touch ~/locked && chflags uchg ~/locked
+  exit 7
+')
+rc=$?
+
+field() {
+  printf '%s\n' "$out" | sed -n "s/^$1=//p"
+}
+
+home=$(field home)
+check 'the command exit status passes through' test "$rc" = 7
+check 'HOME is a fresh directory' test -n "$home"
+check 'HOME is not the caller HOME' test "$home" != "$caller_home"
+check 'HOME is not the real HOME' test "$home" != ~
+check '~/git/ide is the core' test "$(field git_ide)" = "$core"
+check '~/.config/timvisher/ide is the given overlay' \
+      test "$(field overlay)" = "$overlay"
+check 'XDG_CONFIG_HOME is under HOME' test "$(field xdg_config)" = "$home/.config"
+check 'XDG_DATA_HOME is under HOME' test "$(field xdg_data)" = "$home/.local/share"
+check 'XDG_STATE_HOME is under HOME' test "$(field xdg_state)" = "$home/.local/state"
+check 'XDG_CACHE_HOME is under HOME' test "$(field xdg_cache)" = "$home/.cache"
+check 'TIMVISHER_GIT_HOME is ~/git' test "$(field git_home)" = "$home/git"
+check 'PATH starts in HOME' eval '[[ $(field path) == "$home"/* ]]'
+check 'PATH has nothing from the caller HOME' \
+      eval '[[ :$(field path): != *":$caller_home"* ]]'
+check 'TIMVISHER_AGENT is not passed' test "$(field agent)" = unset
+check 'GH_TOKEN is not passed' test "$(field token)" = unset
+check 'other caller variables are not passed' test "$(field probe)" = unset
+check 'core.hooksPath is an empty directory in HOME' \
+      eval '[[ $(field hooks) == "$home"/* ]]'
+check 'trace2 goes to the git wrapper state in HOME' \
+      test "$(field trace2)" = "$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
+check 'git has a test identity' test "$(field author)" = Test
+check 'the command runs at the repo root' test "$(field pwd)" = "$core"
+check 'HOME is removed afterwards, locked files included' test ! -e "$home"
+
+second=$(shell_in --overlay "$overlay" --shell bash -c 'printf %s "$HOME"')
+check 'each run gets its own HOME' test "$second" != "$home"
+
+default_overlay=$(shell_in --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P')
+check 'the overlay defaults to the caller ~/.config/timvisher/ide' \
+      test "$default_overlay" = "$overlay"
+
+out=$(cd "$core" && HOME="$caller_home" "$script" 2>/dev/null)
+rc=$?
+check 'no mode is a usage error' test "$rc" != 0
+check 'no mode prints nothing on stdout' test -z "$out"
+check 'no mode prints usage on stderr' \
+      test -n "$(cd "$core" && HOME="$caller_home" "$script" 2>&1 >/dev/null)"
+
+out=$(cd "$core" && HOME="$caller_home" "$script" --help 2>/dev/null)
+rc=$?
+check '--help exits 0' test "$rc" = 0
+check '--help prints usage on stdout' eval '[[ $out == Usage:* ]]'
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

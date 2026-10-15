@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1091
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/logging.bash" ||
+  {
+    echo 'Unable to source logging functions' >&2
+    exit 1
+  }
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_tests [--core <path>] [--overlay <path>] --shell [<cmd> [<arg>...]]
+
+Build a template HOME with bash/install.bash from the worktrees under
+test, copy it to a fresh HOME, and run <cmd> (default: bash) there with
+an allowlisted environment, at the root of the current repo. The HOME
+is removed when <cmd> exits, and its exit status is returned.
+
+The current repo is one root under test. The other is --core or
+--overlay when given, otherwise that repo's installed trunk (~/git/ide
+or ~/.config/timvisher/ide).
+
+Options:
+  --core <path>     The ide root, when running from system-extensions.
+  --overlay <path>  The system-extensions root, when running from ide.
+  --shell           Run <cmd> in a fresh HOME. Everything after it is
+                    the command.
+  -h, --help        Show this help.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+core=
+overlay=
+shell=
+cmd=()
+
+while (( 0 < $# ))
+do
+  case $1 in
+    --core)
+      core=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
+    --overlay)
+      overlay=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
+    --shell)
+      shell=1
+      shift
+      cmd=("$@")
+      break
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z $shell ]]
+then
+  usage
+  exit 1
+fi
+
+if (( 0 == ${#cmd[@]} ))
+then
+  cmd=(bash)
+fi
+
+here=$(git rev-parse --show-toplevel) || die 'Not in a git repository'
+here=$(realpath "$here") || die "Can't resolve '%s'" "$here"
+
+if [[ -e $here/bash/install.bash ]]
+then
+  core=${core:-$here}
+  overlay=${overlay:-$HOME/.config/timvisher/ide}
+else
+  core=${core:-$HOME/git/ide}
+  overlay=${overlay:-$here}
+fi
+
+core=$(realpath "$core") || die "No core at '%s'" "$core"
+overlay=$(realpath "$overlay") || die "No overlay at '%s'" "$overlay"
+
+base_path=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+run_dir=
+cleanup() {
+  if [[ -n $run_dir ]]
+  then
+    chflags -R nouchg "$run_dir" 2>/dev/null
+    rm -rf -- "$run_dir"
+  fi
+}
+trap cleanup EXIT
+run_dir=$(mktemp -d) || die "Can't create a run directory"
+run_dir=$(realpath "$run_dir") || die "Can't resolve '%s'" "$run_dir"
+
+template=$run_dir/template
+mkdir -p "$template" || die "Can't create '%s'" "$template"
+if ! env -i HOME="$template" PATH="$base_path" TMPDIR="${TMPDIR:-/tmp}" \
+  LANG="${LANG:-en_US.UTF-8}" \
+  bash "$core/bash/install.bash" --core "$core" --overlay "$overlay" \
+  </dev/null >"$run_dir/install.log" 2>&1
+then
+  cat "$run_dir/install.log" >&2
+  die "bash/install.bash failed for core '%s' and overlay '%s'" "$core" "$overlay"
+fi
+
+home=$run_dir/home
+/bin/cp -R "$template" "$home" || die "Can't copy the template to '%s'" "$home"
+hooks=$home/.local/state/timvisher_tests/hooks
+mkdir -p "$hooks" "$home/.local/state/timvisher/wrappers/git" ||
+  die "Can't create state directories in '%s'" "$home"
+
+# shellcheck disable=SC2016
+paths=$(env -i HOME="$home" PATH="$base_path" bash -c '
+  source ~/.functions/path.bash || exit 1
+  timvisher_path_prepend_ide_roots ~/git/ide ~/.config/timvisher/ide
+  printf "%s\n%s\n" "$PATH" "$PYTHONPATH"
+') || die "Can't build PATH from '%s'" "$home/.functions/path.bash"
+{
+  IFS= read -r path
+  IFS= read -r pythonpath
+} <<< "$paths"
+
+env_args=(
+  HOME="$home"
+  XDG_CONFIG_HOME="$home/.config"
+  XDG_DATA_HOME="$home/.local/share"
+  XDG_STATE_HOME="$home/.local/state"
+  XDG_CACHE_HOME="$home/.cache"
+  TIMVISHER_GIT_HOME="$home/git"
+  PATH="$path"
+  PYTHONPATH="$pythonpath"
+  TMPDIR="${TMPDIR:-/tmp}"
+  GIT_CONFIG_COUNT=2
+  GIT_CONFIG_KEY_0=trace2.eventTarget
+  GIT_CONFIG_VALUE_0="$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
+  GIT_CONFIG_KEY_1=core.hooksPath
+  GIT_CONFIG_VALUE_1="$hooks"
+  GIT_AUTHOR_NAME=Test
+  GIT_AUTHOR_EMAIL=test@example.com
+  GIT_COMMITTER_NAME=Test
+  GIT_COMMITTER_EMAIL=test@example.com
+)
+
+for var in LANG TERM $(compgen -e LC_)
+do
+  if [[ -n ${!var+set} ]]
+  then
+    env_args+=("$var=${!var}")
+  fi
+done
+
+(cd "$here" && env -i "${env_args[@]}" "${cmd[@]}")
