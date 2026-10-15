@@ -3412,10 +3412,10 @@ worktree_gc__count_archivable() {
   local wt_path=$1
   local count=0
 
-  while IFS= read -r file; do
+  while IFS= read -r -d '' file; do
     worktree_gc__should_archive "$file" || continue
     (( count++ )) || true
-  done < <(git -C "$wt_path" ls-files --others --ignored --exclude-standard 2>/dev/null)
+  done < <(git -C "$wt_path" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
 
   printf '%d' "$count"
 }
@@ -3425,13 +3425,13 @@ worktree_gc__do_archive() {
   local rel="${wt_path#"${live_repo_dir}/"}"
   local dest="${worktree_gc__archive_dir}/${rel}"
 
-  while IFS= read -r file; do
+  while IFS= read -r -d '' file; do
     worktree_gc__should_archive "$file" || continue
 
     local file_dest="${dest}/${file}"
     mkdir -p "$(dirname "$file_dest")" || return 1
     cp -a "${wt_path}/${file}" "$file_dest" || return 1
-  done < <(git -C "$wt_path" ls-files --others --ignored --exclude-standard 2>/dev/null)
+  done < <(git -C "$wt_path" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
 }
 
 # Derive an "owner/repo" slug from a cache's origin remote, for `gh --repo`.
