@@ -297,6 +297,48 @@ fi
 cleanup "$test_home"
 cleanup "$source_dir"
 
+# --- Test: resolve creates ~/CLAUDE.md → ~/AGENTS.md ---
+run_test
+test_home=$(setup_home)
+
+source_dir=$(empty_source)
+
+HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_dir" 2>/dev/null
+
+if [[ -L "${test_home}/CLAUDE.md" ]] &&
+   [[ "${test_home}/CLAUDE.md" -ef "${test_home}/AGENTS.md" ]]
+then
+  pass "resolve: creates ~/CLAUDE.md → ~/AGENTS.md"
+else
+  fail "resolve: expected ~/CLAUDE.md → ~/AGENTS.md, got '$(readlink "${test_home}/CLAUDE.md" 2>/dev/null || echo 'not a link')'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+# --- Test: resolve refuses to replace a regular ~/CLAUDE.md ---
+run_test
+test_home=$(setup_home)
+echo "stray" > "${test_home}/CLAUDE.md"
+
+source_dir=$(empty_source)
+
+result=$(HOME="$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "$source_dir" 2>&1 >/dev/null)
+exit_code=$?
+
+if (( exit_code != 0 )) &&
+   [[ ! -L "${test_home}/CLAUDE.md" ]] &&
+   [[ $(< "${test_home}/CLAUDE.md") == stray ]] &&
+   [[ $result == *"CLAUDE.md' exists and is not a symlink"* ]]
+then
+  pass "resolve: reports a regular ~/CLAUDE.md without replacing it"
+else
+  fail "resolve: expected an error and an untouched regular ~/CLAUDE.md (exit_code=${exit_code})"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
 # --- Test: resolve creates ~/.claude/CLAUDE.md → ~/AGENTS.md ---
 run_test
 test_home=$(setup_home)

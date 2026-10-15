@@ -20,6 +20,7 @@
 #
 # After installing, the following symlinks are created/verified:
 #   - ~/AGENTS.md            → ~/git/ide/ai/HOME/AGENTS.md
+#   - ~/CLAUDE.md            → ~/AGENTS.md
 #   - ~/.claude/CLAUDE.md    → ~/AGENTS.md
 #   - ~/.claude/skills       → ~/.agents/skills
 #   - ~/.codex/AGENTS.md     → ~/AGENTS.md
@@ -223,6 +224,9 @@ do_install_from() {
 do_resolve() {
   # ~/AGENTS.md → ~/git/ide/ai/HOME/AGENTS.md
   ensure_symlink "${HOME}/AGENTS.md" "$(prefer_path "${HOME}/git/ide/ai/HOME/AGENTS.md")"
+
+  # ~/CLAUDE.md → ~/AGENTS.md
+  ensure_symlink "${HOME}/CLAUDE.md" "$(prefer_path "${HOME}/AGENTS.md")"
 
   # ~/.claude/CLAUDE.md → ~/AGENTS.md
   if [[ -d ${HOME}/.claude ]]
