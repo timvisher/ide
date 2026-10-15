@@ -79,23 +79,24 @@ show_help() {
     - Title/body: updated from pr.md under the description lease (see
       pr edit)
     - Conversation: walks .timvisher_gh/pr/comments/ in filename order
-      (see pr pull) and sends local intent:
-        a directory with comment.md but no id      posted: a top-level
+      (see pr pull) and sends local intent with the comment verbs:
+        a <name>.md with no <name>.md.json         posted: a top-level
                                                    comment, or a reply
-                                                   when inside a thread
-        your posted comment whose .md changed      edited, under a lease
-                                                   on posted.body (refused
-                                                   with a diff if GitHub's
-                                                   copy moved)
-        "reactions": [...] in any json             added; REST names
-                                                   (+1, heart), emoji, or
-                                                   GraphQL enums
-                                                   (THUMBS_UP); stored as
-                                                   REST names
-        "resolved": true in thread.json            resolved after the
+                                                   (comment reply) when
+                                                   inside a thread
+                                                   directory
+        your posted comment whose .md changed      edited (comment edit),
+                                                   under its lease on
+                                                   posted.body
+        "reactions": [...] in any json             added; any spelling
+                                                   comment react accepts,
+                                                   stored as REST names
+        "resolved": true in a thread root's json   resolved (comment
+                                                   resolve) after the
                                                    thread's replies
       What was sent is recorded in each json, so reruns send nothing
-      twice.  Starting new review threads is not supported
+      twice.  Starting new review threads and editing review bodies
+      are not supported
     - Prints the PR URL on stdout.  --open also opens it in the
       browser (default: --no-open)
 
@@ -114,25 +115,29 @@ show_help() {
 
   pr pull subcommand:
     - Mirrors the conversation (GitHub -> worktree); safe to rerun
-    - One directory per item under .timvisher_gh/pr/comments/, named
-      <UTC +%FT%H-%M-%S%z>-<slug> so lexical order is chronological:
-        <ts>-<author>/comment.{md,json}         issue comment
-        <ts>-<author>-review/comment.{md,json}  review with a body
-                                                (empty-body reviews and
-                                                your pending review are
-                                                not mirrored)
-        <ts>-<path>-L<line>-thread/thread.{md,json}
-                                                review thread root
-        <ts>-...-thread/<ts>-<author>/comment.{md,json}
-                                                thread reply
-    - Items are matched to existing directories by node id, so renamed
-      directories and rerunning are fine
+    - One <name>.md + <name>.md.json pair per item under
+      .timvisher_gh/pr/comments/, in the comment verbs' sidecar schema
+      and naming (<name> = <ts>-<author>[-<slug>], <ts> = the item's
+      UTC creation time as +%FT%H-%M-%S%z, so lexical order is
+      chronological):
+        <name>.md                    issue comment, or a review with a
+                                     body (empty-body reviews and your
+                                     pending review are not mirrored)
+        <ts>-<author>-<path>-L<line>-thread/<name>.md
+                                     review thread: its root comment
+                                     (with thread_id, path, line) and
+                                     its replies
+    - Items are matched to existing files by node id, so renamed files
+      and rerunning are fine
     - Remote edits flow down.  Your own comment with an unpushed local
       edit keeps the edit and its lease; anyone else's comment is
       read-only and is overwritten from GitHub
     - Intent keys you add are never touched: "reactions" (REST names)
-      in any json, "resolved" in thread.json.  Directories without an
-      id (new, unposted comments) are left alone
+      in any json, "resolved" in a thread root's json.  A .md with no
+      .md.json (a new, unposted comment) is left alone
+    - Root x.*.md files tracking a comment on this PR (a <file>.json
+      or legacy <file>.url from the old reply workflow) move into the
+      mirrored comment
 
   pr merge subcommand:
     - Requires a recorded PR (pr.json)
@@ -1634,55 +1639,46 @@ conv__items() {
      --argjson reviews "$reviews" \
      --argjson threads "$threads" \
      "${conv__reaction_rest_jq}"'
-     def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-+|-+$"; "") | .[0:60];
-     def ts: sub(":"; "-"; "g") | sub("Z$"; "+0000");
      def login: .author.login // "ghost";
-     def viewer_reactions: [.reactionGroups[]? | select(.viewerHasReacted) | .content | rest_reaction];
+     def mine: ((login | ascii_downcase) == ($me | ascii_downcase));
+     def viewer_reactions: [.reactionGroups[]? | select(.viewerHasReacted) | .content | rest_reaction] | sort;
      def review_of: .pullRequestReview
        | if . == null then null
          else {id, database_id: .databaseId, state, author: (.author.login // "ghost")}
          end;
      [
        ($threads[] | . as $t | (.comments.nodes[0] // empty) as $root |
-        {key: ("thread:" + $t.id), parent: null, file: "thread",
-         name: (($root.createdAt | ts) + "-" + ($t.path | slug) + "-L"
-                + (($t.line // $t.originalLine // 0) | tostring) + "-thread"),
-         mine: (($root | login) == $me),
-         body: ($root.body // ""),
-         fields: {kind: "thread", thread_id: $t.id, path: $t.path,
-                  line: $t.line, start_line: $t.startLine,
-                  original_line: $t.originalLine, side: $t.diffSide,
-                  outdated: $t.isOutdated,
-                  id: $root.id, database_id: $root.databaseId, url: $root.url,
-                  author: ($root | login), created_at: $root.createdAt,
+        {key: ("thread:" + $t.id), type: "thread", parent: null,
+         created_at: $root.createdAt, author: ($root | login),
+         path: $t.path, line: ($t.line // $t.originalLine // 0)},
+        {key: $root.id, type: "comment", parent: ("thread:" + $t.id),
+         mine: ($root | mine), body: ($root.body // ""),
+         fields: {kind: "review_comment", id: $root.id, database_id: $root.databaseId,
+                  url: $root.url, author: ($root | login), created_at: $root.createdAt,
+                  thread_id: $t.id, path: $t.path, line: $t.line,
+                  start_line: $t.startLine, original_line: $t.originalLine,
+                  side: $t.diffSide, outdated: $t.isOutdated,
                   review: ($root | review_of)},
-         posted: {url: $root.url, resolved: $t.isResolved,
-                  reactions: ($root | viewer_reactions)}}),
-       ($threads[] | . as $t | (.comments.nodes[1:][]) |
-        {key: .id, parent: ("thread:" + $t.id), file: "comment",
-         name: ((.createdAt | ts) + "-" + (login | slug)),
-         mine: (login == $me),
-         body: (.body // ""),
-         fields: {kind: "review_comment", id, database_id: .databaseId, url,
-                  author: login, created_at: .createdAt, review: review_of},
-         posted: {url, reactions: viewer_reactions}}),
+         posted: {resolved: $t.isResolved, reactions: ($root | viewer_reactions)}},
+        (.comments.nodes[1:][] |
+         {key: .id, type: "comment", parent: ("thread:" + $t.id),
+          mine: mine, body: (.body // ""),
+          fields: {kind: "review_comment", id, database_id: .databaseId, url,
+                   author: login, created_at: .createdAt, thread_id: $t.id,
+                   in_reply_to: $root.databaseId, review: review_of},
+          posted: {reactions: viewer_reactions}})),
        ($comments[] |
-        {key: .id, parent: null, file: "comment",
-         name: ((.createdAt | ts) + "-" + (login | slug)),
-         mine: (login == $me),
-         body: (.body // ""),
+        {key: .id, type: "comment", parent: null,
+         mine: mine, body: (.body // ""),
          fields: {kind: "issue_comment", id, database_id: .databaseId, url,
                   author: login, created_at: .createdAt},
-         posted: {url, reactions: viewer_reactions}}),
+         posted: {reactions: viewer_reactions}}),
        ($reviews[] | select(.state != "PENDING" and ((.body // "") | test("\\S"))) |
-        (.submittedAt // .createdAt) as $at |
-        {key: .id, parent: null, file: "comment",
-         name: (($at | ts) + "-" + (login | slug) + "-review"),
-         mine: (login == $me),
-         body: .body,
+        {key: .id, type: "comment", parent: null,
+         mine: mine, body: .body,
          fields: {kind: "review", state, id, database_id: .databaseId, url,
-                  author: login, created_at: $at},
-         posted: {url, reactions: viewer_reactions}})
+                  author: login, created_at: (.submittedAt // .createdAt)},
+         posted: {reactions: viewer_reactions}})
      ][]'
 }
 
@@ -1691,42 +1687,83 @@ conv__status=
 
 conv__index() {
   local comments_dir=$1
-  local file key
+  local file id thread kind db
   conv__idx=()
   [[ -d $comments_dir ]] ||
     return 0
-  while IFS=$'\t' read -r file key
+  while IFS=$'\t' read -r file id thread kind db
   do
-    [[ -n $key ]] &&
-      conv__idx["$key"]=${file%/*}
+    file=${file%.json}
+    [[ -n $id ]] &&
+      conv__idx["$id"]=$file
+    [[ -n $thread ]] &&
+      conv__idx["thread:${thread}"]=${file%/*}
+    [[ -n $kind && -n $db ]] &&
+      conv__idx["db:${kind}:${db}"]=$file
   done < <(
-    find "$comments_dir" -name '*.json' -type f -exec \
-         jq -r '[input_filename, (if .kind == "thread" and .thread_id then "thread:" + .thread_id else (.id // "") end)] | @tsv' {} +
+    find "$comments_dir" -name '*.md.json' -type f -exec \
+         jq -r '[input_filename, (.id // ""), (.thread_id // ""), (.kind // ""), (.database_id // "" | tostring)] | @tsv' {} +
   )
 }
 
-conv__unique_dir() {
-  local base=$1 candidate=$1 n=2
-  while [[ -e $candidate ]]
+conv__unique_name() {
+  local base=$1 suffix=$2 candidate=$1 n=2
+  while [[ -e ${candidate}${suffix} || -e ${candidate}${suffix}.json ]]
   do
     candidate="${base}-${n}"
     (( n += 1 ))
   done
-  printf '%s\n' "$candidate"
+  printf '%s%s\n' "$candidate" "$suffix"
+}
+
+conv__path_slug() {
+  local path=${1//\//-}
+  path=${path//[^A-Za-z0-9._-]/-}
+  printf '%s' "${path#[.-]}"
+}
+
+conv__new_thread_dir() {
+  local comments_dir=$1 item=$2 prefix path line
+  prefix=$(comment__name_prefix "$(jq -r .created_at <<<"$item")" "$(jq -r .author <<<"$item")")
+  path=$(conv__path_slug "$(jq -r '.path // ""' <<<"$item")")
+  line=$(jq -r .line <<<"$item")
+  conv__unique_name "${comments_dir}/${prefix}${path:+-$path}-L${line}" -thread
+}
+
+conv__new_file() {
+  local parent_dir=$1 item=$2 prefix slug budget
+  prefix=$(comment__name_prefix "$(jq -r .fields.created_at <<<"$item")" "$(jq -r .fields.author <<<"$item")")
+  budget=$(( 255 - $(printf '%s' "${prefix}-.md.json.XXXXXX" | wc -c) ))
+  slug=$(comment__slug "$(jq -r .body <<<"$item")" "$budget")
+  conv__unique_name "${parent_dir}/${prefix}${slug:+-$slug}" .md
 }
 
 conv__apply_item() {
   local comments_dir=$1 item=$2
-  local key parent name file mine body
+  local key type parent mine body
   key=$(jq -r .key <<<"$item")
+  type=$(jq -r .type <<<"$item")
   parent=$(jq -r '.parent // empty' <<<"$item")
-  name=$(jq -r .name <<<"$item")
-  file=$(jq -r .file <<<"$item")
+
+  if [[ $type == thread ]]
+  then
+    if [[ -z ${conv__idx["$key"]-} ]]
+    then
+      local dir
+      dir=$(conv__new_thread_dir "$comments_dir" "$item")
+      mkdir -p -- "$dir" ||
+        die "Couldn't create '%s'" "$dir"
+      conv__idx["$key"]=$dir
+    fi
+    conv__status=
+    return 0
+  fi
+
   mine=$(jq -r .mine <<<"$item")
   body=$(desc__normalize "$(jq -r .body <<<"$item")")
 
-  local dir=${conv__idx["$key"]-} status=unchanged
-  if [[ -z $dir ]]
+  local md=${conv__idx["$key"]-} status=unchanged
+  if [[ -z $md ]]
   then
     local parent_dir=$comments_dir
     if [[ -n $parent ]]
@@ -1735,15 +1772,12 @@ conv__apply_item() {
       [[ -n $parent_dir ]] ||
         die "Couldn't place reply '%s': its thread was not mirrored" "$key"
     fi
-    dir=$(conv__unique_dir "${parent_dir}/${name}")
-    mkdir -p -- "$dir" ||
-      die "Couldn't create '%s'" "$dir"
-    conv__idx["$key"]=$dir
+    md=$(conv__new_file "$parent_dir" "$item")
+    conv__idx["$key"]=$md
     status=new
   fi
 
-  local md="${dir}/${file}.md" json_file="${dir}/${file}.json"
-  local existing='{}'
+  local json_file="${md}.json" existing='{}'
   [[ -r $json_file ]] &&
     existing=$(< "$json_file")
 
@@ -1788,12 +1822,12 @@ conv__apply_item() {
     | $old + $item.fields
     | .posted = (($old.posted // {}) + $item.posted
                  + (if $keep then {} else {body: $item.body} end))' <<<"$existing") ||
-    die "Couldn't merge state for '%s'" "$dir"
-  if [[ $merged != "$existing" ]] && ! jq -e --argjson old "$existing" '. == $old' >/dev/null <<<"$merged"
+    die "Couldn't merge state for '%s'" "$md"
+  if ! jq -e --argjson old "$existing" '. == $old' >/dev/null <<<"$merged"
   then
     [[ $status == unchanged ]] &&
       status=updated
-    jq . <<<"$merged" | state__write_file "$json_file" ||
+    comment__sidecar_write "$md" "$merged" ||
       die "Couldn't write '%s'" "$json_file"
   fi
 
@@ -1802,365 +1836,209 @@ conv__apply_item() {
       info "Kept your unpushed edit in '%s'" "${md#"$toplevel"/}"
       ;;
     new|updated)
-      info '%s %s' "${status^}" "${dir#"$toplevel"/}"
+      info '%s %s' "${status^}" "${md#"$toplevel"/}"
       ;;
   esac
   conv__status=$status
 }
 
-conv__reaction_rest() {
-  case ${1,,} in
-    +1|thumbs_up|thumbsup|👍)
-      echo +1
-      ;;
-    -1|thumbs_down|thumbsdown|👎)
-      echo -1
-      ;;
-    laugh|😄)
-      echo laugh
-      ;;
-    hooray|tada|🎉)
-      echo hooray
-      ;;
-    confused|😕)
-      echo confused
-      ;;
-    heart|❤️|❤)
-      echo heart
-      ;;
-    rocket|🚀)
-      echo rocket
-      ;;
-    eyes|👀)
-      echo eyes
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-conv__reaction_enum() {
-  case $1 in
-    +1) echo THUMBS_UP ;;
-    -1) echo THUMBS_DOWN ;;
-    *) echo "${1^^}" ;;
-  esac
+conv__migrate_root_pairs() {
+  local pr md json url pr_url target body
+  pr_url=$(state__url pr)
+  [[ -n $pr_url ]] ||
+    return 0
+  pr=$(comment__pr_from_url "$pr_url" 2>/dev/null) ||
+    return 0
+  for md in "${toplevel}"/x.*.md
+  do
+    { [[ -f $md ]] && comment__has_sidecar "$md"; } ||
+      continue
+    json=$(comment__sidecar_load "$md" 2>/dev/null) ||
+      continue
+    url=$(jq -r .url <<<"$json")
+    [[ $(comment__pr_from_url "$url" 2>/dev/null) == "$pr" ]] ||
+      continue
+    target=${conv__idx["db:$(jq -r '.kind + ":" + (.database_id | tostring)' <<<"$json")"]-}
+    [[ -n $target ]] ||
+      continue
+    body=$(desc__normalize "$(< "$md")")
+    if [[ $body != "$(desc__normalize "$(< "$target")")" ]]
+    then
+      printf '%s\n' "$body" | state__write_file "$target" ||
+        die "Couldn't write '%s'" "$target"
+    fi
+    rm -f -- "$md" "${md}.json" "${md}.url" ||
+      die "Couldn't remove '%s'" "$md"
+    info "Moved '%s' into '%s'" "${md#"$toplevel"/}" "${target#"$toplevel"/}"
+  done
 }
 
 conv__me_login=
 
-conv__me() {
-  if [[ -z $conv__me_login ]]
-  then
-    conv__me_login=$(command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api user --jq .login) ||
-      die 'Unable to query authenticated user'
-  fi
-}
-
-conv__pr_parts=()
-
-conv__load_pr() {
-  local pr_url=$1
-  mapfile -t conv__pr_parts < <(gh_pr__url_parts "$pr_url")
-  (( ${#conv__pr_parts[@]} == 3 )) ||
-    die "'%s' doesn't look like a PR URL" "$pr_url"
-}
-
-conv__endpoint() {
-  local kind=$1 database_id=$2
-  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}"
-  case $kind in
-    issue_comment)
-      printf 'repos/%s/issues/comments/%s\n' "$repo" "$database_id"
-      ;;
-    review_comment|thread)
-      printf 'repos/%s/pulls/comments/%s\n' "$repo" "$database_id"
-      ;;
-    review)
-      printf 'repos/%s/pulls/%s/reviews/%s\n' "$repo" "${conv__pr_parts[2]}" "$database_id"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-conv__item_file() {
-  if [[ -e $1/thread.md || -e $1/thread.json ]]
-  then
-    echo thread
-  else
-    echo comment
-  fi
-}
-
-conv__write() {
-  local json_file=$1 json=$2
-  jq . <<<"$json" | state__write_file "$json_file" ||
-    die "Couldn't write '%s'" "$json_file"
-}
-
-conv__post_new() {
-  local dir=$1 thread_dir=$2 md=$3 json_file=$4 json=$5
-  local body resp kind
-  local repo="${conv__pr_parts[0]}/${conv__pr_parts[1]}" number=${conv__pr_parts[2]}
-  body=$(desc__normalize "$(< "$md")")
-  [[ -n $body ]] ||
-    {
-      error "Not posting empty comment '%s'" "${md#"$toplevel"/}"
-      return 1
-    }
-
-  if [[ -n $thread_dir ]]
-  then
-    local parent_id
-    parent_id=$(jq -r '.database_id // empty' "${thread_dir}/thread.json" 2>/dev/null)
-    [[ -n $parent_id ]] ||
-      {
-        error "Can't reply in '%s': its thread has no database_id (run pr pull)" "${thread_dir#"$toplevel"/}"
-        return 1
-      }
-    resp=$(command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api --method POST "repos/${repo}/pulls/${number}/comments" \
-                   -F "in_reply_to=${parent_id}" \
-                   -f "body=${body}") ||
-      {
-        error "Couldn't post reply '%s'" "${md#"$toplevel"/}"
-        return 1
-      }
-    kind=review_comment
-  else
-    resp=$(command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api --method POST "repos/${repo}/issues/${number}/comments" \
-                   -f "body=${body}") ||
-      {
-        error "Couldn't post comment '%s'" "${md#"$toplevel"/}"
-        return 1
-      }
-    kind=issue_comment
-  fi
-
-  json=$(jq --argjson resp "$resp" --arg kind "$kind" --arg me "$conv__me_login" --arg body "$body" '
-    . + {kind: $kind, id: $resp.node_id, database_id: $resp.id, url: $resp.html_url,
-         author: $me, created_at: $resp.created_at}
-    | .posted = ((.posted // {}) + {body: $body, url: $resp.html_url})' <<<"$json") ||
-    die "Couldn't record the post of '%s'; it IS on GitHub: %s" "${md#"$toplevel"/}" "$resp"
-  conv__write "$json_file" "$json"
-  info 'Posted %s: %s' "${dir#"$toplevel"/}" "$(jq -r .url <<<"$json")"
-}
-
-conv__edit() {
-  local dir=$1 md=$2 json_file=$3 json=$4
-  local kind database_id endpoint local_body posted_body remote_body
-  kind=$(jq -r .kind <<<"$json")
-  database_id=$(jq -r '.database_id // empty' <<<"$json")
-  endpoint=$(conv__endpoint "$kind" "$database_id") ||
-    {
-      error "Don't know how to edit a '%s' (%s)" "$kind" "${dir#"$toplevel"/}"
-      return 1
-    }
-  local_body=$(desc__normalize "$(< "$md")")
-  posted_body=$(jq -r '.posted.body // ""' <<<"$json")
-
-  remote_body=$(command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api "$endpoint" --jq '.body // ""') ||
-    {
-      error "Couldn't read the current body of '%s'" "${dir#"$toplevel"/}"
-      return 1
-    }
-  remote_body=$(desc__normalize "$remote_body")
-
-  if [[ $remote_body == "$local_body" ]]
-  then
-    info "Comment already current: '%s'" "${dir#"$toplevel"/}"
-  elif [[ $remote_body != "$posted_body" ]]
-  then
-    error "Comment '%s' changed on GitHub since it was last pushed or pulled:" "${dir#"$toplevel"/}"
-    diff -u --label 'last pushed' --label 'GitHub now' \
-         <(printf '%s\n' "$posted_body") <(printf '%s\n' "$remote_body") >&2
-    error "Not overwriting it. Fold those edits into '%s' to continue." "${md#"$toplevel"/}"
+conv__select() {
+  c_file=$1
+  c_json=$(jq -c . "${1}.json") ||
     return 1
-  else
-    local method=PATCH
-    [[ $kind == review ]] &&
-      method=PUT
-    command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api --method "$method" "$endpoint" -f "body=${local_body}" >/dev/null ||
-      {
-        error "Couldn't edit '%s'" "${dir#"$toplevel"/}"
-        return 1
-      }
-    info 'Edited %s' "${dir#"$toplevel"/}"
-  fi
-
-  json=$(jq --arg body "$local_body" '.posted = ((.posted // {}) + {body: $body})' <<<"$json")
-  conv__write "$json_file" "$json"
+  c_url=$(jq -r '.url // empty' <<<"$c_json")
+  comment__parse_url "$c_url" ||
+    c_kind=$(jq -r '.kind // empty' <<<"$c_json")
 }
 
 conv__react() {
-  local dir=$1 json_file=$2 json=$3
-  local id raw rest enum failures=0 changed=false
-  local -a wanted=()
-  id=$(jq -r '.id // empty' <<<"$json")
+  local file=$1 json raw rest
+  local -a wanted=() missing=()
+  json=$(jq -c . "${file}.json") ||
+    return 1
   mapfile -t wanted < <(jq -r '.reactions // [] | .[]' <<<"$json")
   (( ${#wanted[@]} )) ||
     return 0
-
   local -a normalized=()
   for raw in "${wanted[@]}"
   do
-    if ! rest=$(conv__reaction_rest "$raw")
+    if ! rest=$(comment__reaction_rest "$raw")
     then
-      error "Unknown reaction '%s' in '%s'" "$raw" "${json_file#"$toplevel"/}"
-      (( failures += 1 ))
-      continue
+      error "Unknown reaction '%s' in '%s'" "$raw" "${file#"$toplevel"/}.json"
+      return 1
     fi
     normalized+=("$rest")
+    jq -e --arg r "$rest" '(.posted.reactions // []) | index($r)' >/dev/null <<<"$json" ||
+      missing+=("$rest")
   done
-
-  json=$(jq '.reactions = ($ARGS.positional | unique)' --args "${normalized[@]}" <<<"$json")
-  [[ $json == "$(jq . "$json_file" 2>/dev/null)" ]] ||
-    changed=true
-
-  # shellcheck disable=SC2016
-  local mutation='mutation($id: ID!, $content: ReactionContent!) {
-  addReaction(input: {subjectId: $id, content: $content}) { reaction { content } }
-}'
-  local -a to_add
-  mapfile -t to_add < <(jq -r '.reactions[]' <<<"$json")
-  for rest in "${to_add[@]}"
-  do
-    if jq -e --arg r "$rest" '(.posted.reactions // []) | index($r)' >/dev/null <<<"$json"
-    then
-      continue
-    fi
-    enum=$(conv__reaction_enum "$rest")
-    if command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api graphql -f query="$mutation" -f id="$id" -f content="$enum" >/dev/null
-    then
-      info "Reacted %s on '%s'" "$rest" "${dir#"$toplevel"/}"
-      json=$(jq --arg r "$rest" '.posted = ((.posted // {}) | .reactions = ((.reactions // []) + [$r] | unique))' <<<"$json")
-      changed=true
-    else
-      error "Couldn't react %s on '%s'" "$rest" "${dir#"$toplevel"/}"
-      (( failures += 1 ))
-    fi
-  done
-
-  if [[ $changed == true ]]
+  json=$(jq -c '.reactions = ($ARGS.positional | unique)' --args "${normalized[@]}" <<<"$json")
+  if [[ $json != "$(jq -c . "${file}.json")" ]]
   then
-    conv__write "$json_file" "$json"
+    comment__sidecar_write "$file" "$json" ||
+      return 1
   fi
-  (( failures == 0 ))
+  (( ${#missing[@]} )) ||
+    return 0
+  (
+    conv__select "$file" ||
+      exit 1
+    comment__react_apply add "${missing[@]}"
+  ) ||
+    {
+      error "Couldn't react on '%s'" "${file#"$toplevel"/}"
+      return 1
+    }
+  info "Reacted %s on '%s'" "${missing[*]}" "${file#"$toplevel"/}"
 }
 
-conv__resolve() {
-  local dir=$1 json_file="$1/thread.json" json thread_id
-  [[ -r $json_file ]] ||
-    return 0
-  json=$(< "$json_file")
-  jq -e '.resolved == true' >/dev/null <<<"$json" ||
-    return 0
-  if jq -e '.posted.resolved == true' >/dev/null <<<"$json"
-  then
-    return 0
-  fi
-  thread_id=$(jq -r '.thread_id // empty' <<<"$json")
-  [[ -n $thread_id ]] ||
-    {
-      error "Can't resolve '%s': no thread_id (run pr pull)" "${dir#"$toplevel"/}"
-      return 1
-    }
-
-  # shellcheck disable=SC2016
-  local mutation='mutation($id: ID!) {
-  resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
-}'
-  command gh -R "${conv__pr_parts[0]}/${conv__pr_parts[1]}" api graphql -f query="$mutation" -f id="$thread_id" >/dev/null ||
-    {
-      error "Couldn't resolve '%s'" "${dir#"$toplevel"/}"
-      return 1
-    }
-  info "Resolved '%s'" "${dir#"$toplevel"/}"
-  conv__write "$json_file" "$(jq '.posted = ((.posted // {}) + {resolved: true})' <<<"$json")"
+conv__post_top() {
+  local comment_pr_url=$1
+  gh_comment_post "$2"
 }
 
 conv__push_item() {
-  local dir=${1%/} thread_dir=${2-}
-  local file md json_file json='{}' failures=0
-  file=$(conv__item_file "$dir")
-  md="${dir}/${file}.md"
-  json_file="${dir}/${file}.json"
-  [[ -e $md || -e $json_file ]] ||
-    return 0
-  [[ -r $json_file ]] &&
-    json=$(< "$json_file")
+  local pr_url=$1 file=$2 root=${3-}
+  local json failures=0
+  if ! comment__has_sidecar "$file"
+  then
+    [[ -n $(desc__normalize "$(< "$file")") ]] ||
+      {
+        error "Not posting empty comment '%s'" "${file#"$toplevel"/}"
+        return 1
+      }
+    if [[ -n $root ]]
+    then
+      ( gh_comment_reply "$root" "$file" ) >/dev/null ||
+        return 1
+    else
+      ( conv__post_top "$pr_url" "$file" ) >/dev/null ||
+        return 1
+    fi
+    info 'Posted %s: %s' "${file#"$toplevel"/}" "$(jq -r .url "${file}.json")"
+  fi
 
-  if [[ -z $(jq -r '.id // empty' <<<"$json") ]]
+  json=$(jq -c . "${file}.json") ||
+    return 1
+  if jq -e --arg me "${conv__me_login,,}" '(.author // "" | ascii_downcase) == $me' >/dev/null <<<"$json" &&
+     [[ $(desc__normalize "$(< "$file")") != "$(jq -r '.posted.body // ""' <<<"$json")" ]]
   then
-    if [[ $file == thread ]]
+    if [[ $(jq -r .kind <<<"$json") == review ]]
     then
-      error "Starting new review threads is not supported: '%s'" "${dir#"$toplevel"/}"
-      return 1
-    fi
-    if [[ ! -r $md ]]
+      error "Editing review bodies is not supported; edit '%s' on GitHub" "$(jq -r .url <<<"$json")"
+      (( failures += 1 ))
+    elif ( gh_comment_edit "$file" ) >/dev/null
     then
-      error "'%s' has no %s.md to post" "${dir#"$toplevel"/}" "$file"
-      return 1
-    fi
-    conv__post_new "$dir" "$thread_dir" "$md" "$json_file" "$json" ||
-      return 1
-    json=$(< "$json_file")
-  elif [[ -r $md ]] && jq -e --arg me "$conv__me_login" '.author == $me' >/dev/null <<<"$json"
-  then
-    if [[ $(desc__normalize "$(< "$md")") != "$(jq -r '.posted.body // ""' <<<"$json")" ]]
-    then
-      conv__edit "$dir" "$md" "$json_file" "$json" ||
-        (( failures += 1 ))
-      json=$(< "$json_file")
+      info 'Edited %s' "${file#"$toplevel"/}"
+    else
+      (( failures += 1 ))
     fi
   fi
 
-  conv__react "$dir" "$json_file" "$json" ||
+  conv__react "$file" ||
     (( failures += 1 ))
 
   (( failures == 0 ))
 }
 
-conv__subdirs() {
-  find "$1" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort
+conv__files() {
+  find "$1" -mindepth 1 -maxdepth 1 -type f -name '*.md' | LC_ALL=C sort
 }
 
 conv__push_thread() {
-  local dir=$1 failures=0 reply
-  local -a replies
-  conv__push_item "$dir" ||
-    (( failures += 1 ))
-  mapfile -t replies < <(conv__subdirs "$dir")
-  for reply in "${replies[@]}"
+  local pr_url=$1 dir=$2 root='' file failures=0
+  local -a files
+  mapfile -t files < <(conv__files "$dir")
+  for file in "${files[@]}"
   do
-    conv__push_item "$reply" "$dir" ||
-      (( failures += 1 ))
+    if [[ -e ${file}.json ]]
+    then
+      root=$file
+      break
+    fi
   done
-  conv__resolve "$dir" ||
-    (( failures += 1 ))
+  [[ -n $root ]] ||
+    {
+      error "Starting new review threads is not supported: '%s'" "${dir#"$toplevel"/}"
+      return 1
+    }
+  for file in "${files[@]}"
+  do
+    if [[ $file == "$root" ]]
+    then
+      conv__push_item "$pr_url" "$file" ||
+        (( failures += 1 ))
+    else
+      conv__push_item "$pr_url" "$file" "$root" ||
+        (( failures += 1 ))
+    fi
+  done
+  if jq -e '.resolved == true and .posted.resolved != true' >/dev/null "${root}.json"
+  then
+    if ( gh_comment_resolve "$root" ) >/dev/null
+    then
+      info "Resolved '%s'" "${dir#"$toplevel"/}"
+    else
+      (( failures += 1 ))
+    fi
+  fi
   (( failures == 0 ))
 }
 
 conv__push_all() {
-  local pr_url=$1 comments_dir dir failures=0
-  local -a dirs
+  local pr_url=$1 comments_dir entry failures=0 pr
+  local -a entries
   comments_dir="$(state__dir pr)/comments"
   [[ -d $comments_dir ]] ||
     return 0
-  conv__load_pr "$pr_url"
-  conv__me
+  comment__init
+  pr=$(comment__pr_from_url "$pr_url") ||
+    return 1
+  IFS=/ read -r c_owner c_repo _ c_pr <<<"$pr"
+  conv__me_login=$(comment__viewer) ||
+    return 1
 
-  mapfile -t dirs < <(conv__subdirs "$comments_dir")
-  for dir in "${dirs[@]}"
+  mapfile -t entries < <(find "$comments_dir" -mindepth 1 -maxdepth 1 \( -type d -o -type f -name '*.md' \) | LC_ALL=C sort)
+  for entry in "${entries[@]}"
   do
-    if [[ $(conv__item_file "$dir") == thread ]]
+    if [[ -d $entry ]]
     then
-      conv__push_thread "$dir" ||
+      conv__push_thread "$pr_url" "$entry" ||
         (( failures += 1 ))
     else
-      conv__push_item "$dir" ||
+      conv__push_item "$pr_url" "$entry" ||
         (( failures += 1 ))
     fi
   done
@@ -2212,8 +2090,11 @@ gh_pr_pull() {
     [[ -n $item ]] ||
       continue
     conv__apply_item "$comments_dir" "$item"
-    (( counts[$conv__status] += 1 ))
+    [[ -n $conv__status ]] &&
+      (( counts[$conv__status] += 1 ))
   done <<<"$items"
+
+  conv__migrate_root_pairs
 
   info 'Pulled %s: %d new, %d updated, %d unchanged, %d unpushed edits kept' \
        "$pr_url" "${counts[new]}" "${counts[updated]}" "${counts[unchanged]}" "${counts[kept]}"
@@ -2877,9 +2758,9 @@ gh_comment_post() {
     json=$(comment__own_posted "$comment_file" "$json" issue_comment) ||
       exit 1
     local requested=${comment_pr_url:-}
-    if [[ -z $requested && -r pr.md.url ]]
+    if [[ -z $requested ]]
     then
-      requested=$(< pr.md.url)
+      requested=$(state__url pr)
     fi
     if [[ -n $requested ]]
     then

@@ -130,17 +130,19 @@ timvisher_gh issue edit  # reads URL from .timvisher_gh/issue/issue.json
 timvisher_gh pr pull
 ```
 
-Mirrors the whole conversation into `.timvisher_gh/pr/comments/`, one directory per item, named `<UTC timestamp>-<slug>` so `ls` order is chronological: issue comments and reviews with a body as `<ts>-<author>[-review]/comment.{md,json}`, review threads as `<ts>-<path>-L<line>-thread/thread.{md,json}` with replies in `<ts>-<author>/comment.{md,json}` inside. The JSON carries the node id, URL, author, and (for threads) path, line, starting review and resolved state. Safe to rerun: remote edits flow down, your unpushed edits to your own comments are kept, and intent keys (`reactions`, `resolved`) are never touched. Filter ARP threads by `thread.json` `.author` starting with `dd-agentic-review-platform`.
+Mirrors the whole conversation into `.timvisher_gh/pr/comments/` as `<name>.md` + `<name>.md.json` pairs in the same sidecar schema and naming the `comment` verbs use (`<name>` = `<ts>-<author>-<slug>`, `<ts>` the item's UTC creation time, so `ls` order is chronological): issue comments and reviews with a body at the top level, each review thread as a `<ts>-<author>-<path>-L<line>-thread/` directory holding its root comment (with `thread_id`, `path`, `line`, starting review and resolved state) and its replies. Safe to rerun: remote edits flow down, your unpushed edits to your own comments are kept, and intent keys (`reactions`, `resolved`) are never touched. Root `x.*.md` files tracking a comment on the PR move into the tree. Filter ARP threads by the root comment's `.author` starting with `dd-agentic-review-platform`.
 
 ## Workflow — answering PR feedback
 
 Write intent into the mirrored tree, then hand the human `timvisher_gh pr push`, which sends it in filename order and records what it sent so reruns never duplicate anything:
 
-- Reply in a thread: create `<thread dir>/<UTC ts>-<slug>/comment.md` (`date -u +%FT%H-%M-%S%z` for the timestamp).
-- New top-level comment: create `.timvisher_gh/pr/comments/<UTC ts>-<slug>/comment.md`.
-- Edit your own posted comment: edit its `.md`; it is re-pushed under a lease on `posted.body`.
-- React: add `"reactions": ["+1"]` to the item's JSON (REST names, emoji, or GraphQL enums are accepted).
-- Resolve a thread: set `"resolved": true` in its `thread.json` (e.g. every ARP thread once addressed).
+- Reply in a thread: create `<thread dir>/<UTC ts>-<you>-<slug>.md` (`date -u +%FT%H-%M-%S%z` for the timestamp); it is posted with `comment reply`.
+- New top-level comment: create `.timvisher_gh/pr/comments/<UTC ts>-<you>-<slug>.md`; it is posted with `comment`.
+- Edit your own posted comment: edit its `.md`; it is re-pushed with `comment edit`, under its lease on `posted.body`.
+- React: add `"reactions": ["+1"]` to the item's `.md.json` (any spelling `comment react` accepts).
+- Resolve a thread: set `"resolved": true` in its root comment's `.md.json` (e.g. every ARP thread once addressed).
+
+Starting new review threads and editing review bodies aren't supported.
 
 ## Workflow — working with PR comments
 
