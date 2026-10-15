@@ -102,16 +102,25 @@ When starting a session, read the Beads and Topics section below and use the `be
 - For doc-only changes with no meaningful tests, state that explicitly.
 - _*NEVER*_ add an explanatory comment on your own initiative — a comment that
   explains _why_ a change was made, narrates your reasoning or investigation,
-  cites tickets/PRs/runbooks, or restates what the code plainly does. That
-  context is the job of the commit message and PR description. Add such a
-  comment only when the human explicitly asks for one, or judges a specific one
-  worth keeping.
+  cites tickets/PRs/runbooks, or restates what the code plainly does. Why a
+  _change_ was made is the job of the commit message and PR description. Add
+  such a comment only when the human explicitly asks for one, or judges a
+  specific one worth keeping.
+- _*DO*_ comment a decision the code cannot show. Code documents what it does,
+  never what it chose not to do. Where you picked one approach over a
+  plausible alternative, say at that spot what you rejected and why, so the
+  next reader doesn't "fix" it back. Keep it to the choice and the reason —
+  no story of how you got there. This is the one kind of comment to write
+  without being asked: it explains why the code _is_ this way, which stays
+  true as long as the code does, not why it changed.
 - This _*overrides*_ "match the surrounding comment density." Existing
   explanatory comments in a file do _*NOT*_ license new ones — do not imitate
-  them. Absent a human request, write zero comments.
+  them. Absent a human request, write no comments other than decision
+  comments.
 - Before you say you are done, re-read your diff and delete every explanatory
-  comment you added that the human did not ask for. Treat a leftover one as a
-  failing lint: you are not done until it is gone.
+  comment you added that the human did not ask for. Decision comments are
+  exempt. Treat a leftover explanatory one as a failing lint: you are not done
+  until it is gone.
 
 ## Documentation Index
 
