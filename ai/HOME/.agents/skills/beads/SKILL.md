@@ -1,6 +1,6 @@
 ---
 name: beads
-description: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, or choose between local planning and persistent project tracking. Also trigger when planning or breaking down work into milestones, epics, tasks, spikes or decisions; when claiming work in an agent loop (bd ready --claim, leases, heartbeat, reclaim); when superseding a spec or marking duplicates; when checking issue quality with bd lint; when storing project memories with bd remember; when ending a session and syncing beads; or when deciding whether beads is live in a worktree and which timvisher_bd_topics topic to set.
+description: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, or choose between local planning and persistent project tracking. Also trigger when planning or breaking down work into milestones, epics, tasks, spikes or decisions; when claiming work in an agent loop (bd ready --claim, leases, heartbeat, reclaim); when superseding a spec or marking duplicates; when checking issue quality with bd lint; when storing project memories with bd remember; when ending a session; or at the start of any session, to find which timvisher_bd_topics topic holds the project's beads (they usually live in a topic, not the repo).
 ---
 
 # Beads
@@ -9,39 +9,20 @@ Use Beads as the shared project task system. Local plans, scratch files, and per
 
 Everything below was checked against bd 1.3.1. When in doubt, `bd <command> --help` is authoritative; do not use flags it does not list.
 
-## First Step: Is Beads Live?
+## First Step: Find the Beads Topic
 
-Beads is live when `bd where` resolves a database:
+Tim's beads databases almost always live in **topics**, not in the repo. A topic is a directory under the topics root (`~/Documents/datadog/projects`, configured in `~/.config/timvisher/ide/bd_topics_root`) with its own `.beads`. Repo-local beads are rare. Start every session by working out which topic applies.
 
-```bash
-bd where
-```
+1. Check whether this worktree already has one:
 
-It succeeds in any of these setups:
+   ```bash
+   timvisher_bd_topics current
+   bd where
+   ```
 
-- The repo root has a real `.beads` directory.
-- The repo root has a `.beads` directory holding only a redirect to a topic (see Topics below). `bd where` prints `(via redirect from …)`.
-- `BEADS_DIR` points at a `.beads` directory.
+   `bd where` printing `(via redirect from …)` means a topic is set. If both succeed, go to step 5.
 
-`.beads` is always a directory. Never read it as a file or inspect its contents; ask `bd where`, `bd context` or `bd info` instead.
-
-If `bd where` fails with "No active beads workspace found", beads is not live *yet*. That does not mean the project has no beads. Check for a topic before concluding anything (see Topics below).
-
-Once live, load context:
-
-```bash
-bd prime
-```
-
-If hooks are installed, `bd prime` may already be injected. Run it manually after compaction, a cleared context, or whenever context is missing. Its output includes the project's persistent memories.
-
-## Topics (Tim's Setup)
-
-Most of Tim's beads databases live outside the repo, in topic directories under the topics root (`~/Documents/datadog/projects`, configured in `~/.config/timvisher/ide/bd_topics_root`). A worktree subscribes to a topic with `timvisher_bd_topics set`, which writes `.beads/redirect` and `.timvisher_bd_topics/topic.txt` into the repo root. Both are globally gitignored, so a fresh worktree has neither until a topic is set.
-
-So "the worktree has no `.beads` or `.timvisher_bd_topics`" means "no topic set in this worktree", not "this project has no beads". Before saying beads is not live:
-
-1. See which topics sibling worktrees of the same repo use:
+2. A fresh worktree has no topic set. `timvisher_bd_topics set` writes `.beads/redirect` and `.timvisher_bd_topics/topic.txt` into the repo root, both globally gitignored, so new worktrees start with neither. That means "no topic set here yet", never "this project has no beads". See which topics sibling worktrees of the same repo use:
 
    ```bash
    git worktree list --porcelain | awk '/^worktree /{print $2}' |
@@ -52,23 +33,35 @@ So "the worktree has no `.beads` or `.timvisher_bd_topics`" means "no topic set 
      done
    ```
 
-2. List topics and their subscribers:
+3. Look at the available topics, and at who subscribes to a candidate:
 
    ```bash
    timvisher_bd_topics ls
    timvisher_bd_topics subscribers <topic>
    ```
 
-3. If the right topic is obvious (siblings agree, or the user named it), set it; otherwise offer the candidates and ask:
+   Topics are organized by project, not by repo, so the right one may be named for the work (for example an incident or initiative) rather than the repo. When the task is about something that has its own topic, use that topic even if siblings use another.
+
+4. If the right topic is obvious (the user named it, or siblings agree and the task fits), set it. Otherwise offer the candidates and ask:
 
    ```bash
    timvisher_bd_topics set <topic>
    bd where
    ```
 
-Other `timvisher_bd_topics` commands: `current` prints the worktree's topic, `bd <topic> -- <bd-args>` runs bd against a topic without subscribing, and `new <topic>` creates and initializes a topic. Do not create topics without asking.
+5. Load context:
 
-`BEADS_DIR=<topic>/.beads bd …` also works as a one-off override, but prefer `set` so the worktree stays subscribed.
+   ```bash
+   bd prime
+   ```
+
+   If hooks are installed, `bd prime` may already be injected. Run it manually after compaction, a cleared context, or whenever context is missing. Its output includes the topic's persistent memories.
+
+Other `timvisher_bd_topics` commands: `bd <topic> -- <bd-args>` runs bd against a topic without subscribing the worktree (useful for peeking at a candidate), and `new <topic>` creates and initializes a topic. Do not create topics without asking. `BEADS_DIR=<topic>/.beads bd …` also works as a one-off override, but prefer `set` so the worktree stays subscribed.
+
+Only if no topic fits and `bd where` resolves without a redirect is the project using repo-local beads.
+
+`.beads` is always a directory. Never read it as a file or inspect its contents; ask `bd where`, `bd context` or `bd info` instead.
 
 ## Core CLI Workflow
 
@@ -227,9 +220,10 @@ When ending a session of beads-tracked work:
 2. **Run quality gates** if code changed: tests, linters, builds.
 3. **Update status.** Close what is actually finished (`bd close <id1> <id2> …`). For unfinished work, `bd note` where you stopped, and `bd unclaim` anything you won't come back to.
 4. **Commit** per the `git` skill.
-5. **Sync beads.** Check for a Dolt remote with `bd dolt remote list`. If one is configured, `bd dolt push` publishes the beads changes (`bd sync` does the full pull, conflict check and push loop). If none is configured, skip this step: don't pass `--yes` to `bd dolt push`, and don't run `bd sync`. Both can adopt the current git repo's origin as the Dolt remote, which for a topic is the wrong repo.
-6. **Push git** only if the user's instructions allow it (the `git` skill forbids agents from mutating remotes by default). Otherwise hand the human the exact `bd dolt push` and `git push` commands.
-7. **Hand off.** Summarize changes, validation, issue status, and anything that still needs syncing or pushing.
+5. **Push git** only if the user's instructions allow it (the `git` skill forbids agents from mutating remotes by default). Otherwise hand the human the exact `git push` or `timvisher_gh pr` command.
+6. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
+
+Beads stays local. Do not run `bd dolt push`, `bd dolt pull` or `bd sync`, even when `bd dolt remote list` shows a remote, unless the user asks for it. Closing a bead needs no further sync step.
 
 ## What Belongs In Beads
 
@@ -250,4 +244,5 @@ Use agent-local planning tools only for the current turn's execution checklist. 
 - Prefer `--json` when parsing `bd` output programmatically.
 - Do not close or mutate tasks unless the work is actually complete.
 - Do not claim milestones or epics as work; claim their leaves.
-- Do not decide beads is not live until you have checked for a topic.
+- Look for a topic first; do not decide beads is not live until you have checked.
+- Keep beads local: no `bd dolt push`, `bd dolt pull` or `bd sync` unless asked.
