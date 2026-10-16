@@ -3411,14 +3411,24 @@ worktree_gc__should_archive() {
   return 1
 }
 
+worktree_gc__ignored_files=()
+
+worktree_gc__list_ignored() {
+  local wt_path=$1
+  worktree_gc__ignored_files=()
+  mapfile -d '' -t worktree_gc__ignored_files < <(git -C "$wt_path" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
+  wait $!
+}
+
 worktree_gc__count_archivable() {
   local wt_path=$1
-  local count=0
+  local count=0 file
 
-  while IFS= read -r -d '' file; do
+  worktree_gc__list_ignored "$wt_path" || return 1
+  for file in ${worktree_gc__ignored_files[@]+"${worktree_gc__ignored_files[@]}"}; do
     worktree_gc__should_archive "$file" || continue
     (( count++ )) || true
-  done < <(git -C "$wt_path" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
+  done
 
   printf '%d' "$count"
 }
@@ -3427,14 +3437,16 @@ worktree_gc__do_archive() {
   local wt_path=$1
   local rel="${wt_path#"${live_repo_dir}/"}"
   local dest="${worktree_gc__archive_dir}/${rel}"
+  local file
 
-  while IFS= read -r -d '' file; do
+  worktree_gc__list_ignored "$wt_path" || return 1
+  for file in ${worktree_gc__ignored_files[@]+"${worktree_gc__ignored_files[@]}"}; do
     worktree_gc__should_archive "$file" || continue
 
     local file_dest="${dest}/${file}"
     mkdir -p "$(dirname "$file_dest")" || return 1
     cp -a "${wt_path}/${file}" "$file_dest" || return 1
-  done < <(git -C "$wt_path" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
+  done
 }
 
 # Derive an "owner/repo" slug from a cache's origin remote, for `gh --repo`.
@@ -3740,7 +3752,10 @@ worktree_gc() {
         info "  %-6s  %s  %s  (%s)" "$remove_kind" "$last_date" "$branch" "$detail"
 
         local file_count
-        file_count=$(worktree_gc__count_archivable "$wt_path")
+        if ! file_count=$(worktree_gc__count_archivable "$wt_path"); then
+          warn "  Couldn't list the ignored files in %s; keeping it" "$wt_rel"
+          continue
+        fi
 
         to_remove+=("${trunk_cache}|${wt_path}")
         archive_counts+=("$file_count")
