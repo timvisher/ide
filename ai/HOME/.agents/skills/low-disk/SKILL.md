@@ -25,5 +25,9 @@ description: Measure and reclaim disk space through pluggable consumers. Use whe
    ```
    Each plugin decides what is safe and reports what it did or refused.
 
+`low-disk activity` shows which worktrees have a tmux client attached
+(never reclaim from those) or are protected by dev_ci. The bundled
+plugins only measure; their `reclaim` refuses and says why.
+
 ## References
 - See references/protocol.md for the plugin contract.

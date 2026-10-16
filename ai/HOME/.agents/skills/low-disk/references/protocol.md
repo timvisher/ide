@@ -18,8 +18,8 @@ name in both directories is an error.
 
 ## Interface
 
-A plugin is called with one subcommand and prints a single JSON object on
-stdout. Logs and diagnostics go to stderr. A non-zero exit means the plugin
+A plugin is called with one subcommand and prints exactly one JSON object
+on stdout. Logs and diagnostics go to stderr. A non-zero exit means the plugin
 failed.
 
 ### `measure`
@@ -68,10 +68,27 @@ about whether it is in use:
   attached worktree.
 - `protected`: `timvisher_dev_ci worktrees active` lists it.
 - `sessions`: tmux sessions whose path is in the worktree, attached or
-  not.
+  not, on every socket in `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. A session in a
+  worktree nested inside another counts for both.
+
+`activity` fails rather than guess: when a tmux socket refuses the
+connection, the socket directory cannot be read, or `timvisher_dev_ci`
+fails. A stale socket (no server behind it) just has no sessions.
 
 Until something records detach times, "no client attached right now" is
 the only idle signal.
+
+## Sizes
+
+`low-disk size <path>...` sizes paths for plugins, in parallel, staying on
+each path's filesystem:
+
+```json
+{"sizes": {"/some/path": {"bytes": 123, "incomplete": false}}}
+```
+
+`incomplete` is true when part of the tree could not be read, so `bytes`
+is a lower bound; a missing path has `"bytes": null`.
 
 ## What low-disk adds
 
@@ -79,14 +96,28 @@ the only idle signal.
   `{"plugins": {"<plugin>": <its measure output>}}`.
 - `low-disk reclaim <plugin>:<target>...` groups targets by plugin, calls
   each plugin's `reclaim` once, and prints the same `{"plugins": ...}` shape.
-- A plugin that exits non-zero or prints something other than a JSON
-  object is reported as `{"<plugin>": {"error": "..."}}`. The other plugins
-  still report, and `low-disk` exits non-zero.
+- A plugin that exits non-zero or prints anything other than exactly one
+  JSON object is reported as `{"plugins": {"<plugin>": {"error": "..."}}}`.
+  The other plugins still report, and `low-disk` exits non-zero.
 
 ## Working with no free space
 
-The point of these tools is to run when the disk is full, so neither
-`low-disk` nor its plugins intentionally write to disk: no temp files, no
-heredocs or here-strings (bash may back them with temp files), no caches.
-Pass data through pipes and command substitution. Deleting things is the
-only disk activity, and it is assumed to work.
+The point of these tools is to run when the disk is full, so the code in
+`low-disk` and its plugins does not intentionally write to disk: no temp
+files, no heredocs or here-strings (bash may back them with temp files), no
+caches. Pass data through pipes and command substitution. Deleting things
+is the only disk activity, and it is assumed to work.
+
+This is a principle for this code, not a guarantee about the commands it
+runs: `timvisher_dev_ci`, `tmux` and the plugins' own tools are outside it.
+
+## Bundled plugins
+
+- `worktrees`: timvisher_git worktrees with their activity and size. A
+  worktree nested in another is counted only in itself. Refuses every
+  reclaim: removing worktrees is `timvisher_git worktree gc`'s job, in an
+  agent session.
+- `biggest`: every directory directly under `$HOME` and
+  `/private/var/tmp`, largest first, so you can spot what no plugin covers.
+  `LOW_DISK_BIGGEST_ROOTS` replaces those roots with a colon-separated
+  list. Loose files and symlinks are skipped. Refuses every reclaim.

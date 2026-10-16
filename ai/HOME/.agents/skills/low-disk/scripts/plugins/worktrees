@@ -11,24 +11,33 @@ source ~/.functions/logging.bash ||
   die 'LOW_DISK is not set; run this plugin through low-disk'
 
 measure() {
-  local activity
+  local activity sizes paths=()
   activity=$("$LOW_DISK" activity) || die 'low-disk activity failed'
-  # du is metadata-bound and a dd-source checkout takes ~12s on its own,
-  # so the worktrees are sized in parallel rather than one after another.
+  mapfile -d '' -t paths < <(printf '%s' "$activity" | jq -j '.worktrees | keys[] | . + "\u0000"')
+  sizes=$("$LOW_DISK" size "${paths[@]}") || die 'low-disk size failed'
+  # A worktree nested inside another is counted once, in itself: its bytes
+  # come off the worktree directly containing it.
   {
     printf '%s\n' "$activity"
-    printf '%s' "$activity" |
-      jq -j '.worktrees | keys[] | . + "\u0000"' |
-      xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" du -sk -- 2>/dev/null |
-      while IFS=$'\t' read -r kib path
-      do
-        [[ $kib =~ ^[0-9]+$ ]] || continue
-        jq -nc --arg p "$path" --argjson b "$(( kib * 1024 ))" '{path: $p, bytes: $b}'
-      done
+    printf '%s\n' "$sizes"
   } | jq -s '
-    (.[0].worktrees) as $activity
-    | {targets: (.[1:]
-        | map(select($activity[.path]) | {(.path): ($activity[.path] + {path, bytes})})
+    .[0].worktrees as $activity
+    | .[1].sizes as $sizes
+    | ($activity | keys) as $paths
+    | def inside($outer): startswith($outer + "/");
+      def direct_children($p):
+        [$paths[] as $c
+          | select($c | inside($p))
+          | select([$paths[] as $m | select(($m | inside($p)) and ($c | inside($m)))] | length == 0)
+          | $c];
+      {targets: ($paths
+        | map(. as $p
+          | ($sizes[$p] // {bytes: null, incomplete: true}) as $size
+          | ([direct_children($p)[] | $sizes[.].bytes // 0] | add // 0) as $nested
+          | {($p): ($activity[$p] + {
+              path: $p,
+              bytes: (if $size.bytes == null then null else $size.bytes - $nested end),
+              incomplete: $size.incomplete})})
         | add // {})}'
 }
 

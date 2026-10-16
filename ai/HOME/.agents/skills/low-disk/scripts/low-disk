@@ -7,8 +7,9 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-script_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
-  die "Unable to resolve the low-disk script directory"
+script_path=$(realpath "${BASH_SOURCE[0]}") ||
+  die "Unable to resolve the low-disk script path"
+script_dir=${script_path%/*}
 
 plugin_dirs=(
   "${script_dir}/plugins"
@@ -19,7 +20,9 @@ plugin_dirs=(
 # XDG_CACHE_HOME.
 repo_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
 
-export LOW_DISK="${script_dir}/low-disk"
+tmux_socket_dir=${TMUX_TMPDIR:-/tmp}/tmux-${UID}
+
+export LOW_DISK=$script_path
 
 # Help text is printed with printf rather than a heredoc: bash may back a
 # heredoc with a temp file, and low-disk has to work with no free space.
@@ -35,6 +38,7 @@ show_help() {
     '  activity                       Print each timvisher_git worktree with its' \
     '                                 tmux sessions, whether a client is attached,' \
     '                                 and whether dev_ci protects it.' \
+    '  size <path>...                 Print the disk each path uses, for plugins.' \
     '' \
     'Plugins are executables in:' \
     "  ${plugin_dirs[0]}" \
@@ -86,9 +90,9 @@ run_plugin() {
     jq -nc --arg n "$name" --arg e "exited ${rc}" '{($n): {error: $e}}'
     return 1
   fi
-  if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1
+  if ! printf '%s' "$out" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1
   then
-    jq -nc --arg n "$name" --arg e 'did not print a JSON object' '{($n): {error: $e}}'
+    jq -nc --arg n "$name" --arg e 'did not print exactly one JSON object' '{($n): {error: $e}}'
     return 1
   fi
   printf '%s' "$out" | jq -c --arg n "$name" '{($n): .}'
@@ -104,77 +108,101 @@ canonical() {
 
 # Worktree paths come from each cache's worktrees/*/gitdir file rather than
 # `git worktree list`: plain reads, no git process, no git wrapper log write.
-cmd_activity() {
-  command -v tmux >/dev/null 2>&1 ||
-    die 'tmux is required to tell attached worktrees from idle ones'
-
+list_worktrees() {
+  local -n __worktrees=$1 __repos=$2
   local gitdir_file worktree_git worktree repo
-  local worktrees=()
-  declare -A repos=() protected=()
   for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir
   do
     [[ -f $gitdir_file ]] || continue
     IFS= read -r worktree_git < "$gitdir_file" || continue
+    [[ $worktree_git == /* ]] || worktree_git=${gitdir_file%/*}/${worktree_git}
     worktree=$(canonical "${worktree_git%/.git}") || continue
+    [[ -z ${__repos[$worktree]+x} ]] || continue
     repo=${gitdir_file#"$repo_trunks_dir"/}
-    repos[$worktree]=${repo%%/worktrees/*}
-    worktrees+=("$worktree")
+    __repos["$worktree"]=${repo%%/worktrees/*}
+    __worktrees+=("$worktree")
   done
+}
 
-  local out rc path
-  if command -v timvisher_dev_ci >/dev/null 2>&1
-  then
-    out=$(timvisher_dev_ci worktrees active) ||
-      die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
-    while IFS= read -r path
+list_protected() {
+  local -n __protected=$1
+  command -v timvisher_dev_ci >/dev/null 2>&1 || return 0
+  local out path
+  out=$(timvisher_dev_ci worktrees active) ||
+    die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
+  while IFS= read -r path
+  do
+    [[ -n $path ]] || continue
+    path=$(canonical "$path") || continue
+    __protected["$path"]=1
+  done < <(printf '%s\n' "$out")
+}
+
+# Every socket in the tmux socket directory is asked, not just the default
+# one, so sessions started with -L still count. Only a stale socket ("no
+# server running") or one removed while we looked counts as having no
+# sessions; anything else, such as a sandbox refusing the connection, fails
+# rather than reporting attached worktrees as idle.
+list_sessions() {
+  local -n __sessions=$1
+  [[ -e $tmux_socket_dir ]] || return 0
+  [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
+    die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
+  local socket out rc line sockets=()
+  for socket in "$tmux_socket_dir"/*
+  do
+    [[ -S $socket ]] && sockets+=("$socket")
+  done
+  (( 0 < ${#sockets[@]} )) || return 0
+  command -v tmux >/dev/null 2>&1 ||
+    die "tmux sockets exist in '%s' but tmux is not installed" "$tmux_socket_dir"
+  for socket in "${sockets[@]}"
+  do
+    out=$(tmux -S "$socket" list-sessions -F '#{session_attached}	#{session_name}	#{session_path}' 2>&1)
+    rc=$?
+    if (( rc != 0 ))
+    then
+      [[ $out == *'no server running'* || $out == *'(No such file or directory)'* ]] && continue
+      die "tmux list-sessions on '%s' failed: %s" "$socket" "$out"
+    fi
+    while IFS= read -r line
     do
-      [[ -n $path ]] || continue
-      path=$(canonical "$path") || continue
-      protected[$path]=1
+      [[ -n $line ]] && __sessions+=("$line")
     done < <(printf '%s\n' "$out")
-  fi
+  done
+}
 
-  local sessions=()
-  out=$(tmux list-sessions -F '#{session_attached}	#{session_name}	#{session_path}' 2>&1)
-  rc=$?
-  if (( rc == 0 ))
-  then
-    mapfile -t sessions < <(printf '%s\n' "$out")
-  elif [[ $out != *'no server running'* && $out != *'error connecting'* ]]
-  then
-    die 'tmux list-sessions failed: %s' "$out"
-  fi
+cmd_activity() {
+  local worktrees=() sessions=()
+  declare -A repos=() protected=()
+  list_worktrees worktrees repos
+  list_protected protected
+  list_sessions sessions
 
   {
+    local worktree
     for worktree in "${worktrees[@]}"
     do
       jq -nc --arg p "$worktree" --arg r "${repos[$worktree]}" \
         --argjson prot "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )" \
         '{kind: "worktree", path: $p, repo: $r, protected: $prot}'
     done
-    local line clients name session_path best
+    local line clients name session_path
     for line in "${sessions[@]}"
     do
-      [[ -n $line ]] || continue
       clients=${line%%$'\t'*}
       line=${line#*$'\t'}
       name=${line%%$'\t'*}
       session_path=${line#*$'\t'}
       [[ $clients =~ ^[0-9]+$ ]] || continue
       session_path=$(canonical "$session_path") || continue
-      best=''
       for worktree in "${worktrees[@]}"
       do
-        if [[ $session_path == "$worktree" || $session_path == "$worktree"/* ]] &&
-             (( ${#best} < ${#worktree} ))
-        then
-          best=$worktree
-        fi
+        [[ $session_path == "$worktree" || $session_path == "$worktree"/* ]] || continue
+        jq -nc --arg p "$worktree" --arg n "$name" \
+          --argjson a "$( (( 0 < clients )) && echo true || echo false )" \
+          '{kind: "session", path: $p, name: $n, attached: $a}'
       done
-      [[ -n $best ]] || continue
-      jq -nc --arg p "$best" --arg n "$name" \
-        --argjson a "$( (( 0 < clients )) && echo true || echo false )" \
-        '{kind: "session", path: $p, name: $n, attached: $a}'
     done
   } | jq -s '
     reduce .[] as $r ({};
@@ -185,6 +213,42 @@ cmd_activity() {
         | .[$r.path].attached = (.[$r.path].attached or $r.attached)
       end)
     | {worktrees: .}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+}
+
+# Each path is sized by its own du so its result stays paired with the
+# argument that produced it (names may hold tabs or newlines), and in
+# parallel because du is bound by filesystem metadata. -x keeps du off other
+# mounts. du exits non-zero when it cannot read part of a tree; that size is
+# reported as incomplete rather than dropped.
+cmd_size() {
+  (( 0 < $# )) ||
+    {
+      jq -n '{sizes: {}}'
+      return
+    }
+  local record rc kib path
+  # shellcheck disable=SC2016 # the sh -c script expands its own variables
+  printf '%s\0' "$@" |
+    xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" sh -c '
+      out=$(du -skx -- "$1" 2>/dev/null)
+      printf "%s\t%s\t%s\0" "$?" "${out%%	*}" "$1"' size |
+    while IFS= read -r -d '' record
+    do
+      rc=${record%%$'\t'*}
+      record=${record#*$'\t'}
+      kib=${record%%$'\t'*}
+      path=${record#*$'\t'}
+      if [[ $kib =~ ^[0-9]+$ ]]
+      then
+        jq -nc --arg p "$path" --argjson b "$(( kib * 1024 ))" --argjson i "$( (( rc == 0 )) && echo false || echo true )" \
+          '{($p): {bytes: $b, incomplete: $i}}'
+      else
+        jq -nc --arg p "$path" '{($p): {bytes: null, incomplete: true}}'
+      fi
+    done |
+    jq -s '{sizes: (add // {})}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 && PIPESTATUS[2] == 0 && PIPESTATUS[3] == 0 ))
 }
 
 cmd_measure() {
@@ -201,7 +265,7 @@ cmd_measure() {
     done
     exit "$failed"
   } | collect
-  return "${PIPESTATUS[0]}"
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
 }
 
 cmd_reclaim() {
@@ -237,7 +301,7 @@ cmd_reclaim() {
     done
     exit "$failed"
   } | collect
-  return "${PIPESTATUS[0]}"
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
 }
 
 case ${1-} in
@@ -262,6 +326,12 @@ case ${1-} in
   activity)
     command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
     cmd_activity
+    exit
+    ;;
+  size)
+    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    shift
+    cmd_size "$@"
     exit
     ;;
   *)
