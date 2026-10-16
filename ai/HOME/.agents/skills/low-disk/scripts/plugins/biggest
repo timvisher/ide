@@ -14,7 +14,9 @@ roots_spec=${LOW_DISK_BIGGEST_ROOTS:-${HOME}:/private/var/tmp}
 roots=()
 while [[ -n $roots_spec ]]
 do
-  roots+=("${roots_spec%%:*}")
+  root=${roots_spec%%:*}
+  [[ $root == / ]] || root=${root%/}
+  [[ -n $root ]] && roots+=("$root")
   if [[ $roots_spec == *:* ]]
   then
     roots_spec=${roots_spec#*:}
@@ -23,15 +25,27 @@ do
   fi
 done
 
+device_of() {
+  stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null
+}
+
+# An entry on a different device from its root is a mount point (OrbStack,
+# FUSE, cloud storage): walking it is slow or hangs and is not this disk.
 measure() {
-  local root entry entries=()
+  local root root_device entry entries=()
   shopt -s dotglob nullglob
   for root in "${roots[@]}"
   do
-    [[ -d $root ]] || continue
-    for entry in "$root"/*
+    [[ -e $root ]] || continue
+    [[ -d $root && -r $root && -x $root ]] ||
+      die "Cannot list the root '%s'" "$root"
+    root_device=$(device_of "$root") ||
+      die "Cannot tell which device '%s' is on" "$root"
+    for entry in "${root%/}"/*
     do
-      [[ -d $entry && ! -L $entry ]] && entries+=("$entry")
+      [[ -d $entry && ! -L $entry ]] || continue
+      [[ $(device_of "$entry") == "$root_device" ]] || continue
+      entries+=("$entry")
     done
   done
   shopt -u dotglob nullglob

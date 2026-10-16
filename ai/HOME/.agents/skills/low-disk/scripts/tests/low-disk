@@ -43,7 +43,7 @@ socket_dir="${sockdir}/tmux-${UID}"
 mockbin="${tmpdir}/mockbin"
 mkdir -p "$mockbin" || { echo "cannot create mockbin" >&2; exit 1; }
 printf '%s\n' '#!/usr/bin/env bash' \
-  '[[ $1 == -S && $3 == list-sessions ]] || exit 2' \
+  '[[ $1 == -S && $3 == list-panes && $4 == -a ]] || exit 2' \
   '[[ -f $2.out ]] && cat -- "$2.out"' \
   'rc=0' \
   '[[ -f $2.rc ]] && rc=$(cat -- "$2.rc")' \
@@ -57,7 +57,8 @@ enable_dev_ci() { printf '%s\n' "$dev_ci_mock" > "${mockbin}/timvisher_dev_ci"; 
 disable_dev_ci() { rm -f "${mockbin}/timvisher_dev_ci"; }
 enable_dev_ci
 jq_path=$(command -v jq) || { echo "jq not found" >&2; exit 1; }
-export PATH="${mockbin}:${jq_path%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
+bash_path=$(command -v bash) || { echo "bash not found" >&2; exit 1; }
+export PATH="${mockbin}:${bash_path%/*}:${jq_path%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
 export MOCK_DEV_CI_ACTIVE='' MOCK_DEV_CI_RC=0
 export LOW_DISK_BIGGEST_ROOTS="${HOME}"
 
@@ -79,7 +80,12 @@ add_worktree() { # org/repo name worktree-path bytes
   head -c "$4" /dev/zero > "${wt}/payload"
 }
 
-add_socket() { # name list-sessions-output exit-status
+us=$'\x1f'
+pane() { # attached-clients session-name session-path pane-path
+  printf '%s\n' "${1}${us}${2}${us}${3}${us}${4}"
+}
+
+add_socket() { # name list-panes-output exit-status
   mkdir -p "$socket_dir"
   python3 -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' \
     "${socket_dir}/$1"
@@ -139,12 +145,12 @@ head -c 102400 /dev/zero > "${tmpdir}/sz/odd"$'\n'"name/f"
 chmod 000 "${tmpdir}/sz/locked/inner"
 
 out=$("$low_disk" size "${tmpdir}/sz/plain" "${tmpdir}/sz/locked" "${tmpdir}/sz/missing" "${tmpdir}/sz/odd"$'\n'"name"); rc=$?
-check "size reports each path's bytes" \
-  "$(expect --arg p "${tmpdir}/sz/plain" '.sizes[$p] | 307200 <= .bytes and .incomplete == false')"
+check "size reports each path's bytes and device" \
+  "$(expect --arg p "${tmpdir}/sz/plain" '.sizes[$p] | 307200 <= .bytes and .incomplete == false and (.device | type == "number")')"
 check "size marks a path with unreadable contents incomplete" \
   "$(expect --arg p "${tmpdir}/sz/locked" '.sizes[$p] | .bytes != null and .incomplete == true')"
 check "size reports a missing path with null bytes" \
-  "$(expect --arg p "${tmpdir}/sz/missing" '.sizes[$p] == {bytes: null, incomplete: true}')"
+  "$(expect --arg p "${tmpdir}/sz/missing" '.sizes[$p] == {bytes: null, incomplete: true, device: null}')"
 check "size keeps names containing newlines intact" \
   "$(expect --arg p "${tmpdir}/sz/odd"$'\n'"name" '.sizes[$p] | 102400 <= .bytes')"
 chmod 700 "${tmpdir}/sz/locked/inner"
@@ -184,6 +190,14 @@ check "a relative gitdir is resolved against its own directory, not the caller's
   "$(expect --arg p "$rel_wt" '.worktrees[$p].repo == "rel/repo"')"
 rm -rf "${trunks}/rel" "${HOME}/git/rel"
 
+legacy_wt="${HOME}/git/legacy/repo/main"
+mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "$legacy_wt"
+printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
+out=$("$low_disk" activity); rc=$?
+check "worktrees of a not-yet-migrated non-bare cache are found too" \
+  "$(expect --arg p "$legacy_wt" '.worktrees[$p].repo == "legacy/repo"')"
+rm -rf "${trunks}/legacy" "${HOME}/git/legacy"
+
 # --- activity ---
 nested="${wt}/sub/inner"
 add_worktree org/repo inner "$nested" 102400
@@ -193,8 +207,8 @@ out=$("$low_disk" activity); rc=$?
 check "activity with no tmux socket directory reports every worktree unattached" \
   "$(expect --arg p "$wt" '.worktrees[$p] == {repo: "org/repo", protected: false, attached: false, sessions: []} and (.worktrees | length == 2)')"
 
-add_socket default $'1\tattached-session\t'"${wt}/deep/dir"$'\n0\tdetached-session\t'"${nested}"$'\n2\telsewhere\t'"${HOME}"$'\n' 0
-add_socket other $'1\tother-socket\t'"${nested}"$'\n' 0
+add_socket default "$(pane 1 attached-session "${wt}/deep/dir" "${wt}/deep/dir"; pane 0 detached-session "$nested" "$nested"; pane 2 elsewhere "$HOME" "$HOME"; pane 1 wandered "$HOME" "${wt}/deep")" 0
+add_socket other "$(pane 1 other-socket "$nested" "$nested")" 0
 out=$("$low_disk" activity); rc=$?
 check "a session attached anywhere under a worktree marks it attached" \
   "$(expect --arg p "$wt" '.worktrees[$p].attached == true and (.worktrees[$p].sessions | index({name: "attached-session", attached: true}) != null)')"
@@ -206,6 +220,15 @@ check "a session in a nested worktree also counts for the worktree containing it
   "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "other-socket", attached: true}) != null')"
 check "a session outside every worktree is ignored" \
   "$(expect '[.worktrees[].sessions[].name] | index("elsewhere") == null')"
+check "a pane that has cd'd into a worktree counts for it" \
+  "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "wandered", attached: true}) != null')"
+check "a session with several panes in a worktree is listed once" \
+  "$(expect --arg p "$wt" '[.worktrees[$p].sessions[] | select(.name == "attached-session")] | length == 1')"
+reset_sockets
+
+add_socket default "garbage without separators"$'\n' 0
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "tmux output that cannot be parsed makes activity fail rather than report idle" "$(expect_failure)"
 reset_sockets
 
 add_socket default 'no server running on /tmp/tmux-504/default' 1
@@ -249,7 +272,7 @@ check "without timvisher_dev_ci nothing is protected" \
   "$(expect '[.worktrees[].protected] | all(. == false)')"
 enable_dev_ci
 
-add_socket default $'1\tattached-session\t'"${wt}"$'\n' 0
+add_socket default "$(pane 1 attached-session "$wt" "$wt")" 0
 out=$("$low_disk" measure worktrees); rc=$?
 check "worktrees plugin measure carries activity alongside size" \
   "$(expect --arg p "$wt" '.plugins.worktrees.targets[$p] | .attached == true and .protected == false and .repo == "org/repo" and .path == $p')"
@@ -277,6 +300,17 @@ out=$(LOW_DISK_BIGGEST_ROOTS="${r1}:${r2}:${tmpdir}/missing:" "$low_disk" measur
 check "biggest sizes the directories under each root, largest first, dotfiles included" \
   "$(expect --arg a "${r1}/large" --arg b "${r2}/.hidden" --arg c "${r1}/small" \
       '.plugins.biggest.targets | (keys_unsorted == [$a, $b, $c]) and (409600 <= .[$a].bytes) and (.[$a].path == $a)')"
+
+out=$(LOW_DISK_BIGGEST_ROOTS="${r1}/" "$low_disk" measure biggest); rc=$?
+check "a root with a trailing slash reports the same paths as without" \
+  "$(expect --arg a "${r1}/large" '.plugins.biggest.targets | has($a)')"
+
+mkdir -p "${tmpdir}/lockedroot/inside"
+chmod 000 "${tmpdir}/lockedroot"
+out=$(LOW_DISK_BIGGEST_ROOTS="${tmpdir}/lockedroot" "$low_disk" measure biggest 2>/dev/null); rc=$?
+check "an unreadable root is an error, not an empty result" \
+  "$( (( rc != 0 )) && rc=0 expect '.plugins.biggest.error | test("exited")' || echo "rc=$rc out='$out'")"
+chmod 700 "${tmpdir}/lockedroot"
 
 mkdir -p "${tmpdir}/emptyroot"
 out=$(LOW_DISK_BIGGEST_ROOTS="${tmpdir}/emptyroot" "$low_disk" measure biggest); rc=$?
@@ -342,9 +376,14 @@ out=$("$low_disk" measure 2>/dev/null); rc=$?
 check "a plugin name defined in both directories is an error" "$(expect_failure)"
 reset_overlay
 
-add_plugin 'bad:name' 'exit 0'
-out=$("$low_disk" measure 2>/dev/null); rc=$?
-check "a plugin name containing ':' is an error" "$(expect_failure)"
+add_plugin 'fake' 'echo "{\"targets\": {}}"'
+add_plugin 'fake~' 'exit 3'
+add_plugin 'x.scratch' 'exit 3'
+add_plugin 'bad:name' 'exit 3'
+add_plugin '.hidden' 'exit 3'
+out=$("$low_disk" measure fake); rc=$?
+check "files whose names are not plugin names are not loaded" \
+  "$( (( rc == 0 )) && out=$("$low_disk" measure) && printf '%s' "$out" | jq -e '.plugins | (has("fake~") or has("x.scratch") or has("bad:name") or has(".hidden")) | not' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
 reset_overlay
 
 printf '\n%d tests, %d failures\n' "$tests" "$failures"

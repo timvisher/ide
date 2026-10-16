@@ -16,7 +16,10 @@ measure() {
   mapfile -d '' -t paths < <(printf '%s' "$activity" | jq -j '.worktrees | keys[] | . + "\u0000"')
   sizes=$("$LOW_DISK" size "${paths[@]}") || die 'low-disk size failed'
   # A worktree nested inside another is counted once, in itself: its bytes
-  # come off the worktree directly containing it.
+  # come off the worktree directly containing it, but only when both are on
+  # the same device, since du -x never counted it in the parent otherwise.
+  # Should the subtraction still go negative (hard links counted in both),
+  # the parent is reported as incomplete rather than with a made-up number.
   {
     printf '%s\n' "$activity"
     printf '%s\n' "$sizes"
@@ -32,13 +35,15 @@ measure() {
           | $c];
       {targets: ($paths
         | map(. as $p
-          | ($sizes[$p] // {bytes: null, incomplete: true}) as $size
-          | ([direct_children($p)[] | $sizes[.].bytes // 0] | add // 0) as $nested
+          | ($sizes[$p] // {bytes: null, incomplete: true, device: null}) as $size
+          | ([direct_children($p)[] | $sizes[.] | select(.device == $size.device) | .bytes // 0] | add // 0) as $nested
+          | (if $size.bytes == null then null else $size.bytes - $nested end) as $bytes
           | {($p): ($activity[$p] + {
               path: $p,
-              bytes: (if $size.bytes == null then null else $size.bytes - $nested end),
-              incomplete: $size.incomplete})})
+              bytes: (if $bytes != null and $bytes < 0 then 0 else $bytes end),
+              incomplete: ($size.incomplete or ($bytes != null and $bytes < 0))})})
         | add // {})}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
 }
 
 # Removing a worktree is left to `timvisher_git worktree gc` in an agent

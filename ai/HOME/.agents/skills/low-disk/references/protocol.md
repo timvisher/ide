@@ -13,8 +13,10 @@ A plugin is an executable file. `low-disk` loads every executable in:
    (machine- or employer-specific plugins, such as the system extensions
    repo)
 
-The file name is the plugin name. A name may not contain `:`, and the same
-name in both directories is an error.
+The file name is the plugin name. Only names of lowercase letters, digits
+and dashes (`^[a-z0-9][a-z0-9-]*$`) are loaded, so editor backups and
+`x.`/`y.`/`z.` scratch scripts sitting in a plugin directory are ignored.
+The same name in both directories is an error.
 
 ## Interface
 
@@ -66,14 +68,16 @@ about whether it is in use:
 - `attached`: a tmux client is attached to a session in the worktree right
   now. That is the strongest sign Tim is using it; never reclaim from an
   attached worktree.
-- `protected`: `timvisher_dev_ci worktrees active` lists it.
-- `sessions`: tmux sessions whose path is in the worktree, attached or
-  not, on every socket in `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. A session in a
-  worktree nested inside another counts for both.
+- `protected`: `timvisher_dev_ci worktrees active` lists it. Without
+  `timvisher_dev_ci` installed nothing is protected.
+- `sessions`: tmux sessions with the worktree as their path or a pane whose
+  current directory is in it, attached or not, on every socket in
+  `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. A session in a worktree nested inside
+  another counts for both.
 
 `activity` fails rather than guess: when a tmux socket refuses the
-connection, the socket directory cannot be read, or `timvisher_dev_ci`
-fails. A stale socket (no server behind it) just has no sessions.
+connection, the socket directory cannot be read, tmux prints something it
+cannot parse, or `timvisher_dev_ci` fails. A stale socket (no server behind it) just has no sessions.
 
 Until something records detach times, "no client attached right now" is
 the only idle signal.
@@ -84,11 +88,12 @@ the only idle signal.
 each path's filesystem:
 
 ```json
-{"sizes": {"/some/path": {"bytes": 123, "incomplete": false}}}
+{"sizes": {"/some/path": {"bytes": 123, "incomplete": false, "device": 16777232}}}
 ```
 
 `incomplete` is true when part of the tree could not be read, so `bytes`
-is a lower bound; a missing path has `"bytes": null`.
+is a lower bound; a missing path has `"bytes": null`. `device` is the
+filesystem the path is on.
 
 ## What low-disk adds
 
@@ -113,11 +118,13 @@ runs: `timvisher_dev_ci`, `tmux` and the plugins' own tools are outside it.
 
 ## Bundled plugins
 
-- `worktrees`: timvisher_git worktrees with their activity and size. A
-  worktree nested in another is counted only in itself. Refuses every
-  reclaim: removing worktrees is `timvisher_git worktree gc`'s job, in an
-  agent session.
+- `worktrees`: timvisher_git worktrees (bare and not-yet-migrated caches)
+  with their activity and size. A worktree nested in another on the same
+  filesystem is counted only in itself. Refuses every reclaim: removing
+  worktrees is `timvisher_git worktree gc`'s job, in an agent session.
 - `biggest`: every directory directly under `$HOME` and
   `/private/var/tmp`, largest first, so you can spot what no plugin covers.
-  `LOW_DISK_BIGGEST_ROOTS` replaces those roots with a colon-separated
-  list. Loose files and symlinks are skipped. Refuses every reclaim.
+  `LOW_DISK_BIGGEST_ROOTS` replaces those roots with a colon-separated list
+  (empty means the defaults). Loose files, symlinks and mount points are
+  skipped; a root that cannot be listed fails the plugin. Refuses every
+  reclaim.

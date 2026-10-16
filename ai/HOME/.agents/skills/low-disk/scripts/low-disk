@@ -63,8 +63,7 @@ discover_plugins() {
     do
       [[ -f $path && -x $path ]] || continue
       name=${path##*/}
-      [[ $name != *:* ]] ||
-        die "Plugin name '%s' contains ':', which separates plugins from targets" "$path"
+      [[ $name =~ ^[a-z0-9][a-z0-9-]*$ ]] || continue
       if [[ -n ${plugins[$name]+x} ]]
       then
         die "Plugin '%s' is defined twice: '%s' and '%s'" "$name" "${plugins[$name]}" "$path"
@@ -110,16 +109,18 @@ canonical() {
 # `git worktree list`: plain reads, no git process, no git wrapper log write.
 list_worktrees() {
   local -n __worktrees=$1 __repos=$2
-  local gitdir_file worktree_git worktree repo
-  for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir
+  local gitdir_file worktree_git worktree relative org
+  for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir "$repo_trunks_dir"/*/*/.git/worktrees/*/gitdir
   do
     [[ -f $gitdir_file ]] || continue
     IFS= read -r worktree_git < "$gitdir_file" || continue
     [[ $worktree_git == /* ]] || worktree_git=${gitdir_file%/*}/${worktree_git}
     worktree=$(canonical "${worktree_git%/.git}") || continue
     [[ -z ${__repos[$worktree]+x} ]] || continue
-    repo=${gitdir_file#"$repo_trunks_dir"/}
-    __repos["$worktree"]=${repo%%/worktrees/*}
+    relative=${gitdir_file#"$repo_trunks_dir"/}
+    org=${relative%%/*}
+    relative=${relative#*/}
+    __repos["$worktree"]=${org}/${relative%%/*}
     __worktrees+=("$worktree")
   done
 }
@@ -142,13 +143,16 @@ list_protected() {
 # one, so sessions started with -L still count. Only a stale socket ("no
 # server running") or one removed while we looked counts as having no
 # sessions; anything else, such as a sandbox refusing the connection, fails
-# rather than reporting attached worktrees as idle.
-list_sessions() {
-  local -n __sessions=$1
+# rather than reporting attached worktrees as idle. Panes are listed rather
+# than sessions so a pane that has cd'd into a worktree counts too. Fields
+# are separated by \x1f, which session names and paths do not contain in
+# practice; a line that does not split into four fields fails the command.
+list_panes() {
+  local -n __panes=$1
   [[ -e $tmux_socket_dir ]] || return 0
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
     die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
-  local socket out rc line sockets=()
+  local socket out rc line rest sockets=()
   for socket in "$tmux_socket_dir"/*
   do
     [[ -S $socket ]] && sockets+=("$socket")
@@ -158,95 +162,118 @@ list_sessions() {
     die "tmux sockets exist in '%s' but tmux is not installed" "$tmux_socket_dir"
   for socket in "${sockets[@]}"
   do
-    out=$(tmux -S "$socket" list-sessions -F '#{session_attached}	#{session_name}	#{session_path}' 2>&1)
+    out=$(tmux -S "$socket" list-panes -a \
+      -F $'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}' 2>&1)
     rc=$?
     if (( rc != 0 ))
     then
       [[ $out == *'no server running'* || $out == *'(No such file or directory)'* ]] && continue
-      die "tmux list-sessions on '%s' failed: %s" "$socket" "$out"
+      die "tmux list-panes on '%s' failed: %s" "$socket" "$out"
     fi
     while IFS= read -r line
     do
-      [[ -n $line ]] && __sessions+=("$line")
+      [[ -n $line ]] || continue
+      rest=${line//[^$'\x1f']/}
+      [[ ${#rest} == 3 && ${line%%$'\x1f'*} =~ ^[0-9]+$ ]] ||
+        die "Cannot parse tmux list-panes output from '%s': %s" "$socket" "$line"
+      __panes+=("$line")
     done < <(printf '%s\n' "$out")
   done
 }
 
 cmd_activity() {
-  local worktrees=() sessions=()
+  local worktrees=() panes=()
   declare -A repos=() protected=()
   list_worktrees worktrees repos
   list_protected protected
-  list_sessions sessions
+  list_panes panes
 
   {
-    local worktree
+    local worktree failed=0
     for worktree in "${worktrees[@]}"
     do
       jq -nc --arg p "$worktree" --arg r "${repos[$worktree]}" \
         --argjson prot "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )" \
-        '{kind: "worktree", path: $p, repo: $r, protected: $prot}'
+        '{kind: "worktree", path: $p, repo: $r, protected: $prot}' || failed=1
     done
-    local line clients name session_path
-    for line in "${sessions[@]}"
+    local line clients name pane_path attached
+    for line in "${panes[@]}"
     do
-      clients=${line%%$'\t'*}
-      line=${line#*$'\t'}
-      name=${line%%$'\t'*}
-      session_path=${line#*$'\t'}
-      [[ $clients =~ ^[0-9]+$ ]] || continue
-      session_path=$(canonical "$session_path") || continue
-      for worktree in "${worktrees[@]}"
+      clients=${line%%$'\x1f'*}
+      line=${line#*$'\x1f'}
+      name=${line%%$'\x1f'*}
+      line=${line#*$'\x1f'}
+      attached=$( (( 0 < clients )) && echo true || echo false )
+      for pane_path in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
       do
-        [[ $session_path == "$worktree" || $session_path == "$worktree"/* ]] || continue
-        jq -nc --arg p "$worktree" --arg n "$name" \
-          --argjson a "$( (( 0 < clients )) && echo true || echo false )" \
-          '{kind: "session", path: $p, name: $n, attached: $a}'
+        pane_path=$(canonical "$pane_path") || continue
+        for worktree in "${worktrees[@]}"
+        do
+          [[ $pane_path == "$worktree" || $pane_path == "$worktree"/* ]] || continue
+          jq -nc --arg p "$worktree" --arg n "$name" --argjson a "$attached" \
+            '{kind: "session", path: $p, name: $n, attached: $a}' || failed=1
+        done
       done
     done
+    exit "$failed"
   } | jq -s '
     reduce .[] as $r ({};
       if $r.kind == "worktree" then
         .[$r.path] = {repo: $r.repo, protected: $r.protected, attached: false, sessions: []}
       else
-        .[$r.path].sessions += [{name: $r.name, attached: $r.attached}]
+        .[$r.path].sessions |= (. + [{name: $r.name, attached: $r.attached}] | unique)
         | .[$r.path].attached = (.[$r.path].attached or $r.attached)
       end)
     | {worktrees: .}'
   (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
 }
 
-# Each path is sized by its own du so its result stays paired with the
-# argument that produced it (names may hold tabs or newlines), and in
-# parallel because du is bound by filesystem metadata. -x keeps du off other
-# mounts. du exits non-zero when it cannot read part of a tree; that size is
-# reported as incomplete rather than dropped.
+# Each path is sized by its own du, in parallel because du is bound by
+# filesystem metadata. Workers report an index into the argument list
+# rather than the path, so every record stays far below PIPE_BUF and
+# parallel writes cannot interleave, and paths holding tabs or newlines
+# never pass through the pipe. -x keeps du off other mounts. du exits
+# non-zero when it cannot read part of a tree; that size is reported as
+# incomplete rather than dropped. GNU stat is tried before BSD stat because
+# GNU's `stat -f` means something else and would not fail.
 cmd_size() {
   (( 0 < $# )) ||
     {
       jq -n '{sizes: {}}'
       return
     }
-  local record rc kib path
+  local jobs
+  jobs=$(getconf _NPROCESSORS_ONLN) && [[ $jobs =~ ^[0-9]+$ ]] ||
+    die 'Cannot tell how many processors to size paths with'
+  local paths=("$@") i
   # shellcheck disable=SC2016 # the sh -c script expands its own variables
-  printf '%s\0' "$@" |
-    xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" sh -c '
-      out=$(du -skx -- "$1" 2>/dev/null)
-      printf "%s\t%s\t%s\0" "$?" "${out%%	*}" "$1"' size |
-    while IFS= read -r -d '' record
-    do
-      rc=${record%%$'\t'*}
-      record=${record#*$'\t'}
-      kib=${record%%$'\t'*}
-      path=${record#*$'\t'}
-      if [[ $kib =~ ^[0-9]+$ ]]
-      then
-        jq -nc --arg p "$path" --argjson b "$(( kib * 1024 ))" --argjson i "$( (( rc == 0 )) && echo false || echo true )" \
-          '{($p): {bytes: $b, incomplete: $i}}'
-      else
-        jq -nc --arg p "$path" '{($p): {bytes: null, incomplete: true}}'
-      fi
-    done |
+  for (( i = 0; i < ${#paths[@]}; i++ ))
+  do
+    printf '%d\0%s\0' "$i" "${paths[i]}"
+  done |
+    xargs -0 -n 2 -P "$jobs" sh -c '
+      out=$(du -skx -- "$2" 2>/dev/null)
+      rc=$?
+      dev=$(stat -c %d -- "$2" 2>/dev/null || stat -f %d -- "$2" 2>/dev/null)
+      printf "%s\t%s\t%s\t%s\n" "$1" "$rc" "${out%%	*}" "$dev"' size |
+    {
+      local index rc kib dev failed=0
+      while IFS=$'\t' read -r index rc kib dev
+      do
+        [[ $index =~ ^[0-9]+$ && -n ${paths[index]+x} ]] || continue
+        [[ $dev =~ ^[0-9]+$ ]] || dev=null
+        if [[ $kib =~ ^[0-9]+$ ]]
+        then
+          jq -nc --arg p "${paths[index]}" --argjson b "$(( kib * 1024 ))" --argjson d "$dev" \
+            --argjson i "$( (( rc == 0 )) && echo false || echo true )" \
+            '{($p): {bytes: $b, incomplete: $i, device: $d}}' || failed=1
+        else
+          jq -nc --arg p "${paths[index]}" --argjson d "$dev" \
+            '{($p): {bytes: null, incomplete: true, device: $d}}' || failed=1
+        fi
+      done
+      exit "$failed"
+    } |
     jq -s '{sizes: (add // {})}'
   (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 && PIPESTATUS[2] == 0 && PIPESTATUS[3] == 0 ))
 }
