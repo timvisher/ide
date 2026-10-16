@@ -3372,6 +3372,10 @@ worktree_gc__collect_protected() {
 worktree_gc__should_archive() {
   local file=$1
 
+  case "$file" in
+    .timvisher_gh/*) return 0 ;;
+  esac
+
   # Skip: caches and regenerable artifacts
   case "$file" in
     .terraform/*|*/.terraform/*) return 1 ;;
@@ -3395,7 +3399,6 @@ worktree_gc__should_archive() {
     .agent-shell/transcripts/*) return 0 ;;
     .beads/*) return 0 ;;
     .timvisher_bd_topics/*) return 0 ;;
-    .timvisher_gh/*) return 0 ;;
   esac
 
   # Preserve: workflow files by first path component
