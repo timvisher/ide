@@ -4522,6 +4522,37 @@ worktree_gc__collect_protected() {
   done <<< "$output"
 }
 
+worktree_gc__low_disk=${HOME}/.agents/skills/low-disk/scripts/low-disk
+
+worktree_gc__collect_attached() {
+  local -n __attached=$1
+
+  if [[ ! -x $worktree_gc__low_disk ]]
+  then
+    error "low-disk is not installed at '%s' (run timvisher_agents_install) — refusing to gc without knowing which worktrees have a tmux client attached" "$worktree_gc__low_disk"
+    return 1
+  fi
+
+  local output
+  if ! output=$("$worktree_gc__low_disk" activity)
+  then
+    error "low-disk activity failed — refusing to gc without knowing which worktrees have a tmux client attached"
+    return 1
+  fi
+
+  local attached=() wt
+  mapfile -d '' -t attached < <(printf '%s' "$output" | jq -j '.worktrees | to_entries[] | select(.value.attached) | .key + "\u0000"')
+  if ! wait "$!"
+  then
+    error "Cannot read the output of low-disk activity — refusing to gc without knowing which worktrees have a tmux client attached"
+    return 1
+  fi
+  for wt in "${attached[@]}"
+  do
+    __attached["$wt"]=1
+  done
+}
+
 worktree_gc__should_archive() {
   local file=$1
 
@@ -4916,6 +4947,20 @@ worktree_gc() {
     echo
   fi
 
+  local -A gc_attached=()
+  worktree_gc__collect_attached gc_attached || return 1
+
+  if (( 0 < ${#gc_attached[@]} ))
+  then
+    info "Protected worktrees: %d (tmux client attached)" "${#gc_attached[@]}"
+    local attached_wt
+    for attached_wt in "${!gc_attached[@]}"
+    do
+      info "  ATTACHED  %s" "${attached_wt#"${live_repo_dir}/"}"
+    done
+    echo
+  fi
+
   # Parallel arrays: trunk_cache|wt_path, archive file counts, and the
   # kind of removal (MERGED vs STALE) for the per-item line and summary.
   local to_remove=()
@@ -4979,7 +5024,7 @@ worktree_gc() {
       # Skip worktrees protected by dev_ci or pinned
       local resolved_wt
       resolved_wt=$(cd "$wt_path" && pwd -P 2>/dev/null) || resolved_wt="$wt_path"
-      if [[ -n ${gc_protected["$resolved_wt"]+x} ]]; then
+      if [[ -n ${gc_protected["$resolved_wt"]+x} || -n ${gc_attached["$resolved_wt"]+x} ]]; then
         continue
       fi
       if worktree_gc__is_pinned "$resolved_wt"
