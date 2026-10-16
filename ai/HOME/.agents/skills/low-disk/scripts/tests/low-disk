@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+fail() { echo "FAIL: $1" >&2; (( failures += 1 )); }
+pass() { echo "PASS: $1"; }
+run_test() { (( tests += 1 )); }
+
+scripts_dir=$(cd "$(dirname "$0")/.." && pwd) ||
+  { echo "cannot resolve scripts_dir" >&2; exit 1; }
+repo_root=$(git -C "$scripts_dir" rev-parse --show-toplevel) ||
+  { echo "cannot resolve repo root" >&2; exit 1; }
+low_disk="${scripts_dir}/low-disk"
+
+tmpdir=''
+trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+
+export HOME="${tmpdir}/home"
+export XDG_CONFIG_HOME="${HOME}/.config"
+export XDG_DATA_HOME="${HOME}/.local/share"
+export XDG_STATE_HOME="${HOME}/.local/state"
+export XDG_CACHE_HOME="${HOME}/.cache"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" ||
+  { echo "cannot create fixture HOME" >&2; exit 1; }
+ln -s "${repo_root}/bash/functions" "${HOME}/.functions" ||
+  { echo "cannot link .functions" >&2; exit 1; }
+
+overlay="${XDG_CONFIG_HOME}/timvisher/ide/low-disk/plugins"
+trunks="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
+
+add_plugin() { # name body
+  mkdir -p "$overlay"
+  printf '#!/usr/bin/env bash\n%s\n' "$2" > "${overlay}/$1"
+  chmod +x "${overlay}/$1"
+}
+
+reset_overlay() { rm -rf "$overlay"; }
+
+add_worktree() { # org/repo name worktree-path bytes
+  local cache="${trunks}/$1" wt=$3
+  mkdir -p "${cache}/worktrees/$2" "$wt"
+  printf '%s/.git\n' "$wt" > "${cache}/worktrees/$2/gitdir"
+  head -c "$4" /dev/zero > "${wt}/payload"
+}
+
+check() { # description condition-result
+  run_test
+  if [[ $2 == ok ]]
+  then
+    pass "$1"
+  else
+    fail "$1: $2"
+  fi
+}
+
+# --- usage and help streams ---
+out=$("$low_disk" --help 2>/dev/null); rc=$?
+check "--help prints to stdout and exits 0" \
+  "$( [[ $rc -eq 0 && $out == *'Usage: low-disk'* ]] && echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" 2>/dev/null); rc=$?
+check "no subcommand prints nothing on stdout and exits non-zero" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
+err=$("$low_disk" 2>&1 >/dev/null)
+check "no subcommand prints usage on stderr" \
+  "$( [[ $err == *'Usage: low-disk'* ]] && echo ok || echo "err='$err'")"
+
+# --- worktrees plugin with no caches ---
+out=$("$low_disk" measure); rc=$?
+check "measure with no worktrees reports empty worktrees targets" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e '.plugins.worktrees == {targets: {}}' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
+
+# --- worktrees plugin finds worktrees and skips stale entries ---
+wt="${HOME}/git/org/repo/branch"
+add_worktree org/repo branch "$wt" 204800
+mkdir -p "${trunks}/org/repo/worktrees/gone"
+printf '%s/.git\n' "${HOME}/git/org/repo/gone" > "${trunks}/org/repo/worktrees/gone/gitdir"
+
+out=$("$low_disk" measure worktrees); rc=$?
+check "worktrees plugin reports a worktree with its repo and size" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '.plugins.worktrees.targets[$p] | .path == $p and .repo == "org/repo" and .bytes >= 204800' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+check "worktrees plugin skips gitdir entries whose worktree is gone" \
+  "$(printf '%s' "$out" | jq -e '.plugins.worktrees.targets | length == 1' >/dev/null && echo ok || echo "out='$out'")"
+
+out=$("$low_disk" reclaim "worktrees:${wt}"); rc=$?
+check "worktrees plugin refuses to reclaim and says why" \
+  "$( [[ $rc -eq 0 && -d $wt ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '.plugins.worktrees.targets[$p] | .reclaimed == false and (.reason | test("worktree gc"))' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+
+# --- overlay plugins and measure scoping ---
+# shellcheck disable=SC2016
+add_plugin fake 'case $1 in
+  measure) printf "{\"targets\": {\"a\": {\"bytes\": 1}}}" ;;
+  reclaim) shift; jq -nc --args "{targets: (\$ARGS.positional | map({(.): {reclaimed: true}}) | add)}" "$@" ;;
+esac'
+
+out=$("$low_disk" measure); rc=$?
+check "measure includes overlay plugins alongside skill plugins" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e '.plugins.fake.targets.a.bytes == 1 and (.plugins | has("worktrees"))' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" measure fake); rc=$?
+check "measure <plugin> runs only that plugin" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e '.plugins | keys == ["fake"]' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" measure nope 2>/dev/null); rc=$?
+check "measure of an unknown plugin fails without stdout" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
+# --- reclaim routing ---
+out=$("$low_disk" reclaim fake:a "worktrees:${wt}" fake:b:c); rc=$?
+check "reclaim routes each plugin's targets to it in one call" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '(.plugins.fake.targets | keys == ["a", "b:c"]) and .plugins.worktrees.targets[$p].reclaimed == false' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" reclaim nocolon 2>/dev/null); rc=$?
+check "reclaim of a target without a plugin prefix fails without stdout" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" reclaim nope:a 2>/dev/null); rc=$?
+check "reclaim for an unknown plugin fails without stdout" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" reclaim 2>/dev/null); rc=$?
+check "reclaim with no targets fails without stdout" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
+# --- failing plugins are reported, others still report ---
+add_plugin broken 'exit 3'
+add_plugin garbage 'echo not json'
+out=$("$low_disk" measure); rc=$?
+check "a failing plugin makes measure exit non-zero" \
+  "$( [[ $rc -ne 0 ]] && echo ok || echo "rc=$rc")"
+check "failing plugins carry an error and the rest still report" \
+  "$(printf '%s' "$out" | jq -e '(.plugins.broken.error | test("exited 3")) and (.plugins.garbage.error | test("JSON")) and .plugins.fake.targets.a.bytes == 1' >/dev/null &&
+     echo ok || echo "out='$out'")"
+reset_overlay
+
+# --- discovery errors ---
+add_plugin worktrees 'exit 0'
+out=$("$low_disk" measure 2>/dev/null); rc=$?
+check "a plugin name defined in both directories is an error" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+reset_overlay
+
+add_plugin 'bad:name' 'exit 0'
+out=$("$low_disk" measure 2>/dev/null); rc=$?
+check "a plugin name containing ':' is an error" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+reset_overlay
+
+printf '\n%d tests, %d failures\n' "$tests" "$failures"
+(( failures == 0 ))

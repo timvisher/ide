@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+script_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
+  die "Unable to resolve the low-disk script directory"
+
+plugin_dirs=(
+  "${script_dir}/plugins"
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/low-disk/plugins"
+)
+
+# Help text is printed with printf rather than a heredoc: bash may back a
+# heredoc with a temp file, and low-disk has to work with no free space.
+show_help() {
+  printf '%s\n' \
+    'Usage: low-disk <subcommand> [args...]' \
+    '' \
+    'Subcommands:' \
+    '  measure [<plugin>...]          Print what each plugin finds and how much' \
+    '                                 disk it uses, as one JSON object.' \
+    '  reclaim <plugin>:<target>...   Ask each plugin to reclaim its targets and' \
+    '                                 print what it did, as one JSON object.' \
+    '' \
+    'Plugins are executables in:' \
+    "  ${plugin_dirs[0]}" \
+    "  ${plugin_dirs[1]}" \
+    '' \
+    'Exit status is non-zero when any plugin fails; its entry carries an' \
+    '"error" field and the other plugins still report.'
+}
+
+usage() {
+  show_help >&2
+}
+
+declare -A plugins=()
+plugin_names=()
+
+discover_plugins() {
+  local dir path name
+  for dir in "${plugin_dirs[@]}"
+  do
+    for path in "$dir"/*
+    do
+      [[ -f $path && -x $path ]] || continue
+      name=${path##*/}
+      [[ $name != *:* ]] ||
+        die "Plugin name '%s' contains ':', which separates plugins from targets" "$path"
+      if [[ -n ${plugins[$name]+x} ]]
+      then
+        die "Plugin '%s' is defined twice: '%s' and '%s'" "$name" "${plugins[$name]}" "$path"
+      fi
+      plugins[$name]=$path
+      plugin_names+=("$name")
+    done
+  done
+}
+
+require_plugin() {
+  [[ -n ${plugins[$1]+x} ]] ||
+    die "Unknown plugin '%s'. Known plugins: %s" "$1" "${plugin_names[*]}"
+}
+
+run_plugin() {
+  local name=$1 out rc
+  shift
+  out=$("${plugins[$name]}" "$@")
+  rc=$?
+  if (( rc != 0 ))
+  then
+    jq -nc --arg n "$name" --arg e "exited ${rc}" '{($n): {error: $e}}'
+    return 1
+  fi
+  if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1
+  then
+    jq -nc --arg n "$name" --arg e 'did not print a JSON object' '{($n): {error: $e}}'
+    return 1
+  fi
+  printf '%s' "$out" | jq -c --arg n "$name" '{($n): .}'
+}
+
+collect() {
+  jq -s '{plugins: (add // {})}'
+}
+
+cmd_measure() {
+  local names=("$@") name failed=0
+  (( 0 < ${#names[@]} )) || names=("${plugin_names[@]}")
+  for name in "${names[@]}"
+  do
+    require_plugin "$name"
+  done
+  {
+    for name in "${names[@]}"
+    do
+      run_plugin "$name" measure || failed=1
+    done
+    exit "$failed"
+  } | collect
+  return "${PIPESTATUS[0]}"
+}
+
+cmd_reclaim() {
+  (( 0 < $# )) ||
+    {
+      usage
+      return 1
+    }
+  local spec name order=() failed=0
+  declare -A seen=()
+  for spec in "$@"
+  do
+    [[ $spec == *:* ]] ||
+      die "Target '%s' is not of the form <plugin>:<target>" "$spec"
+    name=${spec%%:*}
+    require_plugin "$name"
+    if [[ -z ${seen[$name]+x} ]]
+    then
+      seen[$name]=1
+      order+=("$name")
+    fi
+  done
+  local targets
+  {
+    for name in "${order[@]}"
+    do
+      targets=()
+      for spec in "$@"
+      do
+        [[ ${spec%%:*} == "$name" ]] && targets+=("${spec#*:}")
+      done
+      run_plugin "$name" reclaim "${targets[@]}" || failed=1
+    done
+    exit "$failed"
+  } | collect
+  return "${PIPESTATUS[0]}"
+}
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  measure)
+    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    discover_plugins
+    shift
+    cmd_measure "$@"
+    exit
+    ;;
+  reclaim)
+    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    discover_plugins
+    shift
+    cmd_reclaim "$@"
+    exit
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

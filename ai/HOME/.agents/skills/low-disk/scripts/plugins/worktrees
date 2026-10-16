@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# Matches timvisher_git's own cache location, which does not follow
+# XDG_CACHE_HOME.
+repo_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
+
+# Worktree paths come from each cache's worktrees/*/gitdir file rather than
+# `git worktree list`: plain reads, no git process, no git wrapper log write.
+measure() {
+  local gitdir_file worktree_git worktree repo kib path
+  declare -A repos=()
+  local worktrees=()
+  for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir
+  do
+    [[ -f $gitdir_file ]] || continue
+    IFS= read -r worktree_git < "$gitdir_file" || continue
+    worktree=${worktree_git%/.git}
+    [[ -d $worktree ]] || continue
+    repo=${gitdir_file#"$repo_trunks_dir"/}
+    repos[$worktree]=${repo%%/worktrees/*}
+    worktrees+=("$worktree")
+  done
+  (( 0 < ${#worktrees[@]} )) ||
+    {
+      jq -n '{targets: {}}'
+      return
+    }
+  # du is metadata-bound and a dd-source checkout takes ~12s on its own,
+  # so the worktrees are sized in parallel rather than one after another.
+  printf '%s\0' "${worktrees[@]}" |
+    xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" du -sk -- 2>/dev/null |
+    while IFS=$'\t' read -r kib path
+    do
+      [[ $kib =~ ^[0-9]+$ && -n ${repos[$path]+x} ]] || continue
+      jq -nc --arg p "$path" --arg r "${repos[$path]}" --argjson b "$(( kib * 1024 ))" \
+        '{($p): {path: $p, repo: $r, bytes: $b}}'
+    done |
+    jq -s '{targets: (add // {})}'
+}
+
+# Removing a worktree is left to `timvisher_git worktree gc` in an agent
+# session: it archives workflow files and asks before removing, which an
+# unattended reclaim cannot do.
+reclaim() {
+  local target
+  for target in "$@"
+  do
+    jq -nc --arg t "$target" \
+      '{($t): {reclaimed: false, reason: "worktree removal is agent-driven: use timvisher_git worktree gc"}}'
+  done | jq -s '{targets: (add // {})}'
+}
+
+case ${1-} in
+  measure)
+    measure
+    ;;
+  reclaim)
+    shift
+    reclaim "$@"
+    ;;
+  *)
+    die "Usage: worktrees measure | worktrees reclaim <target>..."
+    ;;
+esac

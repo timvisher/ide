@@ -1,0 +1,3 @@
+interface:
+  display_name: "Low disk"
+  short_description: "Measure and reclaim disk space through pluggable consumers"
