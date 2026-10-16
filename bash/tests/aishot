@@ -223,16 +223,19 @@ rm -rf "$repo"
 # ---------------------------------------------------------------------------
 run_test
 repo=$(make_repo)
-mkdir -p "$repo/.timvisher_gh/pr"
+mkdir -p "$repo/.timvisher_gh/pr/comments/2026-10-10T10-01-00+0000-alice-a.go-L4-thread"
 printf 'STATE DRAFT TITLE\n\nSTATE DRAFT BODY\n' > "$repo/.timvisher_gh/pr/pr.md"
+printf 'UNPOSTED REPLY DRAFT\n' > "$repo/.timvisher_gh/pr/comments/2026-10-10T10-01-00+0000-alice-a.go-L4-thread/2026-10-10T12-00-00+0000-me-reply.md"
+printf '{"resolved": true}\n' > "$repo/.timvisher_gh/pr/comments/2026-10-10T10-01-00+0000-alice-a.go-L4-thread/2026-10-10T10-01-00+0000-alice-nit.md.json"
 ln -s .timvisher_gh/pr/pr.md "$repo/pr.md"
 out=$(cd "$repo" && AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
 drafts=$(grep -c 'PR DESCRIPTION DRAFT' <<<"$out")
-if [[ $out == *'STATE DRAFT BODY'* ]] && (( drafts == 1 ))
+if [[ $out == *'STATE DRAFT BODY'* ]] && (( drafts == 1 )) &&
+   [[ $out == *'UNPOSTED REPLY DRAFT'* && $out == *'"resolved": true'* ]]
 then
-  pass "review inlines .timvisher_gh/pr/pr.md once as the PR draft"
+  pass "review inlines .timvisher_gh/pr/ state, pr.md once as the PR draft"
 else
-  fail "review should inline .timvisher_gh/pr/pr.md exactly once (got ${drafts})"
+  fail "review should inline .timvisher_gh/pr/ state with pr.md exactly once (got ${drafts})"
 fi
 rm -rf "$repo"
 
