@@ -377,7 +377,7 @@ do_make_diff_prompt() {
         fi
         local size
         size=$(wc -c < "$f" | tr -d ' ')
-        if ! file --brief --mime-type -- "$f" 2>/dev/null | grep -q '^text/'
+        if ! file --brief --mime-type -- "$f" 2>/dev/null | grep -qE '^(text/|application/json$)'
         then
             _section_ref+="
 ### ${f}
@@ -423,12 +423,18 @@ $(cat -- "$f")
     # committed/staged/unstaged diff, not gitignored scratch files.
     local root_files=()
     local candidate
+    local -a pr_state_files=()
     if [[ $mode == review ]]
     then
-        for candidate in x x.* y y.* z z.* pr.md
+        if [[ -d .timvisher_gh/pr ]]
+        then
+            mapfile -t pr_state_files < <(find .timvisher_gh/pr -type f | LC_ALL=C sort)
+        fi
+        for candidate in x x.* y y.* z z.* pr.md ${pr_state_files[@]+"${pr_state_files[@]}"}
         do
             # Don't re-inline our own spilled diff file from a previous run.
             [[ $candidate == "$spill_diff_basename" ]] && continue
+            [[ $candidate == pr.md && -L $candidate ]] && continue
             [[ -f $candidate ]] && root_files+=("$candidate")
         done
     fi
@@ -442,7 +448,7 @@ them with the same rigor as tracked code.
 "
         for f in "${root_files[@]}"
         do
-            if [[ $f == pr.md ]]
+            if [[ $f == pr.md || $f == .timvisher_gh/pr/pr.md ]]
             then
                 root_section+="
 ### pr.md — PR DESCRIPTION DRAFT (review as deliverable, not just documentation)

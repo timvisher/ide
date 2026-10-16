@@ -65,16 +65,30 @@ Recommended structure (adapt to any repo template):
 If `.github/PULL_REQUEST_TEMPLATE.md` exists, append its contents after your summary and fill all placeholders. Do not leave TODOs or empty checklists.
 
 ### 4) Quick checks
-- Ensure `pr.md` lives at repo root.
+- Ensure `pr.md` lives at repo root (or at `.timvisher_gh/pr/pr.md`).
 - Ensure line 2 is blank (the PR body starts on line 3).
 - Ensure the title and summary reflect all commits when `1 < commit_count`.
 
-### 5) Create the PR
+### 5) Create or update the PR
+Agents do not push. Hand the human the one-line invocation instead:
+
 ```bash
-timvisher_gh pr
+timvisher_gh pr push                      # same as bare `timvisher_gh pr`
+timvisher_gh pr push --force-with-lease   # after a rebase or other rewrite
 ```
 
-This pushes the branch and creates the PR, storing the URL in `pr.md.url`.
+`pr push` converges GitHub to the worktree and is safe to rerun after any failure: it pushes the branch (or reports "already pushed"), creates a draft PR from `pr.md` if none is recorded (adopting an existing open PR for the branch instead of duplicating it), and otherwise updates the title and body from `pr.md`. The URL is recorded in `.timvisher_gh/pr/pr.json`. `--force-with-lease` runs `git push --force-with-lease --force-if-includes`; `--force-with-lease=<sha>` leases against a specific remote SHA. `--open` opens the PR afterwards.
+
+The title/body update is guarded by a lease on what `timvisher_gh` last posted (`.posted` in `pr.json`). If someone edited the description on GitHub since then, `pr push` refuses and prints the diff: fold their edits into `pr.md` (a `pr.md` that matches GitHub becomes the new baseline) or delete `.posted` from `pr.json` to overwrite GitHub. Never write ad hoc `y.*.sh` push scripts; everything they did is a `pr push` rerun.
+
+## State directory
+
+`timvisher_gh` keeps per-worktree state in `.timvisher_gh/` at the worktree root (ignored by the global gitignore):
+
+- `pr/pr.md`, `pr/pr.json` (`url` plus the `posted` title/body), `pr/pr.url` (generated from `pr.json`; `cat` or open it), `pr/merged` (merged cookie)
+- `issue/issue.md`, `issue/issue.json`, `issue/issue.url`
+
+A `pr.md` or `issue.md` drafted at the worktree root is moved into `.timvisher_gh/` the next time a `pr`, `issue`, or `comment` subcommand runs. Root `pr.md`, `pr.md.url` and `x.merged` symlinks are left behind for older callers; read the PR URL from `.timvisher_gh/pr/pr.url` in new code.
 
 ## Workflow — creating an issue
 
@@ -84,7 +98,7 @@ Draft `issue.md` using the same format (title on line 1, blank line 2, body from
 timvisher_gh issue
 ```
 
-The URL is stored in `issue.md.url`.
+The URL is recorded in `.timvisher_gh/issue/issue.json`.
 
 ## Workflow — marking a PR ready for review
 
@@ -94,20 +108,41 @@ Wait for CI checks to pass, then remove draft status:
 timvisher_gh pr ready
 ```
 
-- Polls `gh pr checks` until all non-excluded checks pass, then runs `gh pr ready`
+- Reports "already ready" (and runs only the ready post-hooks) when the PR is not a draft
+- Polls `gh pr checks` until all non-excluded checks pass, runs the ready pre-hooks (e.g. an ARP gate), then runs `gh pr ready`
 - Fails immediately if any check has `bucket == "fail"`
-- Per-repo exclude patterns at `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/OWNER/REPO/pr/ready/exclude-checks.txt` ignore meta-checks (like mergegate) that never complete until all other checks pass
+- Org and repo exclude patterns at `timvisher_gh.config/{orgs/OWNER,repos/OWNER/REPO}/pr/ready/exclude-checks.txt` (either config root) ignore meta-checks (like mergegate) that never complete until all other checks pass
 - One regex pattern per line; `#` comments and blank lines are skipped
 - Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
 
 ## Workflow — editing an existing PR or issue
 
-After modifying `pr.md` or `issue.md`, push the updates to GitHub:
+After modifying `pr.md` or `issue.md`, push the updates to GitHub (both use the description lease described above):
 
 ```bash
-timvisher_gh pr edit     # reads URL from pr.md.url
-timvisher_gh issue edit  # reads URL from issue.md.url
+timvisher_gh pr push     # or `pr edit` for only the title/body step
+timvisher_gh issue edit  # reads URL from .timvisher_gh/issue/issue.json
 ```
+
+## Workflow — reading PR feedback
+
+```bash
+timvisher_gh pr pull
+```
+
+Mirrors the whole conversation into `.timvisher_gh/pr/comments/` as `<name>.md` + `<name>.md.json` pairs in the same sidecar schema and naming the `comment` verbs use (`<name>` = `<ts>-<author>-<slug>`, `<ts>` the item's UTC creation time, so `ls` order is chronological): issue comments and reviews with a body at the top level, each review thread as a `<ts>-<author>-<path>-L<line>-thread/` directory holding its root comment (with `thread_id`, `path`, `line`, starting review and resolved state) and its replies. Safe to rerun: remote edits flow down, your unpushed edits to your own comments are kept, and intent keys (`reactions`, `resolved`) are never touched. Root `x.*.md` files tracking a comment on the PR move into the tree. Filter ARP threads by the root comment's `.author` starting with `dd-agentic-review-platform`.
+
+## Workflow — answering PR feedback
+
+Write intent into the mirrored tree, then hand the human `timvisher_gh pr push`, which sends it in filename order and records what it sent so reruns never duplicate anything:
+
+- Reply in a thread: create `<thread dir>/<UTC ts>-<you>-<slug>.md` (`date -u +%FT%H-%M-%S%z` for the timestamp); it is posted with `comment reply`.
+- New top-level comment: create `.timvisher_gh/pr/comments/<UTC ts>-<you>-<slug>.md`; it is posted with `comment`.
+- Edit your own posted comment: edit its `.md`; it is re-pushed with `comment edit`, under its lease on `posted.body`.
+- React: add `"reactions": ["+1"]` to the item's `.md.json` (any spelling `comment react` accepts).
+- Resolve a thread: set `"resolved": true` in its root comment's `.md.json` (e.g. every ARP thread once addressed).
+
+Starting new review threads and editing review bodies aren't supported.
 
 ## Workflow — working with PR comments
 
@@ -124,7 +159,7 @@ Rerunning a verb converges instead of repeating it: a tracked comment isn't post
 ### Post a top-level comment
 
 ```bash
-timvisher_gh comment comment.md                                    # PR URL from pr.md.url or Chrome
+timvisher_gh comment comment.md                                    # PR URL from .timvisher_gh/pr/pr.json or Chrome
 timvisher_gh comment --pull-request=https://github.com/o/r/pull/1 comment.md  # explicit PR URL
 ```
 
@@ -185,6 +220,24 @@ timvisher_gh comment delete --force comment.md  # batch cleanup
 ```
 
 `--force` refuses comments someone else wrote, such as ones fetched with `get`; delete those interactively. A comment counts as already gone only when GitHub says so (404/410) and its repository is still reachable; any other failure keeps the state and exits non-zero.
+
+## Workflow — merging and releasing
+
+Agents do not merge. Hand the human one of:
+
+```bash
+timvisher_gh pr release              # merge, then watch the release via merge post-hooks
+timvisher_gh pr release --no-watch   # merge only (same as `timvisher_gh pr merge`)
+timvisher_gh pr merge                # the lower-level merge step
+```
+
+Both are idempotent: an already-merged PR reports "already merged in <commit>", an already-requested merge (auto-merge, merge queue, or a `/merge` comment since the last push) goes straight to waiting, and nothing is ever requested twice. After a confirmed merge, `timvisher_gh` drops `.timvisher_gh/pr/merged` and pulls the trunk worktree (`~/git/<org>/<repo>/<default branch>`) in the background. `--open` opens the PR, merge queue, and whatever the hooks discover.
+
+## Hooks and canned comments
+
+Org-, repo- and path-specific steps (ARP review kicks, readiness gates, release watchers) are hooks, not ad hoc scripts: executables under `timvisher_gh.config/<scope>/pr/<push|ready|merge>/{pre,post}.d/` in either config root (`bash/bin/timvisher_gh.config/` in this repo, or `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/`). `<scope>` is `orgs/OWNER`, `repos/OWNER/REPO`, or `repos/OWNER/REPO/paths/<dir>` (fires only when the PR touches `<dir>`). Pre-hooks gate a transition and are skipped once it has happened; post-hooks run every time and must check their own end state. `timvisher_gh --help` lists the environment they receive.
+
+`timvisher_gh comment <name>` posts the canned comment `timvisher_gh.config/comments/<name>.md` when `<name>` is not a file (e.g. `timvisher_gh comment arp-review`).
 
 ## General GitHub interactions
 
