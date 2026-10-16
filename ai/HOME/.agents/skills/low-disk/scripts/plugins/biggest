@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+roots_spec=${LOW_DISK_BIGGEST_ROOTS:-${HOME}:/private/var/tmp}
+roots=()
+while [[ -n $roots_spec ]]
+do
+  roots+=("${roots_spec%%:*}")
+  if [[ $roots_spec == *:* ]]
+  then
+    roots_spec=${roots_spec#*:}
+  else
+    roots_spec=''
+  fi
+done
+
+measure() {
+  local root entry entries=()
+  shopt -s dotglob nullglob
+  for root in "${roots[@]}"
+  do
+    [[ -d $root ]] || continue
+    for entry in "$root"/*
+    do
+      [[ -d $entry && ! -L $entry ]] && entries+=("$entry")
+    done
+  done
+  shopt -u dotglob nullglob
+  (( 0 < ${#entries[@]} )) ||
+    {
+      jq -n '{targets: {}}'
+      return
+    }
+  printf '%s\0' "${entries[@]}" |
+    xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" du -sk -- 2>/dev/null |
+    while IFS=$'\t' read -r kib path
+    do
+      [[ $kib =~ ^[0-9]+$ ]] || continue
+      jq -nc --arg p "$path" --argjson b "$(( kib * 1024 ))" '{path: $p, bytes: $b}'
+    done |
+    jq -s '{targets: (sort_by(-.bytes) | map({(.path): .}) | add // {})}'
+}
+
+reclaim() {
+  local target
+  for target in "$@"
+  do
+    jq -nc --arg t "$target" \
+      '{($t): {reclaimed: false, reason: "biggest only measures; reclaim through the plugin that owns the directory, or by hand"}}'
+  done | jq -s '{targets: (add // {})}'
+}
+
+case ${1-} in
+  measure)
+    measure
+    ;;
+  reclaim)
+    shift
+    reclaim "$@"
+    ;;
+  *)
+    die "Usage: biggest measure | biggest reclaim <target>..."
+    ;;
+esac

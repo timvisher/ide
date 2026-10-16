@@ -46,6 +46,7 @@ enable_dev_ci
 jq_dir=$(dirname "$(command -v jq)") || { echo "jq not found" >&2; exit 1; }
 export PATH="${mockbin}:${jq_dir}:/usr/bin:/bin:/usr/sbin:/sbin"
 export MOCK_TMUX_OUT='' MOCK_TMUX_RC=0 MOCK_DEV_CI_ACTIVE='' MOCK_DEV_CI_RC=0
+export LOW_DISK_BIGGEST_ROOTS="${HOME}"
 
 overlay="${XDG_CONFIG_HOME}/timvisher/ide/low-disk/plugins"
 trunks="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
@@ -177,6 +178,26 @@ check "worktrees plugin refuses to reclaim and says why" \
   "$( [[ $rc -eq 0 && -d $wt ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
       '.plugins.worktrees.targets[$p] | .reclaimed == false and (.reason | test("worktree gc"))' >/dev/null &&
       echo ok || echo "rc=$rc out='$out'")"
+
+# --- biggest plugin ---
+r1="${tmpdir}/root1" r2="${tmpdir}/root2"
+mkdir -p "${r1}/small" "${r1}/large" "${r2}/.hidden"
+head -c 102400 /dev/zero > "${r1}/small/f"
+head -c 409600 /dev/zero > "${r1}/large/f"
+head -c 204800 /dev/zero > "${r2}/.hidden/f"
+head -c 999999 /dev/zero > "${r1}/loose-file"
+ln -s "${r1}/large" "${r2}/link"
+
+out=$(LOW_DISK_BIGGEST_ROOTS="${r1}:${r2}:${tmpdir}/missing" "$low_disk" measure biggest); rc=$?
+check "biggest sizes the directories under each root, largest first, dotfiles included" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg a "${r1}/large" --arg b "${r2}/.hidden" --arg c "${r1}/small" \
+      '.plugins.biggest.targets | (keys_unsorted == [$a, $b, $c]) and (.[$a].bytes >= 409600) and (.[$a].path == $a)' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+
+out=$("$low_disk" reclaim "biggest:${r1}/large"); rc=$?
+check "biggest refuses to reclaim and says why" \
+  "$( [[ $rc -eq 0 && -d ${r1}/large ]] && printf '%s' "$out" | jq -e --arg a "${r1}/large" \
+      '.plugins.biggest.targets[$a].reclaimed == false' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
 
 # --- overlay plugins and measure scoping ---
 add_plugin fake 'case $1 in
