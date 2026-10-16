@@ -44,6 +44,35 @@ the ones that are not, saying why:
 {"targets": {"<target>": {"reclaimed": false, "reason": "..."}}}
 ```
 
+## Environment
+
+`low-disk` exports `LOW_DISK`, the path to itself, so a plugin can call
+back into it. Plugins that need it should refuse to run without it.
+
+## Activity
+
+`low-disk activity` prints every timvisher_git worktree with what it knows
+about whether it is in use:
+
+```json
+{"worktrees": {"/path/to/worktree": {
+  "repo": "org/repo",
+  "protected": false,
+  "attached": true,
+  "sessions": [{"name": "org/repo/branch", "attached": true}]
+}}}
+```
+
+- `attached`: a tmux client is attached to a session in the worktree right
+  now. That is the strongest sign Tim is using it; never reclaim from an
+  attached worktree.
+- `protected`: `timvisher_dev_ci worktrees active` lists it.
+- `sessions`: tmux sessions whose path is in the worktree, attached or
+  not.
+
+Until something records detach times, "no client attached right now" is
+the only idle signal.
+
 ## What low-disk adds
 
 - `low-disk measure [<plugin>...]` prints

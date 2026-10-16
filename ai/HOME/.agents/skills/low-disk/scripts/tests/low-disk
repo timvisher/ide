@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # fixture scripts are written unexpanded on purpose
 
 failures=0
 tests=0
@@ -16,6 +17,7 @@ low_disk="${scripts_dir}/low-disk"
 tmpdir=''
 trap '[[ -z $tmpdir ]] || rm -rf "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+tmpdir=$(cd "$tmpdir" && pwd -P) || { echo "cannot canonicalize tmpdir" >&2; exit 1; }
 
 export HOME="${tmpdir}/home"
 export XDG_CONFIG_HOME="${HOME}/.config"
@@ -26,6 +28,24 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
   { echo "cannot create fixture HOME" >&2; exit 1; }
 ln -s "${repo_root}/bash/functions" "${HOME}/.functions" ||
   { echo "cannot link .functions" >&2; exit 1; }
+
+mockbin="${tmpdir}/mockbin"
+mkdir -p "$mockbin" || { echo "cannot create mockbin" >&2; exit 1; }
+printf '%s\n' '#!/usr/bin/env bash' \
+  '[[ $1 == list-sessions ]] || exit 1' \
+  'printf "%s" "${MOCK_TMUX_OUT-}"' \
+  'exit "${MOCK_TMUX_RC:-0}"' > "${mockbin}/tmux"
+chmod +x "${mockbin}/tmux"
+dev_ci_mock='#!/usr/bin/env bash
+[[ $1 == worktrees && $2 == active ]] || exit 1
+printf "%s" "${MOCK_DEV_CI_ACTIVE-}"
+exit "${MOCK_DEV_CI_RC:-0}"'
+enable_dev_ci() { printf '%s\n' "$dev_ci_mock" > "${mockbin}/timvisher_dev_ci"; chmod +x "${mockbin}/timvisher_dev_ci"; }
+disable_dev_ci() { rm -f "${mockbin}/timvisher_dev_ci"; }
+enable_dev_ci
+jq_dir=$(dirname "$(command -v jq)") || { echo "jq not found" >&2; exit 1; }
+export PATH="${mockbin}:${jq_dir}:/usr/bin:/bin:/usr/sbin:/sbin"
+export MOCK_TMUX_OUT='' MOCK_TMUX_RC=0 MOCK_DEV_CI_ACTIVE='' MOCK_DEV_CI_RC=0
 
 overlay="${XDG_CONFIG_HOME}/timvisher/ide/low-disk/plugins"
 trunks="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
@@ -87,6 +107,71 @@ check "worktrees plugin reports a worktree with its repo and size" \
 check "worktrees plugin skips gitdir entries whose worktree is gone" \
   "$(printf '%s' "$out" | jq -e '.plugins.worktrees.targets | length == 1' >/dev/null && echo ok || echo "out='$out'")"
 
+# --- activity ---
+nested="${wt}/sub/inner"
+add_worktree org/repo inner "$nested" 1
+mkdir -p "${wt}/deep/dir"
+
+out=$("$low_disk" activity); rc=$?
+check "activity with no tmux sessions reports every worktree unattached" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '.worktrees[$p] == {repo: "org/repo", protected: false, attached: false, sessions: []} and (.worktrees | length == 2)' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+
+MOCK_TMUX_OUT=$'1\tattached-session\t'"${wt}/deep/dir"$'\n0\tdetached-session\t'"${nested}"$'\n2\telsewhere\t'"${HOME}"$'\n'
+out=$("$low_disk" activity); rc=$?
+check "a session attached anywhere under a worktree marks it attached" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '.worktrees[$p] | .attached == true and .sessions == [{name: "attached-session", attached: true}]' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+check "a detached session is listed but leaves its worktree unattached" \
+  "$(printf '%s' "$out" | jq -e --arg p "$nested" \
+      '.worktrees[$p] | .attached == false and .sessions == [{name: "detached-session", attached: false}]' >/dev/null &&
+      echo ok || echo "out='$out'")"
+check "a session outside every worktree is ignored" \
+  "$(printf '%s' "$out" | jq -e '[.worktrees[].sessions[].name] | index("elsewhere") == null' >/dev/null && echo ok || echo "out='$out'")"
+
+MOCK_TMUX_OUT='no server running on /tmp/tmux-504/default' MOCK_TMUX_RC=1
+out=$("$low_disk" activity); rc=$?
+check "no tmux server means no sessions, not a failure" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e '[.worktrees[].attached] | all(. == false)' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
+
+MOCK_TMUX_OUT='something else broke' MOCK_TMUX_RC=1
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "any other tmux failure makes activity fail without stdout" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+MOCK_TMUX_OUT='' MOCK_TMUX_RC=0
+
+MOCK_DEV_CI_ACTIVE="${nested}"$'\n'
+out=$("$low_disk" activity); rc=$?
+check "worktrees dev_ci lists as active are protected" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg n "$nested" --arg p "$wt" \
+      '.worktrees[$n].protected == true and .worktrees[$p].protected == false' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
+
+MOCK_DEV_CI_RC=1
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a failing dev_ci makes activity fail rather than report unprotected" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+MOCK_DEV_CI_RC=0
+
+disable_dev_ci
+out=$("$low_disk" activity); rc=$?
+check "without timvisher_dev_ci nothing is protected" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e '[.worktrees[].protected] | all(. == false)' >/dev/null && echo ok || echo "rc=$rc out='$out'")"
+enable_dev_ci
+
+MOCK_TMUX_OUT=$'1\tattached-session\t'"${wt}"$'\n'
+out=$("$low_disk" measure worktrees); rc=$?
+check "worktrees plugin measure carries activity alongside size" \
+  "$( [[ $rc -eq 0 ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
+      '.plugins.worktrees.targets[$p] | .attached == true and .protected == false and .repo == "org/repo" and .bytes >= 204800 and .path == $p' >/dev/null &&
+      echo ok || echo "rc=$rc out='$out'")"
+MOCK_DEV_CI_ACTIVE='' MOCK_TMUX_OUT=''
+
+out=$(env -u LOW_DISK "${scripts_dir}/plugins/worktrees" measure 2>/dev/null); rc=$?
+check "the worktrees plugin refuses to run outside low-disk" \
+  "$( [[ $rc -ne 0 && -z $out ]] && echo ok || echo "rc=$rc out='$out'")"
+
 out=$("$low_disk" reclaim "worktrees:${wt}"); rc=$?
 check "worktrees plugin refuses to reclaim and says why" \
   "$( [[ $rc -eq 0 && -d $wt ]] && printf '%s' "$out" | jq -e --arg p "$wt" \
@@ -94,7 +179,6 @@ check "worktrees plugin refuses to reclaim and says why" \
       echo ok || echo "rc=$rc out='$out'")"
 
 # --- overlay plugins and measure scoping ---
-# shellcheck disable=SC2016
 add_plugin fake 'case $1 in
   measure) printf "{\"targets\": {\"a\": {\"bytes\": 1}}}" ;;
   reclaim) shift; jq -nc --args "{targets: (\$ARGS.positional | map({(.): {reclaimed: true}}) | add)}" "$@" ;;

@@ -15,6 +15,12 @@ plugin_dirs=(
   "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/low-disk/plugins"
 )
 
+# Matches timvisher_git's own cache location, which does not follow
+# XDG_CACHE_HOME.
+repo_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
+
+export LOW_DISK="${script_dir}/low-disk"
+
 # Help text is printed with printf rather than a heredoc: bash may back a
 # heredoc with a temp file, and low-disk has to work with no free space.
 show_help() {
@@ -26,6 +32,9 @@ show_help() {
     '                                 disk it uses, as one JSON object.' \
     '  reclaim <plugin>:<target>...   Ask each plugin to reclaim its targets and' \
     '                                 print what it did, as one JSON object.' \
+    '  activity                       Print each timvisher_git worktree with its' \
+    '                                 tmux sessions, whether a client is attached,' \
+    '                                 and whether dev_ci protects it.' \
     '' \
     'Plugins are executables in:' \
     "  ${plugin_dirs[0]}" \
@@ -87,6 +96,95 @@ run_plugin() {
 
 collect() {
   jq -s '{plugins: (add // {})}'
+}
+
+canonical() {
+  (cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+# Worktree paths come from each cache's worktrees/*/gitdir file rather than
+# `git worktree list`: plain reads, no git process, no git wrapper log write.
+cmd_activity() {
+  command -v tmux >/dev/null 2>&1 ||
+    die 'tmux is required to tell attached worktrees from idle ones'
+
+  local gitdir_file worktree_git worktree repo
+  local worktrees=()
+  declare -A repos=() protected=()
+  for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir
+  do
+    [[ -f $gitdir_file ]] || continue
+    IFS= read -r worktree_git < "$gitdir_file" || continue
+    worktree=$(canonical "${worktree_git%/.git}") || continue
+    repo=${gitdir_file#"$repo_trunks_dir"/}
+    repos[$worktree]=${repo%%/worktrees/*}
+    worktrees+=("$worktree")
+  done
+
+  local out rc path
+  if command -v timvisher_dev_ci >/dev/null 2>&1
+  then
+    out=$(timvisher_dev_ci worktrees active) ||
+      die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
+    while IFS= read -r path
+    do
+      [[ -n $path ]] || continue
+      path=$(canonical "$path") || continue
+      protected[$path]=1
+    done < <(printf '%s\n' "$out")
+  fi
+
+  local sessions=()
+  out=$(tmux list-sessions -F '#{session_attached}	#{session_name}	#{session_path}' 2>&1)
+  rc=$?
+  if (( rc == 0 ))
+  then
+    mapfile -t sessions < <(printf '%s\n' "$out")
+  elif [[ $out != *'no server running'* && $out != *'error connecting'* ]]
+  then
+    die 'tmux list-sessions failed: %s' "$out"
+  fi
+
+  {
+    for worktree in "${worktrees[@]}"
+    do
+      jq -nc --arg p "$worktree" --arg r "${repos[$worktree]}" \
+        --argjson prot "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )" \
+        '{kind: "worktree", path: $p, repo: $r, protected: $prot}'
+    done
+    local line clients name session_path best
+    for line in "${sessions[@]}"
+    do
+      [[ -n $line ]] || continue
+      clients=${line%%$'\t'*}
+      line=${line#*$'\t'}
+      name=${line%%$'\t'*}
+      session_path=${line#*$'\t'}
+      [[ $clients =~ ^[0-9]+$ ]] || continue
+      session_path=$(canonical "$session_path") || continue
+      best=''
+      for worktree in "${worktrees[@]}"
+      do
+        if [[ $session_path == "$worktree" || $session_path == "$worktree"/* ]] &&
+             (( ${#best} < ${#worktree} ))
+        then
+          best=$worktree
+        fi
+      done
+      [[ -n $best ]] || continue
+      jq -nc --arg p "$best" --arg n "$name" \
+        --argjson a "$( (( 0 < clients )) && echo true || echo false )" \
+        '{kind: "session", path: $p, name: $n, attached: $a}'
+    done
+  } | jq -s '
+    reduce .[] as $r ({};
+      if $r.kind == "worktree" then
+        .[$r.path] = {repo: $r.repo, protected: $r.protected, attached: false, sessions: []}
+      else
+        .[$r.path].sessions += [{name: $r.name, attached: $r.attached}]
+        | .[$r.path].attached = (.[$r.path].attached or $r.attached)
+      end)
+    | {worktrees: .}'
 }
 
 cmd_measure() {
@@ -159,6 +257,11 @@ case ${1-} in
     discover_plugins
     shift
     cmd_reclaim "$@"
+    exit
+    ;;
+  activity)
+    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    cmd_activity
     exit
     ;;
   *)
