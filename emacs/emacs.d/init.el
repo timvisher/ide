@@ -45,7 +45,6 @@
                           (magit . "melpa-stable")
                           (markdown-mode . "melpa-stable")
                           (paredit . "melpa-stable")
-                          (php-mode . "melpa-stable")
                           (projectile . "melpa-stable")
                           (smex . "melpa-stable")
                           (yaml-mode . "melpa-stable")
@@ -745,8 +744,8 @@ over the code-block language minibuffer prompt."
         clojure-mode-extra-font-locking coffee-mode csv-mode
         dockerfile-mode eat edit-indirect expand-region fixme-mode forge
         go-mode htmlize ido-ubiquitous ido-vertical-mode inheritenv
-        jq-mode langtool magit markdown-mode mediawiki org-contrib orgit
-        outline-indent ox-slack paredit php-mode polymode projectile
+        jq-mode langtool magit markdown-mode org-contrib orgit
+        outline-indent ox-slack paredit polymode projectile
         protobuf-mode sed-mode smex swift-mode terraform-mode
         typescript-mode vterm websocket xclip yaml-mode))
  '(package-vc-selected-packages
