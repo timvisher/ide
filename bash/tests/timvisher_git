@@ -991,6 +991,16 @@ else
   fail "worktree gc does not pin a worktree with .timvisher_dev_ci/protected"
 fi
 
+run_test
+rm -f "$pin_dir/.timvisher_dev_ci/protected"
+mkdir -p "$pin_dir/.timvisher_dev_ci/protected"
+if worktree_gc__is_pinned "$pin_dir"
+then
+  pass "worktree gc pins a worktree whose .timvisher_dev_ci/protected is a directory"
+else
+  fail "worktree gc does not pin a worktree whose .timvisher_dev_ci/protected is a directory"
+fi
+
 # ---------------------------------------------------------------------------
 # Setup for is_branch_ish and clone_stacked integration tests
 # ---------------------------------------------------------------------------
@@ -3949,6 +3959,84 @@ then
   pass "sync_trunk: unpublished commits ahead of origin -> non-zero, no path"
 else
   fail "sync_trunk unpublished: expected rc>0 + empty, got rc=${st_rc} out='${st_out}'"
+fi
+
+# ---------------------------------------------------------------------------
+# worktree gc: pinned, frozen and legacy-keep worktrees survive a dry run
+# that reaps an otherwise identical unpinned worktree
+# ---------------------------------------------------------------------------
+
+gc_base="$(cd "$tmpdir" && pwd -P)/gc"
+gc_origin="$gc_base/origin"
+gc_trunks="$gc_base/repo_trunks"
+gc_live="$gc_base/live"
+gc_protect="$gc_base/protect"
+gc_cache="$gc_trunks/gcorg/gcrepo"
+mkdir -p "$gc_trunks/gcorg" "$gc_live/gcorg/gcrepo" "$gc_protect/gcorg/gcrepo"
+"$test_git" init "$gc_origin" >/dev/null 2>&1
+"$test_git" -C "$gc_origin" -c user.email=t@t -c user.name=t \
+  -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
+gc_trunk=$("$test_git" -C "$gc_origin" rev-parse --abbrev-ref HEAD)
+"$test_git" init --bare "$gc_cache" >/dev/null 2>&1
+"$test_git" -C "$gc_cache" remote add origin "$gc_origin"
+"$test_git" -C "$gc_cache" fetch origin >/dev/null 2>&1
+"$test_git" -C "$gc_cache" remote set-head origin -a >/dev/null 2>&1
+for gc_name in unpinned pinned frozen legacy
+do
+  gc_wt="$gc_live/gcorg/gcrepo/$gc_name"
+  "$test_git" -C "$gc_cache" worktree add -b "$gc_name" "$gc_wt" "origin/$gc_trunk" >/dev/null 2>&1
+  mkdir -p "$gc_wt/.timvisher_gh/pr"
+  touch -t 202001010000 "$gc_wt/.timvisher_gh/pr/merged"
+done
+mkdir -p "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci"
+: > "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci/protected"
+mkdir -p "$gc_protect/gcorg/gcrepo/frozen" "$gc_protect/gcorg/gcrepo/legacy"
+: > "$gc_protect/gcorg/gcrepo/frozen/frozen"
+: > "$gc_protect/gcorg/gcrepo/legacy/keep"
+
+# shellcheck disable=SC2034
+gc_out=$(
+  repo_trunks_dir=$gc_trunks
+  live_repo_dir=$gc_live
+  worktree_gc__protect_dir=$gc_protect
+  timvisher_logging_log_level=INFO
+  export TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry"
+  worktree_gc --dry-run 2>&1
+)
+
+run_test
+if [[ $gc_out =~ MERGED[^$'\n']*' unpinned ' ]]
+then
+  pass "worktree gc dry run reaps an unpinned merged worktree"
+else
+  fail "worktree gc dry run did not reap the unpinned control: ${gc_out}"
+fi
+
+for gc_name in pinned frozen legacy
+do
+  run_test
+  if [[ $gc_out =~ MERGED[^$'\n']*" ${gc_name} " ]]
+  then
+    fail "worktree gc dry run would reap the ${gc_name} worktree: ${gc_out}"
+  else
+    pass "worktree gc dry run keeps the ${gc_name} worktree"
+  fi
+done
+
+run_test
+if [[ $gc_out == *'Pinned: gcorg/gcrepo/pinned (.timvisher_dev_ci/protected)'* ]]
+then
+  pass "worktree gc reports the pinned worktree it skipped"
+else
+  fail "worktree gc did not report the pinned worktree: ${gc_out}"
+fi
+
+run_test
+if [[ $gc_out == *"Legacy gc keep file '$gc_protect/gcorg/gcrepo/legacy/keep'"* ]]
+then
+  pass "worktree gc warns about a legacy keep file"
+else
+  fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
 fi
 
 echo ""
