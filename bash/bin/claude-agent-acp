@@ -12,6 +12,7 @@ source ~/git/ide/bash/ai/agents.bash ||
 
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
 export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-opus[1m]}"
+export CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1
 
 export TIMVISHER_CLAUDE=true
 
