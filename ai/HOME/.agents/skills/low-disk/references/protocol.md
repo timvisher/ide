@@ -94,7 +94,7 @@ the only idle signal.
 each path's filesystem:
 
 ```json
-{"sizes": {"/some/path": {"bytes": 123, "incomplete": false, "device": 16777232}}}
+{"sizes": {"/a/path": {"bytes": 123, "incomplete": false, "device": 16}}}
 ```
 
 `incomplete` is true when part of the tree could not be read, so `bytes`
@@ -107,7 +107,7 @@ filesystem the path is on.
   `{"plugins": {"<plugin>": <its measure output>}}`.
 - `low-disk reclaim <plugin>:<target>...` groups targets by plugin, drops
   repeats, calls each plugin's `reclaim` once, and prints the same
-  `{"plugins": ...}` shape. An empty target is an error.
+  `{"plugins": ...}` shape. An empty plugin name or target is an error.
 - A plugin that exits non-zero or prints anything other than exactly one
   JSON object is reported as `{"plugins": {"<plugin>": {"error": "..."}}}`.
   The other plugins still report, and `low-disk` exits non-zero.

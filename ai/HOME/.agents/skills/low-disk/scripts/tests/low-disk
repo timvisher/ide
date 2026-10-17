@@ -58,8 +58,8 @@ disable_dev_ci() { rm -f "${mockbin}/timvisher_dev_ci"; }
 enable_dev_ci
 jq_path=$(command -v jq) || { echo "jq not found" >&2; exit 1; }
 bash_path=$(command -v bash) || { echo "bash not found" >&2; exit 1; }
-python3 -c 'import socket' 2>/dev/null || { echo "python3 is needed for the tmux socket fixtures" >&2; exit 1; }
 export PATH="${mockbin}:${bash_path%/*}:${jq_path%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
+python3 -c 'import socket' 2>/dev/null || { echo "python3 is needed for the tmux socket fixtures" >&2; exit 1; }
 export MOCK_DEV_CI_ACTIVE='' MOCK_DEV_CI_RC=0
 export LOW_DISK_BIGGEST_ROOTS="${HOME}"
 
@@ -199,6 +199,13 @@ check "a relative gitdir is resolved against its own directory, not the caller's
   "$(expect --arg p "$rel_wt" '.worktrees[$p].repo == "rel/repo"')"
 rm -rf "${trunks}/rel" "${HOME}/git/rel"
 
+mkdir -p "${trunks}/sealed/repo"
+chmod 000 "${trunks}/sealed/repo"
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a cache that cannot be read makes activity fail rather than omit its worktrees" "$(expect_failure)"
+chmod 700 "${trunks}/sealed/repo"
+rm -rf "${trunks}/sealed"
+
 legacy_wt="${HOME}/git/legacy/repo/main"
 mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "$legacy_wt"
 printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
@@ -217,13 +224,13 @@ check "activity with no tmux socket directory reports every worktree unattached"
   "$(expect --arg p "$wt" '.worktrees[$p] == {repo: "org/repo", protected: false, attached: false, sessions: []} and (.worktrees | length == 2)')"
 
 add_socket default "$(pane 1 attached-session "${wt}/deep/dir" "${wt}/deep/dir"; pane 1 attached-session "${wt}/deep/dir" "${wt}/deep"; pane 0 detached-session "$nested" "$nested"; pane 2 elsewhere "$HOME" "$HOME"; pane 1 wandered "$HOME" "${wt}/deep"; pane 1 removed "$HOME" "${wt}/was-here")" 0
-add_socket other "$(pane 1 other-socket "$nested" "$nested")" 0
+add_socket .other "$(pane 1 other-socket "$nested" "$nested")" 0
 out=$("$low_disk" activity); rc=$?
 check "a session attached anywhere under a worktree marks it attached" \
   "$(expect --arg p "$wt" '.worktrees[$p].attached == true and (.worktrees[$p].sessions | index({name: "attached-session", attached: true}) != null)')"
 check "a detached session is listed with its worktree" \
   "$(expect --arg n "$nested" '.worktrees[$n].sessions | index({name: "detached-session", attached: false}) != null')"
-check "sessions on every tmux socket count, not just the default one" \
+check "sessions on every tmux socket count, dot-prefixed ones included" \
   "$(expect --arg n "$nested" '.worktrees[$n].attached == true and (.worktrees[$n].sessions | index({name: "other-socket", attached: true}) != null)')"
 check "a session in a nested worktree also counts for the worktree containing it" \
   "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "other-socket", attached: true}) != null')"
@@ -345,6 +352,13 @@ check "an unreadable root is an error, not an empty result" \
   "$( (( rc != 0 )) && rc=0 expect '.plugins.biggest.error | test("exited")' || echo "rc=$rc out='$out'")"
 chmod 700 "${tmpdir}/lockedroot"
 
+mkdir -p "${tmpdir}/fence/root"
+chmod 000 "${tmpdir}/fence"
+out=$(LOW_DISK_BIGGEST_ROOTS="${tmpdir}/fence/root" "$low_disk" measure biggest 2>/dev/null); rc=$?
+check "a root below a directory that cannot be searched is an error, not missing" \
+  "$( (( rc != 0 )) && rc=0 expect '.plugins.biggest.error | test("exited")' || echo "rc=$rc out='$out'")"
+chmod 700 "${tmpdir}/fence"
+
 mkdir -p "${tmpdir}/emptyroot"
 out=$(LOW_DISK_BIGGEST_ROOTS="${tmpdir}/emptyroot" "$low_disk" measure biggest); rc=$?
 check "biggest with nothing under its roots reports no targets" \
@@ -385,6 +399,10 @@ check "a target named twice is passed to its plugin once" \
 out=$("$low_disk" reclaim fake: 2>/dev/null); rc=$?
 check "an empty target fails without stdout" "$(expect_failure)"
 
+err=$("$low_disk" reclaim :a 2>&1 >/dev/null); rc=$?
+check "an empty plugin name fails with a plain message" \
+  "$( (( rc != 0 )) && [[ $err == *'not of the form'* && $err != *'bad array subscript'* ]] && echo ok || echo "rc=$rc err='$err'")"
+
 out=$("$low_disk" reclaim nocolon 2>/dev/null); rc=$?
 check "reclaim of a target without a plugin prefix fails without stdout" "$(expect_failure)"
 
@@ -411,6 +429,13 @@ check "a failing plugin makes reclaim exit non-zero and still reports the rest" 
 reset_overlay
 
 # --- discovery errors ---
+mkdir -p "$overlay"
+chmod 000 "$overlay"
+out=$("$low_disk" measure 2>/dev/null); rc=$?
+check "a plugin directory that cannot be read is an error" "$(expect_failure)"
+chmod 700 "$overlay"
+reset_overlay
+
 add_plugin worktrees 'exit 0'
 out=$("$low_disk" measure 2>/dev/null); rc=$?
 check "a plugin name defined in both directories is an error" "$(expect_failure)"

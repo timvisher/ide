@@ -44,7 +44,7 @@ measure() {
               path: $p,
               bytes: (if $bytes != null and $bytes < 0 then 0 else $bytes end),
               incomplete: ($size.incomplete
-                or ($children | length > 0)
+                or (0 < ($children | length))
                 or any($children[]; .incomplete or .bytes == null))})})
         | add // {})}'
   (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
@@ -54,12 +54,9 @@ measure() {
 # session: it archives workflow files and asks before removing, which an
 # unattended reclaim cannot do.
 reclaim() {
-  local target
-  for target in "$@"
-  do
-    jq -nc --arg t "$target" \
-      '{($t): {reclaimed: false, reason: "worktree removal is agent-driven: use timvisher_git worktree gc"}}'
-  done | jq -s '{targets: (add // {})}'
+  jq -n --arg reason 'worktree removal is agent-driven: use timvisher_git worktree gc' \
+    '{targets: ($ARGS.positional | map({(.): {reclaimed: false, reason: $reason}}) | add // {})}' \
+    --args "$@"
 }
 
 case ${1-} in

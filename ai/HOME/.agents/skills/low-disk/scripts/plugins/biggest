@@ -31,16 +31,30 @@ device_of() {
 
 # An entry on a different device from its root is a mount point (OrbStack,
 # FUSE, cloud storage): walking it is slow or hangs and is not this disk.
+# Telling which device it is on still stats it, so a dead network mount can
+# hang here; nothing short of not looking avoids that.
 measure() {
-  local root root_device entry entries=()
+  local root ancestor resolved root_device entry entries=()
   shopt -s dotglob nullglob
   for root in "${roots[@]}"
   do
-    [[ -e $root ]] || continue
+    if [[ ! -e $root ]]
+    then
+      ancestor=$root
+      while [[ ! -e $ancestor && $ancestor == */* ]]
+      do
+        ancestor=${ancestor%/*}
+        [[ -n $ancestor ]] || ancestor=/
+      done
+      [[ -d $ancestor && ! -x $ancestor ]] &&
+        die "Cannot tell whether the root '%s' exists below '%s'" "$root" "$ancestor"
+      continue
+    fi
     [[ -d $root && -r $root && -x $root ]] ||
       die "Cannot list the root '%s'" "$root"
-    root=$(CDPATH='' cd -- "$root" && pwd -P) ||
+    resolved=$(CDPATH='' cd -- "$root" && pwd -P) ||
       die "Cannot resolve the root '%s'" "$root"
+    root=$resolved
     root_device=$(device_of "$root") ||
       die "Cannot tell which device '%s' is on" "$root"
     for entry in "${root%/}"/*
@@ -60,12 +74,9 @@ measure() {
 }
 
 reclaim() {
-  local target
-  for target in "$@"
-  do
-    jq -nc --arg t "$target" \
-      '{($t): {reclaimed: false, reason: "biggest only measures; reclaim through the plugin that owns the directory, or by hand"}}'
-  done | jq -s '{targets: (add // {})}'
+  jq -n --arg reason 'biggest only measures; reclaim through the plugin that owns the directory, or by hand' \
+    '{targets: ($ARGS.positional | map({(.): {reclaimed: false, reason: $reason}}) | add // {})}' \
+    --args "$@"
 }
 
 case ${1-} in

@@ -55,10 +55,17 @@ usage() {
 declare -A plugins=()
 plugin_names=()
 
+require_listable() {
+  [[ -d $1 && -r $1 && -x $1 ]] ||
+    die "Cannot list '%s'; refusing to report without it" "$1"
+}
+
 discover_plugins() {
   local dir path name
   for dir in "${plugin_dirs[@]}"
   do
+    [[ -e $dir ]] || continue
+    require_listable "$dir"
     for path in "$dir"/*
     do
       [[ -f $path && -x $path ]] || continue
@@ -124,21 +131,42 @@ canonical_or_gone() {
 
 # Worktree paths come from each cache's worktrees/*/gitdir file rather than
 # `git worktree list`: plain reads, no git process, no git wrapper log write.
+# Every directory on the way is checked, so one we cannot read fails the
+# command instead of quietly leaving its worktrees out.
 list_worktrees() {
   local -n __worktrees=$1 __repos=$2
-  local gitdir_file worktree_git worktree relative org
-  for gitdir_file in "$repo_trunks_dir"/*/*/worktrees/*/gitdir "$repo_trunks_dir"/*/*/.git/worktrees/*/gitdir
+  [[ -e $repo_trunks_dir ]] || return 0
+  require_listable "$repo_trunks_dir"
+  local org_dir cache admin entry gitdir_file worktree_git worktree
+  for org_dir in "$repo_trunks_dir"/*
   do
-    [[ -f $gitdir_file ]] || continue
-    IFS= read -r worktree_git < "$gitdir_file" || continue
-    [[ $worktree_git == /* ]] || worktree_git=${gitdir_file%/*}/${worktree_git}
-    worktree=$(canonical "${worktree_git%/.git}") || continue
-    [[ -z ${__repos[$worktree]+x} ]] || continue
-    relative=${gitdir_file#"$repo_trunks_dir"/}
-    org=${relative%%/*}
-    relative=${relative#*/}
-    __repos["$worktree"]=${org}/${relative%%/*}
-    __worktrees+=("$worktree")
+    [[ -d $org_dir ]] || continue
+    require_listable "$org_dir"
+    for cache in "$org_dir"/*
+    do
+      [[ -d $cache ]] || continue
+      require_listable "$cache"
+      for admin in "${cache}/worktrees" "${cache}/.git/worktrees"
+      do
+        [[ -e $admin ]] || continue
+        require_listable "$admin"
+        for entry in "$admin"/*
+        do
+          [[ -d $entry ]] || continue
+          require_listable "$entry"
+          gitdir_file=${entry}/gitdir
+          [[ -e $gitdir_file ]] || continue
+          [[ -r $gitdir_file ]] ||
+            die "Cannot read '%s'; refusing to report without it" "$gitdir_file"
+          IFS= read -r worktree_git < "$gitdir_file" || continue
+          [[ $worktree_git == /* ]] || worktree_git=${entry}/${worktree_git}
+          canonical_or_gone "${worktree_git%/.git}" worktree || continue
+          [[ -z ${__repos[$worktree]+x} ]] || continue
+          __repos["$worktree"]=${org_dir##*/}/${cache##*/}
+          __worktrees+=("$worktree")
+        done
+      done
+    done
   done
 }
 
@@ -175,10 +203,12 @@ list_panes() {
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
     die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
   local socket out rc line rest sockets=()
+  shopt -s dotglob
   for socket in "$tmux_socket_dir"/*
   do
     [[ -S $socket ]] && sockets+=("$socket")
   done
+  shopt -u dotglob
   (( 0 < ${#sockets[@]} )) || return 0
   command -v tmux >/dev/null 2>&1 ||
     die "tmux sockets exist in '%s' but tmux is not installed" "$tmux_socket_dir"
@@ -226,34 +256,28 @@ cmd_activity() {
     done
   done
 
-  {
-    local worktree failed=0 i
+  local worktree i records=()
+  for worktree in "${worktrees[@]}"
+  do
+    records+=("$worktree" "${repos[$worktree]}" "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )")
+  done
+  local worktree_count=${#worktrees[@]}
+  for (( i = 0; i < ${#pane_paths[@]}; i++ ))
+  do
     for worktree in "${worktrees[@]}"
     do
-      jq -nc --arg p "$worktree" --arg r "${repos[$worktree]}" \
-        --argjson prot "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )" \
-        '{kind: "worktree", path: $p, repo: $r, protected: $prot}' || failed=1
+      [[ ${pane_paths[i]} == "$worktree" || ${pane_paths[i]} == "$worktree"/* ]] || continue
+      records+=("$worktree" "${pane_names[i]}" "${pane_attached[i]}")
     done
-    for (( i = 0; i < ${#pane_paths[@]}; i++ ))
-    do
-      for worktree in "${worktrees[@]}"
-      do
-        [[ ${pane_paths[i]} == "$worktree" || ${pane_paths[i]} == "$worktree"/* ]] || continue
-        jq -nc --arg p "$worktree" --arg n "${pane_names[i]}" --argjson a "${pane_attached[i]}" \
-          '{kind: "session", path: $p, name: $n, attached: $a}' || failed=1
-      done
-    done
-    exit "$failed"
-  } | jq -s '
-    reduce .[] as $r ({};
-      if $r.kind == "worktree" then
-        .[$r.path] = {repo: $r.repo, protected: $r.protected, attached: false, sessions: []}
-      else
-        .[$r.path].sessions |= (. + [{name: $r.name, attached: $r.attached}] | unique)
-        | .[$r.path].attached = (.[$r.path].attached or $r.attached)
-      end)
-    | {worktrees: .}'
-  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+  done
+  jq -n --argjson worktrees "$worktree_count" '
+    $ARGS.positional as $r
+    | reduce range(0; $worktrees) as $i ({};
+        .[$r[3 * $i]] = {repo: $r[3 * $i + 1], protected: ($r[3 * $i + 2] == "true"), attached: false, sessions: []})
+    | reduce range(3 * $worktrees; $r | length; 3) as $j (.;
+        .[$r[$j]].sessions |= (. + [{name: $r[$j + 1], attached: ($r[$j + 2] == "true")}] | unique)
+        | .[$r[$j]].attached = (.[$r[$j]].attached or ($r[$j + 2] == "true")))
+    | {worktrees: .}' --args "${records[@]}"
 }
 
 # Each path is sized by its own du, in parallel because du is bound by
@@ -288,9 +312,11 @@ cmd_size() {
       printf "%s\037%s\037%s\037%s\n" "$1" "$rc" "${out%%	*}" "$dev"' size |
     {
       local index rc kib dev failed=0
+      declare -A reported=()
       while IFS=$'\x1f' read -r index rc kib dev
       do
-        [[ $index =~ ^[0-9]+$ && -n ${paths[index]+x} ]] || continue
+        [[ $index =~ ^[0-9]+$ && -n ${paths[index]+x} && -z ${reported[$index]+x} ]] || continue
+        reported[$index]=1
         [[ $dev =~ ^[0-9]+$ ]] || dev=null
         if [[ $kib =~ ^[0-9]+$ ]]
         then
@@ -301,6 +327,11 @@ cmd_size() {
           jq -nc --arg p "${paths[index]}" --argjson d "$dev" \
             '{($p): {bytes: null, incomplete: true, device: $d}}' || failed=1
         fi
+      done
+      for (( index = 0; index < ${#paths[@]}; index++ ))
+      do
+        [[ -n ${reported[$index]+x} ]] && continue
+        jq -nc --arg p "${paths[index]}" '{($p): {bytes: null, incomplete: true, device: null}}' || failed=1
       done
       exit "$failed"
     } |
@@ -335,7 +366,7 @@ cmd_reclaim() {
   declare -A seen=()
   for spec in "$@"
   do
-    [[ $spec == *:?* ]] ||
+    [[ $spec == ?*:?* ]] ||
       die "Target '%s' is not of the form <plugin>:<target>" "$spec"
     name=${spec%%:*}
     require_plugin "$name"
