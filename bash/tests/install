@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2088
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    (( failures += 1 ))
+  fi
+}
+
+core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+# shellcheck disable=SC1091
+source "$core/bash/tests/lib/timvisher_tests.bash" || exit 1
+
+tmpdir=''
+trap '[[ -z $tmpdir ]] || { chflags -R nouchg "$tmpdir" 2>/dev/null; rm -rf -- "$tmpdir"; }' EXIT
+tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
+
+overlay="$tmpdir/overlay"
+mkdir -p "$overlay/git/bin" \
+         "$overlay/git/XDG_CONFIG_HOME/git" \
+         "$overlay/ai/HOME/.agents/skills/overlay-skill" ||
+  exit 1
+cat > "$overlay/git/bin/install" <<'INSTALL'
+#!/usr/bin/env bash
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/git" &&
+  ln -sfn "${here%/bin}/XDG_CONFIG_HOME/git/config_overlay" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/git/config_overlay"
+INSTALL
+chmod +x "$overlay/git/bin/install" || exit 1
+printf '[core]\n' > "$overlay/git/XDG_CONFIG_HOME/git/config_overlay"
+printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
+
+run_install() {
+  local home=$1
+  shift
+  timvisher_tests_with_home "$home" bash "$core/bash/install.bash" "$@" </dev/null \
+    >"$tmpdir/out" 2>&1
+}
+
+tree_of() {
+  (cd "$1" && /usr/bin/find . -print | LC_ALL=C sort | while IFS= read -r p
+  do
+    if [[ -L $p ]]
+    then
+      printf '%s -> %s\n' "$p" "$(readlink "$p")"
+    else
+      printf '%s\n' "$p"
+    fi
+  done)
+}
+
+core_status_before=$(git -C "$core" status --porcelain)
+overlay_tree_before=$(tree_of "$overlay")
+
+home="$tmpdir/fresh/home"
+mkdir -p "$home"
+
+run_install "$home" --core "$core" --overlay "$overlay"
+rc=$?
+check 'fresh install exits 0' test "$rc" = 0
+if (( rc != 0 ))
+then
+  cat "$tmpdir/out" >&2
+fi
+
+check '~/git/ide is the core' test "$home/git/ide" -ef "$core"
+check '~/git/ide is a link' test -L "$home/git/ide"
+check '~/.config/timvisher/ide is the overlay' \
+      test "$home/.config/timvisher/ide" -ef "$overlay"
+check '~/.config/emacs is the core emacs.d' \
+      test "$home/.config/emacs" -ef "$core/emacs/emacs.d"
+check '~/.bashrc is the core bashrc' test "$home/.bashrc" -ef "$core/bash/bashrc"
+check '~/.functions is the core functions' \
+      test "$home/.functions" -ef "$core/bash/functions"
+check '~/bin is the core bin' test "$home/bin" -ef "$core/bash/bin"
+check 'core git install linked the core gitignore' \
+      test "$home/.config/git/gitignore" -ef "$core/git/XDG_CONFIG_HOME/git/gitignore"
+check 'overlay git install linked the overlay config' \
+      test "$home/.config/git/config_overlay" -ef "$overlay/git/XDG_CONFIG_HOME/git/config_overlay"
+check 'core skills are installed' \
+      test "$home/.agents/skills/aishot" -ef "$core/ai/HOME/.agents/skills/aishot"
+check 'overlay skills are installed' \
+      test "$home/.agents/skills/overlay-skill" -ef "$overlay/ai/HOME/.agents/skills/overlay-skill"
+check '~/AGENTS.md is the core AGENTS.md' \
+      test "$home/AGENTS.md" -ef "$core/ai/HOME/AGENTS.md"
+
+first_tree=$(tree_of "$home")
+run_install "$home" --core "$core" --overlay "$overlay"
+rc=$?
+check 'second install exits 0' test "$rc" = 0
+check 'second install leaves the tree unchanged' \
+      test "$(tree_of "$home")" = "$first_tree"
+
+check 'nothing is written beside HOME' \
+      test "$(cd "$tmpdir/fresh" && /usr/bin/find . -mindepth 1 -maxdepth 1)" = ./home
+check 'the core worktree is unchanged' \
+      test "$(git -C "$core" status --porcelain)" = "$core_status_before"
+check 'the overlay is unchanged' \
+      test "$(tree_of "$overlay")" = "$overlay_tree_before"
+
+live="$tmpdir/live"
+mkdir -p "$live/git" "$live/.config/timvisher"
+ln -s "$core" "$live/git/ide"
+ln -s ../git/ide/emacs/emacs.d "$live/.config/emacs"
+ln -s "$overlay" "$live/.config/timvisher/ide"
+run_install "$live"
+rc=$?
+check 'a live-style HOME installs without --core or --overlay' test "$rc" = 0
+check 'the live emacs link keeps its text' \
+      test "$(readlink "$live/.config/emacs")" = ../git/ide/emacs/emacs.d
+check 'the live overlay is used' \
+      test "$live/.config/git/config_overlay" -ef "$overlay/git/XDG_CONFIG_HOME/git/config_overlay"
+
+other="$tmpdir/other"
+mkdir -p "$other/git"
+ln -s "$tmpdir" "$other/git/ide"
+run_install "$other" --core "$core"
+rc=$?
+check '~/git/ide pointing elsewhere fails the install' test "$rc" != 0
+check '~/git/ide pointing elsewhere is left alone' \
+      test "$(readlink "$other/git/ide")" = "$tmpdir"
+
+foreign="$tmpdir/foreign/home"
+mkdir -p "$foreign/.config/emacs"
+printf 'mine\n' > "$foreign/.config/emacs/init.el"
+run_install "$foreign" --core "$core" --overlay "$overlay"
+rc=$?
+check 'a real ~/.config/emacs fails the install' test "$rc" != 0
+check 'a real ~/.config/emacs fails before anything is installed' test ! -e "$foreign/.bashrc"
+check 'a real ~/.config/emacs is left alone' \
+      eval '[[ ! -L $foreign/.config/emacs && $(< "$foreign/.config/emacs/init.el") == mine ]]'
+
+for option in --core --overlay
+do
+  dangling="$tmpdir/dangling$option"
+  mkdir -p "$dangling"
+  timvisher_tests_with_home "$dangling" timeout 10 bash "$core/bash/install.bash" "$option" \
+    </dev/null >"$tmpdir/out" 2>&1
+  rc=$?
+  check "a trailing $option is a usage error, not a hang" eval '(( rc != 0 && rc != 124 ))'
+  check "a trailing $option names the missing path" grep -q -- "$option needs a path" "$tmpdir/out"
+done
+
+broken="$tmpdir/broken-overlay"
+mkdir -p "$broken/git/bin" || exit 1
+printf '#!/usr/bin/env bash\nexit 3\n' > "$broken/git/bin/install"
+chmod +x "$broken/git/bin/install" || exit 1
+failing="$tmpdir/failing/home"
+mkdir -p "$failing"
+run_install "$failing" --core "$core" --overlay "$broken"
+rc=$?
+check 'a failing git installer fails the install' test "$rc" != 0
+check 'a failing git installer is reported' grep -q 'git/bin/install failed' "$tmpdir/out"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
