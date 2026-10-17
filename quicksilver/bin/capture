@@ -39,7 +39,7 @@ REPO_ROOTS = [
     ("ide", "/Users/tim.visher/git/timvisher/ide/main"),
     ("ide", "/Users/tim.visher/git/ide"),
     ("sysext", "/Users/tim.visher/.config/timvisher/ide"),
-    ("sysext", "/Users/tim.visher/git/DataDog/timvisher-ide-datadog-system-extensions/main"),
+    ("sysext", "/Users/tim.visher/git/ddoghq-sandbox/timvisher-ide-datadog-system-extensions/main"),
 ]
 
 
