@@ -190,7 +190,22 @@ Observed in bd 1.3.1:
 - External `blocks` edges are not enforced. The dependent bead stays in `bd ready` and out of `bd blocked`, before and after `bd ship`. To make a cross-topic blocker visible, say so in the dependent's notes too.
 - The reference names a capability, not a bead, and nothing checks it. A typo in `<name>` or `<capability>`, or a missing `export:` label, is silent.
 
-So record every cross-topic link twice: the `external:` edge, so it can be found mechanically, plus a note naming the other topic and the bead ID (with `BEADS_DIR=<topic>/.beads bd show <id>` to follow it), because the note is what `bd show` displays. When work moves into a subtopic, leave the parent's epic open as the link and give it a `related` edge to the subtopic's root epic.
+`external_ref` is the visible half. It's a free-text field meant for outside-tracker IDs (`gh-9`, `jira-ABC`), set with `bd create --external-ref` or `bd update --external-ref`. bd prints it in the `bd show` header (`External: …`) and filters on it (`bd list --external-ref <exact>`, `--external-contains <substring>`), but never resolves it. Each bead holds one.
+
+| | `external:` edge | `external_ref` |
+|---|---|---|
+| Shown by `bd show` | No (only `bd dep list`) | Yes, in the header |
+| Searchable | No | `bd list --external-ref` |
+| Checked by bd | No | No |
+| Per bead | Many | One |
+
+So use all three for every cross-topic link, in both directions:
+
+1. The `external:` edge (normally `related`), so it can be found mechanically.
+2. `external_ref` set to `<name>:<id>`, where `<name>` is the `external_projects` key for the other topic. If the bead needs the field for a real outside-tracker ID, that wins, and the edge and note carry the topic link.
+3. A note naming the other topic and bead, with the command to follow it: `BEADS_DIR=<topic>/.beads bd show <id>`.
+
+When work moves into a subtopic, leave the parent's epic open as the link and give the parent and the subtopic's root epic all three, each pointing at the other. Moved beads keep their old ID as `external_ref` (`<name>:<old-id>`), so `bd list --external-ref` finds them from either side.
 
 ## Agent Claim Loop
 
