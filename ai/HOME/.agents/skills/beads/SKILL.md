@@ -158,6 +158,40 @@ So when picking work, exclude structure types:
 bd ready --parent <milestone> --exclude-type milestone,epic
 ```
 
+### Links Between Topics
+
+Each topic (and subtopic) is its own database, so an ordinary dependency can't point at another topic's bead. Use a capability reference instead: a bead depends on a named capability in another project, not on a bead ID.
+
+1. In the database that holds the reference, name the other topic:
+
+   ```bash
+   bd config set external_projects.<name> <path-to-the-other-topic>
+   ```
+
+   This writes an `external_projects:` block into that topic's `.beads/config.yaml`.
+
+2. In the other topic, label the bead that represents the capability:
+
+   ```bash
+   bd label add <id> export:<capability>
+   ```
+
+3. Add the reference, with any dependency type:
+
+   ```bash
+   bd dep add <id> external:<name>:<capability> -t related
+   ```
+
+4. When the exporting bead closes, `bd ship <capability>` (run in its topic) adds `provides:<capability>`.
+
+Observed in bd 1.3.1:
+
+- `bd show` and `bd dep tree` don't display external edges; `bd show` says the bead has no dependencies. Only `bd dep list <id>` reveals them, as a warning listing each `external:<name>:<capability> via <type>`.
+- External `blocks` edges are not enforced. The dependent bead stays in `bd ready` and out of `bd blocked`, before and after `bd ship`. To make a cross-topic blocker visible, say so in the dependent's notes too.
+- The reference names a capability, not a bead, and nothing checks it. A typo in `<name>` or `<capability>`, or a missing `export:` label, is silent.
+
+So record every cross-topic link twice: the `external:` edge, so it can be found mechanically, plus a note naming the other topic and the bead ID (with `BEADS_DIR=<topic>/.beads bd show <id>` to follow it), because the note is what `bd show` displays. When work moves into a subtopic, leave the parent's epic open as the link and give it a `related` edge to the subtopic's root epic.
+
 ## Agent Claim Loop
 
 `bd ready --claim` atomically claims the first ready issue matching its filters (sets you as assignee and status `in_progress`) and prints it. With `--json` it prints a one-element array, or `[]` when nothing matched:
