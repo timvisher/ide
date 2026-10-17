@@ -180,7 +180,7 @@ get_org() {
       org=${source%%/*}
       ;;
     *)
-      die "get_org: Unsupported source ‘${source}’"
+      die "get_org: Unsupported source '${source}'"
       ;;
   esac
 
@@ -225,7 +225,7 @@ get_repo() {
       repo=${repo%%/*}
       ;;
     *)
-      die "get_repo: Unsupported source ‘${source}’"
+      die "get_repo: Unsupported source '${source}'"
       ;;
   esac
 
@@ -785,9 +785,9 @@ migrate_cache_to_bare_if_needed() {
   if [[ $is_bare != true ]]
   then
     [[ -d ${cache_dir}/.git ]] ||
-      die "migrate_cache_to_bare_if_needed: cache ‘${cache_dir}’ is not bare and has no .git subdir; refusing to guess"
+      die "migrate_cache_to_bare_if_needed: cache '${cache_dir}' is not bare and has no .git subdir; refusing to guess"
 
-    info "migrate_cache_to_bare_if_needed: converting non-bare trunk cache ‘${cache_dir}’ to bare layout"
+    info "migrate_cache_to_bare_if_needed: converting non-bare trunk cache '${cache_dir}' to bare layout"
 
     local item
     for item in "$cache_dir"/* "$cache_dir"/.[!.]* "$cache_dir"/..?*
@@ -795,7 +795,7 @@ migrate_cache_to_bare_if_needed() {
       [[ -e $item ]] || continue
       [[ ${item##*/} == ".git" ]] && continue
       rm -rf "$item" ||
-        die "migrate_cache_to_bare_if_needed: unable to remove ‘${item}’"
+        die "migrate_cache_to_bare_if_needed: unable to remove '${item}'"
     done
 
     # The mv loop runs in a subshell to scope `shopt -s dotglob nullglob`.
@@ -810,12 +810,12 @@ migrate_cache_to_bare_if_needed() {
         mv "$gitfile" "$cache_dir/" || exit 1
       done
     ) ||
-      die "migrate_cache_to_bare_if_needed: failed to flatten ‘${cache_dir}/.git’ into ‘${cache_dir}’"
+      die "migrate_cache_to_bare_if_needed: failed to flatten '${cache_dir}/.git' into '${cache_dir}'"
     rmdir "${cache_dir}/.git" ||
       die "migrate_cache_to_bare_if_needed: .git dir not empty after flatten; manual inspection required"
 
     command git -C "$cache_dir" config core.bare true ||
-      die "migrate_cache_to_bare_if_needed: unable to set core.bare=true in ‘${cache_dir}’"
+      die "migrate_cache_to_bare_if_needed: unable to set core.bare=true in '${cache_dir}'"
 
     command git -C "$cache_dir" worktree repair >&2 ||
       warn "migrate_cache_to_bare_if_needed: worktree repair reported issues; live worktrees may need manual fixing"
@@ -865,29 +865,29 @@ repair_bare_poisoning_source() {
   bare=$(command git -C "$cache_dir" config --type=bool --file "${cache_dir}/config" --get core.bare 2>/dev/null) || bare=""
   [[ $bare == true ]] || return 0
 
-  warn 'repair_bare_poisoning_source: ‘%s’ has extensions.worktreeConfig with core.bare in the shared config; migrating core.bare to config.worktree' \
+  warn 'repair_bare_poisoning_source: "%s" has extensions.worktreeConfig with core.bare in the shared config; migrating core.bare to config.worktree' \
     "$cache_dir"
 
   if ! command git -C "$cache_dir" config --worktree core.bare true
   then
-    warn 'repair_bare_poisoning_source: could not set per-worktree core.bare in ‘%s’; leaving shared config alone' "$cache_dir"
+    warn 'repair_bare_poisoning_source: could not set per-worktree core.bare in "%s"; leaving shared config alone' "$cache_dir"
     return 1
   fi
 
   command git -C "$cache_dir" config --file "${cache_dir}/config" --unset core.bare ||
     {
-      warn 'repair_bare_poisoning_source: could not unset shared core.bare in ‘%s’' "$cache_dir"
+      warn 'repair_bare_poisoning_source: could not unset shared core.bare in "%s"' "$cache_dir"
       return 1
     }
 
   if [[ $(command git -C "$cache_dir" rev-parse --is-bare-repository 2>/dev/null) != true ]]
   then
-    warn 'repair_bare_poisoning_source: ‘%s’ no longer reports bare after migration; restoring shared core.bare' "$cache_dir"
+    warn 'repair_bare_poisoning_source: "%s" no longer reports bare after migration; restoring shared core.bare' "$cache_dir"
     command git -C "$cache_dir" config --file "${cache_dir}/config" core.bare true
     return 1
   fi
 
-  info 'repair_bare_poisoning_source: migrated core.bare for ‘%s’' "$cache_dir"
+  info 'repair_bare_poisoning_source: migrated core.bare for "%s"' "$cache_dir"
 }
 
 ensure_worktrees_not_poisoned_by_bare() {
@@ -918,9 +918,9 @@ ensure_worktrees_not_poisoned_by_bare() {
     current=$(command git -C "$wt_path" config --worktree --get core.bare 2>/dev/null) || current=""
     [[ $current == false ]] && continue
 
-    info "ensure_worktrees_not_poisoned_by_bare: setting per-worktree core.bare=false in ‘${wt_path}’"
+    info "ensure_worktrees_not_poisoned_by_bare: setting per-worktree core.bare=false in '${wt_path}'"
     command git -C "$wt_path" config --worktree core.bare false ||
-      warn "ensure_worktrees_not_poisoned_by_bare: failed to set per-worktree core.bare in ‘${wt_path}’"
+      warn "ensure_worktrees_not_poisoned_by_bare: failed to set per-worktree core.bare in '${wt_path}'"
   done < <(command git -C "$cache_dir" worktree list --porcelain 2>/dev/null)
 }
 
@@ -933,34 +933,34 @@ init_bare_cache() {
   local repo_dir=$1 origin_url=$2 alternates_objects_dir=${3:-}
 
   command git init --bare "$repo_dir" >&2 ||
-    die "init_bare_cache: Unable to init bare cache at ‘${repo_dir}’"
+    die "init_bare_cache: Unable to init bare cache at '${repo_dir}'"
 
   if [[ -n $alternates_objects_dir ]]
   then
     printf '%s\n' "$alternates_objects_dir" > "${repo_dir}/objects/info/alternates" ||
-      die "init_bare_cache: Unable to write alternates for ‘${repo_dir}’"
+      die "init_bare_cache: Unable to write alternates for '${repo_dir}'"
   fi
 
   command git -C "$repo_dir" remote add origin "$origin_url" >&2 ||
-    die "init_bare_cache: Unable to add origin remote for ‘${repo_dir}’"
+    die "init_bare_cache: Unable to add origin remote for '${repo_dir}'"
   command git -C "$repo_dir" fetch --prune origin >&2 ||
-    die "init_bare_cache: Unable to fetch origin for ‘${repo_dir}’"
+    die "init_bare_cache: Unable to fetch origin for '${repo_dir}'"
   command git -C "$repo_dir" remote set-head origin -a >&2 ||
-    die "init_bare_cache: Unable to set origin HEAD for ‘${repo_dir}’"
+    die "init_bare_cache: Unable to set origin HEAD for '${repo_dir}'"
 }
 
 cache_trunk() {
   local source=$1
   local org repo
   org=$(get_org "$source") ||
-    die "Unable to get org from ‘${source}’"
+    die "Unable to get org from '${source}'"
   repo=$(get_repo "$source") ||
-    die "Unable to get repo from ‘${source}’"
+    die "Unable to get repo from '${source}'"
   local org_dir="${repo_trunks_dir}/${org}"
   local repo_dir="${org_dir}/${repo}"
 
   mkdir -p "$org_dir" ||
-    die "cache_trunk: Unable to create directory ‘${org_dir}’"
+    die "cache_trunk: Unable to create directory '${org_dir}'"
 
   local org_repo="${org}/${repo}"
   local clone_source
@@ -996,13 +996,13 @@ cache_trunk() {
           info "${org_repo} is a fork of ${existing_parent_spec}; wiring alternates retroactively"
           local existing_parent_cache
           existing_parent_cache=$(cache_trunk "$existing_parent_spec") ||
-            die "cache_trunk: Unable to cache parent ‘${existing_parent_spec}’ for fork ‘${org_repo}’"
+            die "cache_trunk: Unable to cache parent '${existing_parent_spec}' for fork '${org_repo}'"
 
           local alt_file="${repo_dir}/objects/info/alternates"
           if [[ ! -e $alt_file ]]
           then
             printf '%s\n' "${existing_parent_cache}/objects" > "$alt_file" ||
-              die "cache_trunk: Unable to write alternates for ‘${org_repo}’"
+              die "cache_trunk: Unable to write alternates for '${org_repo}'"
           fi
         fi
 
@@ -1058,7 +1058,7 @@ cache_trunk() {
       info "${org_repo} is a fork of ${parent_spec}; sharing objects via alternates"
       local parent_cache
       parent_cache=$(cache_trunk "$parent_spec") ||
-        die "cache_trunk: Unable to cache parent ‘${parent_spec}’ for fork ‘${org_repo}’"
+        die "cache_trunk: Unable to cache parent '${parent_spec}' for fork '${org_repo}'"
       alternates_objects_dir="${parent_cache}/objects"
     fi
 
@@ -1091,9 +1091,9 @@ get_trunk_branch_name_from_cache() {
     origin_head=$(command git -C "$trunk_cache" rev-parse --abbrev-ref origin/HEAD 2>/dev/null) ||
     {
       command git -C "$trunk_cache" remote set-head origin -a >&2 ||
-        die "Unable to set origin HEAD in cache ‘${trunk_cache}’"
+        die "Unable to set origin HEAD in cache '${trunk_cache}'"
       origin_head=$(command git -C "$trunk_cache" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) ||
-        die "Unable to resolve origin HEAD in cache ‘${trunk_cache}’"
+        die "Unable to resolve origin HEAD in cache '${trunk_cache}'"
     }
 
   printf '%s' "${origin_head#refs/remotes/origin/}"
@@ -1407,7 +1407,7 @@ branch_path_for_source() {
       org=$(get_org "$head_repo_spec")
       repo=$(get_repo "$head_repo_spec")
       branch=$(pr_head_ref_name "$source") ||
-        die "Unable to resolve PR head branch for ‘${source}’; ensure gh is installed and authenticated"
+        die "Unable to resolve PR head branch for '${source}'; ensure gh is installed and authenticated"
       branch_dir="${org}/${repo}/${branch}"
       ;;
     https://github.com/*/*/tree/*)
@@ -1448,7 +1448,7 @@ branch_path_for_source() {
       branch_dir="${org}/${repo}/${branch}"
       ;;
     *)
-      die "Unsupported source ‘${source}’"
+      die "Unsupported source '${source}'"
       ;;
   esac
 
@@ -1539,7 +1539,7 @@ ensure_worktree() {
     if [[ -n $existing_branch && $existing_branch != "HEAD" ]]
     then
       # Worktree exists and has a real branch checked out — reuse it.
-      info "Using existing worktree for PR head branch ‘${existing_branch}’ at ‘${branch_dir_abs}’"
+      info "Using existing worktree for PR head branch '${existing_branch}' at '${branch_dir_abs}'"
       printf '%s' "$branch_dir_abs"
       return 0
     fi
@@ -1547,7 +1547,7 @@ ensure_worktree() {
     # Directory exists but is broken (detached HEAD from a failed prior
     # attempt, or not a valid git worktree).  Clean it up so we can
     # start fresh.
-    warn "Removing broken PR worktree at ‘${branch_dir_abs}’"
+    warn "Removing broken PR worktree at '${branch_dir_abs}'"
     command git -C "${trunk_cache}" worktree remove --force "$branch_dir_abs" >&2 2>/dev/null || true
     rm -rf "$branch_dir_abs" 2>/dev/null || true
     branch_dir_exists=0
@@ -1569,17 +1569,17 @@ ensure_worktree() {
 
     if [[ -n $existing_wt && -d $existing_wt ]]
     then
-      info "Branch ‘%s’ already checked out at ‘%s’; moving to ‘%s’" "$branch" "$existing_wt" "$branch_dir_abs"
+      info "Branch '%s' already checked out at '%s'; moving to '%s'" "$branch" "$existing_wt" "$branch_dir_abs"
       mkdir -p "$branch_dir_parent" ||
-        die "Unable to create branch directory parent ‘${branch_dir_parent}’"
+        die "Unable to create branch directory parent '${branch_dir_parent}'"
       command git -C "${trunk_cache}" worktree move "$existing_wt" "$branch_dir_abs" >&2 ||
-        die "Unable to move worktree from ‘%s’ to ‘%s’" "$existing_wt" "$branch_dir_abs"
+        die "Unable to move worktree from '%s' to '%s'" "$existing_wt" "$branch_dir_abs"
       branch_dir_exists=1
     fi
   fi
 
   mkdir -p "$branch_dir_parent" ||
-    die "Unable to create branch directory parent ‘${branch_dir_parent}’"
+    die "Unable to create branch directory parent '${branch_dir_parent}'"
 
   # Where we actually build.  A brand-new worktree is built in a hidden
   # temp sibling and moved into the canonical path as the very last step,
@@ -1595,19 +1595,19 @@ ensure_worktree() {
   if ! [[ -d ${branch_dir_abs} ]]
   then
     build_dir=$(mktemp -d "${branch_dir_parent}/.x.ntmux3-building.XXXXXX") ||
-      die "Unable to create temp build dir under ‘${branch_dir_parent}’"
+      die "Unable to create temp build dir under '${branch_dir_parent}'"
     building_in_temp=1
 
-    info "Creating worktree ‘${branch_dir_abs}’ from cache ‘${trunk_cache}’ (building in ‘${build_dir}’)"
+    info "Creating worktree '${branch_dir_abs}' from cache '${trunk_cache}' (building in '${build_dir}')"
     command git -C "${trunk_cache}" worktree prune >&2
     command git -C "${trunk_cache}" worktree add --detach "${build_dir}" "origin/$(get_trunk_branch_name_from_cache "$trunk_cache")" >&2 ||
-      die "Unable to add worktree ‘${build_dir}’"
+      die "Unable to add worktree '${build_dir}'"
 
     # Mark the worktree not-ready for the whole build.  Removed only once
     # it is fully built and moved into place; a surviving marker means the
     # build did not finish (recovery / inspection signal).
     : > "${build_dir}/x.ntmux3-building" ||
-      die "Unable to write x.ntmux3-building marker in ‘${build_dir}’"
+      die "Unable to write x.ntmux3-building marker in '${build_dir}'"
 
     # Caches with extensions.worktreeConfig=true propagate core.bare=true
     # into every freshly-added worktree; without the per-worktree override
@@ -1627,7 +1627,7 @@ ensure_worktree() {
 
   (
     cd "$build_dir" ||
-      die "Unable to cd to ‘${build_dir}’"
+      die "Unable to cd to '${build_dir}'"
 
     local errors
 
@@ -1640,13 +1640,13 @@ ensure_worktree() {
         # Branch is already checked out (existing worktree).  No need to
         # run gh pr checkout — it would try to fast-forward and fail if
         # the local branch has diverged from the remote PR tip.
-        info "PR branch ‘%s’ already checked out; skipping gh pr checkout" "$current_branch"
+        info "PR branch '%s' already checked out; skipping gh pr checkout" "$current_branch"
       else
         local pr_url
         pr_url=$(normalize_pr_url "$source")
         gh -R "$(pr_url_repo "$pr_url")" pr checkout "$pr_url" >&2 ||
           {
-            error "Failed to checkout PR source ‘${source}’"
+            error "Failed to checkout PR source '${source}'"
             errors=1
           }
       fi
@@ -1699,13 +1699,13 @@ ensure_worktree() {
   if [[ -n $building_in_temp ]]
   then
     [[ ! -e $branch_dir_abs ]] ||
-      die "Refusing to publish worktree: ‘${branch_dir_abs}’ appeared during build"
+      die "Refusing to publish worktree: '${branch_dir_abs}' appeared during build"
     mv "$build_dir" "$branch_dir_abs" ||
-      die "Unable to move worktree from ‘${build_dir}’ to ‘${branch_dir_abs}’"
+      die "Unable to move worktree from '${build_dir}' to '${branch_dir_abs}'"
     command git -C "${trunk_cache}" worktree repair "$branch_dir_abs" >&2 ||
-      die "Unable to repair worktree at ‘${branch_dir_abs}’ after move"
+      die "Unable to repair worktree at '${branch_dir_abs}' after move"
     rm -f "${branch_dir_abs}/x.ntmux3-building" ||
-      warn "Unable to remove x.ntmux3-building marker in ‘${branch_dir_abs}’ (non-fatal)"
+      warn "Unable to remove x.ntmux3-building marker in '${branch_dir_abs}' (non-fatal)"
   fi
 
   # Eagerly create sibling trunk worktrees when source is in a fork
@@ -3969,7 +3969,7 @@ ensure_maintenance_scheduler() {
     return 0
   fi
 
-  warn 'ensure_maintenance_scheduler: install failed; delete ‘%s’ to retry' "$stamp"
+  warn 'ensure_maintenance_scheduler: install failed; delete "%s" to retry' "$stamp"
   return 1
 }
 
@@ -4027,10 +4027,10 @@ reconcile_maintenance_repos() {
 
     if (( 0 < drained ))
     then
-      warn 'reconcile_maintenance_repos: draining %s maintenance.repo entr%s out of the tracked global config into ‘%s’' \
+      warn 'reconcile_maintenance_repos: draining %s maintenance.repo entr%s out of the tracked global config into "%s"' \
         "$drained" "$([[ $drained == 1 ]] && echo y || echo ies)" "$machine_config"
       command git config --file "$global_config" --unset-all maintenance.repo 2>/dev/null ||
-        warn 'reconcile_maintenance_repos: could not clear maintenance.repo from ‘%s’' "$global_config"
+        warn 'reconcile_maintenance_repos: could not clear maintenance.repo from "%s"' "$global_config"
     fi
   fi
 
@@ -4042,7 +4042,7 @@ reconcile_maintenance_repos() {
     then
       keep+=("$entry")
     else
-      info 'reconcile_maintenance_repos: pruning missing ‘%s’' "$entry"
+      info 'reconcile_maintenance_repos: pruning missing "%s"' "$entry"
       (( pruned++ ))
     fi
   done
@@ -4073,7 +4073,7 @@ reconcile_maintenance_repos() {
     then
       keep+=("$register")
       added=1
-      info 'reconcile_maintenance_repos: registering ‘%s’' "$register"
+      info 'reconcile_maintenance_repos: registering "%s"' "$register"
     fi
   fi
 
@@ -4089,7 +4089,7 @@ reconcile_maintenance_repos() {
   for k in "${keep[@]}"
   do
     command git config --file "$machine_config" --add maintenance.repo "$k" ||
-      warn 'reconcile_maintenance_repos: could not add ‘%s’' "$k"
+      warn 'reconcile_maintenance_repos: could not add "%s"' "$k"
   done
 }
 
