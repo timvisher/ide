@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 
 # Tests for timvisher_dev_ci's agent-facing surface: --help, hooks
 # subcommand, run-tests convenience, and structured error paths.
@@ -26,13 +27,15 @@ script="${script_dir}/bin/timvisher_dev_ci"
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Override TIMVISHER_GIT_HOME so all path validation runs against the
-# fixture, not the real ~/git/.  Also override XDG_CONFIG_HOME so the
-# DEV_CI_REGISTRY default lands in a fresh empty dir (avoids reading
-# the real registry).
+[[ -n ${TIMVISHER_TESTS_TEMPLATE-} ]] ||
+  { echo "run this suite through timvisher_tests" >&2; exit 1; }
 export TIMVISHER_GIT_HOME="$tmpdir/git"
-export XDG_CONFIG_HOME="$tmpdir/config"
-mkdir -p "$TIMVISHER_GIT_HOME" "$XDG_CONFIG_HOME"
+ide_config="$XDG_CONFIG_HOME/timvisher/ide"
+if [[ -L $ide_config ]]
+then
+  rm -- "$ide_config" || { echo "cannot unlink '$ide_config'" >&2; exit 1; }
+fi
+mkdir -p "$TIMVISHER_GIT_HOME" "$ide_config" || exit 1
 
 export TIMVISHER_AGENT=1
 unset TIMVISHER_AICTL_LOG
@@ -235,7 +238,7 @@ marker="$tmpdir/hook-ran"
 cat > "$hook_dir/run-tests.sh" <<HOOK
 #!/usr/bin/env bash
 echo "ran: \$0"
-touch "$marker"
+pwd -P > "$marker"
 HOOK
 chmod +x "$hook_dir/run-tests.sh"
 
@@ -260,7 +263,7 @@ rm -f "$marker"
 # arg parser distinguishing -C PATH from hook-name positionals.
 out=$(cd "$tmpdir" && PATH="$tmpdir/mockbin:$PATH" "$script" hooks run -C "$fake_wt" run-tests.sh 2>&1)
 rc=$?
-if (( rc == 0 )) && [[ -f $marker ]]
+if (( rc == 0 )) && [[ -f $marker && $(< "$marker") == "$(cd "$fake_wt" && pwd -P)" ]]
 then
   pass "hooks run -C PATH HOOK runs the named hook in the targeted worktree"
 else
@@ -900,8 +903,9 @@ printf 'moved\n' > "$rung_wt/old/moved.txt"
 "$test_git" -C "$rung_wt" add -A
 "$test_git" -C "$rung_wt" commit -q -m base
 "$test_git" -C "$rung_wt" checkout -q -b feat/x --track main
-mkdir -p "$rung_wt/z" "$rung_wt/a/d" "$rung_wt/a/b"
-for f in z/f.txt a/d/e.txt a/b/c.txt root.txt
+# 'w', not 'z': the global gitignore ignores z, which would hide it.
+mkdir -p "$rung_wt/w" "$rung_wt/a/d" "$rung_wt/a/b"
+for f in w/f.txt a/d/e.txt a/b/c.txt root.txt
 do
   printf 'change\n' >> "$rung_wt/$f"
 done
@@ -916,7 +920,7 @@ join_subpaths() {
 
 run_test
 rung_subpaths=$(join_subpaths "$rung_wt")
-if [[ $rung_subpaths == "a|z|a/b|a/d|" ]]
+if [[ $rung_subpaths == "a|w|a/b|a/d|" ]]
 then
   pass "changed_subpaths: changed dirs and ancestors, shallow first, ties lexicographic"
 else
@@ -1016,7 +1020,7 @@ rung_expected=(
   "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/rung.sh"
   "$REPO_HOOKS_DIR/meorg/rungrepo/rung.sh"
   "$REPO_HOOKS_EXT_DIR/meorg/rungrepo/a/rung.sh"
-  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/z/rung.sh"
+  "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/w/rung.sh"
   "$REPO_HOOKS_DIR/meorg/rungrepo/a/b/rung.sh"
   "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/a/d/rung.sh"
   "$REPO_HOOKS_EXT_DIR/mainorg/rungrepo/feat/x/rung.sh"

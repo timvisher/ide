@@ -30,12 +30,14 @@
 # at any rung, it is auto-migrated to the checked-in config dir under
 # the fork network branch rung.
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
     {
         echo "Unable to source logging functions" >&2
         exit 1
     }
 
+# shellcheck source=/dev/null
 source ~/.functions/aictl.bash ||
     {
         echo "Unable to source aictl functions" >&2
@@ -118,8 +120,9 @@ heartbeat_elapsed() {
 # the local branch name (e.g., soft forks tracking origin/main).
 push_to_remote() {
     local dir=$1
-    local err=$(mktemp)
-    local push_remote=$(
+    local err push_remote
+    err=$(mktemp)
+    push_remote=$(
       exec 2>"$err"
       branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
       git -C "$dir" config "branch.${branch}.pushRemote" ||
@@ -434,9 +437,9 @@ hook_exists() {
 }
 
 # Run all matching hooks for a given hook name.  Each hook is executed
-# in a separate bash process.  Fails on the first hook that fails;
-# returns 0 when no hook is configured, and halts on an unresolvable
-# context.
+# in a separate bash process with its cwd at the worktree.  Fails on the
+# first hook that fails; returns 0 when no hook is configured, and halts
+# on an unresolvable context.
 # Usage: run_hooks "/path/to/worktree" "run-tests.sh"
 run_hooks() {
     local worktree_path=$1
@@ -451,7 +454,7 @@ run_hooks() {
     for hook_path in "${resolved[@]}"
     do
         info "hook: running '%s'" "$hook_path"
-        bash "$hook_path" || return $?
+        (cd "$worktree_path" && bash "$hook_path") || return $?
     done
 }
 
@@ -764,7 +767,9 @@ ensure_session() {
     # tmux.bash requires extglob for extended glob patterns.
     (
         shopt -s extglob
+        # shellcheck source=/dev/null
         source ~/.functions/logging.bash 2>/dev/null
+        # shellcheck source=/dev/null
         source ~/.functions/tmux.bash 2>/dev/null ||
             {
                 error "Unable to source tmux.bash"
@@ -2490,8 +2495,8 @@ cmd_status() {
         local status
         status=$(read_status "$dev")
         local dep_list=${dev_branches[$dev]}
-        local dd_list=${dev_branch_deps[$dev]}
-        local all_deps="${dep_list:+$dep_list}${dep_list:+${dd_list:+ }}${dd_list:+$dd_list}"
+        local extra_deps=${dev_branch_deps[$dev]}
+        local all_deps="${dep_list:+$dep_list}${dep_list:+${extra_deps:+ }}${extra_deps:+$extra_deps}"
         printf '  %-60s %s  (deps: %s)\n' "$dev" "${status:-pending}" "${all_deps:-none}"
     done
 }
