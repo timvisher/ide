@@ -1,0 +1,3 @@
+interface:
+  display_name: "Session Handoff"
+  short_description: "Copy a live session to a new context and resume it there"
