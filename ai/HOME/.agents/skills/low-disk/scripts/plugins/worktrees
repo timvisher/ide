@@ -28,11 +28,10 @@ measure() {
     | .[1].sizes as $sizes
     | ($activity | keys) as $paths
     | def inside($outer): startswith($outer + "/");
-      def direct_children($p):
-        [$paths[] as $c
-          | select($c | inside($p))
-          | select([$paths[] as $m | select(($m | inside($p)) and ($c | inside($m)))] | length == 0)
-          | $c];
+      (reduce $paths[] as $c ({};
+          ([$paths[] | select(. as $o | $c | inside($o))] | max_by(length)) as $parent
+          | if $parent == null then . else .[$parent] += [$c] end)) as $children_of
+      | def direct_children($p): $children_of[$p] // [];
       {targets: ($paths
         | map(. as $p
           | ($sizes[$p] // {bytes: null, incomplete: true, device: null}) as $size

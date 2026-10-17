@@ -44,9 +44,10 @@ mockbin="${tmpdir}/mockbin"
 mkdir -p "$mockbin" || { echo "cannot create mockbin" >&2; exit 1; }
 printf '%s\n' '#!/usr/bin/env bash' \
   '[[ $1 == -S && $3 == list-panes && $4 == -a ]] || exit 2' \
-  '[[ -f $2.out ]] && cat -- "$2.out"' \
   'rc=0' \
   '[[ -f $2.rc ]] && rc=$(cat -- "$2.rc")' \
+  'if (( rc == 0 )); then cat -- "$2.out"; else cat -- "$2.out" >&2; fi' \
+  '[[ -f $2.err ]] && cat -- "$2.err" >&2' \
   'exit "$rc"' > "${mockbin}/tmux"
 chmod +x "${mockbin}/tmux"
 dev_ci_mock='#!/usr/bin/env bash
@@ -263,6 +264,24 @@ check "a session named like a jq option is reported as data" \
 chmod 700 "${tmpdir}/outside"
 reset_sockets
 
+add_socket default "$(pane 1 relative . "$HOME")" 0
+out=$(cd "$wt" && "$low_disk" activity); rc=$?
+check "a relative session path is not resolved against where activity runs" \
+  "$(expect '[.worktrees[].attached] | all(. == false)')"
+reset_sockets
+
+add_socket default "$(pane 0 sudo-detached "$HOME" '')" 0
+printf '%s\n' 'tmux: a warning on stderr' > "${socket_dir}/default.err"
+out=$("$low_disk" activity); rc=$?
+check "an empty pane path in a detached session is ignored, and stderr warnings are not parsed" \
+  "$(expect '[.worktrees[].attached] | all(. == false)')"
+reset_sockets
+
+add_socket default "$(pane 1 sudo-attached "$HOME" '')" 0
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "an empty pane path in an attached session makes activity fail" "$(expect_failure)"
+reset_sockets
+
 out=$(TMUX_TMPDIR="${sockdir}/does-not-exist" "$low_disk" activity); rc=$?
 check "a TMUX_TMPDIR that does not exist means no sessions" \
   "$(expect '[.worktrees[].attached] | all(. == false)')"
@@ -272,6 +291,13 @@ chmod 000 "${wt}/sealed"
 add_socket default "$(pane 1 hidden "$HOME" "${wt}/sealed/inner")" 0
 out=$("$low_disk" activity 2>/dev/null); rc=$?
 check "a pane in a directory that exists but cannot be entered makes activity fail" "$(expect_failure)"
+reset_sockets
+
+ln -s "$wt" "${tmpdir}/alias"
+add_socket default "$(pane 1 hidden "$HOME" "${tmpdir}/alias/sealed/inner")" 0
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "an uninspectable pane reached through a symlink into a worktree makes activity fail" "$(expect_failure)"
+rm "${tmpdir}/alias"
 chmod 700 "${wt}/sealed"
 rm -rf "${wt}/sealed"
 reset_sockets
@@ -316,6 +342,20 @@ out=$("$low_disk" activity); rc=$?
 check "dev_ci paths are canonicalized before matching worktrees" \
   "$(expect --arg p "$wt" '.worktrees[$p].protected == true')"
 MOCK_DEV_CI_ACTIVE=''
+
+mkdir -p "${wt}/locked/inner"
+chmod 000 "${wt}/locked"
+MOCK_DEV_CI_ACTIVE="${wt}/locked/inner"$'\n'
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a protected path that exists but cannot be inspected makes activity fail" "$(expect_failure)"
+chmod 700 "${wt}/locked"
+rm -rf "${wt}/locked"
+MOCK_DEV_CI_ACTIVE=''
+
+chmod 000 "${HOME}/.cache/timvisher_git_worktrees"
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "caches below a directory that cannot be searched make activity fail" "$(expect_failure)"
+chmod 700 "${HOME}/.cache/timvisher_git_worktrees"
 
 MOCK_DEV_CI_RC=1
 out=$("$low_disk" activity 2>/dev/null); rc=$?
@@ -461,6 +501,16 @@ check "a failing plugin makes reclaim exit non-zero and still reports the rest" 
 reset_overlay
 
 # --- discovery errors ---
+err=$("$low_disk" measure '' 2>&1 >/dev/null); rc=$?
+check "an empty plugin name for measure fails with a plain message" \
+  "$( (( rc != 0 )) && [[ $err == *'Unknown plugin'* && $err != *'bad array subscript'* ]] && echo ok || echo "rc=$rc err='$err'")"
+
+mkdir -p "${XDG_CONFIG_HOME}/timvisher"
+chmod 000 "${XDG_CONFIG_HOME}/timvisher"
+out=$("$low_disk" measure 2>/dev/null); rc=$?
+check "a plugin directory below one that cannot be searched is an error" "$(expect_failure)"
+chmod 700 "${XDG_CONFIG_HOME}/timvisher"
+
 mkdir -p "$overlay"
 chmod 000 "$overlay"
 out=$("$low_disk" measure 2>/dev/null); rc=$?

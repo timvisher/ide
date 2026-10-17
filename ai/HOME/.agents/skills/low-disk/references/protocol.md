@@ -79,9 +79,13 @@ about whether it is in use:
 connection or the tmux client cannot talk to a running server (after a
 `brew upgrade tmux`, until the old server exits), the socket directory or
 a pane's directory inside a worktree cannot be inspected, tmux prints
-something it cannot parse, or `timvisher_dev_ci` fails. A stale socket
-(no server behind it) just has no sessions, and a pane whose directory
-was deleted, or is outside every worktree, is ignored.
+something it cannot parse, an attached session has a pane tmux cannot
+place (it reports an empty path while, say, `sudo` runs), or
+`timvisher_dev_ci` fails. A stale socket (no server behind it) just has no
+sessions, and a pane whose directory was deleted, or is outside every
+worktree, is ignored. A relative session path (`tmux new -c .`) is ignored
+rather than resolved against where `activity` runs; the session's panes
+still place it.
 
 Caches are found where timvisher_git keeps them:
 `~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>`.

@@ -55,6 +55,20 @@ usage() {
 declare -A plugins=()
 plugin_names=()
 
+# A missing path is fine to skip; one we cannot tell is missing, because an
+# ancestor cannot be searched, is not.
+require_missing() {
+  local ancestor=$1
+  while [[ ! -e $ancestor && $ancestor == */* ]]
+  do
+    ancestor=${ancestor%/*}
+    [[ -n $ancestor ]] || ancestor=/
+  done
+  [[ -d $ancestor && ! -x $ancestor ]] &&
+    die "Cannot tell whether '%s' exists: '%s' cannot be searched" "$1" "$ancestor"
+  return 0
+}
+
 require_listable() {
   [[ -d $1 && -r $1 && -x $1 ]] ||
     die "Cannot list '%s'; refusing to report without it" "$1"
@@ -64,7 +78,11 @@ discover_plugins() {
   local dir path name
   for dir in "${plugin_dirs[@]}"
   do
-    [[ -e $dir ]] || continue
+    if [[ ! -e $dir ]]
+    then
+      require_missing "$dir"
+      continue
+    fi
     require_listable "$dir"
     for path in "$dir"/*
     do
@@ -82,7 +100,7 @@ discover_plugins() {
 }
 
 require_plugin() {
-  [[ -n ${plugins[$1]+x} ]] ||
+  [[ -n $1 && -n ${plugins[$1]+x} ]] ||
     die "Unknown plugin '%s'. Known plugins: %s" "$1" "${plugin_names[*]}"
 }
 
@@ -114,18 +132,29 @@ canonical() {
 
 # An existing directory we cannot enter is not the same as a missing one.
 # Returns 1 for a path that is gone and 2 for one that cannot be inspected,
-# so each caller can decide whether the second matters.
+# so each caller can decide whether the second matters. For the second, the
+# resolved value is the path with its nearest enterable ancestor
+# canonicalized, so callers can still tell which worktree it is under even
+# when it was reached through a symlink.
 canonical_or_gone() {
   local -n __resolved=$2
   __resolved=$(canonical "$1") && return 0
-  local ancestor=$1
-  [[ -e $ancestor ]] && return 2
-  while [[ ! -e $ancestor && $ancestor == */* ]]
+  local ancestor=$1 base
+  while [[ $ancestor == */* ]] && ! base=$(canonical "$ancestor")
   do
     ancestor=${ancestor%/*}
     [[ -n $ancestor ]] || ancestor=/
   done
-  [[ -d $ancestor && ! -x $ancestor ]] && return 2
+  base=${base:-$ancestor}
+  __resolved=${base%/}${1#"$ancestor"}
+  [[ -e $1 ]] && return 2
+  local nearest=$1
+  while [[ ! -e $nearest && $nearest == */* ]]
+  do
+    nearest=${nearest%/*}
+    [[ -n $nearest ]] || nearest=/
+  done
+  [[ -d $nearest && ! -x $nearest ]] && return 2
   return 1
 }
 
@@ -135,7 +164,11 @@ canonical_or_gone() {
 # command instead of quietly leaving its worktrees out.
 list_worktrees() {
   local -n __worktrees=$1 __repos=$2
-  [[ -e $repo_trunks_dir ]] || return 0
+  if [[ ! -e $repo_trunks_dir ]]
+  then
+    require_missing "$repo_trunks_dir"
+    return 0
+  fi
   require_listable "$repo_trunks_dir"
   local org_dir cache admin entry gitdir_file worktree_git worktree
   shopt -s dotglob
@@ -179,14 +212,18 @@ list_worktrees() {
 list_protected() {
   local -n __protected=$1
   command -v timvisher_dev_ci >/dev/null 2>&1 || return 0
-  local out path
+  local out path resolved
   out=$(timvisher_dev_ci worktrees active) ||
     die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
   while IFS= read -r path
   do
     [[ -n $path ]] || continue
-    path=$(canonical "$path") || continue
-    __protected["$path"]=1
+    canonical_or_gone "$path" resolved
+    case $? in
+      1) continue ;;
+      2) die "Cannot inspect the protected worktree '%s'; refusing to report without it" "$path" ;;
+    esac
+    __protected["$resolved"]=1
   done < <(printf '%s\n' "$out")
 }
 
@@ -227,10 +264,11 @@ list_panes() {
   for socket in "${sockets[@]}"
   do
     out=$(tmux -S "$socket" list-panes -a \
-      -F $'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}' 2>&1)
+      -F $'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}' 2>/dev/null)
     rc=$?
     if (( rc != 0 ))
     then
+      out=$(tmux -S "$socket" list-panes -a 2>&1 >/dev/null)
       [[ $out == *'no server running'* || $out == *'(No such file or directory)'* ]] && continue
       die "tmux list-panes on '%s' failed: %s" "$socket" "$out"
     fi
@@ -259,15 +297,27 @@ cmd_activity() {
     line=${line#*$'\x1f'}
     name=${line%%$'\x1f'*}
     line=${line#*$'\x1f'}
+    # tmux keeps a session path as given, so it may be relative to wherever
+    # the session was started; it is skipped rather than resolved against
+    # our own directory, and the session's panes, whose paths are always
+    # absolute, place it instead. tmux reports an empty pane path when it
+    # cannot read the foreground process's directory (sudo); in an attached
+    # session that hides where the user is working.
     for candidate in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
     do
+      if [[ -z $candidate ]]
+      then
+        (( clients == 0 )) && continue
+        die "tmux cannot tell where a pane of the attached session '%s' is; refusing to report activity without it" "$name"
+      fi
+      [[ $candidate == /* ]] || continue
       canonical_or_gone "$candidate" resolved
       case $? in
         1) continue ;;
         2)
           for worktree in "${worktrees[@]}"
           do
-            [[ $candidate == "$worktree" || $candidate == "$worktree"/* ]] &&
+            [[ $resolved == "$worktree" || $resolved == "$worktree"/* ]] &&
               die "Cannot inspect '%s' in the worktree '%s'; refusing to report activity without it" "$candidate" "$worktree"
           done
           continue
