@@ -54,7 +54,11 @@ lint flags, and env vars the raw commands miss.
 - Bare `timvisher_dev_ci` — full orchestrated pipeline (sync +
   integrate + push) via tmux + nested claudeshot agents. A
   different operation. Don't invoke unless the user explicitly
-  asks for the full pipeline.
+  asks for the full pipeline. It resets every target to `@{u}`, so
+  it refuses (`dev_ci_not_integration_worktree`) unless the target
+  is a dev integration worktree — registered or marked with
+  `x.dev-integration-branch`. Inside any other worktree,
+  `run-tests` is the per-worktree path.
 
 ## Errors
 
