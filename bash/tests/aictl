@@ -2,8 +2,6 @@
 
 # Tests for aictl structured messaging functions
 
-set -euo pipefail
-
 failures=0
 tests=0
 
