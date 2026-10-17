@@ -231,21 +231,32 @@ new_log() {
 run_test
 log=$(new_log fail)
 err=$(TIMVISHER_AICTL_LOG="$log" TIMVISHER_AGENT=1 bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
-if [[ $err == "boom"$'\n'"$(cat "$log")" ]] &&
+if [[ $err == "$(cat "$log")" ]] &&
   [[ $(jq -r '.code + " " + .message' "$log") == "ntmux3_failed boom" ]]
 then
-  pass "ntmux3__fail echoes for the human and emits ntmux3_failed"
+  pass "ntmux3__fail gives an agent ntmux3_failed on stderr and in the log"
 else
-  fail "ntmux3__fail: stderr='${err}' log='$(cat "$log" 2>/dev/null)'"
+  fail "ntmux3__fail agent: stderr='${err}' log='$(cat "$log" 2>/dev/null)'"
+fi
+
+run_test
+log=$(new_log fail_window)
+err=$(env -u TIMVISHER_AGENT TIMVISHER_AICTL_LOG="$log" bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
+if [[ $err == *' ERROR ntmux3_failed: boom'* && $err != *'"type":"instruction"'* ]] &&
+  [[ $(jq -r '.code + " " + .message' "$log") == "ntmux3_failed boom" ]]
+then
+  pass "ntmux3__fail in the -T window shows the human text and logs ntmux3_failed"
+else
+  fail "ntmux3__fail window: stderr='${err}' log='$(cat "$log" 2>/dev/null)'"
 fi
 
 run_test
 err=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
-if [[ $err == boom ]]
+if [[ $err == *' ERROR ntmux3_failed: boom'* && $err != *'"type":"instruction"'* ]]
 then
-  pass "ntmux3__fail emits no instruction when nobody is listening"
+  pass "ntmux3__fail shows a human the failure as text"
 else
-  fail "ntmux3__fail unlistened: stderr='${err}'"
+  fail "ntmux3__fail human: stderr='${err}'"
 fi
 
 cat > "${stub_bin}/tmux" <<STUB

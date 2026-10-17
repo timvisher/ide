@@ -62,6 +62,7 @@ run_case() {
     PATH="${mockbin}:${PATH}"
     : > "${tmpdir}/tgt.log"
     source "${funcs_dir}/logging.bash"
+    source "${funcs_dir}/aictl.bash"
     source "${funcs_dir}/tmux.bash"
     eval "$script"
   ) 2>&1
