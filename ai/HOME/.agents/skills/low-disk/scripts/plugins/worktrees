@@ -56,7 +56,7 @@ measure() {
 reclaim() {
   jq -n --arg reason 'worktree removal is agent-driven: use timvisher_git worktree gc' \
     '{targets: ($ARGS.positional | map({(.): {reclaimed: false, reason: $reason}}) | add // {})}' \
-    --args "$@"
+    --args -- "$@"
 }
 
 case ${1-} in

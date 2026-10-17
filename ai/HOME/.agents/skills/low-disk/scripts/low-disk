@@ -112,20 +112,20 @@ canonical() {
   (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)
 }
 
-# An existing directory we cannot enter is not the same as a missing one:
-# the first fails the command, the second is just gone.
+# An existing directory we cannot enter is not the same as a missing one.
+# Returns 1 for a path that is gone and 2 for one that cannot be inspected,
+# so each caller can decide whether the second matters.
 canonical_or_gone() {
   local -n __resolved=$2
   __resolved=$(canonical "$1") && return 0
   local ancestor=$1
-  [[ -e $ancestor ]] && die "Cannot inspect '%s'; refusing to report activity without it" "$1"
+  [[ -e $ancestor ]] && return 2
   while [[ ! -e $ancestor && $ancestor == */* ]]
   do
     ancestor=${ancestor%/*}
     [[ -n $ancestor ]] || ancestor=/
   done
-  [[ -d $ancestor && ! -x $ancestor ]] &&
-    die "Cannot inspect '%s' below '%s'; refusing to report activity without it" "$1" "$ancestor"
+  [[ -d $ancestor && ! -x $ancestor ]] && return 2
   return 1
 }
 
@@ -138,6 +138,7 @@ list_worktrees() {
   [[ -e $repo_trunks_dir ]] || return 0
   require_listable "$repo_trunks_dir"
   local org_dir cache admin entry gitdir_file worktree_git worktree
+  shopt -s dotglob
   for org_dir in "$repo_trunks_dir"/*
   do
     [[ -d $org_dir ]] || continue
@@ -158,9 +159,13 @@ list_worktrees() {
           [[ -e $gitdir_file ]] || continue
           [[ -r $gitdir_file ]] ||
             die "Cannot read '%s'; refusing to report without it" "$gitdir_file"
-          IFS= read -r worktree_git < "$gitdir_file" || continue
+          IFS= read -r worktree_git < "$gitdir_file" || [[ -n $worktree_git ]] || continue
           [[ $worktree_git == /* ]] || worktree_git=${entry}/${worktree_git}
-          canonical_or_gone "${worktree_git%/.git}" worktree || continue
+          canonical_or_gone "${worktree_git%/.git}" worktree
+          case $? in
+            1) continue ;;
+            2) die "Cannot inspect the worktree '%s'; refusing to report without it" "${worktree_git%/.git}" ;;
+          esac
           [[ -z ${__repos[$worktree]+x} ]] || continue
           __repos["$worktree"]=${org_dir##*/}/${cache##*/}
           __worktrees+=("$worktree")
@@ -168,6 +173,7 @@ list_worktrees() {
       done
     done
   done
+  shopt -u dotglob
 }
 
 list_protected() {
@@ -196,8 +202,14 @@ list_panes() {
   local -n __panes=$1
   if [[ ! -e $tmux_socket_dir ]]
   then
-    [[ -x ${tmux_socket_dir%/*} ]] ||
-      die "Cannot search '%s' for the tmux socket directory" "${tmux_socket_dir%/*}"
+    local ancestor=$tmux_socket_dir
+    while [[ ! -e $ancestor && $ancestor == */* ]]
+    do
+      ancestor=${ancestor%/*}
+      [[ -n $ancestor ]] || ancestor=/
+    done
+    [[ -d $ancestor && ! -x $ancestor ]] &&
+      die "Cannot search '%s' for the tmux socket directory" "$ancestor"
     return 0
   fi
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
@@ -240,7 +252,7 @@ cmd_activity() {
   list_protected protected
   list_panes panes
 
-  local line clients name candidate resolved pane_names=() pane_attached=() pane_paths=()
+  local line clients name candidate resolved worktree pane_names=() pane_attached=() pane_paths=()
   for line in "${panes[@]}"
   do
     clients=${line%%$'\x1f'*}
@@ -249,14 +261,25 @@ cmd_activity() {
     line=${line#*$'\x1f'}
     for candidate in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
     do
-      canonical_or_gone "$candidate" resolved || continue
+      canonical_or_gone "$candidate" resolved
+      case $? in
+        1) continue ;;
+        2)
+          for worktree in "${worktrees[@]}"
+          do
+            [[ $candidate == "$worktree" || $candidate == "$worktree"/* ]] &&
+              die "Cannot inspect '%s' in the worktree '%s'; refusing to report activity without it" "$candidate" "$worktree"
+          done
+          continue
+          ;;
+      esac
       pane_names+=("$name")
       pane_attached+=("$( (( 0 < clients )) && echo true || echo false )")
       pane_paths+=("$resolved")
     done
   done
 
-  local worktree i records=()
+  local i records=()
   for worktree in "${worktrees[@]}"
   do
     records+=("$worktree" "${repos[$worktree]}" "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )")
@@ -277,7 +300,7 @@ cmd_activity() {
     | reduce range(3 * $worktrees; $r | length; 3) as $j (.;
         .[$r[$j]].sessions |= (. + [{name: $r[$j + 1], attached: ($r[$j + 2] == "true")}] | unique)
         | .[$r[$j]].attached = (.[$r[$j]].attached or ($r[$j + 2] == "true")))
-    | {worktrees: .}' --args "${records[@]}"
+    | {worktrees: .}' --args -- "${records[@]}"
 }
 
 # Each path is sized by its own du, in parallel because du is bound by
@@ -340,11 +363,15 @@ cmd_size() {
 }
 
 cmd_measure() {
-  local names=("$@") name failed=0
-  (( 0 < ${#names[@]} )) || names=("${plugin_names[@]}")
-  for name in "${names[@]}"
+  local requested=("$@") names=() name failed=0
+  declare -A chosen=()
+  (( 0 < ${#requested[@]} )) || requested=("${plugin_names[@]}")
+  for name in "${requested[@]}"
   do
     require_plugin "$name"
+    [[ -n ${chosen[$name]+x} ]] && continue
+    chosen[$name]=1
+    names+=("$name")
   done
   {
     for name in "${names[@]}"
@@ -366,9 +393,9 @@ cmd_reclaim() {
   declare -A seen=()
   for spec in "$@"
   do
-    [[ $spec == ?*:?* ]] ||
-      die "Target '%s' is not of the form <plugin>:<target>" "$spec"
     name=${spec%%:*}
+    [[ -n $name && $spec == *:?* ]] ||
+      die "Target '%s' is not of the form <plugin>:<target>" "$spec"
     require_plugin "$name"
     if [[ -z ${seen[$name]+x} ]]
     then

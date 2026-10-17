@@ -8,7 +8,7 @@ fail() { echo "FAIL: $1" >&2; (( failures += 1 )); }
 pass() { echo "PASS: $1"; }
 run_test() { (( tests += 1 )); }
 
-scripts_dir=$(cd "$(dirname "$0")/.." && pwd) ||
+scripts_dir=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd) ||
   { echo "cannot resolve scripts_dir" >&2; exit 1; }
 repo_root=$(git -C "$scripts_dir" rev-parse --show-toplevel) ||
   { echo "cannot resolve repo root" >&2; exit 1; }
@@ -22,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-tmpdir=$(cd "$tmpdir" && pwd -P) || { echo "cannot canonicalize tmpdir" >&2; exit 1; }
+tmpdir=$(CDPATH='' cd -- "$tmpdir" && pwd -P) || { echo "cannot canonicalize tmpdir" >&2; exit 1; }
 # Unix socket paths are limited to ~104 bytes on macOS, which a path under
 # $TMPDIR can exceed, so the fixture sockets live under /tmp.
 sockdir=$(mktemp -d /tmp/x.low-disk-test.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
@@ -206,6 +206,14 @@ check "a cache that cannot be read makes activity fail rather than omit its work
 chmod 700 "${trunks}/sealed/repo"
 rm -rf "${trunks}/sealed"
 
+dot_wt="${HOME}/git/org/.github/main"
+mkdir -p "${trunks}/org/.github/worktrees/main" "$dot_wt"
+printf '%s/.git' "$dot_wt" > "${trunks}/org/.github/worktrees/main/gitdir"
+out=$("$low_disk" activity); rc=$?
+check "a dot-named cache is found, even with no newline after its gitdir" \
+  "$(expect --arg p "$dot_wt" '.worktrees[$p].repo == "org/.github"')"
+rm -rf "${trunks}/org/.github" "${HOME}/git/org/.github"
+
 legacy_wt="${HOME}/git/legacy/repo/main"
 mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "$legacy_wt"
 printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
@@ -243,6 +251,21 @@ check "a session with several panes in a worktree is listed once" \
 check "a pane in a directory that no longer exists is ignored" \
   "$(expect '[.worktrees[].sessions[].name] | index("removed") == null')"
 reset_sockets
+
+mkdir -p "${tmpdir}/outside/inner"
+chmod 000 "${tmpdir}/outside"
+add_socket default "$(pane 1 elsewhere "$HOME" "${tmpdir}/outside/inner"; pane 1 --version "$wt" "$wt")" 0
+out=$("$low_disk" activity); rc=$?
+check "a pane in an unenterable directory outside every worktree is ignored" \
+  "$(expect --arg p "$wt" '.worktrees[$p].attached == true')"
+check "a session named like a jq option is reported as data" \
+  "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "--version", attached: true}) != null')"
+chmod 700 "${tmpdir}/outside"
+reset_sockets
+
+out=$(TMUX_TMPDIR="${sockdir}/does-not-exist" "$low_disk" activity); rc=$?
+check "a TMUX_TMPDIR that does not exist means no sessions" \
+  "$(expect '[.worktrees[].attached] | all(. == false)')"
 
 mkdir -p "${wt}/sealed/inner"
 chmod 000 "${wt}/sealed"
@@ -384,6 +407,12 @@ check "measure includes overlay plugins alongside skill plugins" \
 out=$("$low_disk" measure fake); rc=$?
 check "measure <plugin> runs only that plugin" "$(expect '.plugins | keys == ["fake"]')"
 
+add_plugin counted 'echo x >> "'"${tmpdir}"'/counted.log"; echo "{\"targets\": {}}"'
+out=$("$low_disk" measure counted counted); rc=$?
+check "a plugin named twice is measured once" \
+  "$( (( rc == 0 )) && [[ $(wc -l < "${tmpdir}/counted.log") -eq 1 ]] && echo ok || echo "rc=$rc runs=$(wc -l < "${tmpdir}/counted.log")")"
+rm -f "${overlay}/counted"
+
 out=$("$low_disk" measure nope 2>/dev/null); rc=$?
 check "measure of an unknown plugin fails without stdout" "$(expect_failure)"
 
@@ -399,9 +428,12 @@ check "a target named twice is passed to its plugin once" \
 out=$("$low_disk" reclaim fake: 2>/dev/null); rc=$?
 check "an empty target fails without stdout" "$(expect_failure)"
 
-err=$("$low_disk" reclaim :a 2>&1 >/dev/null); rc=$?
-check "an empty plugin name fails with a plain message" \
-  "$( (( rc != 0 )) && [[ $err == *'not of the form'* && $err != *'bad array subscript'* ]] && echo ok || echo "rc=$rc err='$err'")"
+for spec in :a ::a
+do
+  err=$("$low_disk" reclaim "$spec" 2>&1 >/dev/null); rc=$?
+  check "an empty plugin name ('$spec') fails with a plain message" \
+    "$( (( rc != 0 )) && [[ $err == *'not of the form'* && $err != *'bad array subscript'* ]] && echo ok || echo "rc=$rc err='$err'")"
+done
 
 out=$("$low_disk" reclaim nocolon 2>/dev/null); rc=$?
 check "reclaim of a target without a plugin prefix fails without stdout" "$(expect_failure)"

@@ -66,8 +66,8 @@ about whether it is in use:
 ```
 
 - `attached`: a tmux client is attached to a session in the worktree right
-  now. That is the strongest sign Tim is using it; never reclaim from an
-  attached worktree.
+  now. That is the strongest sign the user is working in it; never reclaim
+  from an attached worktree.
 - `protected`: `timvisher_dev_ci worktrees active` lists it. Without
   `timvisher_dev_ci` installed nothing is protected.
 - `sessions`: tmux sessions with the worktree as their path or a pane whose
@@ -78,9 +78,10 @@ about whether it is in use:
 `activity` fails rather than guess: when a tmux socket refuses the
 connection or the tmux client cannot talk to a running server (after a
 `brew upgrade tmux`, until the old server exits), the socket directory or
-a pane's directory cannot be inspected, tmux prints something it cannot
-parse, or `timvisher_dev_ci` fails. A stale socket (no server behind it)
-just has no sessions, and a pane whose directory was deleted is ignored.
+a pane's directory inside a worktree cannot be inspected, tmux prints
+something it cannot parse, or `timvisher_dev_ci` fails. A stale socket
+(no server behind it) just has no sessions, and a pane whose directory
+was deleted, or is outside every worktree, is ignored.
 
 Caches are found where timvisher_git keeps them:
 `~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>`.
@@ -133,5 +134,7 @@ runs: `timvisher_dev_ci`, `tmux` and the plugins' own tools are outside it.
   `/private/var/tmp`, largest first, so you can spot what no plugin covers.
   `LOW_DISK_BIGGEST_ROOTS` replaces those roots with a colon-separated list
   (empty means the defaults). Loose files, symlinks and mount points are
-  skipped; a root that cannot be listed fails the plugin. Refuses every
-  reclaim.
+  skipped; a root that cannot be listed fails the plugin. Without Full
+  Disk Access, sizing `~/Documents`, `~/Desktop`, `~/Downloads` or
+  `~/Library` can raise macOS privacy prompts or come back incomplete.
+  Refuses every reclaim.
