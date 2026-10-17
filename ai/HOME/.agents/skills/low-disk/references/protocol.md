@@ -106,7 +106,7 @@ each path's filesystem:
 
 `incomplete` is true when part of the tree could not be read, so `bytes`
 is a lower bound; a missing path has `"bytes": null`. `device` is the
-filesystem the path is on.
+filesystem the path is on. An empty path is an error.
 
 ## What low-disk adds
 
@@ -125,7 +125,7 @@ Nothing times out: a wedged tmux server or `timvisher_dev_ci` blocks
 ## Requirements
 
 `jq` 1.7 or newer, which ends option parsing at `--` after `--args`;
-bash 4.3 or newer.
+bash 4.4 or newer.
 
 ## Working with no free space
 

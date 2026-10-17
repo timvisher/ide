@@ -174,6 +174,19 @@ chmod 700 "${tmpdir}/sz/sealed"
 out=$("$low_disk" size); rc=$?
 check "size with no paths reports nothing" "$(expect '. == {sizes: {}}')"
 
+out=$("$low_disk" size '' "${tmpdir}/sz/plain" 2>/dev/null); rc=$?
+check "size refuses an empty path rather than misfile the rest" "$(expect_failure)"
+
+oldjq="${tmpdir}/oldjq"
+mkdir -p "$oldjq"
+printf '%s\n' '#!/usr/bin/env bash' '[[ $1 == --version ]] && { echo "${FAKE_JQ_VERSION}"; exit 0; }' "exec '${jq_path}' \"\$@\"" > "${oldjq}/jq"
+chmod +x "${oldjq}/jq"
+for version in jq-1.6 something-else
+do
+  out=$(PATH="${oldjq}:${PATH}" FAKE_JQ_VERSION=$version "$low_disk" size "${tmpdir}/sz/plain" 2>/dev/null); rc=$?
+  check "a jq that is too old or unrecognisable ('$version') is refused" "$(expect_failure)"
+done
+
 # --- worktrees plugin with no caches ---
 out=$("$low_disk" measure worktrees); rc=$?
 check "measure with no worktrees reports empty worktrees targets" \
@@ -229,11 +242,15 @@ chmod 700 "${trunks}/hidden/repo/.git"
 rm -rf "${trunks}/hidden"
 
 legacy_wt="${HOME}/git/legacy/repo/main"
-mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "$legacy_wt"
+mixed_wt="${HOME}/git/legacy/repo/feature"
+mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "${trunks}/legacy/repo/worktrees/feature" "$legacy_wt" "$mixed_wt"
 printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
+printf '%s/.git\n' "$mixed_wt" > "${trunks}/legacy/repo/worktrees/feature/gitdir"
 out=$("$low_disk" activity); rc=$?
 check "worktrees of a not-yet-migrated non-bare cache are found too" \
   "$(expect --arg p "$legacy_wt" '.worktrees[$p].repo == "legacy/repo"')"
+check "a cache with both layouts reports the worktrees of each" \
+  "$(expect --arg p "$mixed_wt" '.worktrees[$p].repo == "legacy/repo"')"
 rm -rf "${trunks}/legacy" "${HOME}/git/legacy"
 
 # --- activity ---
@@ -353,6 +370,11 @@ out=$("$low_disk" activity 2>/dev/null); rc=$?
 check "a socket we cannot connect to makes activity fail rather than report idle" "$(expect_failure)"
 reset_sockets
 
+add_socket default 'protocol version mismatch (client 8, server 7)' 1
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a tmux client that cannot talk to the running server makes activity fail" "$(expect_failure)"
+reset_sockets
+
 mkdir -p "$socket_dir"
 chmod 000 "$socket_dir"
 out=$("$low_disk" activity 2>/dev/null); rc=$?
@@ -384,6 +406,11 @@ chmod 000 "${HOME}/.cache/timvisher_git_worktrees"
 out=$("$low_disk" activity 2>/dev/null); rc=$?
 check "caches below a directory that cannot be searched make activity fail" "$(expect_failure)"
 chmod 700 "${HOME}/.cache/timvisher_git_worktrees"
+
+MOCK_DEV_CI_ACTIVE='relative/worktree'$'\n'
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a relative path from dev_ci makes activity fail rather than guess" "$(expect_failure)"
+MOCK_DEV_CI_ACTIVE=''
 
 MOCK_DEV_CI_RC=1
 out=$("$low_disk" activity 2>/dev/null); rc=$?

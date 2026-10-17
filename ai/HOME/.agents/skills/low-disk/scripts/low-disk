@@ -68,15 +68,21 @@ require_jq() {
 declare -A plugins=()
 plugin_names=()
 
-# A missing path is fine to skip; one we cannot tell is missing, because an
-# ancestor cannot be searched, is not.
-require_missing() {
+nearest_existing() {
   local ancestor=$1
   while [[ ! -e $ancestor && $ancestor == */* ]]
   do
     ancestor=${ancestor%/*}
     [[ -n $ancestor ]] || ancestor=/
   done
+  printf '%s\n' "$ancestor"
+}
+
+# A missing path is fine to skip; one we cannot tell is missing, because an
+# ancestor cannot be searched, is not.
+require_missing() {
+  local ancestor
+  ancestor=$(nearest_existing "$1")
   [[ -d $ancestor && ! -x $ancestor ]] &&
     die "Cannot tell whether '%s' exists: '%s' cannot be searched" "$1" "$ancestor"
   return 0
@@ -190,12 +196,8 @@ canonical_or_gone() {
   __resolved=$(canonical "$1") && return 0
   __resolved=$(physical "$1") || __resolved=$1
   [[ -e $1 ]] && return 2
-  local nearest=$1
-  while [[ ! -e $nearest && $nearest == */* ]]
-  do
-    nearest=${nearest%/*}
-    [[ -n $nearest ]] || nearest=/
-  done
+  local nearest
+  nearest=$(nearest_existing "$1")
   [[ -d $nearest && ! -x $nearest ]] && return 2
   return 1
 }
@@ -259,11 +261,13 @@ list_protected() {
   local -n __protected=$1
   command -v timvisher_dev_ci >/dev/null 2>&1 || return 0
   local out path resolved
-  out=$(timvisher_dev_ci worktrees active) ||
+  out=$(timvisher_dev_ci worktrees active </dev/null) ||
     die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
   while IFS= read -r path
   do
     [[ -n $path ]] || continue
+    [[ $path == /* ]] ||
+      die "timvisher_dev_ci listed a relative path '%s'; refusing to guess what it is relative to" "$path"
     canonical_or_gone "$path" resolved
     case $? in
       1) continue ;;
@@ -285,14 +289,7 @@ list_panes() {
   local -n __panes=$1
   if [[ ! -e $tmux_socket_dir ]]
   then
-    local ancestor=$tmux_socket_dir
-    while [[ ! -e $ancestor && $ancestor == */* ]]
-    do
-      ancestor=${ancestor%/*}
-      [[ -n $ancestor ]] || ancestor=/
-    done
-    [[ -d $ancestor && ! -x $ancestor ]] &&
-      die "Cannot search '%s' for the tmux socket directory" "$ancestor"
+    require_missing "$tmux_socket_dir"
     return 0
   fi
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
@@ -434,6 +431,11 @@ cmd_size() {
       jq -n '{sizes: {}}'
       return
     }
+  local arg
+  for arg in "$@"
+  do
+    [[ -n $arg ]] || die 'size cannot measure an empty path'
+  done
   local jobs
   jobs=$(getconf _NPROCESSORS_ONLN) && [[ $jobs =~ ^[0-9]+$ ]] ||
     die 'Cannot tell how many processors to size paths with'
