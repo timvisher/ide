@@ -275,6 +275,79 @@ else
   fail "expected 'wrong/topic' fallback, got '${result}'"
 fi
 
+topics_real=$(cd "$tmpdir/topics" && pwd -P)
+
+# Test: `root` prints the absolute dir of the topic CWD is in.
+run_test
+result=$(cd "$tmpdir/topics/Incidents/100/sub/dir" && run_cli root 2>/dev/null)
+if [[ $result == "$topics_real/Incidents/100" ]]
+then
+  pass "root prints the closest topic dir"
+else
+  fail "expected '$topics_real/Incidents/100', got '${result}'"
+fi
+
+# Test: `root` stops at a subtopic rather than its parent topic.
+run_test
+mkdir -p "$tmpdir/topics/Incidents/100/child/.beads"
+: > "$tmpdir/topics/Incidents/100/child/.beads/beads.db"
+result=$(cd "$tmpdir/topics/Incidents/100/child" && run_cli root 2>/dev/null)
+if [[ $result == "$topics_real/Incidents/100/child" ]]
+then
+  pass "root prints the subtopic dir, not its parent"
+else
+  fail "expected '$topics_real/Incidents/100/child', got '${result}'"
+fi
+
+# Test: `root` from a non-topic dir under the topics root prints the
+# repo root, not the topic the repo's topic.txt points at.
+run_test
+result=$(cd "$tmpdir/topics/no-beads-here" && run_cli root 2>/dev/null)
+if [[ $result == "$topics_real" ]]
+then
+  pass "root falls back to the repo root outside any topic dir"
+else
+  fail "expected '$topics_real', got '${result}'"
+fi
+
+# Test: `root` in a code repo subscribed to a topic prints the repo
+# root, not the topic dir.
+run_test
+mkdir -p "$tmpdir/code/sub" "$tmpdir/code/.timvisher_bd_topics"
+git -C "$tmpdir/code" init -q 2>/dev/null
+printf 'Incidents/100\n' > "$tmpdir/code/.timvisher_bd_topics/topic.txt"
+code_real=$(cd "$tmpdir/code" && pwd -P)
+result=$(cd "$tmpdir/code/sub" && run_cli root 2>/dev/null)
+if [[ $result == "$code_real" ]]
+then
+  pass "root prints the repo root in a subscribed code repo"
+else
+  fail "expected '$code_real', got '${result}'"
+fi
+
+# Test: `root` outside any repo, topic or todo.org dir exits non-zero
+# with nothing on stdout.
+run_test
+mkdir -p "$tmpdir/nowhere"
+if result=$(cd "$tmpdir/nowhere" && GIT_CEILING_DIRECTORIES="$tmpdir" run_cli root 2>/dev/null)
+then
+  fail "expected non-zero exit outside any root, got '${result}'"
+elif [[ -n $result ]]
+then
+  fail "expected empty stdout outside any root, got '${result}'"
+else
+  pass "root outside any root exits non-zero with empty stdout"
+fi
+
+# Test: `root` takes no arguments.
+run_test
+if ! (cd "$tmpdir/topics/Incidents/100" && run_cli root extra >/dev/null 2>&1)
+then
+  pass "root with arguments exits non-zero"
+else
+  fail "expected non-zero exit for root with arguments"
+fi
+
 # Test: mv stops the source topic's dolt server so the next bd call
 # auto-starts a fresh server. A live dolt sql-server cannot serve its
 # database after the parent dir is renamed; leaving it running puts the

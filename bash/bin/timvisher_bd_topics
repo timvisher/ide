@@ -24,6 +24,7 @@ usage() {
   Usage:
     timvisher_bd_topics ls [--all] [<prefix>...]
     timvisher_bd_topics current
+    timvisher_bd_topics root
     timvisher_bd_topics set [<topic>]
     timvisher_bd_topics bd [<topic>] [-- <bd-args>...]
     timvisher_bd_topics new <topic>
@@ -38,6 +39,10 @@ usage() {
     - Topic paths are absolute or relative to the configured topics root.
     - set must be run from within a git repo or a directory with todo.org.
     - new can be run outside a git repo (it skips writing .beads/redirect).
+    - root prints the directory that owns the current context: the
+      closest topic dir when CWD is inside one, otherwise the git repo
+      root (or the directory with todo.org). It exits non-zero when
+      neither exists.
     - resolve prints the topic name for a path under the topics root and
       exits non-zero otherwise. The path does not need to exist.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
@@ -696,6 +701,22 @@ case $cmd in
     fi
 
     printf '%s\n' "$topic_rel"
+    ;;
+  root)
+    if (( 0 < $# ))
+    then
+      usage
+      exit 1
+    fi
+
+    if topic_rel=$(find_topic_rel_for_cwd) && [[ -n $topic_rel ]]
+    then
+      printf '%s\n' "$topics_root_real/$topic_rel"
+      exit 0
+    fi
+
+    project_root=$(require_project_root) || exit 1
+    printf '%s\n' "$project_root"
     ;;
   bd)
     if [[ $# -eq 0 ]]
