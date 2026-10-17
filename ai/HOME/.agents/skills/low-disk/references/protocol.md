@@ -21,8 +21,8 @@ The same name in both directories is an error.
 ## Interface
 
 A plugin is called with one subcommand and prints exactly one JSON object
-on stdout. Logs and diagnostics go to stderr. A non-zero exit means the plugin
-failed.
+on stdout. Logs and diagnostics go to stderr. A non-zero exit means the
+plugin failed.
 
 ### `measure`
 
@@ -76,8 +76,14 @@ about whether it is in use:
   another counts for both.
 
 `activity` fails rather than guess: when a tmux socket refuses the
-connection, the socket directory cannot be read, tmux prints something it
-cannot parse, or `timvisher_dev_ci` fails. A stale socket (no server behind it) just has no sessions.
+connection or the tmux client cannot talk to a running server (after a
+`brew upgrade tmux`, until the old server exits), the socket directory or
+a pane's directory cannot be inspected, tmux prints something it cannot
+parse, or `timvisher_dev_ci` fails. A stale socket (no server behind it)
+just has no sessions, and a pane whose directory was deleted is ignored.
+
+Caches are found where timvisher_git keeps them:
+`~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>`.
 
 Until something records detach times, "no client attached right now" is
 the only idle signal.
@@ -99,8 +105,9 @@ filesystem the path is on.
 
 - `low-disk measure [<plugin>...]` prints
   `{"plugins": {"<plugin>": <its measure output>}}`.
-- `low-disk reclaim <plugin>:<target>...` groups targets by plugin, calls
-  each plugin's `reclaim` once, and prints the same `{"plugins": ...}` shape.
+- `low-disk reclaim <plugin>:<target>...` groups targets by plugin, drops
+  repeats, calls each plugin's `reclaim` once, and prints the same
+  `{"plugins": ...}` shape. An empty target is an error.
 - A plugin that exits non-zero or prints anything other than exactly one
   JSON object is reported as `{"plugins": {"<plugin>": {"error": "..."}}}`.
   The other plugins still report, and `low-disk` exits non-zero.

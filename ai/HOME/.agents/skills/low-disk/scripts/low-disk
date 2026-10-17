@@ -102,7 +102,24 @@ collect() {
 }
 
 canonical() {
-  (cd -- "$1" 2>/dev/null && pwd -P)
+  (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+# An existing directory we cannot enter is not the same as a missing one:
+# the first fails the command, the second is just gone.
+canonical_or_gone() {
+  local -n __resolved=$2
+  __resolved=$(canonical "$1") && return 0
+  local ancestor=$1
+  [[ -e $ancestor ]] && die "Cannot inspect '%s'; refusing to report activity without it" "$1"
+  while [[ ! -e $ancestor && $ancestor == */* ]]
+  do
+    ancestor=${ancestor%/*}
+    [[ -n $ancestor ]] || ancestor=/
+  done
+  [[ -d $ancestor && ! -x $ancestor ]] &&
+    die "Cannot inspect '%s' below '%s'; refusing to report activity without it" "$1" "$ancestor"
+  return 1
 }
 
 # Worktree paths come from each cache's worktrees/*/gitdir file rather than
@@ -149,7 +166,12 @@ list_protected() {
 # practice; a line that does not split into four fields fails the command.
 list_panes() {
   local -n __panes=$1
-  [[ -e $tmux_socket_dir ]] || return 0
+  if [[ ! -e $tmux_socket_dir ]]
+  then
+    [[ -x ${tmux_socket_dir%/*} ]] ||
+      die "Cannot search '%s' for the tmux socket directory" "${tmux_socket_dir%/*}"
+    return 0
+  fi
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
     die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
   local socket out rc line rest sockets=()
@@ -188,31 +210,37 @@ cmd_activity() {
   list_protected protected
   list_panes panes
 
+  local line clients name candidate resolved pane_names=() pane_attached=() pane_paths=()
+  for line in "${panes[@]}"
+  do
+    clients=${line%%$'\x1f'*}
+    line=${line#*$'\x1f'}
+    name=${line%%$'\x1f'*}
+    line=${line#*$'\x1f'}
+    for candidate in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
+    do
+      canonical_or_gone "$candidate" resolved || continue
+      pane_names+=("$name")
+      pane_attached+=("$( (( 0 < clients )) && echo true || echo false )")
+      pane_paths+=("$resolved")
+    done
+  done
+
   {
-    local worktree failed=0
+    local worktree failed=0 i
     for worktree in "${worktrees[@]}"
     do
       jq -nc --arg p "$worktree" --arg r "${repos[$worktree]}" \
         --argjson prot "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )" \
         '{kind: "worktree", path: $p, repo: $r, protected: $prot}' || failed=1
     done
-    local line clients name pane_path attached
-    for line in "${panes[@]}"
+    for (( i = 0; i < ${#pane_paths[@]}; i++ ))
     do
-      clients=${line%%$'\x1f'*}
-      line=${line#*$'\x1f'}
-      name=${line%%$'\x1f'*}
-      line=${line#*$'\x1f'}
-      attached=$( (( 0 < clients )) && echo true || echo false )
-      for pane_path in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
+      for worktree in "${worktrees[@]}"
       do
-        pane_path=$(canonical "$pane_path") || continue
-        for worktree in "${worktrees[@]}"
-        do
-          [[ $pane_path == "$worktree" || $pane_path == "$worktree"/* ]] || continue
-          jq -nc --arg p "$worktree" --arg n "$name" --argjson a "$attached" \
-            '{kind: "session", path: $p, name: $n, attached: $a}' || failed=1
-        done
+        [[ ${pane_paths[i]} == "$worktree" || ${pane_paths[i]} == "$worktree"/* ]] || continue
+        jq -nc --arg p "$worktree" --arg n "${pane_names[i]}" --argjson a "${pane_attached[i]}" \
+          '{kind: "session", path: $p, name: $n, attached: $a}' || failed=1
       done
     done
     exit "$failed"
@@ -234,8 +262,10 @@ cmd_activity() {
 # parallel writes cannot interleave, and paths holding tabs or newlines
 # never pass through the pipe. -x keeps du off other mounts. du exits
 # non-zero when it cannot read part of a tree; that size is reported as
-# incomplete rather than dropped. GNU stat is tried before BSD stat because
-# GNU's `stat -f` means something else and would not fail.
+# incomplete rather than dropped. Fields are separated by \x1f, not a tab:
+# tab is IFS whitespace, so an empty field between two tabs would vanish and
+# shift the next one into its place. `stat -c` is GNU's form and fails on
+# macOS, where `stat -f` takes over.
 cmd_size() {
   (( 0 < $# )) ||
     {
@@ -255,10 +285,10 @@ cmd_size() {
       out=$(du -skx -- "$2" 2>/dev/null)
       rc=$?
       dev=$(stat -c %d -- "$2" 2>/dev/null || stat -f %d -- "$2" 2>/dev/null)
-      printf "%s\t%s\t%s\t%s\n" "$1" "$rc" "${out%%	*}" "$dev"' size |
+      printf "%s\037%s\037%s\037%s\n" "$1" "$rc" "${out%%	*}" "$dev"' size |
     {
       local index rc kib dev failed=0
-      while IFS=$'\t' read -r index rc kib dev
+      while IFS=$'\x1f' read -r index rc kib dev
       do
         [[ $index =~ ^[0-9]+$ && -n ${paths[index]+x} ]] || continue
         [[ $dev =~ ^[0-9]+$ ]] || dev=null
@@ -305,7 +335,7 @@ cmd_reclaim() {
   declare -A seen=()
   for spec in "$@"
   do
-    [[ $spec == *:* ]] ||
+    [[ $spec == *:?* ]] ||
       die "Target '%s' is not of the form <plugin>:<target>" "$spec"
     name=${spec%%:*}
     require_plugin "$name"
@@ -320,9 +350,12 @@ cmd_reclaim() {
     for name in "${order[@]}"
     do
       targets=()
+      declare -A queued=()
       for spec in "$@"
       do
-        [[ ${spec%%:*} == "$name" ]] && targets+=("${spec#*:}")
+        [[ ${spec%%:*} == "$name" && -z ${queued[$spec]+x} ]] || continue
+        queued[$spec]=1
+        targets+=("${spec#*:}")
       done
       run_plugin "$name" reclaim "${targets[@]}" || failed=1
     done

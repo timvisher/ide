@@ -18,8 +18,8 @@ measure() {
   # A worktree nested inside another is counted once, in itself: its bytes
   # come off the worktree directly containing it, but only when both are on
   # the same device, since du -x never counted it in the parent otherwise.
-  # Should the subtraction still go negative (hard links counted in both),
-  # the parent is reported as incomplete rather than with a made-up number.
+  # Hard links shared with a nested worktree can still skew the difference,
+  # so a parent with nested worktrees is always reported incomplete.
   {
     printf '%s\n' "$activity"
     printf '%s\n' "$sizes"
@@ -36,12 +36,16 @@ measure() {
       {targets: ($paths
         | map(. as $p
           | ($sizes[$p] // {bytes: null, incomplete: true, device: null}) as $size
-          | ([direct_children($p)[] | $sizes[.] | select(.device == $size.device) | .bytes // 0] | add // 0) as $nested
+          | [direct_children($p)[] | $sizes[.] // {bytes: null, incomplete: true, device: null}] as $children
+          | [$children[] | select(.device == $size.device)] as $same_device
+          | ([$same_device[] | .bytes // 0] | add // 0) as $nested
           | (if $size.bytes == null then null else $size.bytes - $nested end) as $bytes
           | {($p): ($activity[$p] + {
               path: $p,
               bytes: (if $bytes != null and $bytes < 0 then 0 else $bytes end),
-              incomplete: ($size.incomplete or ($bytes != null and $bytes < 0))})})
+              incomplete: ($size.incomplete
+                or ($children | length > 0)
+                or any($children[]; .incomplete or .bytes == null))})})
         | add // {})}'
   (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
 }

@@ -39,6 +39,8 @@ measure() {
     [[ -e $root ]] || continue
     [[ -d $root && -r $root && -x $root ]] ||
       die "Cannot list the root '%s'" "$root"
+    root=$(CDPATH='' cd -- "$root" && pwd -P) ||
+      die "Cannot resolve the root '%s'" "$root"
     root_device=$(device_of "$root") ||
       die "Cannot tell which device '%s' is on" "$root"
     for entry in "${root%/}"/*
