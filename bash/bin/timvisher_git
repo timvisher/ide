@@ -2623,10 +2623,6 @@ clone() {
 # Stacked worktree: clone target on top of a base branch.
 # ---------------------------------------------------------------------------
 
-timvisher_git__driven_by_agent() {
-  [[ -n ${CLAUDECODE:-} || -n ${TIMVISHER_CODEX:-} || -n ${TIMVISHER_AGENT:-} ]]
-}
-
 stack_base_org_matches() {
   local base_org=$1 target_org=$2 target=$3
 
@@ -2744,17 +2740,12 @@ resolve_stack_base() {
         sibling_message+=" ${base_org}/${base_repo} is archived; ${target_org}/${target_repo} is the live repo."
       fi
 
-      if timvisher_git__driven_by_agent && declare -F aictl_notice &>/dev/null
-      then
-        aictl_notice \
-          --code timvisher_git_stack_base_alias_sibling \
-          --message "$sibling_message" \
-          --reason "Orgs in the same org alias group host the same repos, and a stacked worktree's base must be in the target's repo." \
-          --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-          --suggestion "Pass the base under the target's org to make this explicit: ${sibling}"
-      else
-        warn '%s' "$sibling_message"
-      fi
+      aictl_notice \
+        --code timvisher_git_stack_base_alias_sibling \
+        --message "$sibling_message" \
+        --reason "Orgs in the same org alias group host the same repos, and a stacked worktree's base must be in the target's repo." \
+        --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+        --suggestion "Pass the base under the target's org to make this explicit: ${sibling}"
 
       printf '%s' "$sibling"
       return
@@ -2778,17 +2769,12 @@ resolve_stack_base() {
   reason="clone_stacked only stacks within one repo, so the only usable reading of a base that does not start with the target's org/repo is a branch of the target's repo."
   suggestion="Pass the base qualified to make the intent explicit: ${resolved}"
 
-  if timvisher_git__driven_by_agent && declare -F aictl_notice &>/dev/null
-  then
-    aictl_notice \
-      --code timvisher_git_stack_base_inherited \
-      --message "$message" \
-      --reason "$reason" \
-      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-      --suggestion "$suggestion"
-  else
-    warn '%s %s' "$message" "$suggestion"
-  fi
+  aictl_notice \
+    --code timvisher_git_stack_base_inherited \
+    --message "$message" \
+    --reason "$reason" \
+    --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+    --suggestion "$suggestion"
 
   printf '%s' "$resolved"
 }
@@ -2847,24 +2833,18 @@ ensure_stack_base_branch_exists() {
     "To start from ${trunk_branch} instead, omit the stack base: ntmux3 -d ${target}"
   )
 
-  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
-  then
-    local -a suggestion_args=()
-    local suggestion
-    for suggestion in "${suggestions[@]}"
-    do
-      suggestion_args+=(--suggestion "$suggestion")
-    done
-    aictl_die \
-      --code timvisher_git_stack_base_missing \
-      --message "$message" \
-      --reason "$reason" \
-      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-      "${suggestion_args[@]}"
-  fi
-
-  local IFS=' '
-  die '%s %s' "$message" "${suggestions[*]}"
+  local -a suggestion_args=()
+  local suggestion
+  for suggestion in "${suggestions[@]}"
+  do
+    suggestion_args+=(--suggestion "$suggestion")
+  done
+  aictl_die \
+    --code timvisher_git_stack_base_missing \
+    --message "$message" \
+    --reason "$reason" \
+    --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+    "${suggestion_args[@]}"
 }
 
 die_stack_target_is_trunk() {
@@ -2880,24 +2860,18 @@ die_stack_target_is_trunk() {
     "To open the trunk itself, drop the stack base: ntmux3 -d ${target}"
   )
 
-  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
-  then
-    local -a suggestion_args=()
-    local suggestion
-    for suggestion in "${suggestions[@]}"
-    do
-      suggestion_args+=(--suggestion "$suggestion")
-    done
-    aictl_die \
-      --code timvisher_git_stack_target_is_trunk \
-      --message "$message" \
-      --reason "$reason" \
-      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-      "${suggestion_args[@]}"
-  fi
-
-  local IFS=' '
-  die '%s %s' "$message" "${suggestions[*]}"
+  local -a suggestion_args=()
+  local suggestion
+  for suggestion in "${suggestions[@]}"
+  do
+    suggestion_args+=(--suggestion "$suggestion")
+  done
+  aictl_die \
+    --code timvisher_git_stack_target_is_trunk \
+    --message "$message" \
+    --reason "$reason" \
+    --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+    "${suggestion_args[@]}"
 }
 
 die_if_stack_target_exists() {
@@ -2950,24 +2924,18 @@ die_if_stack_target_exists() {
     suggestions+=("If it is a leftover local branch from an interrupted run, delete it first: git -C '${trunk_cache}' branch -D '${branch}'")
   fi
 
-  if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
-  then
-    local -a suggestion_args=()
-    local suggestion
-    for suggestion in "${suggestions[@]}"
-    do
-      suggestion_args+=(--suggestion "$suggestion")
-    done
-    aictl_die \
-      --code timvisher_git_stack_target_exists \
-      --message "$message" \
-      --reason "$reason" \
-      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-      "${suggestion_args[@]}"
-  fi
-
-  local IFS=' '
-  die '%s %s' "$message" "${suggestions[*]}"
+  local -a suggestion_args=()
+  local suggestion
+  for suggestion in "${suggestions[@]}"
+  do
+    suggestion_args+=(--suggestion "$suggestion")
+  done
+  aictl_die \
+    --code timvisher_git_stack_target_exists \
+    --message "$message" \
+    --reason "$reason" \
+    --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+    "${suggestion_args[@]}"
 }
 
 clone_stacked() {
@@ -2998,24 +2966,18 @@ clone_stacked() {
     fi
     suggestions+=("A base that does not start with an org/repo is read as a branch of the target's repo, so a bare branch name works: ntmux3 -d ${target} <branch>")
 
-    if timvisher_git__driven_by_agent && declare -F aictl_die &>/dev/null
-    then
-      local -a suggestion_args=()
-      local suggestion
-      for suggestion in "${suggestions[@]}"
-      do
-        suggestion_args+=(--suggestion "$suggestion")
-      done
-      aictl_die \
-        --code timvisher_git_stack_base_repo_mismatch \
-        --message "$message" \
-        --reason "$reason" \
-        --doc ai/HOME/.agents/skills/worktree/SKILL.md \
-        "${suggestion_args[@]}"
-    fi
-
-    local IFS=' '
-    die '%s %s' "$message" "${suggestions[*]}"
+    local -a suggestion_args=()
+    local suggestion
+    for suggestion in "${suggestions[@]}"
+    do
+      suggestion_args+=(--suggestion "$suggestion")
+    done
+    aictl_die \
+      --code timvisher_git_stack_base_repo_mismatch \
+      --message "$message" \
+      --reason "$reason" \
+      --doc ai/HOME/.agents/skills/worktree/SKILL.md \
+      "${suggestion_args[@]}"
   fi
 
   local target_check_cache target_check_dir_and_branch target_check_branch target_check_trunk
