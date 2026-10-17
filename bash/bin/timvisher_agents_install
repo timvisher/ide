@@ -44,7 +44,7 @@ canon_path() {
 # lies under one of these prefixes (after resolving symlinks), rewrite the
 # link to use the preferred form instead. This keeps installed symlinks
 # stable across worktrees — e.g. `~/.config/timvisher/ide/...` rather than
-# `~/git/DataDog/timvisher-ide-datadog-system-extensions/main/...`.
+# `~/git/ddoghq-sandbox/timvisher-ide-datadog-system-extensions/main/...`.
 #
 # ORDER MATTERS: prefer_path() returns the FIRST matching prefix. List
 # more-specific prefixes before more-general ones (no overlap today,
