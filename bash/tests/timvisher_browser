@@ -46,6 +46,12 @@ case $osa_script in
       *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
     esac
     ;;
+  *executeJsInActiveTab*)
+    case ${FAKE_STATE:-ok} in
+      ok) printf 'ok\nVivaldi\n%s\n' "$FAKE_JS_VALUE" ;;
+      *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
+    esac
+    ;;
 esac
 FAKE
 chmod +x "$tmpdir/bin/osascript" || exit 1
@@ -139,6 +145,31 @@ FAKE_OSA_RC=1 browser tab 'https://github.com/DataDog/x/pull/8'
 rc=$?
 check 'tab <url>: an osascript failure exits 1 with timvisher_browser_osascript_failed' \
       eval "(( rc == 1 )) && grep -qF '\"code\":\"timvisher_browser_osascript_failed\"' '$tmpdir/stderr'"
+
+expression='document.querySelector(".head-ref").textContent'
+FAKE_JS_VALUE='timvisher-dd:my-branch' browser tab js "$expression"
+rc=$?
+check 'tab js: exits 0' test "$rc" -eq 0
+check "tab js: prints the expression's value" test "$(cat "$tmpdir/stdout")" = 'timvisher-dd:my-branch'
+check 'tab js: hands the expression to the library' grep -qxF "$expression" "$tmpdir/args"
+check 'tab js: runs it with executeJsInActiveTab' grep -q 'executeJsInActiveTab(e)' "$tmpdir/script"
+check 'tab js: checks the browser is running before running it' \
+      grep -q 'is not running then return "not_running"' "$tmpdir/script"
+
+FAKE_STATE=not_running browser tab js "$expression"
+rc=$?
+check 'tab js, not running: exits 1 with timvisher_browser_not_running and nothing on stdout' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_not_running\"" && stdout_empty'
+
+FAKE_STATE=no_window browser tab js "$expression"
+rc=$?
+check 'tab js, no window: exits 1 with timvisher_browser_no_window' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_no_window\""'
+
+browser tab js
+rc=$?
+check 'tab js without an expression: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab js <expression>' '$tmpdir/stderr'"
 
 browser tab info --help
 rc=$?

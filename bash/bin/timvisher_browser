@@ -19,9 +19,11 @@ timvisher_browser__schema_version=1
 show_help() {
   cat <<'EOF'
 Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
+       timvisher_browser tab js <expression>
        timvisher_browser tab <url>
 
   tab info   print the active tab's record (see 'timvisher_browser tab info --help')
+  tab js     run a JavaScript expression in the active tab; prints its value
   tab <url>  focus a tab with that URL, or open one; prints the URL
 
 The browser is the timvisher Browser AppleScript library's currentBrowser().
@@ -64,6 +66,28 @@ timvisher_browser__osascript() {
     return 1
   fi
   printf '%s\n' "$out"
+}
+
+timvisher_browser__has_tab() {
+  local state=$1 browser=$2
+  case $state in
+    not_running)
+      aictl_error \
+        --code timvisher_browser_not_running \
+        --message "${browser} is not running, so there is no active tab." \
+        --suggestion "Open ${browser} and retry" \
+        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
+      return 1
+      ;;
+    no_window)
+      aictl_error \
+        --code timvisher_browser_no_window \
+        --message "${browser} has no window, so there is no active tab." \
+        --suggestion "Open a ${browser} window and retry" \
+        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
+      return 1
+      ;;
+  esac
 }
 
 timvisher_browser__info() {
@@ -121,24 +145,7 @@ end run') || return 1
     title=$(cat)
   } <<< "$out"
 
-  case $state in
-    not_running)
-      aictl_error \
-        --code timvisher_browser_not_running \
-        --message "${browser} is not running, so there is no active tab." \
-        --suggestion "Open ${browser} and retry" \
-        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
-      return 1
-      ;;
-    no_window)
-      aictl_error \
-        --code timvisher_browser_no_window \
-        --message "${browser} has no window, so there is no active tab." \
-        --suggestion "Open a ${browser} window and retry" \
-        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
-      return 1
-      ;;
-  esac
+  timvisher_browser__has_tab "$state" "$browser" || return 1
 
   local record
   record=$(jq -n \
@@ -152,6 +159,30 @@ end run') || return 1
   else
     jq . <<< "$record"
   fi
+}
+
+timvisher_browser__js() {
+  local expression=$1 out state browser value
+  out=$(timvisher_browser__osascript '
+on run argv
+	set e to item 1 of argv
+	tell script "timvisher Browser" to set b to currentBrowser()
+	if application b is not running then return "not_running" & linefeed & b
+	tell application b
+		if (count of windows) is 0 then return "no_window" & linefeed & b
+	end tell
+	tell script "timvisher Browser" to set r to executeJsInActiveTab(e)
+	return "ok" & linefeed & b & linefeed & r
+end run' "$expression") || return 1
+
+  {
+    IFS= read -r state
+    IFS= read -r browser
+    value=$(cat)
+  } <<< "$out"
+
+  timvisher_browser__has_tab "$state" "$browser" || return 1
+  printf '%s\n' "$value"
 }
 
 timvisher_browser__tab() {
@@ -179,6 +210,10 @@ case ${1-} in
         shift 2
         timvisher_browser__info "$@"
         exit
+        ;;
+      js)
+        (( 3 == $# )) || { usage; exit 2; }
+        timvisher_browser__js "$3" || exit 1
         ;;
       ''|-*)
         usage
