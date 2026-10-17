@@ -3,8 +3,16 @@
 - Use ERT (Emacs Lisp Regression Testing) for testing Emacs Lisp code
 - Run tests in batch mode using the pattern that matches the target:
   - **Testing your config** (`~/git/ide/emacs/` or `~/.config/timvisher/ide/emacs/`):
+    run it through `timvisher_tests` from the worktree root, so it loads
+    that worktree's config in a throwaway `HOME`. In an `ide` worktree,
+    `bash/tests/emacs_ert` runs the config's ERT files
+    (`bash/bin/timvisher_tests --suite bash/tests/emacs_ert`). For another
+    test file (from a system-extensions worktree, use
+    `~/git/ide/bash/bin/timvisher_tests` in place of
+    `bash/bin/timvisher_tests`):
     ```bash
-    emacs --batch \
+    bash/bin/timvisher_tests --shell emacs --batch \
+      --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
       --eval "(require 'package)" \
       --eval "(package-initialize)" \
       --eval '(load "~/.config/emacs/init.el")' \

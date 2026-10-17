@@ -46,6 +46,12 @@ context, prefer `run-tests` over `make test` / `golangci-lint` /
 `pytest` directly: the hook encodes project-specific build tags,
 lint flags, and env vars the raw commands miss.
 
+In `ide` and system-extensions, `run-tests` runs `timvisher_tests`,
+which is also how to run their tests without `dev_ci`: from an `ide`
+worktree root, `bash/bin/timvisher_tests` (or `--suite <path>` for one
+suite); from a system-extensions worktree root,
+`~/git/ide/bash/bin/timvisher_tests`. Never run those suites directly.
+
 ## Foreground vs orchestrated
 
 - `hooks` / `run-tests` — foregrounded in the controlling TTY. Just
