@@ -2,8 +2,6 @@
 
 # Tests for git wrapper
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -21,22 +19,21 @@ run_test() {
 }
 
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/git"
-funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" || exit 1
 
 tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-export XDG_STATE_HOME="$tmpdir/state"
 
 # Create a mock brew prefix with git inside it
-mkdir -p "$tmpdir/prefix/bin"
+mkdir -p "$tmpdir/prefix/bin" || exit 1
 cat > "$tmpdir/prefix/bin/git" <<'MOCK'
 #!/usr/bin/env bash
 echo "real-git $*"
 MOCK
 chmod +x "$tmpdir/prefix/bin/git"
 
-mkdir -p "$tmpdir/mockbin"
+mkdir -p "$tmpdir/mockbin" || exit 1
 cat > "$tmpdir/mockbin/brew" <<MOCK
 #!/usr/bin/env bash
 echo "$tmpdir/prefix"
@@ -69,7 +66,7 @@ chmod +x "$tmpdir/mockbin/ps"
 #   - $tmpdir/mockbin → mock `brew` for wrappers that still shell out to it
 #   - /opt/homebrew/bin:/usr/bin:/bin → bash builtins (`realpath`, `mktemp`,
 #     etc.) but NOT another git binary ahead of the mock
-mkdir -p "$tmpdir/selflink"
+mkdir -p "$tmpdir/selflink" || exit 1
 ln -s "$script" "$tmpdir/selflink/git"
 
 test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
@@ -124,7 +121,7 @@ fi
 
 # Fake bd: a shell script that runs its args as a subprocess (no exec),
 # so it sits in the ancestor chain when the wrapper is invoked underneath.
-mkdir -p "$tmpdir/fakebd-bin"
+mkdir -p "$tmpdir/fakebd-bin" || exit 1
 cat > "$tmpdir/fakebd-bin/bd" <<'FAKE_BD'
 #!/usr/bin/env bash
 "$@"
@@ -214,7 +211,7 @@ fi
 # Our 0/1 check looks at 'bash' and '/path/to/spoofscript' — neither's
 # basename is 'bd', so the guard must still block.
 run_test
-mkdir -p "$tmpdir/spoof-bin"
+mkdir -p "$tmpdir/spoof-bin" || exit 1
 cat > "$tmpdir/spoof-bin/spoofscript" <<'SPOOF'
 #!/usr/bin/env bash
 shift  # discard the 'bd' decoy; run the rest
@@ -751,7 +748,7 @@ real_git=/opt/homebrew/bin/git
 # For upstream guard tests, the wrapper needs the real git binary (not the
 # echo mock) because it calls rev-parse/config internally. Build a parallel
 # PATH that points at real git instead of the echo mock.
-mkdir -p "$tmpdir/real-prefix/bin"
+mkdir -p "$tmpdir/real-prefix/bin" || exit 1
 ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
 
 test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
@@ -1017,7 +1014,7 @@ allow_file="$allow_config/timvisher/ide/git/guard_allow"
 
 # Fake tool: runs its args as a subprocess (no exec) so it sits in the
 # ancestor chain when the wrapper runs underneath.
-mkdir -p "$tmpdir/faketool-bin"
+mkdir -p "$tmpdir/faketool-bin" || exit 1
 for faketool in faketool othertool
 do
   cat > "$tmpdir/faketool-bin/$faketool" <<'FAKE_TOOL'

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 # Tests for claude and codex wrappers
 
-set -euo pipefail
 
 failures=0
 tests=0
@@ -71,7 +72,7 @@ run_test
 fixture_home=$(mktemp -d)
 mkdir -p "$fixture_home/.functions" "$fixture_home/.config"
 cp "$bin_dir/../functions/logging.bash" "$fixture_home/.functions/logging.bash"
-if env -u TIMVISHER_AGENT -u XDG_CONFIG_HOME HOME="$fixture_home" \
+if timvisher_tests_with_home "$fixture_home" env -u TIMVISHER_AGENT \
      bash -c "source \"\$1\" >/dev/null 2>&1; bash -c '[[ -n \${TIMVISHER_AGENT-} ]]'" _ "$bin_dir/../ai/agents.bash"
 then
   pass "agents.bash exports TIMVISHER_AGENT to child processes"

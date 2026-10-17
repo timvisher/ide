@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 # Tests for the Stop hooks under ai/claude/HOME/.claude/hooks/.
 # Covers positive (should-block) and negative (should-pass) cases for
@@ -211,15 +213,8 @@ wlock_input() {
   fi
 }
 
-wlock_env=(
-  HOME="$wlock_home"
-  XDG_CONFIG_HOME="$wlock_home/.config"
-  XDG_DATA_HOME="$wlock_home/.local/share"
-  XDG_STATE_HOME="$wlock_home/.local/state"
-  XDG_CACHE_HOME="$wlock_home/.cache"
-)
-wlock_run_pre() { env "${wlock_env[@]}" "${hooks_dir}/worktree-lock-pretool.sh"; }
-wlock_run_end() { env "${wlock_env[@]}" "${hooks_dir}/worktree-lock-sessionend.sh"; }
+wlock_run_pre() { timvisher_tests_with_home "$wlock_home" "${hooks_dir}/worktree-lock-pretool.sh"; }
+wlock_run_end() { timvisher_tests_with_home "$wlock_home" "${hooks_dir}/worktree-lock-sessionend.sh"; }
 
 WT_A=$(wlock_init_worktree "$tmpdir/wt-A")
 WT_B=$(wlock_init_worktree "$tmpdir/wt-B")

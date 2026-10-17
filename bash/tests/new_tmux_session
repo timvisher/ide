@@ -21,6 +21,8 @@ run_test() {
 }
 
 funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 agent_env_vars=(
   CLAUDECODE
@@ -43,7 +45,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! t_dir=$(mktemp -d)
+# Under /tmp, not TMPDIR: the tmux socket path must fit in 104 bytes,
+# and the runner's per-suite TMPDIR is nested too deep for that.
+if ! t_dir=$(mktemp -d /tmp/new_tmux_session.XXXXXX)
 then
   echo "mktemp -d failed" >&2
   exit 1
@@ -67,14 +71,13 @@ chmod +x "${stub_bin}/emacs"
 
 : > "${t_dir}/aictl.log"
 
-(
+# An empty HOME, not the runner's: the pane's shell would otherwise
+# read the installed ~/.bashrc, which puts the real emacs ahead of the
+# stub.
+# shellcheck disable=SC2329
+start_session() (
   unset TMUX TMUX_PANE
   export TMUX_TMPDIR="$t_dir"
-  export HOME="$fake_home"
-  export XDG_CONFIG_HOME="${fake_home}/.config"
-  export XDG_DATA_HOME="${fake_home}/.local/share"
-  export XDG_STATE_HOME="${fake_home}/.local/state"
-  export XDG_CACHE_HOME="${fake_home}/.cache"
   export PATH="${stub_bin}:${PATH}"
   export NEW_TMUX_SESSION_TEST_CANARY=1
   export CLAUDECODE=1
@@ -91,7 +94,9 @@ chmod +x "${stub_bin}/emacs"
   # shellcheck source=/dev/null
   source "${funcs_dir}/tmux.bash"
   new_tmux_session agent_env "$session_dir" '' true
-) >/dev/null 2>&1
+)
+
+timvisher_tests_with_home "$fake_home" start_session >/dev/null 2>&1
 
 global_env=$(env -u TMUX TMUX_TMPDIR="$t_dir" tmux show-environment -g 2>&1)
 

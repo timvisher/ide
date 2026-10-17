@@ -2,8 +2,6 @@
 
 # Tests for ntmux3 agent shim
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -106,7 +104,7 @@ fi
 
 # shellcheck disable=SC2317
 
-funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" || exit 1
 
 kill_tree() {
   local pid child
@@ -501,7 +499,9 @@ fi
 
 run_test
 log=$(new_log history)
-result=$(TIMVISHER_AICTL_LOG="$log" TMPDIR="${t_dir}/tmp" bash -c "${preamble}
+# HISTIGNORE keeps the indented 'history 1' below out of the history it
+# reads; set here rather than relying on the caller's bashrc.
+result=$(TIMVISHER_AICTL_LOG="$log" TMPDIR="${t_dir}/tmp" HISTIGNORE=$'[ \t]*' bash -c "${preamble}
   set -o history
   ntmux3__main() { ntmux3__history someorg/fromhistory; ntmux3__fail boom; }
   ntmux3

@@ -3,8 +3,6 @@
 # Tests for timvisher_bd_topics.
 # Currently covers the `resolve` subcommand.
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -26,8 +24,8 @@ script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_bd_topics"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-mkdir -p "$tmpdir/topics"
-mkdir -p "$tmpdir/config/timvisher/ide"
+mkdir -p "$tmpdir/topics" || exit 1
+mkdir -p "$tmpdir/config/timvisher/ide" || exit 1
 printf '%s\n' "$tmpdir/topics" > "$tmpdir/config/timvisher/ide/bd_topics_root"
 
 run_resolve() {
@@ -192,7 +190,7 @@ run_cli() {
 # only the abs output name was passed.
 run_test
 # Set up a real topic with .beads so list_topics_under_dir finds it.
-mkdir -p "$tmpdir/topics/single-param-test/nested/.beads"
+mkdir -p "$tmpdir/topics/single-param-test/nested/.beads" || exit 1
 : > "$tmpdir/topics/single-param-test/nested/.beads/beads.db"
 result=$(run_cli ls single-param-test 2>&1)
 if [[ $result == *"single-param-test/nested"* ]]
@@ -214,7 +212,7 @@ printf 'bd-called: %s\n' "$*"
 STUB
 chmod +x "$stubdir/bd"
 # bd subcommand requires the topic dir to exist and contain .beads.
-mkdir -p "$tmpdir/topics/probe-test/.beads"
+mkdir -p "$tmpdir/topics/probe-test/.beads" || exit 1
 : > "$tmpdir/topics/probe-test/.beads/beads.db"
 result=$(PATH="$stubdir:$PATH" run_cli bd probe-test status 2>&1)
 if [[ $result == *"bd-called: status"* ]]
@@ -228,7 +226,7 @@ fi
 # DIFFERENT output variable names (src_abs/src_rel and dst_abs/dst_rel).
 # The function's nameref must not leak between the two calls.
 run_test
-mkdir -p "$tmpdir/topics/rename-src/.beads"
+mkdir -p "$tmpdir/topics/rename-src/.beads" || exit 1
 : > "$tmpdir/topics/rename-src/.beads/beads.db"
 # The `mv` subcommand does the actual rename; just check it doesn't
 # die during resolve (nonexistent dst is fine — it's the target).
@@ -245,10 +243,10 @@ fi
 # real-world setup where the topics root is itself a git repo and the
 # repo's last-set topic shadows the topic the user is actually in.
 run_test
-mkdir -p "$tmpdir/topics/Incidents/100/.beads"
+mkdir -p "$tmpdir/topics/Incidents/100/.beads" || exit 1
 : > "$tmpdir/topics/Incidents/100/.beads/beads.db"
 git -C "$tmpdir/topics" init -q 2>/dev/null
-mkdir -p "$tmpdir/topics/.timvisher_bd_topics"
+mkdir -p "$tmpdir/topics/.timvisher_bd_topics" || exit 1
 printf 'wrong/topic\n' > "$tmpdir/topics/.timvisher_bd_topics/topic.txt"
 result=$(cd "$tmpdir/topics/Incidents/100" && run_cli current 2>&1)
 if [[ $result == "Incidents/100" ]]
@@ -260,7 +258,7 @@ fi
 
 # Test: `current` walks up from CWD to find the closest topic dir.
 run_test
-mkdir -p "$tmpdir/topics/Incidents/100/sub/dir"
+mkdir -p "$tmpdir/topics/Incidents/100/sub/dir" || exit 1
 result=$(cd "$tmpdir/topics/Incidents/100/sub/dir" && run_cli current 2>&1)
 if [[ $result == "Incidents/100" ]]
 then
@@ -272,7 +270,7 @@ fi
 # Test: `current` from a non-topic dir under topics root falls back to
 # the surrounding repo's topic.txt.
 run_test
-mkdir -p "$tmpdir/topics/no-beads-here"
+mkdir -p "$tmpdir/topics/no-beads-here" || exit 1
 result=$(cd "$tmpdir/topics/no-beads-here" && run_cli current 2>&1)
 if [[ $result == "wrong/topic" ]]
 then
@@ -295,7 +293,7 @@ fi
 
 # Test: `root` stops at a subtopic rather than its parent topic.
 run_test
-mkdir -p "$tmpdir/topics/Incidents/100/child/.beads"
+mkdir -p "$tmpdir/topics/Incidents/100/child/.beads" || exit 1
 : > "$tmpdir/topics/Incidents/100/child/.beads/beads.db"
 result=$(cd "$tmpdir/topics/Incidents/100/child" && run_cli root 2>/dev/null)
 if [[ $result == "$topics_real/Incidents/100/child" ]]
@@ -334,7 +332,7 @@ fi
 # Test: `root` outside any repo, topic or todo.org dir exits non-zero
 # with nothing on stdout.
 run_test
-mkdir -p "$tmpdir/nowhere"
+mkdir -p "$tmpdir/nowhere" || exit 1
 if result=$(cd "$tmpdir/nowhere" && GIT_CEILING_DIRECTORIES="$tmpdir" run_cli root 2>/dev/null)
 then
   fail "expected non-zero exit outside any root, got '${result}'"
@@ -359,7 +357,7 @@ fi
 # database after the parent dir is renamed; leaving it running puts the
 # topic into a "database not found" state until manual cleanup.
 run_test
-mkdir -p "$tmpdir/topics/stop-dolt-src/.beads"
+mkdir -p "$tmpdir/topics/stop-dolt-src/.beads" || exit 1
 : > "$tmpdir/topics/stop-dolt-src/.beads/beads.db"
 sleep 60 &
 sleep_pid=$!
@@ -387,7 +385,7 @@ wait "$sleep_pid" 2>/dev/null || true
 # Test: mv tolerates a stale pid file (process already exited) without
 # leaving pid/port files behind.
 run_test
-mkdir -p "$tmpdir/topics/stale-pid-src/.beads"
+mkdir -p "$tmpdir/topics/stale-pid-src/.beads" || exit 1
 : > "$tmpdir/topics/stale-pid-src/.beads/beads.db"
 # Spawn and immediately reap a short-lived process to get a definitely-dead pid.
 ( exec true ) &

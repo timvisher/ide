@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 # Tests for timvisher_gh
 # Heavy mocking since this interacts with git, gh, and macOS open.
@@ -868,7 +870,6 @@ ln -s "$funcs_dir" "$v2_home/.functions"
 run_v2() {
   (
     cd "$tmpdir/repo" &&
-      HOME="$v2_home" \
       PATH="$v2_path" \
       TIMVISHER_AGENT='' \
       timvisher_logging_log_level=INFO \
@@ -877,7 +878,7 @@ run_v2() {
       TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
       TIMVISHER_GH_PR_MERGE_TIMEOUT=2 \
       TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 \
-      "$script" "$@"
+      timvisher_tests_with_home "$v2_home" "$script" "$@"
   )
 }
 
@@ -2430,10 +2431,9 @@ v2_reset trunk_pull
 write_merge_handler "$(merge_graphql MERGED)"
 result=$(
   cd "$git_home/testuser/testrepo/feature" &&
-    HOME="$v2_home" PATH="$v2_path" TIMVISHER_AGENT='' timvisher_logging_log_level=INFO \
+    PATH="$v2_path" TIMVISHER_AGENT='' timvisher_logging_log_level=INFO \
     TIMVISHER_GH_CONFIG_DIR="$ext_root" TIMVISHER_GH_CORE_CONFIG_DIR="$core_root" \
-    TIMVISHER_GIT_HOME="$git_home" \
-    "$script" pr merge 2>&1 </dev/null
+    timvisher_tests_with_home "$v2_home" env TIMVISHER_GIT_HOME="$git_home" "$script" pr merge 2>&1 </dev/null
 ) && rc=0 || rc=$?
 for _ in {1..50}
 do
@@ -2616,7 +2616,7 @@ export MOCK_CHECKS_FILE="$tmpdir/checks_with_excluded.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pass"},{"name":"ci/test","bucket":"pass"},{"name":"mergegate","bucket":"pending"}]
 JSON
-HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" timvisher_tests_with_home "$exclude_home" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
 if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: exclude patterns allow ignoring pending checks"
@@ -2674,7 +2674,7 @@ export MOCK_CHECKS_FILE="$tmpdir/checks_exclude_comments.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pass"},{"name":"mergegate","bucket":"pending"},{"name":"other-meta-check","bucket":"pending"}]
 JSON
-HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" timvisher_tests_with_home "$exclude_home" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
 if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: exclude file skips comments and blank lines"
@@ -2814,7 +2814,7 @@ export MOCK_CHECKS_FILE="$tmpdir/checks_all_excluded.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pending"},{"name":"ci/test","bucket":"pending"}]
 JSON
-HOME="$exclude_home" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
+TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" timvisher_tests_with_home "$exclude_home" bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1 || true
 if grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG"
 then
   pass "pr ready: all checks excluded proceeds immediately"

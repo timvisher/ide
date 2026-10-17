@@ -26,8 +26,6 @@
 # so it flags them as unreachable.  Suppress that file-wide.
 # shellcheck disable=SC2317
 
-set -uo pipefail
-
 failures=0
 tests=0
 
@@ -44,8 +42,8 @@ run_test() {
   ((tests++)) || true
 }
 
-tests_dir="$(cd "$(dirname "$0")" && pwd)"
-funcs_dir="$(cd "${tests_dir}/../functions" && pwd)"
+tests_dir="$(cd "$(dirname "$0")" && pwd)" || exit 1
+funcs_dir="$(cd "${tests_dir}/../functions" && pwd)" || exit 1
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
@@ -53,8 +51,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 # A fake $HOME so a worktree placed under ~/git/ is exercised too.  No
 # commits are made: `rev-parse --is-inside-work-tree` is already true for
 # a freshly `git init`-ed directory.
-fake_home="${tmpdir}/home"
-mkdir -p "${fake_home}" || { echo "FAIL: setup mkdir" >&2; exit 1; }
+fake_home=$HOME
 
 stub_bin="${tmpdir}/bin"
 mkdir -p "${stub_bin}" || { echo "FAIL: setup mkdir bin" >&2; exit 1; }
@@ -114,15 +111,6 @@ sentinel="${tmpdir}/route"
 # override never leak between cases.
 route() {
   (
-    # ntmux3 is production code that assumes an interactive (non-nounset)
-    # shell — e.g. it reads $TMUX unguarded.  Disable nounset for the
-    # invocation so the test exercises real behavior, not a set -u abort.
-    set +u
-    export HOME="${fake_home}"
-    export XDG_CONFIG_HOME="${fake_home}/.config"
-    export XDG_DATA_HOME="${fake_home}/.local/share"
-    export XDG_STATE_HOME="${fake_home}/.local/state"
-    export XDG_CACHE_HOME="${fake_home}/.cache"
     export PATH="${stub_bin}:${PATH}"
     unset TMUX
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088
 
 # Tests for ntmux3__session_name_from_path (bash/functions/tmux.bash).
 #
@@ -6,8 +7,6 @@
 # rules), ~/git/ prefix, directory-level aliases (exact match and
 # subpath suffix), $HOME-relative fallback, symlink canonicalization
 # of input and alias keys, and bare-filename inputs.
-
-set -uo pipefail
 
 failures=0
 tests=0
@@ -25,14 +24,22 @@ run_test() {
   ((tests++)) || true
 }
 
-tests_dir="$(cd "$(dirname "$0")" && pwd)"
-funcs_dir="$(cd "${tests_dir}/../functions" && pwd)"
+tests_dir="$(cd "$(dirname "$0")" && pwd)" || exit 1
+funcs_dir="$(cd "${tests_dir}/../functions" && pwd)" || exit 1
 
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
 
-# Build a fake $HOME with the directory layout the function inspects.
-fake_home="${tmpdir}/home"
+# Build the directory layout the function inspects in the runner's HOME.
+fake_home=$HOME
+if [[ -L ${fake_home}/.config/timvisher/ide ]]
+then
+  rm -- "${fake_home}/.config/timvisher/ide" || {
+    echo "FAIL: setup unlink" >&2
+    exit 1
+  }
+fi
 mkdir -p \
   "${fake_home}/git/timvisher/ide/main" \
   "${fake_home}/Documents/datadog" \
@@ -65,17 +72,9 @@ cat > "${fake_home}/.config/timvisher/ide/ntmux3_path_aliases" <<EOF
 ~/real-target/file.org=real-target-file
 EOF
 
-# Run the function in a fresh subshell with a fully-overridden config
-# environment.  Setting both HOME and XDG_CONFIG_HOME makes the test
-# hermetic against the developer's real config.
 run_case() {
   local input=$1
   (
-    HOME=$fake_home
-    XDG_CONFIG_HOME="${fake_home}/.config"
-    XDG_DATA_HOME="${fake_home}/.local/share"
-    XDG_STATE_HOME="${fake_home}/.local/state"
-    XDG_CACHE_HOME="${fake_home}/.cache"
     shopt -s extglob
     source "${funcs_dir}/tmux.bash"
     ntmux3__session_name_from_path "$input"
@@ -172,11 +171,6 @@ fi
 # that returns nothing (paths outside $HOME).
 run_resolve() {
   (
-    HOME=$fake_home
-    XDG_CONFIG_HOME="${fake_home}/.config"
-    XDG_DATA_HOME="${fake_home}/.local/share"
-    XDG_STATE_HOME="${fake_home}/.local/state"
-    XDG_CACHE_HOME="${fake_home}/.cache"
     shopt -s extglob
     source "${funcs_dir}/tmux.bash"
     ntmux3__resolve_session_name "$@"

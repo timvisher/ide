@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 # Tests for timvisher_git functions
 
@@ -29,6 +31,17 @@ script="${script_dir}/bin/timvisher_git"
 tmpdir=$(mktemp -d) ||
   die "mktemp failed"
 trap 'rm -rf "$tmpdir"' EXIT
+
+[[ -n ${TIMVISHER_TESTS_TEMPLATE-} ]] ||
+  die "run this suite through timvisher_tests"
+ide_config="$XDG_CONFIG_HOME/timvisher/ide"
+if [[ -L $ide_config ]]
+then
+  rm -- "$ide_config" ||
+    die "cannot unlink '$ide_config'"
+fi
+mkdir -p "$ide_config" ||
+  die "cannot create '$ide_config'"
 
 # Create a minimal config dir so the script can initialize
 config_dir="$tmpdir/config"
@@ -257,16 +270,15 @@ printf '%s\n' "myuser" "altuser" > "$mock_self_dir/timvisher_git.config/github_u
 # Source the script in a subshell-safe way by overriding env vars
 # and intercepting the final case block
 source_timvisher_git() {
-  export XDG_CONFIG_HOME="$tmpdir"
   export TIMVISHER_GIT_HOME="$live_dir"
   # Disable agent safety guards in ~/bin/git so command git worktree add
   # and similar operations work during tests.
   unset TIMVISHER_AGENT
 
   # Rename config_dir so script finds our test config
-  mkdir -p "$tmpdir/timvisher/ide"
+  mkdir -p "$ide_config"
   # Empty org aliases file
-  : > "$tmpdir/timvisher/ide/git_org_aliases"
+  : > "$ide_config/git_org_aliases"
 
   # Extract function definitions by stripping the final dispatch
   local body
@@ -283,8 +295,8 @@ source_timvisher_git() {
   done < "$mock_self_dir/timvisher_git.config/github_user_aliases"
 }
 
-# mockbin must be first on PATH to shadow the x.home/bin/gh wrapper
-# installed by the test harness.
+# mockbin must be first on PATH to shadow the ~/bin/gh wrapper in the
+# runner HOME.
 export PATH="$tmpdir/mockbin:$PATH"
 source_timvisher_git
 
@@ -389,11 +401,10 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$MS_LOG"\nexit ${MS_RC:-0}
 chmod +x "$ms_home/stub/git"
 
 ms_run() {
-  HOME="$ms_home" MS_LOG="$ms_home/invocations" MS_RC="${1:-0}" \
+  MS_LOG="$ms_home/invocations" MS_RC="${1:-0}" \
     PATH="$ms_home/stub:$PATH" \
     new_cache_root="$ms_home/cache" \
-    XDG_CONFIG_HOME="$ms_home/.config" \
-    ensure_maintenance_scheduler "$ms_home/trunk"
+    timvisher_tests_with_home "$ms_home" ensure_maintenance_scheduler "$ms_home/trunk"
 }
 ms_stamp="$ms_home/cache/.timvisher_maintenance_scheduler_attempted"
 
@@ -1031,14 +1042,14 @@ mkdir -p "$cache_dir/repo_trunks/testorg"
 "$test_git" -C "$cache_dir/repo_trunks/testorg/testrepo" remote set-head origin -a >/dev/null 2>&1
 
 # Add org alias: to → testorg, and re-source to pick it up
-echo 'to=testorg' > "$tmpdir/timvisher/ide/git_org_aliases"
+echo 'to=testorg' > "$ide_config/git_org_aliases"
 source_timvisher_git
 
 # Override cache/live dirs to use test paths
 repo_trunks_dir="$cache_dir/repo_trunks"
 live_repo_dir="$live_dir"
 # Re-add alias (source_timvisher_git re-reads the file, but the script
-# also sources from XDG_CONFIG_HOME which points to $tmpdir — however
+# also sources from $ide_config under XDG_CONFIG_HOME — however
 # the source function blanks the file.  Set it directly.)
 org_aliases[to]=testorg
 
@@ -1724,7 +1735,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # Install a hook that records $PWD where post-create maintenance runs.
-# hooks_dir resolves under XDG_CONFIG_HOME ($tmpdir) — see script's config_dir.
+# hooks_dir resolves under XDG_CONFIG_HOME — see script's config_dir.
 build_pwd_record="$tmpdir/build_pwd.txt"
 mkdir -p "$hooks_dir/testorg/testrepo"
 cat > "$hooks_dir/testorg/testrepo/post-initial-branch-dir-creation" <<HOOK
@@ -2027,7 +2038,7 @@ cli_expected="$cli_live/testorg/testrepo/${default_branch}"
 run_test
 result=$(
   cd "$tmpdir" &&
-    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+    timvisher_tests_with_home "$cli_home" env TIMVISHER_GIT_HOME="$cli_live" \
       "$script" -C testorg/testrepo rev-parse --show-toplevel 2>/dev/null
 ) && rc=0 || rc=$?
 cli_expected_real=$(cd "$cli_expected" 2>/dev/null && pwd -P)
@@ -2041,7 +2052,7 @@ fi
 run_test
 result=$(
   cd "$tmpdir" &&
-    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+    timvisher_tests_with_home "$cli_home" env TIMVISHER_GIT_HOME="$cli_live" \
       "$script" -C testorg/testrepo info .repo 2>/dev/null
 ) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == testrepo ]]
@@ -2054,7 +2065,7 @@ fi
 run_test
 result=$(
   cd "$tmpdir" &&
-    HOME=$cli_home TIMVISHER_GIT_HOME=$cli_live \
+    timvisher_tests_with_home "$cli_home" env TIMVISHER_GIT_HOME="$cli_live" \
       "$script" -C "$tmpdir/no-such-dir" -C testorg/testrepo info .repo 2>/dev/null
 ) && rc=0 || rc=$?
 if (( rc == 0 )) && [[ $result == testrepo ]]
@@ -2218,7 +2229,7 @@ github_user_aliases=("myuser" "altuser")
 # ---------------------------------------------------------------------------
 
 # NOTE: configure_remotes_and_tracking integration tests are deferred.
-# The test harness git wrapper (x.home/bin/git) interferes with
+# The ~/bin/git wrapper in the runner HOME interferes with
 # clone/fetch/branch-tracking operations needed for realistic remote
 # setup.  The decision logic is covered via find_pushable_fork and
 # preferred_fork_user_for tests above.
@@ -3284,7 +3295,7 @@ mkdir -p "$rewrite_cache/refs/remotes/origin"
 printf 'ref: refs/remotes/origin/main\n' > "$rewrite_cache/refs/remotes/origin/HEAD"
 
 # Populate branch_prefix config
-printf 'timvisher\n' > "$tmpdir/timvisher/ide/branch_prefix"
+printf 'timvisher\n' > "$ide_config/branch_prefix"
 
 # Test: trunk/subpath rewrites to prefix/subpath
 run_test
@@ -3318,7 +3329,7 @@ fi
 
 # Test: missing config file — no rewrite
 run_test
-rm "$tmpdir/timvisher/ide/branch_prefix"
+rm "$ide_config/branch_prefix"
 result=$(maybe_rewrite_trunk_subpath "main/foo" "$rewrite_cache")
 if [[ $result == "main/foo" ]]
 then
@@ -3326,7 +3337,7 @@ then
 else
   fail "expected 'main/foo', got '${result}'"
 fi
-printf 'timvisher\n' > "$tmpdir/timvisher/ide/branch_prefix"
+printf 'timvisher\n' > "$ide_config/branch_prefix"
 
 # Test: missing origin/HEAD — no rewrite
 run_test

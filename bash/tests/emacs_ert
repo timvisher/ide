@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+
+emacs --batch \
+  --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
+  --eval "(require 'package)" \
+  --eval "(package-initialize)" \
+  --eval '(load "~/.config/emacs/init.el")' \
+  --eval '(load "~/.config/emacs/init-test.el")' \
+  --eval '(load "~/.config/emacs/timvisher-agent-shell-alert-test.el")' \
+  --eval '(ert-run-tests-batch-and-exit)' \
+  >"$tmpdir/out" 2>&1
+rc=$?
+
+cat "$tmpdir/out"
+sed -n 's/^ *FAILED  *\([^ ]*\) *$/FAIL: \1/p' "$tmpdir/out"
+exit "$rc"

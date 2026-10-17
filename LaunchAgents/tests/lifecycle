@@ -5,14 +5,12 @@
 # domain: the mock records its argv to $MOCK_LOG and, for `print`,
 # reports loaded/not-loaded based on $MOCK_LOADED.
 
-set -euo pipefail
-
 failures=0
 tests=0
 
 fail() {
   echo "FAIL: $1" >&2
-  ((failures++)) || true
+  (( failures += 1 ))
 }
 
 pass() {
@@ -20,13 +18,15 @@ pass() {
 }
 
 run_test() {
-  ((tests++)) || true
+  (( tests += 1 ))
 }
 
-bindir="$(cd "$(dirname "$0")/../bin" && pwd)"
+bindir="$(cd "$(dirname "$0")/../bin" && pwd)" ||
+  { echo "FAIL: cannot resolve bin dir" >&2; exit 1; }
 
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "FAIL: mktemp" >&2; exit 1; }
 
 # A throwaway LaunchAgents/ tree: real wrappers + helper in bin/, plus a
 # sibling plist (with a __HOME__ token) so discovery and start's
@@ -34,11 +34,15 @@ trap 'rm -rf "$tmpdir"' EXIT
 # tree so start templates into a different file than it reads.
 tree="$tmpdir/LaunchAgents"
 dest="$tmpdir/dest"
-mkdir -p "$tree/bin"
-cp "$bindir/common.bash" "$bindir/start" "$bindir/stop" "$bindir/status" "$bindir/hup" "$tree/bin/"
-chmod +x "$tree/bin/start" "$tree/bin/stop" "$tree/bin/status" "$tree/bin/hup"
+if ! mkdir -p "$tree/bin" ||
+   ! cp "$bindir/common.bash" "$bindir/start" "$bindir/stop" "$bindir/status" "$bindir/hup" "$tree/bin/" ||
+   ! chmod +x "$tree/bin/start" "$tree/bin/stop" "$tree/bin/status" "$tree/bin/hup"
+then
+  echo "FAIL: cannot set up the LaunchAgents fixture tree" >&2
+  exit 1
+fi
 label="com.test.agent"
-cat > "$tree/${label}.plist" <<'PLIST'
+cat > "$tree/${label}.plist" <<'PLIST' || { echo "FAIL: cannot write the fixture plist" >&2; exit 1; }
 <plist version="1.0"><dict>
   <key>Program</key><string>__HOME__/bin/thing</string>
 </dict></plist>
@@ -46,8 +50,8 @@ PLIST
 
 # Mock launchctl on PATH.
 mockbin="$tmpdir/mockbin"
-mkdir -p "$mockbin"
-cat > "$mockbin/launchctl" <<'MOCK'
+mkdir -p "$mockbin" || { echo "FAIL: cannot create $mockbin" >&2; exit 1; }
+cat > "$mockbin/launchctl" <<'MOCK' || { echo "FAIL: cannot write the launchctl mock" >&2; exit 1; }
 #!/usr/bin/env bash
 echo "$*" >> "$MOCK_LOG"
 if [[ ${1:-} == print ]]
@@ -61,66 +65,89 @@ then
 fi
 exit 0
 MOCK
-chmod +x "$mockbin/launchctl"
+if ! chmod +x "$mockbin/launchctl" || [[ ! -s $mockbin/launchctl ]]
+then
+  echo "FAIL: cannot install the launchctl mock" >&2
+  exit 1
+fi
 
 uid=$(id -u)
 domain="gui/${uid}"
 
-# Each invocation gets a fresh log.
+# Each invocation gets a fresh log, and leaves the wrapper's exit status
+# in $tmpdir/rc for ran_ok.
 run() {  # run <MOCK_LOADED> <wrapper> [args...]
   local loaded=$1; shift
   local wrapper=$1; shift
   : > "$tmpdir/mocklog"
   MOCK_LOG="$tmpdir/mocklog" MOCK_LOADED="$loaded" \
     PATH="$mockbin:$PATH" TIMVISHER_LAUNCHAGENTS_DIR="$dest" \
-    "$tree/bin/$wrapper" "$@" 2>"$tmpdir/err" || true
+    "$tree/bin/$wrapper" "$@" 2>"$tmpdir/err"
+  printf '%s\n' "$?" > "$tmpdir/rc"
   cat "$tmpdir/mocklog"
+}
+
+ran_ok() {
+  [[ $(< "$tmpdir/rc") == 0 ]]
 }
 
 # --- stop issues bootout for the discovered label -----------------------
 run_test
-if run "" stop | grep -qx "bootout ${domain}/${label}"
-then pass "stop -> bootout <label> (no-arg discovery)"
-else fail "stop: $(run "" stop | tr '\n' ';')"
+log=$(run "" stop)
+if ran_ok && grep -qx "bootout ${domain}/${label}" <<<"$log"
+then
+  pass "stop -> bootout <label> (no-arg discovery)"
+else
+  fail "stop: rc=$(< "$tmpdir/rc") $(tr '\n' ';' <<<"$log")"
 fi
 
 # --- hup issues kill SIGHUP ---------------------------------------------
 run_test
-if run 1 hup | grep -qx "kill SIGHUP ${domain}/${label}"
-then pass "hup -> kill SIGHUP <label>"
-else fail "hup: $(run 1 hup | tr '\n' ';')"
+log=$(run 1 hup)
+if ran_ok && grep -qx "kill SIGHUP ${domain}/${label}" <<<"$log"
+then
+  pass "hup -> kill SIGHUP <label>"
+else
+  fail "hup: rc=$(< "$tmpdir/rc") $(tr '\n' ';' <<<"$log")"
 fi
 
 # --- start deploys (templates + copies) then bootout + bootstrap --------
 run_test
 log=$(run "" start)
 deployed="$dest/${label}.plist"
-if grep -qx "bootout ${domain}/${label}" <<<"$log" &&
+if ran_ok && grep -qx "bootout ${domain}/${label}" <<<"$log" &&
    grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log" &&
    [[ -f $deployed ]] &&
    grep -q "${HOME}/bin/thing" "$deployed" &&
    ! grep -q "__HOME__" "$deployed"
-then pass "start -> template __HOME__, copy, bootout + bootstrap"
-else fail "start: log=[$(tr '\n' ';' <<<"$log")] deployed=[$(cat "$deployed" 2>&1)]"
+then
+  pass "start -> template __HOME__, copy, bootout + bootstrap"
+else
+  fail "start: rc=$(< "$tmpdir/rc") log=[$(tr '\n' ';' <<<"$log")] deployed=[$(cat "$deployed" 2>&1)]"
 fi
 
 # --- start <label> resolves the source plist from the tree --------------
 run_test
 rm -f "$dest/${label}.plist"
 log=$(run "" start "$label")
-if [[ -f "$dest/${label}.plist" ]] &&
+if ran_ok && [[ -f "$dest/${label}.plist" ]] &&
    grep -qx "bootstrap ${domain} ${dest}/${label}.plist" <<<"$log"
-then pass "start <label> resolves source plist + deploys"
-else fail "start <label>: $(tr '\n' ';' <<<"$log")"
+then
+  pass "start <label> resolves source plist + deploys"
+else
+  fail "start <label>: rc=$(< "$tmpdir/rc") $(tr '\n' ';' <<<"$log")"
 fi
 
 # --- status summarizes state + pid when loaded --------------------------
 run_test
 out=$(MOCK_LOG="$tmpdir/mocklog" MOCK_LOADED=1 PATH="$mockbin:$PATH" \
         TIMVISHER_LAUNCHAGENTS_DIR="$tree" "$tree/bin/status" 2>/dev/null)
-if [[ $out == "${label}: running (pid 4242)" ]]
-then pass "status (loaded) -> 'running (pid N)' summary"
-else fail "status loaded: [$out]"
+rc=$?
+if (( rc == 0 )) && [[ $out == "${label}: running (pid 4242)" ]]
+then
+  pass "status (loaded) -> 'running (pid N)' summary"
+else
+  fail "status loaded: rc=$rc [$out]"
 fi
 
 # --- status reports not-loaded and exits non-zero -----------------------
@@ -130,16 +157,22 @@ if out=$(MOCK_LOG="$tmpdir/mocklog" PATH="$mockbin:$PATH" \
 then
   fail "status should exit non-zero when not loaded: [$out]"
 else
-  [[ $out == "${label}: not loaded" ]] &&
-    pass "status (unloaded) -> 'not loaded' + non-zero exit" ||
+  if [[ $out == "${label}: not loaded" ]]
+  then
+    pass "status (unloaded) -> 'not loaded' + non-zero exit"
+  else
     fail "status unloaded text: [$out]"
+  fi
 fi
 
 # --- explicit label arg overrides plist discovery -----------------------
 run_test
-if run 1 hup other.label.here | grep -qx "kill SIGHUP ${domain}/other.label.here"
-then pass "explicit label arg overrides discovery"
-else fail "explicit arg: $(run 1 hup other.label.here | tr '\n' ';')"
+log=$(run 1 hup other.label.here)
+if ran_ok && grep -qx "kill SIGHUP ${domain}/other.label.here" <<<"$log"
+then
+  pass "explicit label arg overrides discovery"
+else
+  fail "explicit arg: rc=$(< "$tmpdir/rc") $(tr '\n' ';' <<<"$log")"
 fi
 
 echo
