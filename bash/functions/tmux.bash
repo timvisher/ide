@@ -76,15 +76,10 @@ function ntmux3__mark_verdict() {
 
 function maybe_set_beads_topic {
     local repo_root="$1"
-    local topic_file
 
-    if [[ -s "$repo_root/.timvisher_bd_topics/topic.txt" ]]
+    if [[ ! -s "$repo_root/.timvisher_bd_topics/topic.txt" &&
+              ! -s "$repo_root/.timvisher_EXP_bd_topics/topic.txt" ]]
     then
-        topic_file="$repo_root/.timvisher_bd_topics/topic.txt"
-    elif [[ -s "$repo_root/.timvisher_EXP_bd_topics/topic.txt" ]]
-    then
-        topic_file="$repo_root/.timvisher_EXP_bd_topics/topic.txt"
-    else
         return 0
     fi
 
