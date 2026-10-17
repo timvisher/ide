@@ -781,6 +781,7 @@ ab_head_before=$("$test_git" -C "$ab_mixed" rev-parse HEAD)
 printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_mixed/BUILD.bazel"
 printf 'package foo // edited\n' > "$ab_mixed/foo.go"
 all_worktrees=()
+# shellcheck disable=SC2034
 all_worktrees["$ab_mixed"]=1
 autocommit_build_artifacts >/dev/null 2>&1
 if [[ -n $("$test_git" -C "$ab_mixed" status --porcelain) ]] &&

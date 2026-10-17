@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
@@ -7,6 +8,7 @@ source ~/.functions/logging.bash ||
   }
 
 # Source aictl for structured agent messaging
+# shellcheck source=/dev/null
 source ~/.functions/aictl.bash ||
   {
     echo "Unable to source aictl functions" >&2
