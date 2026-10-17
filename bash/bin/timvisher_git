@@ -2110,7 +2110,8 @@ Subcommands
     Soft-fork trunk sync.  See "sync-trunk" below.
 
   worktree gc [options] [<target>...]
-    Remove merged worktrees, archiving workflow files first.
+    Remove merged worktrees, archiving workflow files first.  A worktree
+    containing .timvisher_dev_ci/protected is never removed.
     Any other 'worktree' invocation passes through to git.
 
   worktree sweep-bogus
@@ -3340,10 +3341,14 @@ status__all_published() {
 worktree_gc__archive_dir="${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/worktree/archives"
 worktree_gc__protect_dir="${config_dir}/timvisher_git.config/worktree/gc"
 
+worktree_gc__is_pinned() {
+  [[ -e $1/.timvisher_dev_ci/protected ]]
+}
+
 # Collect dev_ci active worktree paths that should be protected from gc.
 # Delegates to timvisher_dev_ci worktrees active.
 # Populates the associative array whose name is passed as $1.
-# Per-worktree keep files are checked inline in the gc loop.
+# Pinned worktrees (worktree_gc__is_pinned) are checked inline in the gc loop.
 # Returns 1 if dev_ci is available but fails (caller should abort gc).
 worktree_gc__collect_protected() {
   local -n __protected=$1
@@ -3693,18 +3698,32 @@ worktree_gc() {
         fi
       fi
 
-      # Skip worktrees protected by dev_ci or per-worktree keep file
+      # Skip worktrees protected by dev_ci or pinned
       local resolved_wt
       resolved_wt=$(cd "$wt_path" && pwd -P 2>/dev/null) || resolved_wt="$wt_path"
       if [[ -n ${gc_protected["$resolved_wt"]+x} ]]; then
         continue
       fi
       local wt_rel="${wt_path#"${live_repo_dir}/"}"
-      # `keep` pins a worktree forever; `frozen` means the gc already made
-      # its call and is awaiting human input (see the subsumption-detection
-      # workflow) — skip both, but for different reasons.
-      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/keep" \
-         || -f "${worktree_gc__protect_dir}/${wt_rel}/frozen" ]]; then
+      if worktree_gc__is_pinned "$resolved_wt"
+      then
+        info "Pinned: %s (.timvisher_dev_ci/protected)" "$wt_rel"
+        continue
+      fi
+      # A legacy keep file still protects its worktree rather than being
+      # ignored: dropping it silently would let gc force-remove a worktree
+      # its owner believes is pinned. The warning drives the migration.
+      local legacy_keep="${worktree_gc__protect_dir}/${wt_rel}/keep"
+      if [[ -f $legacy_keep ]]
+      then
+        warn "Legacy gc keep file '%s' still protects '%s'; replace it with '%s/.timvisher_dev_ci/protected'" \
+          "$legacy_keep" "$wt_rel" "$wt_path"
+        continue
+      fi
+      # `frozen` means the gc already made its call and is awaiting human
+      # input (see the subsumption-detection workflow).
+      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/frozen" ]]
+      then
         continue
       fi
 
