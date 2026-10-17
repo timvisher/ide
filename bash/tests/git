@@ -30,6 +30,7 @@ mkdir -p "$tmpdir/prefix/bin" || exit 1
 cat > "$tmpdir/prefix/bin/git" <<'MOCK'
 #!/usr/bin/env bash
 echo "real-git $*"
+[[ -z ${TEST_PRINT_TRACE2-} ]] || echo "trace2=${GIT_TRACE2_EVENT-unset}"
 MOCK
 chmod +x "$tmpdir/prefix/bin/git"
 
@@ -349,6 +350,29 @@ then
   pass "log file is still written when stderr is suppressed (parent=dolt)"
 else
   fail "expected log line in ${log_file}; file exists=$([[ -f $log_file ]] && echo y || echo n)"
+fi
+
+run_test
+trace_state="$tmpdir/trace-state"
+rm -rf "$trace_state"
+out=$(TEST_PRINT_TRACE2=1 XDG_STATE_HOME="$trace_state" PATH="$test_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>/dev/null)
+if [[ $out == *"trace2=$trace_state/timvisher/wrappers/git/trace2.jsonl"* ]] &&
+   [[ -d $trace_state/timvisher/wrappers/git ]]
+then
+  pass "trace2 events go under XDG_STATE_HOME, and the directory exists"
+else
+  fail "trace2 target: out='${out}'"
+fi
+
+run_test
+out=$(TEST_PRINT_TRACE2=1 GIT_TRACE2_EVENT="$tmpdir/mine.jsonl" XDG_STATE_HOME="$trace_state" \
+  PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>/dev/null)
+if [[ $out == *"trace2=$tmpdir/mine.jsonl"* ]]
+then
+  pass "a caller's GIT_TRACE2_EVENT is kept"
+else
+  fail "trace2 caller value: out='${out}'"
 fi
 
 # Test: logging does not depend on jq. Strip jq's locations from PATH; keep

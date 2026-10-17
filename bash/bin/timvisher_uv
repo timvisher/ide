@@ -1,0 +1,522 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
+timvisher_uv__venvs_dir=${XDG_DATA_HOME:-${HOME}/.local/share}/timvisher_uv/virtualenvs
+timvisher_uv__schema_version=1
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_uv [<name>]
+
+Make each Python tool's virtualenv match its PEP 723 metadata.
+
+A tool is an executable python/bin/<name> in an IDE root whose first
+line is:
+
+  #!/usr/bin/env -S timvisher_uv exec <name>
+
+Roots are found through the python/bin entries on PATH, so the overlay
+wins over core. Each tool's venv lives at
+
+  ${XDG_DATA_HOME:-~/.local/share}/timvisher_uv/virtualenvs/<name>
+
+  timvisher_uv <name>                  upsert one tool's venv
+  timvisher_uv                         upsert every tool's venv
+  timvisher_uv <name> info [<component>]
+                                       print the tool's record (see
+                                       'timvisher_uv info --help')
+  timvisher_uv <name> --plan           print what an upsert would change
+  timvisher_uv --plan                  the same for every tool
+  timvisher_uv exec <name> [<arg>...]  run the tool in its venv (what the
+                                       shebang does); fails if the venv is
+                                       missing or on another Python
+EOF
+}
+
+show_info_help() {
+  cat <<'EOF'
+Usage: timvisher_uv <name> info [--schema-version <N>] [<component>]
+
+Print the tool's record as JSON, or one <component> of it: a jq path,
+with jq -r semantics (scalars print bare, anything else as JSON).
+
+Fields:
+  schema_version   the record's contract version (currently 1)
+  name             the tool's name
+  entry            path of the tool's python/bin entry
+  venv             path of the tool's virtualenv
+  python           the venv's interpreter, or null before the venv exists
+  python_version   the venv's Python version, or null before it exists
+  requires_python  the PEP 723 requires-python
+  dependencies     the PEP 723 dependencies, as declared
+  current          whether the venv matches the metadata (true exactly
+                   when --plan reports nothing)
+
+--schema-version <N> exits 1 unless the current schema_version is <N>.
+
+Schema versions:
+  1  the first version; no breaking changes yet.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+timvisher_uv__bin_dirs() {
+  local -a entries=()
+  local entry
+  IFS=: read -ra entries <<< "$PATH"
+  for entry in "${entries[@]}"
+  do
+    if [[ $entry == */python/bin && -d $entry ]]
+    then
+      printf '%s\n' "$entry"
+    fi
+  done
+}
+
+timvisher_uv__is_tool() {
+  local path=$1
+  local name=${path##*/}
+  local first
+  [[ -f $path && -x $path ]] || return 1
+  IFS= read -r first < "$path" || return 1
+  [[ $first == "#!/usr/bin/env -S timvisher_uv exec $name" ]]
+}
+
+timvisher_uv__find() {
+  local name=$1
+  local dir
+  while IFS= read -r dir
+  do
+    if timvisher_uv__is_tool "$dir/$name"
+    then
+      printf '%s\n' "$dir/$name"
+      return 0
+    fi
+  done < <(timvisher_uv__bin_dirs)
+  return 1
+}
+
+timvisher_uv__names() {
+  local dir path name
+  local -A seen=()
+  while IFS= read -r dir
+  do
+    for path in "$dir"/*
+    do
+      name=${path##*/}
+      if [[ -z ${seen[$name]-} ]] && timvisher_uv__is_tool "$path"
+      then
+        seen[$name]=1
+        printf '%s\n' "$name"
+      fi
+    done
+  done < <(timvisher_uv__bin_dirs)
+}
+
+timvisher_uv__requires_python() {
+  local entry=$1
+  local line in_block=false
+  local re='^#[[:space:]]*requires-python[[:space:]]*=[[:space:]]*["'\'']([^"'\'']+)["'\'']'
+  while IFS= read -r line
+  do
+    if [[ $in_block == false ]]
+    then
+      [[ $line == '# /// script' ]] && in_block=true
+      continue
+    fi
+    [[ $line == '# ///' ]] && break
+    if [[ $line =~ $re ]]
+    then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done < "$entry"
+  return 1
+}
+
+timvisher_uv__run() {
+  local name=$1
+  shift
+  local out
+  if ! out=$("$@" 2>&1)
+  then
+    aictl_error \
+      --code timvisher_uv_uv_failed \
+      --message "'$*' failed while upserting '${name}'." \
+      --reason "$out" \
+      --suggestion "Fix the cause above, then rerun 'timvisher_uv ${name}'"
+    return 1
+  fi
+  if [[ -n $out ]]
+  then
+    printf '%s\n' "$out"
+  fi
+}
+
+timvisher_uv__metadata() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+import tomllib
+
+text = open(sys.argv[1], encoding="utf-8").read()
+regex = r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
+for match in re.finditer(regex, text):
+    if match.group("type") == "script":
+        content = "".join(
+            line[2:] if line.startswith("# ") else line[1:]
+            for line in match.group("content").splitlines(keepends=True)
+        )
+        metadata = tomllib.loads(content)
+        print(json.dumps({
+            "requires_python": metadata.get("requires-python"),
+            "dependencies": metadata.get("dependencies", []),
+        }))
+        break
+else:
+    print(json.dumps({"requires_python": None, "dependencies": []}))
+PY
+}
+
+timvisher_uv__plan_lines() {
+  local name=$1 entry=$2 requires=$3
+  local venv=${timvisher_uv__venvs_dir}/${name}
+  local python version current dry line
+
+  local found=true
+  if python=$(uv python find --system "$requires" 2>/dev/null)
+  then
+    version=$(timvisher_uv__run "$name" "$python" -c 'import platform; print(platform.python_version())') ||
+      return 1
+  else
+    printf 'python: install %s\n' "$requires"
+    version=$requires
+    found=false
+  fi
+
+  if [[ -r $venv/pyvenv.cfg ]]
+  then
+    current=$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")
+  fi
+
+  if [[ -z ${current-} ]]
+  then
+    printf 'venv: create (Python %s)\n' "$version"
+  elif [[ $current != "$version" ]]
+  then
+    printf 'venv: recreate (Python %s -> %s)\n' "$current" "$version"
+  fi
+
+  [[ $found == true ]] ||
+    return 0
+  dry=$(VIRTUAL_ENV=$venv UV_PYTHON_DOWNLOADS=never \
+    timvisher_uv__run "$name" uv sync --script "$entry" --active --dry-run --color never) ||
+    return 1
+  while IFS= read -r line
+  do
+    if [[ $line == ' '[-+~]' '* ]]
+    then
+      printf 'dependencies: %s\n' "${line# }"
+    fi
+  done <<< "$dry"
+}
+
+timvisher_uv__resolve() {
+  local name=$1
+  if ! timvisher_uv__entry=$(timvisher_uv__find "$name")
+  then
+    aictl_error \
+      --code timvisher_uv_tool_not_found \
+      --message "No tool named '${name}'." \
+      --reason "A tool is an executable python/bin/${name} in an IDE root whose first line is '#!/usr/bin/env -S timvisher_uv exec ${name}'." \
+      --suggestion "Check that python/bin/${name} exists in ~/git/ide or ~/.config/timvisher/ide and that its python/bin is on PATH" \
+      --suggestion "Run 'timvisher_uv' with no name to upsert every tool"
+    return 1
+  fi
+
+  if ! timvisher_uv__requires=$(timvisher_uv__requires_python "$timvisher_uv__entry")
+  then
+    aictl_error \
+      --code timvisher_uv_metadata_invalid \
+      --message "'${timvisher_uv__entry}' declares no requires-python." \
+      --reason "timvisher_uv picks the venv's Python from the PEP 723 '# /// script' block." \
+      --suggestion "Add '# requires-python = \">=3.15\"' to the '# /// script' block in '${timvisher_uv__entry}'"
+    return 1
+  fi
+}
+
+timvisher_uv__plan() {
+  local name=$1 prefix=$2 lines line
+  timvisher_uv__resolve "$name" || return 1
+  lines=$(timvisher_uv__plan_lines "$name" "$timvisher_uv__entry" "$timvisher_uv__requires") ||
+    return 1
+  [[ -n $lines ]] || return 0
+  while IFS= read -r line
+  do
+    printf '%s%s\n' "$prefix" "$line"
+  done <<< "$lines"
+}
+
+timvisher_uv__plan_all() {
+  local name failed=0
+  while IFS= read -r name
+  do
+    timvisher_uv__plan "$name" "${name}: " || (( failed += 1 ))
+  done < <(timvisher_uv__names)
+  (( 0 == failed ))
+}
+
+timvisher_uv__record() {
+  local name=$1
+  local venv=${timvisher_uv__venvs_dir}/${name}
+  local metadata plan python=null python_version=null current=false
+
+  timvisher_uv__resolve "$name" || return 1
+  metadata=$(timvisher_uv__metadata "$timvisher_uv__entry") ||
+    {
+      aictl_error \
+        --code timvisher_uv_metadata_invalid \
+        --message "Unable to read the PEP 723 metadata in '${timvisher_uv__entry}'." \
+        --suggestion "Check the '# /// script' block in '${timvisher_uv__entry}'"
+      return 1
+    }
+  plan=$(timvisher_uv__plan_lines "$name" "$timvisher_uv__entry" "$timvisher_uv__requires") ||
+    return 1
+  if [[ -r $venv/pyvenv.cfg ]]
+  then
+    python=$(jq -n --arg v "$venv/bin/python" '$v')
+    python_version=$(jq -n --arg v "$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")" '$v')
+  fi
+  if [[ -z $plan ]]
+  then
+    current=true
+  fi
+
+  jq -n \
+    --argjson schema_version "$timvisher_uv__schema_version" \
+    --arg name "$name" \
+    --arg entry "$timvisher_uv__entry" \
+    --arg venv "$venv" \
+    --argjson python "$python" \
+    --argjson python_version "$python_version" \
+    --argjson metadata "$metadata" \
+    --argjson current "$current" \
+    '{schema_version: $schema_version, name: $name, entry: $entry, venv: $venv,
+      python: $python, python_version: $python_version,
+      requires_python: $metadata.requires_python,
+      dependencies: $metadata.dependencies, current: $current}'
+}
+
+timvisher_uv__info() {
+  local name=$1
+  shift
+  local component=
+  local -a pin=()
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      -h|--help)
+        show_info_help
+        return 0
+        ;;
+      --schema-version)
+        pin=("${2-}")
+        shift 2 || { show_info_help >&2; return 2; }
+        ;;
+      *)
+        component=$1
+        shift
+        ;;
+    esac
+  done
+
+  if (( 0 < ${#pin[@]} )) && [[ ${pin[0]} != "$timvisher_uv__schema_version" ]]
+  then
+    aictl_error \
+      --code timvisher_uv_schema_version_mismatch \
+      --message "timvisher_uv's record is schema_version ${timvisher_uv__schema_version}, not ${pin[0]}." \
+      --reason "info --schema-version pins the record contract; this tool serves only its current version." \
+      --suggestion "Update the caller for schema_version ${timvisher_uv__schema_version} and pass --schema-version ${timvisher_uv__schema_version}" \
+      --suggestion "See 'timvisher_uv info --help' for the fields and what changed between versions"
+    return 1
+  fi
+
+  local record
+  record=$(timvisher_uv__record "$name") || return 1
+  if [[ -n $component ]]
+  then
+    jq -r "$component" <<< "$record"
+  else
+    jq . <<< "$record"
+  fi
+}
+
+# A shebang hands exec the script's own path ahead of the user's
+# arguments, so a leading tool file of that name is dropped; the entry
+# is always the discovered one (overlay wins), matching the venv built
+# from its metadata.
+timvisher_uv__exec() {
+  local name=${1-}
+  shift
+  [[ -n $name ]] || { usage; return 2; }
+
+  if [[ -n ${1-} && ${1##*/} == "$name" ]] && timvisher_uv__is_tool "$1"
+  then
+    shift
+  fi
+  timvisher_uv__resolve "$name" || return 1
+  local entry=$timvisher_uv__entry
+
+  local requires venv=${timvisher_uv__venvs_dir}/${name} python version current=
+  requires=$timvisher_uv__requires
+  if [[ -r $venv/pyvenv.cfg && -x $venv/bin/python ]]
+  then
+    current=$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")
+  fi
+  if [[ -n $current ]] &&
+     python=$(uv python find --system "$requires" 2>/dev/null) &&
+     version=$("$python" -c 'import platform; print(platform.python_version())' 2>/dev/null) &&
+     [[ $version == "$current" ]]
+  then
+    exec "$venv/bin/python" "$entry" "$@"
+  fi
+
+  aictl_error \
+    --code timvisher_uv_venv_missing \
+    --message "'${name}' has no up-to-date venv at '${venv}'." \
+    --reason "The venv is missing, or its Python isn't the one '${entry}' requires (${requires})." \
+    --suggestion "Run 'timvisher_uv ${name}' to build it, then run the tool again"
+  return 1
+}
+
+timvisher_uv__upsert() {
+  local name=$1
+  local entry requires python version venv current
+  local -a clear=()
+
+  timvisher_uv__resolve "$name" || return 1
+  entry=$timvisher_uv__entry
+  requires=$timvisher_uv__requires
+
+  if ! python=$(uv python find --system "$requires" 2>/dev/null)
+  then
+    timvisher_uv__run "$name" uv python install "$requires" > /dev/null || return 1
+    info 'installed Python "%s" for "%s"' "$requires" "$name"
+    python=$(timvisher_uv__run "$name" uv python find --system "$requires") || return 1
+  fi
+
+  version=$(timvisher_uv__run "$name" "$python" -c 'import platform; print(platform.python_version())') ||
+    return 1
+
+  venv=${timvisher_uv__venvs_dir}/${name}
+  if [[ -r $venv/pyvenv.cfg ]]
+  then
+    current=$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")
+  fi
+
+  if [[ -n ${current-} && $current != "$version" ]]
+  then
+    clear=(--clear)
+  fi
+
+  timvisher_uv__run "$name" uv venv --python "$version" --allow-existing "${clear[@]}" "$venv" > /dev/null ||
+    return 1
+
+  if [[ -z ${current-} ]]
+  then
+    info 'created "%s" with Python %s' "$name" "$version"
+  elif (( 0 < ${#clear[@]} ))
+  then
+    info 'recreated "%s": Python %s -> %s' "$name" "$current" "$version"
+  fi
+  local synced line
+  synced=$(VIRTUAL_ENV=$venv timvisher_uv__run "$name" uv sync --script "$entry" --active) ||
+    return 1
+  while IFS= read -r line
+  do
+    if [[ $line == ' '[-+~]' '* ]]
+    then
+      info 'synced "%s":%s' "$name" "$line"
+    fi
+  done <<< "$synced"
+}
+
+timvisher_uv__upsert_all() {
+  local name failed=0
+  while IFS= read -r name
+  do
+    timvisher_uv__upsert "$name" || (( failed += 1 ))
+  done < <(timvisher_uv__names)
+  (( 0 == failed ))
+}
+
+case ${1-} in
+  -h|--help|help)
+    show_help
+    exit 0
+    ;;
+  '')
+    timvisher_uv__upsert_all || exit 1
+    ;;
+  --plan)
+    (( 1 == $# )) || { usage; exit 2; }
+    timvisher_uv__plan_all || exit 1
+    ;;
+  exec)
+    shift
+    timvisher_uv__exec "$@"
+    exit
+    ;;
+  info)
+    if [[ ${2-} == -h || ${2-} == --help ]]
+    then
+      show_info_help
+      exit 0
+    fi
+    (( 1 == $# )) || { usage; exit 2; }
+    timvisher_uv__upsert info || exit 1
+    ;;
+  -*)
+    usage
+    exit 2
+    ;;
+  *)
+    case ${2-} in
+      '')
+        timvisher_uv__upsert "$1" || exit 1
+        ;;
+      info)
+        name=$1
+        shift 2
+        timvisher_uv__info "$name" "$@"
+        exit
+        ;;
+      --plan)
+        (( 2 == $# )) || { usage; exit 2; }
+        timvisher_uv__plan "$1" '' || exit 1
+        ;;
+      *)
+        usage
+        exit 2
+        ;;
+    esac
+    ;;
+esac

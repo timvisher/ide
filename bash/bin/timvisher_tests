@@ -238,8 +238,14 @@ then
   build=$(mktemp -d "$templates/$key.XXXXXX") ||
     die "Can't create a build directory in '%s'" "$templates"
   mkdir "$build/home" || die "Can't create '%s'" "$build/home"
+  if ! printf '#!/bin/sh\necho "timvisher_tests: not building tool venvs in the template"\n' \
+       > "$build/timvisher_uv" ||
+     ! chmod +x "$build/timvisher_uv"
+  then
+    die "Can't create '%s'" "$build/timvisher_uv"
+  fi
   if ! env -i HOME="$build/home" PATH="$base_path" TMPDIR="${TMPDIR:-/tmp}" \
-    LANG="${LANG:-en_US.UTF-8}" \
+    LANG="${LANG:-en_US.UTF-8}" TIMVISHER_INSTALL_UV="$build/timvisher_uv" \
     bash "$core/bash/install.bash" --core "$core" --overlay "$overlay" \
     </dev/null >"$build/install.log" 2>&1
   then
@@ -443,7 +449,7 @@ fi
 
 show_log() {
   local kind=$1 log=$2
-  if [[ $kind == unittest ]]
+  if [[ $kind == unittest || $kind == conformance ]]
   then
     sed 's/^ERROR: /FAIL: /' "$log"
   else
@@ -495,6 +501,15 @@ run_suite() {
   local rc=$?
   kill -KILL -- "-$pid" 2>/dev/null
   trap - INT HUP TERM
+
+  # unittest exits 5 whenever no test ran, which also happens when a
+  # setUpModule/setUpClass fails; only a python/tests with no test files
+  # at all counts as passing.
+  if [[ $kind == unittest ]] && (( rc == 5 )) &&
+     [[ -z $(/usr/bin/find "$root/python/tests" -name 'test*.py' -print -quit) ]]
+  then
+    rc=0
+  fi
 
   show_log "$kind" "$dir/log"
 

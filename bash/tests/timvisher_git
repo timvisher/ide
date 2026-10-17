@@ -3074,6 +3074,154 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# submodule tests
+# ---------------------------------------------------------------------------
+
+sm_git() {
+  "$test_git" -c user.email=test@test.com -c user.name=Test \
+    -c core.hooksPath=/dev/null -c protocol.file.allow=always "$@"
+}
+
+sm_sub_src="$tmpdir/sm_sub_src"
+sm_super_src="$tmpdir/sm_super_src"
+sm_git init -q -b main "$sm_sub_src"
+printf 'sub content\n' > "$sm_sub_src/f"
+sm_git -C "$sm_sub_src" add f
+sm_git -C "$sm_sub_src" commit -q -m sub
+sm_git init -q -b main "$sm_super_src"
+printf 'super\n' > "$sm_super_src/r"
+sm_git -C "$sm_super_src" add r
+sm_git -C "$sm_super_src" commit -q -m super
+sm_git -C "$sm_super_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_super_src" config -f .gitmodules submodule.m.url https://github.com/smorg/smsub
+sm_git -C "$sm_super_src" add .gitmodules
+sm_git -C "$sm_super_src" commit -q -m 'add submodule'
+sm_recorded=$(sm_git -C "$sm_super_src" rev-parse HEAD:m)
+
+for sm_pair in "smsub:$sm_sub_src" "smsuper:$sm_super_src"
+do
+  sm_cache="$cache_dir/repo_trunks/smorg/${sm_pair%%:*}"
+  mkdir -p "$(dirname "$sm_cache")"
+  sm_git init -q --bare "$sm_cache"
+  sm_git -C "$sm_cache" remote add origin "${sm_pair#*:}"
+  sm_git -C "$sm_cache" fetch -q origin
+  sm_git -C "$sm_cache" remote set-head origin -a >/dev/null 2>&1
+done
+
+run_test
+sm_wt=$(ensure_worktree "smorg/smsuper/sm-feature" 2>/dev/null) && sm_rc=0 || sm_rc=$?
+sm_status=$(sm_git -C "$sm_wt" submodule status 2>/dev/null) || sm_status=""
+if (( sm_rc == 0 )) && [[ $sm_status == " ${sm_recorded} m"* ]]
+then
+  pass "ensure_worktree: checks out submodules at their recorded commits"
+else
+  fail "ensure_worktree submodules: rc=${sm_rc} status='${sm_status}' recorded='${sm_recorded}'"
+fi
+
+run_test
+if [[ $(cat "$sm_wt/m/f" 2>/dev/null) == 'sub content' ]]
+then
+  pass "ensure_worktree: submodule contents are present"
+else
+  fail "ensure_worktree submodule contents: '$(cat "$sm_wt/m/f" 2>&1)'"
+fi
+
+run_test
+sm_origin=$(sm_git -C "$sm_wt/m" remote get-url origin 2>/dev/null) || sm_origin=""
+sm_config_url=$(sm_git -C "$sm_wt" config submodule.m.url 2>/dev/null) || sm_config_url=""
+if [[ $sm_origin == https://github.com/smorg/smsub && $sm_config_url == https://github.com/smorg/smsub ]]
+then
+  pass "ensure_worktree: submodule remotes point at the real URL, not the cache"
+else
+  fail "ensure_worktree submodule url: origin='${sm_origin}' config='${sm_config_url}'"
+fi
+
+run_test
+sm_module=$(sm_git -C "$sm_wt" rev-parse --path-format=absolute --git-path modules/m 2>/dev/null) || sm_module=""
+if [[ -d $sm_module && ! -e $sm_module/objects/info/alternates ]]
+then
+  pass "ensure_worktree: submodule objects are copied, not borrowed from the cache"
+else
+  fail "ensure_worktree submodule alternates: module='${sm_module}'"
+fi
+
+run_test
+if [[ $(sm_git -C "$sm_wt/m" rev-parse --show-toplevel 2>/dev/null) == "$sm_wt/m" ]]
+then
+  pass "ensure_worktree: submodules work at the published path"
+else
+  fail "ensure_worktree submodule after publish: '$(sm_git -C "$sm_wt/m" rev-parse --show-toplevel 2>&1)'"
+fi
+
+run_test
+sm_moved="$live_repo_dir/smorg/smsuper/deeper/still/sm-moved"
+mkdir -p "$(dirname "$sm_moved")" &&
+  mv "$sm_wt" "$sm_moved" &&
+  sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" worktree repair "$sm_moved" >/dev/null 2>&1 &&
+  repair_submodule_worktrees "$sm_moved" 2>/dev/null && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ $(sm_git -C "$sm_moved/m" rev-parse --show-toplevel 2>/dev/null) == "$sm_moved/m" ]] &&
+   [[ $(sm_git -C "$sm_moved" submodule status 2>/dev/null) == " ${sm_recorded} m"* ]]
+then
+  pass "repair_submodule_worktrees: submodules work after the worktree moves to a different depth"
+else
+  fail "repair_submodule_worktrees: rc=${sm_rc} '$(sm_git -C "$sm_moved/m" rev-parse --show-toplevel 2>&1)'"
+fi
+
+run_test
+if sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" worktree remove --force "$sm_moved" >/dev/null 2>&1 &&
+   [[ ! -e $sm_moved ]]
+then
+  pass "a worktree with submodules can be removed"
+else
+  fail "submodule worktree remove: '$(ls -d "$sm_moved" 2>&1)'"
+fi
+
+run_test
+printf 'sub content 2\n' > "$sm_sub_src/f"
+sm_git -C "$sm_sub_src" commit -q -am 'sub 2'
+sm_git -C "$cache_dir/repo_trunks/smorg/smsub" fetch -q origin
+sm_git -C "$sm_super_src" checkout -q -b sm-base
+sm_git -C "$sm_super_src/m" pull -q origin main >/dev/null 2>&1
+sm_git -C "$sm_super_src" add m
+sm_git -C "$sm_super_src" commit -q -m 'bump submodule'
+sm_base_recorded=$(sm_git -C "$sm_super_src" rev-parse HEAD:m)
+sm_git -C "$sm_super_src" checkout -q main
+sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" fetch -q origin
+sm_stack=$(ensure_worktree "smorg/smsuper/sm-stack" 2>/dev/null)
+sm_git -C "$sm_stack" reset -q --hard origin/sm-base >/dev/null 2>&1 &&
+  init_submodules "$sm_stack" >/dev/null 2>&1 && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ $sm_base_recorded != "$sm_recorded" ]] &&
+   [[ $(sm_git -C "$sm_stack" submodule status 2>/dev/null) == " ${sm_base_recorded} m"* ]] &&
+   [[ $(cat "$sm_stack/m/f" 2>/dev/null) == 'sub content 2' ]]
+then
+  pass "init_submodules after a reset updates submodules to the new recorded commits (as clone_stacked does)"
+else
+  fail "init_submodules after reset: rc=${sm_rc} base='${sm_base_recorded}' status='$(sm_git -C "$sm_stack" submodule status 2>&1)'"
+fi
+
+run_test
+sm_bad_src="$tmpdir/sm_bad_src"
+sm_git init -q -b main "$sm_bad_src"
+sm_git -C "$sm_bad_src" commit -q --allow-empty -m bad
+sm_git -C "$sm_bad_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_bad_src" config -f .gitmodules submodule.m.url https://gitlab.example.com/x/y
+sm_git -C "$sm_bad_src" add .gitmodules
+sm_git -C "$sm_bad_src" commit -q -m 'add submodule'
+sm_bad_cache="$cache_dir/repo_trunks/smorg/smbad"
+sm_git init -q --bare "$sm_bad_cache"
+sm_git -C "$sm_bad_cache" remote add origin "$sm_bad_src"
+sm_git -C "$sm_bad_cache" fetch -q origin
+sm_git -C "$sm_bad_cache" remote set-head origin -a >/dev/null 2>&1
+sm_bad_err=$(ensure_worktree "smorg/smbad/sm-feature" 2>&1 >/dev/null) && sm_rc=0 || sm_rc=$?
+if (( sm_rc != 0 )) && [[ $sm_bad_err == *gitlab.example.com* ]] &&
+   [[ ! -e $live_repo_dir/smorg/smbad/sm-feature ]]
+then
+  pass "ensure_worktree: a non-github submodule URL fails the build, naming the URL"
+else
+  fail "ensure_worktree non-github submodule: rc=${sm_rc} err='${sm_bad_err}'"
+fi
+
+# ---------------------------------------------------------------------------
 # die_if_git_component tests
 # ---------------------------------------------------------------------------
 

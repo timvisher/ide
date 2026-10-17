@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+script_dir="$(cd "$(dirname "$0")/.." && pwd)"
+script="${script_dir}/bin/timvisher_uv"
+
+tmpdir=
+trap 'rm -rf -- "$tmpdir"' EXIT
+if ! tmpdir=$(mktemp -d)
+then
+  echo "mktemp failed" >&2
+  exit 1
+fi
+
+mkdir -p "$tmpdir/home" "$tmpdir/mockbin" "$tmpdir/core/python/bin" "$tmpdir/overlay/python/bin"
+ln -s "${script_dir}/functions" "$tmpdir/home/.functions"
+
+cat > "$tmpdir/mockbin/uv" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "VIRTUAL_ENV=${VIRTUAL_ENV-} uv $* UV_PYTHON_DOWNLOADS=${UV_PYTHON_DOWNLOADS-}" >> "$FAKE_UV_LOG"
+case "$1 $2" in
+  'python find')
+    if [[ -e $FAKE_UV_DIR/installed ]]
+    then
+      printf '%s\n' "$FAKE_UV_DIR/python"
+    else
+      echo "error: No interpreter found for Python $3" >&2
+      exit 2
+    fi
+    ;;
+  'python install')
+    touch "$FAKE_UV_DIR/installed"
+    echo "Installed Python $3" >&2
+    ;;
+  venv\ *)
+    shift
+    venv=
+    version=
+    while (( 0 < $# ))
+    do
+      case $1 in
+        --python) version=$2; shift 2 ;;
+        --*) shift ;;
+        *) venv=$1; shift ;;
+      esac
+    done
+    mkdir -p "$venv/bin"
+    printf 'version_info = %s\n' "$version" > "$venv/pyvenv.cfg"
+    ln -sfn "$FAKE_REAL_PYTHON" "$venv/bin/python"
+    ;;
+  sync\ *)
+    if [[ -n ${FAKE_UV_SYNC_CHANGES-} ]]
+    then
+      printf 'Resolved 1 package in 1ms\nInstalled 1 package in 1ms\n %s\n' "$FAKE_UV_SYNC_CHANGES" >&2
+    fi
+    if (( 0 != ${FAKE_UV_SYNC_RC:-0} ))
+    then
+      echo "error: Failed to resolve script requirements" >&2
+      exit "$FAKE_UV_SYNC_RC"
+    fi
+    ;;
+esac
+MOCK
+chmod +x "$tmpdir/mockbin/uv"
+
+cat > "$tmpdir/mockbin/python" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$FAKE_PY_VERSION"
+MOCK
+chmod +x "$tmpdir/mockbin/python"
+
+make_tool() {
+  local path=$1
+  local name=${path##*/}
+  local requires=${2-'>=3.15'}
+  local dependencies=${3-'[]'}
+  {
+    printf '#!/usr/bin/env -S timvisher_uv exec %s\n' "$name"
+    printf '# /// script\n'
+    if [[ -n $requires ]]
+    then
+      printf '# requires-python = "%s"\n' "$requires"
+    fi
+    printf '# dependencies = %s\n' "$dependencies"
+    printf '# ///\n'
+    printf 'print("hi")\n'
+  } > "$path"
+  chmod +x "$path"
+}
+
+reset_uv() {
+  rm -rf "$tmpdir/data" "$tmpdir/fakeuv"
+  mkdir -p "$tmpdir/fakeuv"
+  ln -s "$tmpdir/mockbin/python" "$tmpdir/fakeuv/python"
+  touch "$tmpdir/fakeuv/installed"
+  : > "$tmpdir/uv.log"
+}
+
+real_python=$(command -v python3) || { echo "FAIL: no python3 on PATH" >&2; exit 1; }
+mkdir -p "$tmpdir/uvbin"
+ln -s "$script" "$tmpdir/uvbin/timvisher_uv"
+
+path_without_tools=$(
+  IFS=:
+  kept=()
+  for entry in $PATH
+  do
+    [[ $entry == */python/bin ]] || kept+=("$entry")
+  done
+  printf '%s' "${kept[*]}"
+)
+
+run_uv() {
+  HOME="$tmpdir/home" \
+  XDG_CONFIG_HOME="$tmpdir/home/.config" \
+  XDG_DATA_HOME="$tmpdir/data" \
+  XDG_STATE_HOME="$tmpdir/home/.local/state" \
+  XDG_CACHE_HOME="$tmpdir/home/.cache" \
+  PATH="$tmpdir/overlay/python/bin:$tmpdir/core/python/bin:$tmpdir/mockbin:$path_without_tools" \
+  FAKE_UV_LOG="$tmpdir/uv.log" \
+  FAKE_UV_DIR="$tmpdir/fakeuv" \
+  FAKE_PY_VERSION="${FAKE_PY_VERSION:-3.15.0}" \
+  FAKE_REAL_PYTHON="$real_python" \
+  TIMVISHER_AGENT=true \
+  timvisher_logging_log_level=INFO \
+    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+check() {
+  local description=$1
+  shift
+  run_test
+  if "$@"
+  then
+    pass "$description"
+  else
+    fail "$description"
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    sed 's/^/    uv: /' "$tmpdir/uv.log" >&2
+  fi
+}
+
+logged() {
+  grep -qF -- "$1" "$tmpdir/uv.log"
+}
+
+not_logged() {
+  ! grep -qF -- "$1" "$tmpdir/uv.log"
+}
+
+stdout_empty() {
+  [[ ! -s $tmpdir/stdout ]]
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+venv="$tmpdir/data/timvisher_uv/virtualenvs/demo"
+core_demo="$tmpdir/core/python/bin/demo"
+make_tool "$core_demo"
+
+reset_uv
+run_uv demo
+rc=$?
+check 'create: exits 0' test "$rc" -eq 0
+check 'create: prints nothing on stdout' stdout_empty
+check 'create: makes the venv with the found version' \
+      logged "uv venv --python 3.15.0 --allow-existing $venv"
+check 'create: does not clear a new venv' not_logged '--clear'
+check 'create: syncs the script into the venv' \
+      logged "VIRTUAL_ENV=$venv uv sync --script $core_demo --active"
+check 'create: logs that it created the venv' stderr_has 'created'
+check 'create: skips python install when uv finds a match' not_logged 'uv python install'
+check 'create: finds Python outside any project venv' logged 'uv python find --system >=3.15'
+check 'create: never asks uv for a venv-relative Python' eval "! grep -E 'uv python find [^-]' '$tmpdir/uv.log'"
+
+: > "$tmpdir/uv.log"
+run_uv demo
+rc=$?
+check 'no-op: exits 0' test "$rc" -eq 0
+check 'no-op: prints nothing on stdout' stdout_empty
+check 'no-op: does not clear the venv' not_logged '--clear'
+check 'no-op: logs no change to the venv' eval "! grep -qE 'created|recreated|synced' '$tmpdir/stderr'"
+
+: > "$tmpdir/uv.log"
+FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_uv demo
+check 'dependency change: logs what uv sync installed' stderr_has 'synced \"demo\": + six==1.17.0'
+check 'dependency change: still prints nothing on stdout' stdout_empty
+
+: > "$tmpdir/uv.log"
+FAKE_PY_VERSION=3.15.1 run_uv demo
+rc=$?
+check 'version change: exits 0' test "$rc" -eq 0
+check 'version change: recreates the venv with --clear' \
+      logged "uv venv --python 3.15.1 --allow-existing --clear $venv"
+check 'version change: logs the old and new versions' stderr_has '3.15.0 -> 3.15.1'
+
+reset_uv
+rm "$tmpdir/fakeuv/installed"
+run_uv demo
+rc=$?
+check 'python install: exits 0' test "$rc" -eq 0
+check 'python install: installs the requested Python when none is found' \
+      logged 'uv python install >=3.15'
+check 'python install: logs the install' stderr_has 'installed Python'
+
+overlay_demo="$tmpdir/overlay/python/bin/demo"
+make_tool "$overlay_demo"
+reset_uv
+run_uv demo
+check 'precedence: the overlay tool wins over core' \
+      logged "uv sync --script $overlay_demo --active"
+check 'precedence: the core tool is not synced' not_logged "$core_demo"
+
+make_tool "$tmpdir/core/python/bin/other"
+printf '#!/usr/bin/env python3\nprint("not a tool")\n' > "$tmpdir/core/python/bin/plain"
+chmod +x "$tmpdir/core/python/bin/plain"
+reset_uv
+run_uv
+rc=$?
+check 'all tools: exits 0' test "$rc" -eq 0
+check 'all tools: upserts the overlay demo' \
+      logged "uv sync --script $overlay_demo --active"
+check 'all tools: upserts core-only tools' \
+      logged "uv sync --script $tmpdir/core/python/bin/other --active"
+check 'all tools: skips the shadowed core demo' not_logged "$core_demo"
+check 'all tools: ignores executables without the timvisher_uv shebang' not_logged 'plain'
+
+reset_uv
+run_uv plain
+rc=$?
+check 'unknown tool: exits 1' test "$rc" -eq 1
+check 'unknown tool: reports timvisher_uv_tool_not_found' \
+      stderr_has '"code":"timvisher_uv_tool_not_found"'
+check 'unknown tool: suggests where tools live' stderr_has 'python/bin'
+
+make_tool "$tmpdir/core/python/bin/noreq" ''
+reset_uv
+run_uv noreq
+rc=$?
+check 'no requires-python: exits 1' test "$rc" -eq 1
+check 'no requires-python: reports timvisher_uv_metadata_invalid' \
+      stderr_has '"code":"timvisher_uv_metadata_invalid"'
+
+reset_uv
+FAKE_UV_SYNC_RC=1 run_uv demo
+rc=$?
+check 'uv failure: exits 1' test "$rc" -eq 1
+check 'uv failure: reports timvisher_uv_uv_failed' stderr_has '"code":"timvisher_uv_uv_failed"'
+check "uv failure: includes uv's own error" stderr_has 'Failed to resolve script requirements'
+check 'uv failure: suggests rerunning' stderr_has 'timvisher_uv demo'
+
+reset_uv
+FAKE_UV_SYNC_RC=1 run_uv
+rc=$?
+check 'all tools with a failure: exits 1' test "$rc" -eq 1
+check 'all tools with a failure: still tries every tool' \
+      logged "uv sync --script $tmpdir/core/python/bin/other --active"
+rm "$tmpdir/core/python/bin/noreq"
+
+info_of() {
+  jq -r "$1" "$tmpdir/stdout"
+}
+
+rm -f "$overlay_demo"
+reset_uv
+run_uv demo
+run_uv demo info
+rc=$?
+check 'info: exits 0' test "$rc" -eq 0
+check 'info: bare info is JSON' jq -e . "$tmpdir/stdout"
+check 'info: schema_version is 1' test "$(info_of .schema_version)" = 1
+check 'info: name' test "$(info_of .name)" = demo
+check 'info: entry is the tool path' test "$(info_of .entry)" = "$core_demo"
+check 'info: venv' test "$(info_of .venv)" = "$venv"
+check "info: python is the venv's interpreter" test "$(info_of .python)" = "$venv/bin/python"
+check "info: python_version is the venv's version" test "$(info_of .python_version)" = 3.15.0
+check 'info: requires_python' test "$(info_of .requires_python)" = '>=3.15'
+check 'info: dependencies' test "$(jq -c .dependencies "$tmpdir/stdout")" = '[]'
+check 'info: current after an upsert' test "$(info_of .current)" = true
+
+run_uv demo info .name
+check 'info: a scalar component prints bare' test "$(cat "$tmpdir/stdout")" = demo
+
+make_tool "$tmpdir/core/python/bin/deps" '>=3.15' '["six", "attrs>=23"]'
+reset_uv
+run_uv deps info .dependencies
+check 'info: a non-scalar component prints as JSON' \
+      test "$(jq -c . "$tmpdir/stdout")" = '["six","attrs>=23"]'
+rm "$tmpdir/core/python/bin/deps"
+
+reset_uv
+run_uv demo info
+check 'info: python is null before the venv exists' test "$(info_of .python)" = null
+check 'info: python_version is null before the venv exists' test "$(info_of .python_version)" = null
+check 'info: not current before the venv exists' test "$(info_of .current)" = false
+check 'info: does not create the venv' test ! -e "$venv"
+
+run_uv demo
+FAKE_PY_VERSION=3.15.1 run_uv demo info .current
+check 'info: not current when the Python version changed' test "$(cat "$tmpdir/stdout")" = false
+FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_uv demo info .current
+check 'info: not current when dependencies would change' test "$(cat "$tmpdir/stdout")" = false
+
+run_uv demo info --schema-version 1 .name
+rc=$?
+check 'info --schema-version: a match exits 0' test "$rc" -eq 0
+check 'info --schema-version: a match prints the record' test "$(cat "$tmpdir/stdout")" = demo
+run_uv demo info --schema-version 2
+rc=$?
+check 'info --schema-version: a mismatch exits 1' test "$rc" -eq 1
+check 'info --schema-version: a mismatch reports timvisher_uv_schema_version_mismatch' \
+      stderr_has '"code":"timvisher_uv_schema_version_mismatch"'
+check 'info --schema-version: the suggestion names the current version and info --help' \
+      eval 'stderr_has "--schema-version 1" && stderr_has "info --help"'
+check 'info --schema-version: a mismatch prints nothing on stdout' stdout_empty
+
+run_uv info --help
+rc=$?
+check 'info --help: exits 0' test "$rc" -eq 0
+check 'info --help: states schema_version 1' grep -q 'schema_version.*1' "$tmpdir/stdout"
+
+reset_uv
+run_uv demo
+: > "$tmpdir/uv.log"
+run_uv demo --plan
+rc=$?
+check 'plan current: exits 0' test "$rc" -eq 0
+check 'plan current: reports nothing' stdout_empty
+check 'plan: asks uv for a dry run' logged "uv sync --script $core_demo --active --dry-run"
+check 'plan: never runs uv venv' not_logged 'uv venv'
+check 'plan: the dry run never downloads a Python' logged '--dry-run --color never UV_PYTHON_DOWNLOADS=never'
+
+FAKE_PY_VERSION=3.15.1 run_uv demo --plan
+rc=$?
+check 'plan stale: exits 0' test "$rc" -eq 0
+check 'plan stale: reports the recreate' \
+      grep -qxF 'venv: recreate (Python 3.15.0 -> 3.15.1)' "$tmpdir/stdout"
+check 'plan stale: leaves the venv alone' grep -q 'version_info = 3.15.0' "$venv/pyvenv.cfg"
+
+FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_uv demo --plan
+check 'plan: reports dependency changes' grep -qxF 'dependencies: + six==1.17.0' "$tmpdir/stdout"
+
+reset_uv
+run_uv demo --plan
+check 'plan: reports a venv to create' grep -qxF 'venv: create (Python 3.15.0)' "$tmpdir/stdout"
+check 'plan: does not create the venv' test ! -e "$venv"
+rm "$tmpdir/fakeuv/installed"
+: > "$tmpdir/uv.log"
+run_uv demo --plan
+check 'plan: reports a Python to install' grep -qxF 'python: install >=3.15' "$tmpdir/stdout"
+check 'plan: does not install Python' not_logged 'uv python install'
+check 'plan: skips the dependency dry run until the Python is installed' not_logged '--dry-run'
+
+reset_uv
+run_uv --plan
+rc=$?
+check 'bare plan: exits 0' test "$rc" -eq 0
+check 'bare plan: prefixes each line with the tool' grep -qxF 'demo: venv: create (Python 3.15.0)' "$tmpdir/stdout"
+check 'bare plan: covers every tool' grep -qxF 'other: venv: create (Python 3.15.0)' "$tmpdir/stdout"
+
+cat > "$tmpdir/core/python/bin/echoer" <<'TOOL'
+#!/usr/bin/env -S timvisher_uv exec echoer
+# /// script
+# requires-python = ">=3.15"
+# dependencies = []
+# ///
+import sys
+
+print("argv=" + "|".join(sys.argv[1:]))
+print("stdin=" + sys.stdin.read().strip())
+sys.exit(int(sys.argv[1]) if sys.argv[1:] and sys.argv[1].isdigit() else 0)
+TOOL
+chmod +x "$tmpdir/core/python/bin/echoer"
+
+run_tool() {
+  HOME="$tmpdir/home" \
+  XDG_CONFIG_HOME="$tmpdir/home/.config" \
+  XDG_DATA_HOME="$tmpdir/data" \
+  XDG_STATE_HOME="$tmpdir/home/.local/state" \
+  XDG_CACHE_HOME="$tmpdir/home/.cache" \
+  PATH="$tmpdir/uvbin:$tmpdir/overlay/python/bin:$tmpdir/core/python/bin:$tmpdir/mockbin:$path_without_tools" \
+  FAKE_UV_LOG="$tmpdir/uv.log" \
+  FAKE_UV_DIR="$tmpdir/fakeuv" \
+  FAKE_PY_VERSION="${FAKE_PY_VERSION:-3.15.0}" \
+  FAKE_REAL_PYTHON="$real_python" \
+  TIMVISHER_AGENT=true \
+    "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+reset_uv
+run_uv echoer
+run_tool "$tmpdir/core/python/bin/echoer" 7 'two words' <<< 'from stdin'
+rc=$?
+check 'shebang: the tool runs in its venv and gets its arguments' \
+      grep -qxF 'argv=7|two words' "$tmpdir/stdout"
+check 'shebang: stdin passes through' grep -qxF 'stdin=from stdin' "$tmpdir/stdout"
+check "shebang: the tool's exit status passes through" test "$rc" -eq 7
+
+run_tool timvisher_uv exec echoer a b </dev/null
+rc=$?
+check 'exec: runs the tool with the given arguments' \
+      eval "(( rc == 0 )) && grep -qxF 'argv=a|b' '$tmpdir/stdout'"
+
+reset_uv
+run_tool "$tmpdir/core/python/bin/echoer" </dev/null
+rc=$?
+check 'exec: a missing venv exits 1' test "$rc" -eq 1
+check 'exec: a missing venv reports timvisher_uv_venv_missing' \
+      stderr_has '"code":"timvisher_uv_venv_missing"'
+check 'exec: a missing venv suggests timvisher_uv <name>' stderr_has "timvisher_uv echoer"
+check 'exec: a missing venv runs nothing' stdout_empty
+
+reset_uv
+run_uv echoer
+FAKE_PY_VERSION=3.15.1 run_tool "$tmpdir/core/python/bin/echoer" </dev/null
+rc=$?
+check 'exec: a venv on another Python is stale' \
+      eval "(( rc == 1 )) && grep -qF '\"code\":\"timvisher_uv_venv_missing\"' '$tmpdir/stderr'"
+: > "$tmpdir/uv.log"
+FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_tool "$tmpdir/core/python/bin/echoer" </dev/null
+rc=$?
+check 'exec: dependency drift alone does not block a run' test "$rc" -eq 0
+check 'exec: never syncs, creates a venv or installs a Python' \
+      eval "! grep -qE 'uv (sync|venv|python install)' '$tmpdir/uv.log'"
+rm "$tmpdir/core/python/bin/echoer"
+
+run_uv --help
+rc=$?
+check '--help: exits 0 with usage on stdout' eval "(( rc == 0 )) && grep -q 'Usage: timvisher_uv' '$tmpdir/stdout'"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

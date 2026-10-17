@@ -1506,6 +1506,101 @@ ensure_fork_trunks() {
     warn "Failed to ensure fork trunk worktree '${fork_org}/${fork_repo}/${fork_trunk}'"
 }
 
+github_repo_of_url() {
+  local url=$1 repo
+
+  case $url in
+    https://github.com/*)
+      repo=${url#https://github.com/}
+      ;;
+    ssh://git@github.com/*)
+      repo=${url#ssh://git@github.com/}
+      ;;
+    git@github.com:*)
+      repo=${url#git@github.com:}
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  repo=${repo%/}
+  repo=${repo%.git}
+  [[ $repo == */* && $repo != */*/* ]] ||
+    return 1
+  printf '%s' "$repo"
+}
+
+# Submodules are cloned from the submodule repo's bare cache by
+# overriding its URL for the update, not with --reference: --reference
+# still fetches from the real URL (network), and leaves alternates that
+# a cache prune could break.
+init_submodules() {
+  local worktree=$1
+  [[ -f $worktree/.gitmodules ]] ||
+    return 0
+
+  local key path name url repo cache module
+  while read -r key path
+  do
+    name=${key#submodule.}
+    name=${name%.path}
+    url=$(command git config --file "$worktree/.gitmodules" --get "submodule.${name}.url") ||
+      {
+        error "Submodule '%s' in '%s' has no URL in .gitmodules" "$name" "$worktree"
+        return 1
+      }
+    repo=$(github_repo_of_url "$url") ||
+      {
+        error "Submodule '%s' has URL '%s'; only github.com submodules are supported. Check out '%s' by hand with git submodule update --init." "$name" "$url" "$path"
+        return 1
+      }
+    cache=$(cache_trunk "$repo") ||
+      {
+        error "Unable to cache '%s' for submodule '%s'" "$repo" "$name"
+        return 1
+      }
+    info "Checking out submodule '%s' from cache '%s'" "$path" "$cache"
+    if ! module=$(command git -C "$worktree" rev-parse --path-format=absolute --git-path "modules/${name}") ||
+       ! command git -C "$worktree" submodule init -- "$path" >&2 ||
+       { [[ -f $module/config ]] && ! command git config --file "$module/config" remote.origin.url "$cache"; } ||
+       ! command git -C "$worktree" -c protocol.file.allow=always \
+           -c "submodule.${name}.url=${cache}" submodule update -- "$path" >&2 ||
+       [[ ! -f $module/config ]] ||
+       ! command git config --file "$module/config" remote.origin.url "$url"
+    then
+      error "Unable to check out submodule '%s' in '%s'" "$path" "$worktree"
+      return 1
+    fi
+  done < <(command git config --file "$worktree/.gitmodules" --get-regexp '^submodule\..*\.path$')
+}
+
+# A moved worktree leaves each submodule's core.worktree and .git file
+# pointing at the old location, and git refuses to run against that
+# module gitdir, so both are rewritten directly.
+repair_submodule_worktrees() {
+  local worktree=$1
+  [[ -f $worktree/.gitmodules ]] ||
+    return 0
+
+  local key path name module
+  while read -r key path
+  do
+    name=${key#submodule.}
+    name=${name%.path}
+    module=$(command git -C "$worktree" rev-parse --path-format=absolute --git-path "modules/${name}") ||
+      return 1
+    [[ -f $module/config ]] ||
+      continue
+    if ! command git config --file "$module/config" core.worktree "$worktree/$path" ||
+       { [[ -f $worktree/$path/.git ]] && ! printf 'gitdir: %s\n' "$module" > "$worktree/$path/.git"; }
+    then
+      error "Unable to repair submodule '%s' in '%s'" "$path" "$worktree"
+      return 1
+    fi
+  done < <(command git config --file "$worktree/.gitmodules" --get-regexp '^submodule\..*\.path$')
+}
+
 ensure_worktree() {
   local source=$1
   die_if_git_component "ensure_worktree: source" "$source"
@@ -1572,8 +1667,12 @@ ensure_worktree() {
       info "Branch '%s' already checked out at '%s'; moving to '%s'" "$branch" "$existing_wt" "$branch_dir_abs"
       mkdir -p "$branch_dir_parent" ||
         die "Unable to create branch directory parent '${branch_dir_parent}'"
-      command git -C "${trunk_cache}" worktree move "$existing_wt" "$branch_dir_abs" >&2 ||
+      mv "$existing_wt" "$branch_dir_abs" ||
         die "Unable to move worktree from '%s' to '%s'" "$existing_wt" "$branch_dir_abs"
+      command git -C "${trunk_cache}" worktree repair "$branch_dir_abs" >&2 ||
+        die "Unable to repair worktree at '%s' after move" "$branch_dir_abs"
+      repair_submodule_worktrees "$branch_dir_abs" ||
+        die "Unable to repair submodules at '%s' after move" "$branch_dir_abs"
       branch_dir_exists=1
     fi
   fi
@@ -1685,6 +1784,11 @@ ensure_worktree() {
 
     if [[ -z $errors ]]; then
       configure_remotes_and_tracking "$trunk_cache" "$source"
+      if [[ -n $building_in_temp ]]
+      then
+        init_submodules "$build_dir" ||
+          exit 1
+      fi
       maybe_execute_hook "$(get_org "$source")" "$(get_repo "$source")" post-make-branch-dir
     else
       exit 1
@@ -1693,7 +1797,8 @@ ensure_worktree() {
 
   # Publish: move the freshly-built worktree into its canonical location
   # as the final step, then drop the not-ready marker.  Use mv + `git
-  # worktree repair` (submodule-agnostic) rather than `git worktree move`.
+  # worktree repair` + repair_submodule_worktrees rather than `git worktree
+  # move`, which refuses worktrees with submodules.
   # The rename is within the same parent dir, so it is atomic on a single
   # filesystem.
   if [[ -n $building_in_temp ]]
@@ -1704,6 +1809,8 @@ ensure_worktree() {
       die "Unable to move worktree from '${build_dir}' to '${branch_dir_abs}'"
     command git -C "${trunk_cache}" worktree repair "$branch_dir_abs" >&2 ||
       die "Unable to repair worktree at '${branch_dir_abs}' after move"
+    repair_submodule_worktrees "$branch_dir_abs" ||
+      die "Unable to repair submodules at '${branch_dir_abs}' after move"
     rm -f "${branch_dir_abs}/x.ntmux3-building" ||
       warn "Unable to remove x.ntmux3-building marker in '${branch_dir_abs}' (non-fatal)"
   fi
@@ -3060,6 +3167,9 @@ clone_stacked() {
 
     git -C "$target_dir" reset --hard "$base_branch" >&2 ||
       die "clone_stacked: git reset --hard '%s' failed in '%s'" "$base_branch" "$target_dir"
+
+    init_submodules "$target_dir" ||
+      die "clone_stacked: unable to check out submodules for '%s' in '%s'" "$base_branch" "$target_dir"
 
     rm -f "$building_marker" ||
       warn "clone_stacked: unable to remove x.ntmux3-building (non-fatal)"

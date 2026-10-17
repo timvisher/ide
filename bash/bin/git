@@ -58,6 +58,16 @@ source ~/.functions/aictl.bash ||
     exit 1
   }
 
+_timvisher_git__trace2_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
+if [[ -z ${GIT_TRACE2_EVENT-} ]]
+then
+  if [[ ! -d $_timvisher_git__trace2_dir ]]
+  then
+    mkdir -p "$_timvisher_git__trace2_dir" 2>/dev/null || true
+  fi
+  export GIT_TRACE2_EVENT="$_timvisher_git__trace2_dir/trace2.jsonl"
+fi
+
 # ---------------------------------------------------------------------------
 # Agent invocation log
 #

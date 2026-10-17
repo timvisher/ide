@@ -27,7 +27,7 @@ tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
 tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
 
 overlay="$tmpdir/overlay"
-mkdir -p "$overlay/git/bin" \
+mkdir -p "$overlay/git/bin" "$overlay/python/bin" \
          "$overlay/git/XDG_CONFIG_HOME/git" \
          "$overlay/ai/HOME/.agents/skills/overlay-skill" ||
   exit 1
@@ -42,10 +42,21 @@ chmod +x "$overlay/git/bin/install" || exit 1
 printf '[core]\n' > "$overlay/git/XDG_CONFIG_HOME/git/config_overlay"
 printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
 
+uv_stub="$tmpdir/timvisher_uv_stub"
+cat > "$uv_stub" <<STUB
+#!/usr/bin/env bash
+printf 'args=%s|\n' "\$*" >> '$tmpdir/uv_calls'
+printf 'path=%s\n' "\$PATH" >> '$tmpdir/uv_calls'
+exit \${UV_STUB_RC:-0}
+STUB
+chmod +x "$uv_stub" || exit 1
+
 run_install() {
   local home=$1
   shift
-  timvisher_tests_with_home "$home" bash "$core/bash/install.bash" "$@" </dev/null \
+  : > "$tmpdir/uv_calls"
+  TIMVISHER_INSTALL_UV="$uv_stub" \
+    timvisher_tests_with_home "$home" bash "$core/bash/install.bash" "$@" </dev/null \
     >"$tmpdir/out" 2>&1
 }
 
@@ -96,6 +107,13 @@ check 'overlay skills are installed' \
 check '~/AGENTS.md is the core AGENTS.md' \
       test "$home/AGENTS.md" -ef "$core/ai/HOME/AGENTS.md"
 
+check 'install runs timvisher_uv once' test "$(grep -c '^args=' "$tmpdir/uv_calls")" = 1
+check 'install runs bare timvisher_uv' grep -qx 'args=|' "$tmpdir/uv_calls"
+check "timvisher_uv sees the core's bash/bin on PATH" \
+      grep -q "^path=.*$home/bin" "$tmpdir/uv_calls"
+check "timvisher_uv sees the overlay's python/bin on PATH" \
+      grep -q "^path=.*$home/.config/timvisher/ide/python/bin" "$tmpdir/uv_calls"
+
 first_tree=$(tree_of "$home")
 run_install "$home" --core "$core" --overlay "$overlay"
 rc=$?
@@ -109,6 +127,11 @@ check 'the core worktree is unchanged' \
       test "$(git -C "$core" status --porcelain)" = "$core_status_before"
 check 'the overlay is unchanged' \
       test "$(tree_of "$overlay")" = "$overlay_tree_before"
+
+UV_STUB_RC=1 run_install "$home" --core "$core" --overlay "$overlay"
+rc=$?
+check 'a timvisher_uv failure does not fail the install' test "$rc" = 0
+check 'a timvisher_uv failure is reported' grep -q 'timvisher_uv' "$tmpdir/out"
 
 live="$tmpdir/live"
 mkdir -p "$live/git" "$live/.config/timvisher"

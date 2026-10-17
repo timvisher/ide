@@ -69,3 +69,25 @@ on getTabWithUrl(u)
 end getTabWithUrl
 
 -- getTabWithUrl("https://www.youtube.com/@PogoMusic")
+
+on focusTabWithUrl(u)
+	if application "Vivaldi" is not running then
+		return false
+	end if
+	
+	tell application "Vivaldi"
+		repeat with w in windows
+			set i to 0
+			repeat with t in tabs of w
+				set i to i + 1
+				if URL of t is u then
+					set active tab index of w to i
+					set index of w to 1
+					activate
+					return true
+				end if
+			end repeat
+		end repeat
+	end tell
+	return false
+end focusTabWithUrl
