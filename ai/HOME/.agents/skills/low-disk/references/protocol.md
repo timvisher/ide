@@ -75,17 +75,19 @@ about whether it is in use:
   `${TMUX_TMPDIR:-/tmp}/tmux-$UID/`. A session in a worktree nested inside
   another counts for both.
 
-`activity` fails rather than guess: when a tmux socket refuses the
-connection or the tmux client cannot talk to a running server (after a
-`brew upgrade tmux`, until the old server exits), the socket directory or
-a pane's directory inside a worktree cannot be inspected, tmux prints
-something it cannot parse, an attached session has a pane tmux cannot
-place (it reports an empty path while, say, `sudo` runs), or
-`timvisher_dev_ci` fails. A stale socket (no server behind it) just has no
-sessions, and a pane whose directory was deleted, or is outside every
-worktree, is ignored. A relative session path (`tmux new -c .`) is ignored
-rather than resolved against where `activity` runs; the session's panes
-still place it.
+`activity` fails rather than guess: when a tmux socket cannot be connected
+to for any reason other than there being no server behind it, the tmux
+client cannot talk to a running server (after a `brew upgrade tmux`,
+until the old server exits), the socket directory or a pane's directory
+inside a worktree cannot be inspected, tmux prints something it cannot
+parse, an attached session has a pane tmux cannot place (it reports an
+empty path while, say, `sudo` runs), or `timvisher_dev_ci` fails.
+
+A stale socket (no server behind it) just has no sessions, and a pane in a
+directory outside every worktree is ignored. A pane whose directory was
+deleted inside a worktree (`make clean`) still counts for that worktree.
+A relative session path (`tmux new -c .`) is ignored rather than resolved
+against where `activity` runs; the session's panes still place it.
 
 Caches are found where timvisher_git keeps them:
 `~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>`.
@@ -116,6 +118,14 @@ filesystem the path is on.
 - A plugin that exits non-zero or prints anything other than exactly one
   JSON object is reported as `{"plugins": {"<plugin>": {"error": "..."}}}`.
   The other plugins still report, and `low-disk` exits non-zero.
+
+Nothing times out: a wedged tmux server or `timvisher_dev_ci` blocks
+`activity`, and with it `measure`.
+
+## Requirements
+
+`jq` 1.7 or newer, which ends option parsing at `--` after `--args`;
+bash 4.3 or newer.
 
 ## Working with no free space
 

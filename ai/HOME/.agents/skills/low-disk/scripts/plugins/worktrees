@@ -14,6 +14,8 @@ measure() {
   local activity sizes paths=()
   activity=$("$LOW_DISK" activity) || die 'low-disk activity failed'
   mapfile -d '' -t paths < <(printf '%s' "$activity" | jq -j '.worktrees | keys[] | . + "\u0000"')
+  (( ${#paths[@]} == $(printf '%s' "$activity" | jq '.worktrees | length') )) ||
+    die 'Could not read the worktree list from low-disk activity'
   sizes=$("$LOW_DISK" size "${paths[@]}") || die 'low-disk size failed'
   # A worktree nested inside another is counted once, in itself: its bytes
   # come off the worktree directly containing it, but only when both are on

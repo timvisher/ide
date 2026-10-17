@@ -21,6 +21,7 @@ plugin_dirs=(
 repo_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
 
 tmux_socket_dir=${TMUX_TMPDIR:-/tmp}/tmux-${UID}
+tmux_pane_format=$'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}'
 
 export LOW_DISK=$script_path
 
@@ -50,6 +51,18 @@ show_help() {
 
 usage() {
   show_help >&2
+}
+
+# `--args --` ends jq's option parsing only from jq 1.7 on; earlier versions
+# would let a session or target named like an option through as one.
+require_jq() {
+  local version
+  version=$(jq --version 2>/dev/null) || die 'jq is required but not found'
+  version=${version#jq-}
+  [[ $version =~ ^([0-9]+)\.([0-9]+) ]] ||
+    die "Cannot tell which jq this is: '%s'" "$version"
+  (( 1 < BASH_REMATCH[1] || (1 == BASH_REMATCH[1] && 7 <= BASH_REMATCH[2]) )) ||
+    die 'jq 1.7 or newer is required; found %s' "$version"
 }
 
 declare -A plugins=()
@@ -107,7 +120,7 @@ require_plugin() {
 run_plugin() {
   local name=$1 out rc
   shift
-  out=$("${plugins[$name]}" "$@")
+  out=$("${plugins[$name]}" "$@" </dev/null)
   rc=$?
   if (( rc != 0 ))
   then
@@ -130,23 +143,52 @@ canonical() {
   (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)
 }
 
+# Symlinks are followed one component at a time with readlink, so a path
+# can be resolved even where a directory on it cannot be entered.
+physical() {
+  local path=$1 out='' component target hops=0
+  [[ $path == /* ]] || return 1
+  path=${path#/}
+  while [[ -n $path ]]
+  do
+    component=${path%%/*}
+    if [[ $path == */* ]]
+    then
+      path=${path#*/}
+    else
+      path=''
+    fi
+    case $component in
+      ''|.) continue ;;
+      ..) out=${out%/*}; continue ;;
+    esac
+    if [[ -L ${out}/${component} ]]
+    then
+      (( hops += 1 ))
+      (( hops < 40 )) || return 1
+      target=$(readlink -- "${out}/${component}") || return 1
+      if [[ $target == /* ]]
+      then
+        out=''
+        target=${target#/}
+      fi
+      path=${target}${path:+/${path}}
+      continue
+    fi
+    out=${out}/${component}
+  done
+  printf '%s\n' "${out:-/}"
+}
+
 # An existing directory we cannot enter is not the same as a missing one.
 # Returns 1 for a path that is gone and 2 for one that cannot be inspected,
-# so each caller can decide whether the second matters. For the second, the
-# resolved value is the path with its nearest enterable ancestor
-# canonicalized, so callers can still tell which worktree it is under even
-# when it was reached through a symlink.
+# so each caller can decide what each means for it. For both, the resolved
+# value is the path with every symlink we can read followed, so callers can
+# still tell which worktree it is under.
 canonical_or_gone() {
   local -n __resolved=$2
   __resolved=$(canonical "$1") && return 0
-  local ancestor=$1 base
-  while [[ $ancestor == */* ]] && ! base=$(canonical "$ancestor")
-  do
-    ancestor=${ancestor%/*}
-    [[ -n $ancestor ]] || ancestor=/
-  done
-  base=${base:-$ancestor}
-  __resolved=${base%/}${1#"$ancestor"}
+  __resolved=$(physical "$1") || __resolved=$1
   [[ -e $1 ]] && return 2
   local nearest=$1
   while [[ ! -e $nearest && $nearest == */* ]]
@@ -182,7 +224,11 @@ list_worktrees() {
       require_listable "$cache"
       for admin in "${cache}/worktrees" "${cache}/.git/worktrees"
       do
-        [[ -e $admin ]] || continue
+        if [[ ! -e $admin ]]
+        then
+          require_missing "$admin"
+          continue
+        fi
         require_listable "$admin"
         for entry in "$admin"/*
         do
@@ -251,7 +297,7 @@ list_panes() {
   fi
   [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
     die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
-  local socket out rc line rest sockets=()
+  local socket out err rc line rest sockets=()
   shopt -s dotglob
   for socket in "$tmux_socket_dir"/*
   do
@@ -263,14 +309,24 @@ list_panes() {
     die "tmux sockets exist in '%s' but tmux is not installed" "$tmux_socket_dir"
   for socket in "${sockets[@]}"
   do
-    out=$(tmux -S "$socket" list-panes -a \
-      -F $'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}' 2>/dev/null)
-    rc=$?
-    if (( rc != 0 ))
+    # stdout and stderr are kept apart without a temp file: stderr streams
+    # out first, then a NUL, the captured stdout, a NUL and the status.
+    err='' out='' rc=''
+    {
+      IFS= read -r -d '' err
+      IFS= read -r -d '' out
+      IFS= read -r -d '' rc
+    } < <(
+      {
+        out=$(tmux -S "$socket" list-panes -a -F "$tmux_pane_format")
+        rc=$?
+      } 2>&1
+      printf '\0%s\0%s\0' "$out" "$rc"
+    )
+    if [[ $rc != 0 ]]
     then
-      out=$(tmux -S "$socket" list-panes -a 2>&1 >/dev/null)
-      [[ $out == *'no server running'* || $out == *'(No such file or directory)'* ]] && continue
-      die "tmux list-panes on '%s' failed: %s" "$socket" "$out"
+      [[ $err == *'no server running'* || $err == *'(No such file or directory)'* ]] && continue
+      die "tmux list-panes on '%s' failed: %s" "$socket" "$err"
     fi
     while IFS= read -r line
     do
@@ -290,30 +346,39 @@ cmd_activity() {
   list_protected protected
   list_panes panes
 
-  local line clients name candidate resolved worktree pane_names=() pane_attached=() pane_paths=()
+  local line clients name candidate resolved worktree inside pane_names=() pane_attached=() pane_paths=()
   for line in "${panes[@]}"
   do
     clients=${line%%$'\x1f'*}
     line=${line#*$'\x1f'}
     name=${line%%$'\x1f'*}
     line=${line#*$'\x1f'}
-    # tmux keeps a session path as given, so it may be relative to wherever
-    # the session was started; it is skipped rather than resolved against
-    # our own directory, and the session's panes, whose paths are always
-    # absolute, place it instead. tmux reports an empty pane path when it
-    # cannot read the foreground process's directory (sudo); in an attached
-    # session that hides where the user is working.
-    for candidate in "${line%%$'\x1f'*}" "${line#*$'\x1f'}"
+    # tmux keeps a session path as given, so it may be empty or relative to
+    # wherever the session was started; it is skipped rather than resolved
+    # against our own directory, and the session's panes, whose paths are
+    # always absolute, place it instead. tmux reports an empty pane path
+    # when it cannot read the foreground process's directory (sudo); in an
+    # attached session that hides where the user is working. A pane whose
+    # directory was deleted (make clean) still counts for the worktree it
+    # was in.
+    local session_path=${line%%$'\x1f'*} pane_path=${line#*$'\x1f'}
+    if [[ -z $pane_path ]] && (( 0 < clients ))
+    then
+      die "tmux cannot tell where a pane of the attached session '%s' is; refusing to report activity without it" "$name"
+    fi
+    for candidate in "$session_path" "$pane_path"
     do
-      if [[ -z $candidate ]]
-      then
-        (( clients == 0 )) && continue
-        die "tmux cannot tell where a pane of the attached session '%s' is; refusing to report activity without it" "$name"
-      fi
       [[ $candidate == /* ]] || continue
       canonical_or_gone "$candidate" resolved
       case $? in
-        1) continue ;;
+        1)
+          inside=0
+          for worktree in "${worktrees[@]}"
+          do
+            [[ $resolved == "$worktree" || $resolved == "$worktree"/* ]] && inside=1
+          done
+          (( inside )) || continue
+          ;;
         2)
           for worktree in "${worktrees[@]}"
           do
@@ -478,26 +543,26 @@ case ${1-} in
     exit 0
     ;;
   measure)
-    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    require_jq
     discover_plugins
     shift
     cmd_measure "$@"
     exit
     ;;
   reclaim)
-    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    require_jq
     discover_plugins
     shift
     cmd_reclaim "$@"
     exit
     ;;
   activity)
-    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    require_jq
     cmd_activity
     exit
     ;;
   size)
-    command -v jq >/dev/null 2>&1 || die 'jq is required but not found'
+    require_jq
     shift
     cmd_size "$@"
     exit

@@ -43,10 +43,16 @@ socket_dir="${sockdir}/tmux-${UID}"
 mockbin="${tmpdir}/mockbin"
 mkdir -p "$mockbin" || { echo "cannot create mockbin" >&2; exit 1; }
 printf '%s\n' '#!/usr/bin/env bash' \
-  '[[ $1 == -S && $3 == list-panes && $4 == -a ]] || exit 2' \
+  "format=\$'#{session_attached}\\x1f#{session_name}\\x1f#{session_path}\\x1f#{pane_current_path}'" \
+  '[[ $1 == -S && $3 == list-panes && $4 == -a && $5 == -F && $6 == "$format" ]] || exit 2' \
   'rc=0' \
   '[[ -f $2.rc ]] && rc=$(cat -- "$2.rc")' \
-  'if (( rc == 0 )); then cat -- "$2.out"; else cat -- "$2.out" >&2; fi' \
+  'if (( rc == 0 ))' \
+  'then' \
+  '  cat -- "$2.out"' \
+  'else' \
+  '  cat -- "$2.out" >&2' \
+  'fi' \
   '[[ -f $2.err ]] && cat -- "$2.err" >&2' \
   'exit "$rc"' > "${mockbin}/tmux"
 chmod +x "${mockbin}/tmux"
@@ -215,6 +221,13 @@ check "a dot-named cache is found, even with no newline after its gitdir" \
   "$(expect --arg p "$dot_wt" '.worktrees[$p].repo == "org/.github"')"
 rm -rf "${trunks}/org/.github" "${HOME}/git/org/.github"
 
+mkdir -p "${trunks}/hidden/repo/.git/worktrees"
+chmod 000 "${trunks}/hidden/repo/.git"
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "a legacy cache whose .git cannot be searched makes activity fail" "$(expect_failure)"
+chmod 700 "${trunks}/hidden/repo/.git"
+rm -rf "${trunks}/hidden"
+
 legacy_wt="${HOME}/git/legacy/repo/main"
 mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "$legacy_wt"
 printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
@@ -232,7 +245,7 @@ out=$("$low_disk" activity); rc=$?
 check "activity with no tmux socket directory reports every worktree unattached" \
   "$(expect --arg p "$wt" '.worktrees[$p] == {repo: "org/repo", protected: false, attached: false, sessions: []} and (.worktrees | length == 2)')"
 
-add_socket default "$(pane 1 attached-session "${wt}/deep/dir" "${wt}/deep/dir"; pane 1 attached-session "${wt}/deep/dir" "${wt}/deep"; pane 0 detached-session "$nested" "$nested"; pane 2 elsewhere "$HOME" "$HOME"; pane 1 wandered "$HOME" "${wt}/deep"; pane 1 removed "$HOME" "${wt}/was-here")" 0
+add_socket default "$(pane 1 attached-session "${wt}/deep/dir" "${wt}/deep/dir"; pane 1 attached-session "${wt}/deep/dir" "${wt}/deep"; pane 0 detached-session "$nested" "$nested"; pane 2 elsewhere "$HOME" "$HOME"; pane 1 wandered "$HOME" "${wt}/deep"; pane 1 removed "$HOME" "${wt}/was-here"; pane 1 gone-elsewhere "$HOME" "${tmpdir}/not-here")" 0
 add_socket .other "$(pane 1 other-socket "$nested" "$nested")" 0
 out=$("$low_disk" activity); rc=$?
 check "a session attached anywhere under a worktree marks it attached" \
@@ -249,8 +262,10 @@ check "a pane that has cd'd into a worktree counts for it" \
   "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "wandered", attached: true}) != null')"
 check "a session with several panes in a worktree is listed once" \
   "$(expect --arg p "$wt" '[.worktrees[$p].sessions[] | select(.name == "attached-session")] | length == 1')"
-check "a pane in a directory that no longer exists is ignored" \
-  "$(expect '[.worktrees[].sessions[].name] | index("removed") == null')"
+check "a pane whose directory was deleted inside a worktree still counts for it" \
+  "$(expect --arg p "$wt" '.worktrees[$p].sessions | index({name: "removed", attached: true}) != null')"
+check "a pane whose directory was deleted outside every worktree is ignored" \
+  "$(expect '[.worktrees[].sessions[].name] | index("gone-elsewhere") == null')"
 reset_sockets
 
 mkdir -p "${tmpdir}/outside/inner"
@@ -277,6 +292,12 @@ check "an empty pane path in a detached session is ignored, and stderr warnings 
   "$(expect '[.worktrees[].attached] | all(. == false)')"
 reset_sockets
 
+add_socket default "$(pane 1 no-session-path '' "$wt")" 0
+out=$("$low_disk" activity); rc=$?
+check "an attached session with an empty session path is placed by its pane" \
+  "$(expect --arg p "$wt" '.worktrees[$p].attached == true')"
+reset_sockets
+
 add_socket default "$(pane 1 sudo-attached "$HOME" '')" 0
 out=$("$low_disk" activity 2>/dev/null); rc=$?
 check "an empty pane path in an attached session makes activity fail" "$(expect_failure)"
@@ -291,6 +312,13 @@ chmod 000 "${wt}/sealed"
 add_socket default "$(pane 1 hidden "$HOME" "${wt}/sealed/inner")" 0
 out=$("$low_disk" activity 2>/dev/null); rc=$?
 check "a pane in a directory that exists but cannot be entered makes activity fail" "$(expect_failure)"
+reset_sockets
+
+ln -s "${wt}/sealed" "${tmpdir}/alias-to-sealed"
+add_socket default "$(pane 1 hidden "$HOME" "${tmpdir}/alias-to-sealed/inner")" 0
+out=$("$low_disk" activity 2>/dev/null); rc=$?
+check "an uninspectable pane through a symlink to an unenterable worktree directory makes activity fail" "$(expect_failure)"
+rm "${tmpdir}/alias-to-sealed"
 reset_sockets
 
 ln -s "$wt" "${tmpdir}/alias"
@@ -437,7 +465,7 @@ check "the biggest plugin refuses to run outside low-disk" "$(expect_failure)"
 # --- overlay plugins and measure scoping ---
 add_plugin fake 'case $1 in
   measure) printf "{\"targets\": {\"a\": {\"bytes\": 1}}}" ;;
-  reclaim) shift; jq -nc --args "{targets: (\$ARGS.positional | map({(.): {reclaimed: true}}) | add), args: \$ARGS.positional}" "$@" ;;
+  reclaim) shift; jq -nc --args "{targets: (\$ARGS.positional | map({(.): {reclaimed: true}}) | add), args: \$ARGS.positional}" -- "$@" ;;
 esac'
 
 out=$("$low_disk" measure); rc=$?
@@ -464,6 +492,10 @@ check "reclaim routes each plugin's targets to it in one call" \
 out=$("$low_disk" reclaim fake:a fake:a fake:b); rc=$?
 check "a target named twice is passed to its plugin once" \
   "$(expect '.plugins.fake.args == ["a", "b"]')"
+
+out=$("$low_disk" reclaim fake:--version biggest:--arg); rc=$?
+check "option-like targets reach plugins as targets" \
+  "$(expect '.plugins.fake.args == ["--version"] and .plugins.biggest.targets["--arg"].reclaimed == false')"
 
 out=$("$low_disk" reclaim fake: 2>/dev/null); rc=$?
 check "an empty target fails without stdout" "$(expect_failure)"
