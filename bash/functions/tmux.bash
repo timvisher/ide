@@ -583,7 +583,7 @@ function ntmux3__session_name_from_path() {
     if [[ $path == '~' ]]
     then
         path="$HOME"
-    elif [[ $path == '~/'* ]]
+    elif [[ $path == \~/* ]]
     then
         path="${HOME}/${path#'~'/}"
     fi
@@ -643,7 +643,7 @@ function ntmux3__session_name_from_path() {
             value=${line#*=}
             case $key in
                 '~')   expanded_key="$home_real" ;;
-                '~/'*) expanded_key="${home_real}/${key#'~'/}" ;;
+                \~/*)  expanded_key="${home_real}/${key#'~'/}" ;;
                 *)     expanded_key="$key" ;;
             esac
             if [[ $expanded_key == */* ]]
@@ -685,7 +685,7 @@ function ntmux3__session_name_from_path() {
             # Expand tilde in key
             case $key in
                 '~')   expanded_key="$home_real" ;;
-                '~/'*) expanded_key="${home_real}/${key#'~'/}" ;;
+                \~/*)  expanded_key="${home_real}/${key#'~'/}" ;;
                 *)     expanded_key="$key" ;;
             esac
             # Resolve the alias path
@@ -915,7 +915,7 @@ function ntmux3__main() {
         # clipboard/variable values may not be)
         case $clone_target in
             '~')   clone_target="$HOME" ;;
-            '~/'*) clone_target="${HOME}/${clone_target#'~'/}" ;;
+            \~/*)  clone_target="${HOME}/${clone_target#'~'/}" ;;
         esac
 
         # Resolve relative FILE paths to absolute (editor needs full path).
