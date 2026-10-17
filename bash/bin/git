@@ -37,18 +37,21 @@ _timvisher_git__json_argv() {
   _timvisher_git__json_argv_out="[$out]"
 }
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
     exit 1
   }
 
+# shellcheck source=/dev/null
 source ~/.functions/git.bash ||
   {
     echo "Unable to source git functions" >&2
     exit 1
   }
 
+# shellcheck source=/dev/null
 source ~/.functions/aictl.bash ||
   {
     echo "Unable to source aictl functions" >&2
@@ -129,6 +132,7 @@ then
       "$_timvisher_git__argv_json" >> "$_timvisher_git__log_file" 2>/dev/null || true
   fi
 
+  # shellcheck disable=SC2329
   _timvisher_git__emit() {
     local rc=$1 now=$EPOCHREALTIME
     local a=${_timvisher_git__t0/[.,]/} b=${now/[.,]/}
@@ -340,11 +344,6 @@ _timvisher_git__remove_refspec() {
     "remote.${_timvisher_git__remote}.fetch" "$refspec" 2>/dev/null || true
 }
 
-_timvisher_git__has_selective_fetching() {
-  # True if the wildcard refspec is NOT present (i.e., we're already selective)
-  ! _timvisher_git__has_refspec "+refs/heads/*:refs/remotes/${_timvisher_git__remote}/*"
-}
-
 # Emit refspec-extras lines from every readable extras file, deduped
 # and stripped of blanks + `#`-comments. Order follows the file list
 # (core first, then system-extensions); within a file, original order
@@ -476,6 +475,7 @@ _timvisher_git__ensure_branch_refspec() {
 }
 
 # Scrub refspecs that would break the next fetch.
+# shellcheck disable=SC2329
 _timvisher_git__scrub_dead_refspecs() {
   # Remove explicit (non-wildcard) refspecs whose branch no longer exists on
   # the remote.  Such refspecs make `git fetch` fail hard ("couldn't find
@@ -524,12 +524,14 @@ _timvisher_git__scrub_dead_refspecs() {
 }
 
 # Combined: all three layers. Used by maintenance paths (e.g., worktree prune).
+# shellcheck disable=SC2329
 _timvisher_git__prune_stale_refs() {
   _timvisher_git__scrub_dead_refspecs
   _timvisher_git__prune_unmatched_refs
 }
 
 # Remove remote-tracking refs not matched by any configured refspec.
+# shellcheck disable=SC2329
 _timvisher_git__prune_unmatched_refs() {
   local -a exact_patterns=()
   local -a prefix_patterns=()
@@ -569,7 +571,7 @@ _timvisher_git__prune_unmatched_refs() {
         continue
       fi
 
-      branch="${ref#refs/remotes/${_timvisher_git__remote}/}"
+      branch="${ref#refs/remotes/"${_timvisher_git__remote}"/}"
 
       if [[ -n "${worktree_branches[$branch]:-}" ]]
       then
