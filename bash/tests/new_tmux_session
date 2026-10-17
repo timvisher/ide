@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+
+# A real tmux server on a private socket, not the stub tmux in
+# bash/tests/ntmux3: the leak lives in the server's global environment,
+# which a stub does not have.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+agent_env_vars=(
+  CLAUDECODE
+  TIMVISHER_AGENT
+  TIMVISHER_AGENT_NIRMI
+  TIMVISHER_AGENT_NIRMI_REASON
+  TIMVISHER_AICTL_LOG
+  TIMVISHER_CLAUDE
+  TIMVISHER_CODEX
+)
+
+t_dir=
+# shellcheck disable=SC2329
+cleanup() {
+  if [[ -n $t_dir ]]
+  then
+    env -u TMUX TMUX_TMPDIR="$t_dir" tmux kill-server 2>/dev/null
+    rm -rf -- "$t_dir"
+  fi
+}
+trap cleanup EXIT
+
+if ! t_dir=$(mktemp -d)
+then
+  echo "mktemp -d failed" >&2
+  exit 1
+fi
+
+stub_bin="${t_dir}/bin"
+fake_home="${t_dir}/home"
+session_dir="${t_dir}/session"
+pane_env="${t_dir}/pane.env"
+if ! mkdir -p "$stub_bin" "$fake_home" "$session_dir"
+then
+  echo "mkdir failed under '${t_dir}'" >&2
+  exit 1
+fi
+
+cat > "${stub_bin}/emacs" <<STUB
+#!/usr/bin/env bash
+env > '${pane_env}.tmp' && mv '${pane_env}.tmp' '${pane_env}'
+STUB
+chmod +x "${stub_bin}/emacs"
+
+: > "${t_dir}/aictl.log"
+
+(
+  unset TMUX TMUX_PANE
+  export TMUX_TMPDIR="$t_dir"
+  export HOME="$fake_home"
+  export XDG_CONFIG_HOME="${fake_home}/.config"
+  export XDG_DATA_HOME="${fake_home}/.local/share"
+  export XDG_STATE_HOME="${fake_home}/.local/state"
+  export XDG_CACHE_HOME="${fake_home}/.cache"
+  export PATH="${stub_bin}:${PATH}"
+  export NEW_TMUX_SESSION_TEST_CANARY=1
+  export CLAUDECODE=1
+  export TIMVISHER_AGENT=1
+  export TIMVISHER_AGENT_NIRMI=1
+  export TIMVISHER_AGENT_NIRMI_REASON=test
+  export TIMVISHER_AICTL_LOG="${t_dir}/aictl.log"
+  export TIMVISHER_CLAUDE=true
+  export TIMVISHER_CODEX=true
+  # shellcheck source=/dev/null
+  source "${funcs_dir}/logging.bash"
+  # shellcheck source=/dev/null
+  source "${funcs_dir}/aictl.bash"
+  # shellcheck source=/dev/null
+  source "${funcs_dir}/tmux.bash"
+  new_tmux_session agent_env "$session_dir" '' true
+) >/dev/null 2>&1
+
+global_env=$(env -u TMUX TMUX_TMPDIR="$t_dir" tmux show-environment -g 2>&1)
+
+run_test
+if grep -qx 'NEW_TMUX_SESSION_TEST_CANARY=1' <<<"$global_env"
+then
+  pass "the private tmux server was started by new_tmux_session"
+else
+  fail "canary missing from the global environment: '${global_env}'"
+fi
+
+for (( i = 0; i < 100; i += 1 ))
+do
+  [[ -s $pane_env ]] && break
+  sleep 0.1
+done
+
+run_test
+if grep -qx 'NEW_TMUX_SESSION_TEST_CANARY=1' "$pane_env" 2>/dev/null
+then
+  pass "the editor pane ran the emacs stub"
+else
+  fail "no pane environment recorded at '${pane_env}'"
+fi
+
+for var in "${agent_env_vars[@]}"
+do
+  run_test
+  if grep -q "^${var}=" <<<"$global_env"
+  then
+    fail "${var} leaked into the tmux global environment"
+  else
+    pass "${var} is not in the tmux global environment"
+  fi
+
+  run_test
+  if [[ ! -s $pane_env ]] || grep -q "^${var}=" "$pane_env"
+  then
+    fail "${var} leaked into the editor pane's environment"
+  else
+    pass "${var} is not in the editor pane's environment"
+  fi
+done
+
+echo
+echo "Results: ${tests} tests, ${failures} failures"
+exit "$failures"

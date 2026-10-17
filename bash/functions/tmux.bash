@@ -132,8 +132,29 @@ function new_tmux_session {
             ulimit -Sn 1024
         fi
 
+        # These are removed because the new-session that starts the tmux
+        # server seeds its global environment, which every future pane in
+        # every session inherits. Unset them even when a server is already
+        # running: the client's environment never reaches new panes then,
+        # so it costs nothing.
+        local -a agent_env_vars=(
+            CLAUDECODE
+            TIMVISHER_AGENT
+            TIMVISHER_AGENT_NIRMI
+            TIMVISHER_AGENT_NIRMI_REASON
+            TIMVISHER_AICTL_LOG
+            TIMVISHER_CLAUDE
+            TIMVISHER_CODEX
+        )
+        local -a env_unsets=()
+        local agent_env_var
+        for agent_env_var in "${agent_env_vars[@]}"
+        do
+            env_unsets+=(-u "$agent_env_var")
+        done
+
         # tmux -vvvv new-session -d -s "$session_name" -n editor "$default_command" # for debugging
-        if ! env -u TIMVISHER_AICTL_LOG tmux new-session -d -s "$session_name" -n editor "$default_command"
+        if ! env "${env_unsets[@]}" tmux new-session -d -s "$session_name" -n editor "$default_command"
         then
             echo "# Unable to create tmux session $session_name." >&2
             return 1
