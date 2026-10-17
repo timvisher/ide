@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2123
 
 # Tests for path.bash (timvisher_path_prepend)
 
@@ -7,7 +8,7 @@ tests=0
 
 fail() {
   echo "FAIL: $1" >&2
-  ((failures++)) || true
+  (( failures += 1 ))
 }
 
 pass() {
@@ -15,10 +16,13 @@ pass() {
 }
 
 run_test() {
-  ((tests++)) || true
+  (( tests += 1 ))
 }
 
 funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
+# shellcheck disable=SC1091
 source "$funcs_dir/path.bash"
 
 check() {
@@ -70,6 +74,85 @@ check 'operates on a named variable other than PATH' \
 check 'exports the variable it sets' \
       '/a:/b' \
       "$(PATH=/b; timvisher_path_prepend /a; "$BASH" -c 'printf "%s" "$PATH"')"
+
+roots_home=
+trap 'rm -rf -- "$roots_home"' EXIT
+roots_home=$(mktemp -d)
+
+for root in git/ide .config/timvisher/ide
+do
+  mkdir -p "$roots_home/$root/bash/bin" "$roots_home/$root/python/bin" "$roots_home/$root/python/lib"
+done
+ln -s git/ide/bash/bin "$roots_home/bin"
+
+in_home() {
+  local home=$1 snippet=$2
+  shift 2
+  timvisher_tests_with_home "$home" "$BASH" -c 'source "$1" || exit 1; snippet=$2; shift 2; eval "$snippet"' _ "$funcs_dir/path.bash" "$snippet" "$@"
+}
+
+roots_after() {
+  local home=$1
+  shift
+  in_home "$home" '
+    PATH=$HOME/ext:/usr/bin
+    PYTHONPATH=
+    timvisher_path_prepend_ide_roots "$@"
+    printf "%s|%s" "$PATH" "$PYTHONPATH"' "$@"
+}
+
+h=$roots_home
+core=$h/git/ide
+overlay=$h/.config/timvisher/ide
+
+check 'orders overlay before core and python/bin before bash/bin, keeping ~/.local/bin after ~/bin and ahead of the extension point' \
+      "$overlay/python/bin:$overlay/bash/bin:$core/python/bin:$h/bin:$h/.local/bin:$h/ext:/usr/bin|$overlay/python/lib:$core/python/lib" \
+      "$(roots_after "$h" "$core" "$overlay")"
+
+check 'leaves no duplicates when sourced again' \
+      "$(roots_after "$h" "$core" "$overlay")" \
+      "$(in_home "$h" '
+        PATH=$HOME/ext:/usr/bin
+        PYTHONPATH=
+        timvisher_path_prepend_ide_roots "$1" "$2"
+        timvisher_path_prepend_ide_roots "$1" "$2"
+        printf "%s|%s" "$PATH" "$PYTHONPATH"' "$core" "$overlay")"
+
+check 'skips a root that does not exist' \
+      "$core/python/bin:$h/bin:$h/.local/bin:$h/ext:/usr/bin|$core/python/lib" \
+      "$(in_home "$h" '
+        PATH=$HOME/ext:/usr/bin
+        PYTHONPATH=
+        timvisher_path_prepend_ide_roots "$1" "$HOME/missing"
+        printf "%s|%s" "$PATH" "$PYTHONPATH"' "$core")"
+
+check 'exports PYTHONPATH' \
+      "$core/python/lib" \
+      "$(in_home "$h" '
+        unset PYTHONPATH
+        timvisher_path_prepend_ide_roots "$1"
+        "$BASH" -c '"'"'printf "%s" "$PYTHONPATH"'"'"'' "$core")"
+
+bare=$roots_home/bare
+mkdir -p "$bare/git/ide/bash/bin"
+check 'adds only the root directories that exist' \
+      "$bare/git/ide/bash/bin:$bare/.local/bin:$bare/ext:/usr/bin|" \
+      "$(roots_after "$bare" "$bare/git/ide")"
+
+plain=$roots_home/plain
+mkdir -p "$plain/bin" "$plain/git/ide/bash/bin"
+check 'keeps a ~/bin that is not a root'"'"'s bash/bin' \
+      "$plain/git/ide/bash/bin:$plain/bin:$plain/.local/bin:$plain/ext:/usr/bin|" \
+      "$(roots_after "$plain" "$plain/git/ide")"
+
+ordered() {
+  tr : '\n' | grep -xF -e "$HOME/.config/timvisher/ide/bash/bin" -e "$HOME/bin" -e "$HOME/.local/bin" |
+    paste -sd'|' -
+}
+
+check 'bashrc puts the overlay bash/bin ahead of ~/bin, ahead of ~/.local/bin' \
+      "$HOME/.config/timvisher/ide/bash/bin|$HOME/bin|$HOME/.local/bin" \
+      "$("$BASH" -c 'source ~/.bashrc >/dev/null 2>&1; printf "%s" "$PATH"' | ordered)"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
