@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    (( failures += 1 ))
+  fi
+}
+
+core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+overlay=$(cd ~/.config/timvisher/ide && pwd -P) || exit 1
+relative=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+  "$overlay" "$core/emacs") || exit 1
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+printf '(princ (format "cwd=%%s\\n" default-directory))\n' > "$tmpdir/probe.el" || exit 1
+probe=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+  "$tmpdir/probe.el" "$core/emacs") || exit 1
+
+out=$(cd "$core/emacs" && ../emacs/tests/emacs --overlay "$relative" --batch \
+  -l "$probe" \
+  --eval '(princ (format "emacs.d=%s\n" (file-truename user-emacs-directory)))' \
+  --eval '(princ (format "overlay=%s\n" (file-truename "~/.config/timvisher/ide")))' 2>/dev/null)
+rc=$?
+
+has_line() {
+  grep -qxF -- "$1" <<< "$out"
+}
+
+check 'the launcher exits 0' test "$rc" = 0
+check "the launcher loads this worktree's emacs.d" has_line "emacs.d=$core/emacs/emacs.d/"
+check 'a relative file argument is taken from where the launcher was run' \
+      has_line "cwd=$core/emacs/"
+check 'a relative --overlay is taken from where the launcher was run' \
+      has_line "overlay=$overlay"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
