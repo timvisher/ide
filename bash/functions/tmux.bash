@@ -665,7 +665,7 @@ function ntmux3__session_name_from_path() {
     fi
 
     # Try ~/git/ prefix first (existing worktree path)
-    local relative="${resolved#${home_real}/git/}"
+    local relative="${resolved#"${home_real}"/git/}"
     if [[ $relative != "$resolved" && -n $relative ]]
     then
         printf '%s' "$relative"
@@ -695,7 +695,7 @@ function ntmux3__session_name_from_path() {
             fi
             if [[ $resolved == "$expanded_key"/* ]]
             then
-                local suffix="${resolved#${expanded_key}/}"
+                local suffix="${resolved#"${expanded_key}"/}"
                 printf '%s/%s' "$value" "$suffix"
                 return 0
             elif [[ $resolved == "$expanded_key" ]]
@@ -707,7 +707,7 @@ function ntmux3__session_name_from_path() {
     fi
 
     # Fallback: $HOME-relative path
-    local home_relative="${resolved#${home_real}/}"
+    local home_relative="${resolved#"${home_real}"/}"
     if [[ $home_relative != "$resolved" && -n $home_relative ]]
     then
         printf '%s' "$home_relative"
@@ -743,7 +743,7 @@ function ntmux3__resolve_session_name() {
     then
         local home_real
         home_real=$(cd "$HOME" && pwd -P) || true
-        name=${fallback_real#${home_real}/git/}
+        name=${fallback_real#"${home_real}"/git/}
         if [[ $name == "$fallback_real" ]]
         then
             name=$(basename "$fallback_real")
