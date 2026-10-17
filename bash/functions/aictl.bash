@@ -13,11 +13,22 @@
 #   aictl_listening - True when an agent is listening for instructions
 #   aictl_parse - Print a line back as compact JSON if it is an instruction
 #
-# Output is JSON to stderr, also appended to $TIMVISHER_AICTL_LOG when set:
-#   {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
+# Output is rendered for whoever reads it, the way logging.bash does:
+#   - TIMVISHER_AGENT set: one JSON line to stderr
+#       {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
+#   - TIMVISHER_AICTL_LOG names an existing file: the JSON line is also
+#     appended there, whatever else is set
+#   - TIMVISHER_AGENT unset: stderr gets readable text instead, even
+#     when the log is set:
+#       2026-10-17T16:16:54+0000 INFO <code>: <message>
+#         reason: ...
+#         suggestion: ...   (one line per suggestion)
+#         doc: ...
+#     with ERROR, WARN, INFO or BYPASS for the level. --data is JSON-only.
+# Exit and return status is the same for both audiences.
 #
-# The warning emission deliberately omits any ready-to-paste bypass
-# command or mechanism detail. Agents that need to bypass must read the
+# Neither form carries a ready-to-paste bypass command or any
+# mechanism detail. Agents that need to bypass must read the
 # doc reference (--doc) and assemble the env vars themselves. Data from
 # 2026-04-17..2026-04-21 showed 48 bypasses across 6 sessions; a big
 # chunk came from the agent copying the `command` field we used to emit.
@@ -31,7 +42,8 @@
 #   TIMVISHER_AGENT_NIRMI=1                 Required to bypass aictl_warn
 #   TIMVISHER_AGENT_NIRMI_REASON=<text>     Required; free-form explanation
 #                                           — NIRMI alone is no longer sufficient
-#   TIMVISHER_AICTL_LOG=<file>              Also append instructions to <file>,
+#   TIMVISHER_AGENT=<non-empty>             Render JSON on stderr
+#   TIMVISHER_AICTL_LOG=<file>              Also append the JSON to <file>,
 #                                           one line per write, if it exists
 #
 # Every bypass is logged (ts, code, reason, cwd, command) to
@@ -92,15 +104,59 @@ aictl__parse_args() {
   done
 }
 
+aictl__indent() {
+  local s=$1
+  printf '%s' "${s//$'\n'/$'\n    '}"
+}
+
+# Renders the fields aictl__parse_args set. --data is left out: it is
+# the machine payload, and the message already says what a human needs.
+aictl__render_human() {
+  local level=$1 label ts s
+
+  case $level in
+    error) label=ERROR ;;
+    warning) label=WARN ;;
+    info) label=INFO ;;
+    bypass) label=BYPASS ;;
+    *) label=${level^^} ;;
+  esac
+
+  TZ=UTC0 printf -v ts '%(%FT%T%z)T' -1
+  printf '%s %s %s%s\n' "$ts" "$label" "${_code:+${_code}: }" "$(aictl__indent "$_message")"
+
+  if [[ -n $_reason ]]
+  then
+    printf '  reason: %s\n' "$(aictl__indent "$_reason")"
+  fi
+
+  for s in ${_suggestions[@]+"${_suggestions[@]}"}
+  do
+    printf '  suggestion: %s\n' "$(aictl__indent "$s")"
+  done
+
+  if [[ -n $_doc ]]
+  then
+    printf '  doc: %s\n' "$(aictl__indent "$_doc")"
+  fi
+}
+
 aictl__write() {
-  local line=$1
+  local level=$1 line=$2
 
   if [[ -n ${TIMVISHER_AICTL_LOG:-} && -f $TIMVISHER_AICTL_LOG ]]
   then
     cat 2>/dev/null >> "$TIMVISHER_AICTL_LOG" <<<"$line"
   fi
 
-  printf '%s\n' "$line" >&2
+  # The log alone does not make stderr JSON: under ntmux3 -T a human
+  # watches stderr in the window while the agent reads the log.
+  if [[ -n ${TIMVISHER_AGENT:-} ]]
+  then
+    printf '%s\n' "$line" >&2
+  else
+    aictl__render_human "$level" >&2
+  fi
 }
 
 aictl__emit() {
@@ -163,7 +219,7 @@ aictl__emit() {
     line+=$(printf ',"doc":"%s"' "$(aictl__json_escape "$_doc")")
   fi
 
-  aictl__write "${line}}"
+  aictl__write "$level" "${line}}"
 }
 
 # Fatal error — always exits non-zero. Not bypassable.
@@ -174,7 +230,7 @@ aictl_die() {
   exit 1
 }
 
-# Non-terminating error — emits the same error JSON as aictl_die but
+# Non-terminating error — emits the same error as aictl_die but
 # returns 1 instead of exiting.  Use this from shell FUNCTIONS (sourced
 # into the caller's shell) where `exit` would kill the enclosing
 # interactive shell.  Scripts should prefer aictl_die.
@@ -189,7 +245,7 @@ aictl_error() {
   return 1
 }
 
-# Structured non-error instruction — emits level:info JSON to stderr
+# Structured non-error instruction — emits a level:info instruction
 # and returns 0.  Use this when a successful command needs to convey
 # typed payload back to the agent (paths produced, counts, next-step
 # suggestions) rather than plain stdout that the agent has to parse.
@@ -206,7 +262,7 @@ aictl_info() {
   return 0
 }
 
-# Non-blocking notice — emits warning-level JSON to stderr for visual
+# Non-blocking notice — emits a warning-level instruction for visual
 # weight (so agents treat it as important), but returns 0 and carries no
 # retryable field.  Use this to flag a successful-but-noteworthy state at
 # a boundary, e.g. "this is a long-running op; the worktree it produces is
@@ -223,9 +279,9 @@ aictl_notice() {
 # Blocking warning — exits unless BOTH TIMVISHER_AGENT_NIRMI=1 and
 # TIMVISHER_AGENT_NIRMI_REASON=<non-empty> are set.
 #
-# With both: logs a JSONL bypass event, prints bypass JSON to stderr, returns 0.
+# With both: logs a JSONL bypass event, emits a bypass instruction, returns 0.
 # With NIRMI only: emits an error explaining REASON is required; exits 1.
-# Without either: prints warning JSON, exits 1.
+# Without either: emits a warning instruction, exits 1.
 #
 # Usage: aictl_warn [--code C] [--message M] [--command CMD] [--reason R] [--doc D] [--suggestion S]...
 #    or: aictl_warn <code> <message> [suggestion...]
@@ -268,8 +324,9 @@ aictl_warn() {
       printf '}\n'
     } >> "$_aictl__log_file" 2>/dev/null || true
 
-    aictl__write "$(printf '{"type":"instruction","level":"bypass","code":"%s","message":"Guardrail bypassed with logged reason. Be sure you know what you are doing."}' \
-      "$(aictl__json_escape "${_code:-}")")"
+    aictl__emit bypass \
+      --code "${_code:-}" \
+      --message "Guardrail bypassed with logged reason. Be sure you know what you are doing."
     return 0
   fi
 
