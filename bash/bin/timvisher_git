@@ -10,11 +10,12 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-if [[ -f ~/.functions/aictl.bash ]]
-then
-  # shellcheck source=/dev/null
-  source ~/.functions/aictl.bash
-fi
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
 
 # shellcheck source=/dev/null
 source ~/.functions/gh.bash ||
