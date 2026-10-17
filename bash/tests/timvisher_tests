@@ -1,0 +1,520 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2088
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    (( failures += 1 ))
+  fi
+}
+
+core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+script="$core/bash/bin/timvisher_tests"
+
+tmpdir=''
+trap '[[ -z $tmpdir ]] || { chflags -R nouchg "$tmpdir" 2>/dev/null; rm -rf -- "$tmpdir"; }' EXIT
+tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
+
+overlay="$tmpdir/overlay"
+mkdir -p "$overlay/ai/HOME/.agents/skills/overlay-skill" || exit 1
+printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
+git -C "$overlay" init -q || exit 1
+
+caller_home="$tmpdir/caller"
+mkdir -p "$caller_home/.config/timvisher" || exit 1
+ln -s "$overlay" "$caller_home/.config/timvisher/ide"
+ln -s "$core/bash/functions" "$caller_home/.functions"
+
+as_caller() {
+  HOME="$caller_home" \
+    XDG_CONFIG_HOME="$caller_home/.config" \
+    XDG_DATA_HOME="$caller_home/.local/share" \
+    XDG_STATE_HOME="$caller_home/.local/state" \
+    XDG_CACHE_HOME="$caller_home/.cache" \
+    TIMVISHER_AGENT=1 GH_TOKEN=secret TIMVISHER_TESTS_PROBE=leak \
+    "$@" </dev/null
+}
+
+shell_in() {
+  (cd "$core" && as_caller "$script" "$@")
+}
+
+out=$(shell_in --overlay "$overlay" --shell bash -c '
+  printf "home=%s\n" "$HOME"
+  printf "git_ide=%s\n" "$(cd ~/git/ide && pwd -P)"
+  printf "overlay=%s\n" "$(cd ~/.config/timvisher/ide && pwd -P)"
+  printf "xdg_config=%s\n" "$XDG_CONFIG_HOME"
+  printf "xdg_data=%s\n" "$XDG_DATA_HOME"
+  printf "xdg_state=%s\n" "$XDG_STATE_HOME"
+  printf "xdg_cache=%s\n" "$XDG_CACHE_HOME"
+  printf "git_home=%s\n" "$TIMVISHER_GIT_HOME"
+  printf "path=%s\n" "$PATH"
+  printf "agent=%s\n" "${TIMVISHER_AGENT-unset}"
+  printf "token=%s\n" "${GH_TOKEN-unset}"
+  printf "probe=%s\n" "${TIMVISHER_TESTS_PROBE-unset}"
+  printf "hooks=%s\n" "$(git config core.hooksPath)"
+  printf "trace2=%s\n" "$(git config trace2.eventTarget)"
+  printf "author=%s\n" "$(git var GIT_AUTHOR_IDENT | cut -d" " -f1)"
+  printf "pwd=%s\n" "$(pwd -P)"
+  touch ~/locked && chflags uchg ~/locked
+  exit 7
+')
+rc=$?
+
+field() {
+  printf '%s\n' "$out" | sed -n "s/^$1=//p"
+}
+
+home=$(field home)
+check 'the command exit status passes through' test "$rc" = 7
+check 'HOME is a fresh directory' test -n "$home"
+check 'HOME is not the caller HOME' test "$home" != "$caller_home"
+check 'HOME is a scratch directory under TMPDIR' \
+      eval '[[ $home == "$(cd "${TMPDIR:-/tmp}" && pwd -P)"/* ]]'
+check '~/git/ide is the core' test "$(field git_ide)" = "$core"
+check '~/.config/timvisher/ide is the given overlay' \
+      test "$(field overlay)" = "$overlay"
+check 'XDG_CONFIG_HOME is under HOME' test "$(field xdg_config)" = "$home/.config"
+check 'XDG_DATA_HOME is under HOME' test "$(field xdg_data)" = "$home/.local/share"
+check 'XDG_STATE_HOME is under HOME' test "$(field xdg_state)" = "$home/.local/state"
+check 'XDG_CACHE_HOME is under HOME' test "$(field xdg_cache)" = "$home/.cache"
+check 'TIMVISHER_GIT_HOME is ~/git' test "$(field git_home)" = "$home/git"
+check 'PATH starts in HOME' eval '[[ $(field path) == "$home"/* ]]'
+check 'PATH has nothing from the caller HOME' \
+      eval '[[ :$(field path): != *":$caller_home"* ]]'
+check 'TIMVISHER_AGENT is not passed' test "$(field agent)" = unset
+check 'GH_TOKEN is not passed' test "$(field token)" = unset
+check 'other caller variables are not passed' test "$(field probe)" = unset
+check 'core.hooksPath is an empty directory in HOME' \
+      eval '[[ $(field hooks) == "$home"/* ]]'
+check 'trace2 goes to the git wrapper state in HOME' \
+      test "$(field trace2)" = "$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
+check 'git has a test identity' test "$(field author)" = Test
+check 'the command runs at the repo root' test "$(field pwd)" = "$core"
+check 'HOME is removed afterwards, locked files included' test ! -e "$home"
+
+fresh=$(shell_in --overlay "$overlay" --shell bash -c '
+  source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
+  (timvisher_tests_fresh_home && printf %s "$HOME")')
+check 'a fresh HOME made under --shell is made' test -n "$fresh"
+check 'a fresh HOME made under --shell is removed afterwards' test ! -e "$fresh"
+
+second=$(shell_in --overlay "$overlay" --shell bash -c 'printf %s "$HOME"')
+check 'each run gets its own HOME' test "$second" != "$home"
+
+default_overlay=$(shell_in --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P')
+check 'the overlay defaults to the caller ~/.config/timvisher/ide' \
+      test "$default_overlay" = "$overlay"
+
+out=$(cd "$core" && as_caller "$script" --bogus 2>/dev/null)
+rc=$?
+check 'an unknown option is a usage error' test "$rc" != 0
+check 'an unknown option prints nothing on stdout' test -z "$out"
+check 'an unknown option prints usage on stderr' \
+      test -n "$(cd "$core" && as_caller "$script" --bogus 2>&1 >/dev/null)"
+
+out=$(cd "$core" && as_caller "$script" --help 2>/dev/null)
+rc=$?
+check '--help exits 0' test "$rc" = 0
+check '--help prints usage on stdout' eval '[[ $out == Usage:* ]]'
+
+fcore="$tmpdir/fcore"
+fover="$tmpdir/fover"
+mkdir -p "$fcore/bash/tests/lib" "$fcore/python/tests/conformance" \
+         "$fcore/python/lib/timvisher" "$fover/bash/tests" "$tmpdir/runtmp" ||
+  exit 1
+/bin/cp "$core/bash/tests/lib/timvisher_tests.bash" "$fcore/bash/tests/lib/" || exit 1
+/bin/cp "$core/python/lib/timvisher/testing.py" "$fcore/python/lib/timvisher/" || exit 1
+
+cat > "$fcore/bash/install.bash" <<INSTALL
+#!/usr/bin/env bash
+while (( 0 < \$# ))
+do
+  case \$1 in
+    --core) c=\$2; shift 2 ;;
+    --overlay) o=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p ~/git ~/.config/timvisher ~/.config/app &&
+  ln -s "\$c" ~/git/ide &&
+  ln -s "\$o" ~/.config/timvisher/ide &&
+  ln -s ~/.config/app ~/.app &&
+  ln -s '$core/bash/functions' ~/.functions || exit 1
+printf 'x\n' >> '$tmpdir/installs'
+INSTALL
+
+suite() {
+  local file=$1
+  cat > "$file"
+}
+
+suite "$fcore/bash/tests/pass" <<'SUITE'
+echo 'PASS: fine'
+SUITE
+suite "$fcore/bash/tests/fail" <<'SUITE'
+echo 'FAIL: broken thing'
+exit 1
+SUITE
+suite "$fcore/bash/tests/hang" <<'SUITE'
+echo 'FAIL: before the hang'
+sleep 600
+SUITE
+suite "$fcore/bash/tests/relocated" <<'SUITE'
+if [[ $(cd ~/.app && pwd -P) == "$(cd ~ && pwd -P)/.config/app" ]]
+then
+  echo 'PASS: a link into the template resolves in this HOME'
+else
+  echo "FAIL: ~/.app resolves to $(cd ~/.app && pwd -P)"
+  exit 1
+fi
+SUITE
+suite "$fcore/bash/tests/background" <<SUITE
+sleep 600 &
+printf '%s\n' "\$!" > '$tmpdir/background.pid'
+echo 'PASS: started'
+SUITE
+for name in home_a home_b
+do
+  suite "$fcore/bash/tests/$name" <<SUITE
+env > '$tmpdir/$name.env'
+printf 'pwd=%s\n' "\$(pwd -P)" >> '$tmpdir/$name.env'
+printf 'pgid=%s\n' "\$(ps -o pgid= -p \$\$ | tr -d ' ')" >> '$tmpdir/$name.env'
+printf 'pid=%s\n' "\$\$" >> '$tmpdir/$name.env'
+if read -r line
+then
+  printf 'stdin=open\n' >> '$tmpdir/$name.env'
+fi
+if [[ -e ~/written ]]
+then
+  echo 'FAIL: HOME is shared'
+  exit 1
+fi
+touch ~/written
+echo 'PASS: own HOME'
+SUITE
+done
+suite "$fcore/bash/tests/fresh" <<'SUITE'
+source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
+outer=$HOME
+(
+  timvisher_tests_fresh_home || exit 1
+  if [[ $HOME != "$outer" && -L $HOME/git/ide &&
+        $XDG_CONFIG_HOME == "$HOME/.config" &&
+        $XDG_DATA_HOME == "$HOME/.local/share" &&
+        $XDG_STATE_HOME == "$HOME/.local/state" &&
+        $XDG_CACHE_HOME == "$HOME/.cache" &&
+        $TIMVISHER_GIT_HOME == "$HOME/git" ]]
+  then
+    echo 'PASS: fresh HOME'
+  else
+    echo 'FAIL: fresh HOME'
+    exit 1
+  fi
+  touch "$HOME/fresh-marker"
+) || exit 1
+if [[ -e $HOME/fresh-marker ]]
+then
+  echo 'FAIL: fresh HOME leaked into the suite HOME'
+  exit 1
+fi
+SUITE
+mkdir -p "$fcore/bash/tests/fixtures"
+printf 'echo not a suite\n' > "$fcore/bash/tests/fixtures/data"
+suite "$fcore/bash/tests/prefix_home" <<'SUITE'
+HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent/.config bash -c 'true' &&
+  echo 'PASS: a HOME prefix for a child is allowed'
+HOME=/nonexistent \
+  XDG_CONFIG_HOME=/nonexistent/.config \
+  bash -c 'true' &&
+  echo 'PASS: a continued HOME prefix for a child is allowed'
+SUITE
+suite "$fover/bash/tests/overlay_pass" <<'SUITE'
+echo 'PASS: overlay'
+SUITE
+mkdir -p "$fcore/LaunchAgents/tests" "$fcore/bash/bin/tests" || exit 1
+suite "$fcore/LaunchAgents/tests/agents" <<'SUITE'
+echo 'PASS: launch agents'
+SUITE
+suite "$fcore/bash/bin/tests/wrapper.bash" <<'SUITE'
+echo 'PASS: wrapper'
+SUITE
+printf 'echo not a suite\n' > "$fcore/bash/bin/tests/notes.txt"
+
+cat > "$fcore/python/tests/test_fixture.py" <<'PY'
+import os
+import unittest
+
+from timvisher.testing import fresh_home
+
+
+class Fixture(unittest.TestCase):
+    def test_pass(self):
+        self.assertTrue(True)
+
+    def test_fresh(self):
+        outer = os.environ["HOME"]
+        with fresh_home() as home:
+            self.assertNotEqual(outer, home)
+            self.assertEqual(home, os.environ["HOME"])
+            self.assertEqual(os.path.join(home, ".config"), os.environ["XDG_CONFIG_HOME"])
+            self.assertEqual(os.path.join(home, "git"), os.environ["TIMVISHER_GIT_HOME"])
+            self.assertTrue(os.path.islink(os.path.join(home, "git", "ide")))
+        self.assertEqual(outer, os.environ["HOME"])
+        self.assertFalse(os.path.exists(home))
+
+    def test_fail(self):
+        self.fail("python broke")
+
+    def test_error(self):
+        raise RuntimeError("boom")
+PY
+printf 'print("PASS: conformance")\n' > "$fcore/python/tests/conformance/run.py"
+printf '__pycache__/\n' > "$fcore/.gitignore"
+
+for root in "$fcore" "$fover"
+do
+  git -C "$root" init -q &&
+    git -C "$root" add -A &&
+    git -C "$root" -c commit.gpgsign=false commit -q -m fixture ||
+    exit 1
+done
+
+results="$tmpdir/results"
+
+run_fixture() {
+  : > "$results"
+  (cd "$fcore" && TMPDIR="$tmpdir/runtmp" TIMVISHER_DEV_CI_RESULTS_FILE="$results" \
+    as_caller "$script" --overlay "$fover" --timeout 20 "$@" >"$tmpdir/out" 2>"$tmpdir/err")
+}
+
+absent() {
+  ! grep -q -- "$@"
+}
+
+has_result() {
+  grep -qxF -- "$1" "$results"
+}
+
+env_of() {
+  sed -n "s/^$2=//p" "$tmpdir/$1.env"
+}
+
+run_fixture
+rc=$?
+check 'a run with failing suites exits 1' test "$rc" = 1
+check 'a passing suite is recorded' has_result 'test: ide/bash/tests/pass pass'
+check 'a failing suite is recorded' has_result 'test: ide/bash/tests/fail fail'
+check "a failing suite's FAIL: lines are recorded" \
+      has_result 'test: ide/bash/tests/fail FAIL: broken thing'
+check 'a hung suite times out' has_result 'test: ide/bash/tests/hang FAIL: timed out'
+check "a hung suite's output before the timeout is kept" \
+      has_result 'test: ide/bash/tests/hang FAIL: before the hang'
+check 'links installed into the template resolve in each suite HOME' \
+      has_result 'test: ide/bash/tests/relocated pass'
+check 'a suite leaving a background child passes' \
+      has_result 'test: ide/bash/tests/background pass'
+check 'the background child is killed with its suite' \
+      eval '! kill -0 "$(< "$tmpdir/background.pid")" 2>/dev/null'
+check 'suites that write to HOME each get their own' \
+      eval 'has_result "test: ide/bash/tests/home_a pass" && has_result "test: ide/bash/tests/home_b pass"'
+check 'a suite HOME is not the caller HOME' \
+      eval '[[ $(env_of home_a HOME) != "$caller_home" && -n $(env_of home_a HOME) ]]'
+check 'suites get different HOMEs' \
+      eval '[[ $(env_of home_a HOME) != "$(env_of home_b HOME)" ]]'
+check 'a suite has XDG dirs under its HOME' \
+      eval '[[ $(env_of home_a XDG_CONFIG_HOME) == "$(env_of home_a HOME)/.config" && $(env_of home_a XDG_STATE_HOME) == "$(env_of home_a HOME)/.local/state" ]]'
+check 'a suite does not get TIMVISHER_AGENT' eval '[[ -z $(env_of home_a TIMVISHER_AGENT) ]]'
+check 'a suite does not get GH_TOKEN' eval '[[ -z $(env_of home_a GH_TOKEN) ]]'
+check 'a suite has git overrides' eval '[[ $(env_of home_a GIT_CONFIG_KEY_1) == core.hooksPath ]]'
+check 'a suite has a test identity' eval '[[ $(env_of home_a GIT_AUTHOR_NAME) == Test ]]'
+check 'a suite runs at its repo root' test "$(env_of home_a pwd)" = "$fcore"
+check 'a suite reads stdin from /dev/null' eval '! grep -q "^stdin=" "$tmpdir/home_a.env"'
+check 'a suite runs in its own process group' \
+      test "$(env_of home_a pgid)" = "$(env_of home_a pid)"
+check 'timvisher_tests_fresh_home gives a fresh HOME' has_result 'test: ide/bash/tests/fresh pass'
+check 'directories in a test directory are not suites' \
+      eval '! grep -q -e "bash/tests/fixtures" -e "bash/tests/lib" "$results"'
+check 'a suite giving a child its own HOME is allowed' \
+      has_result 'test: ide/bash/tests/prefix_home pass'
+check 'overlay suites run' has_result 'test: system-extensions/bash/tests/overlay_pass pass'
+check 'LaunchAgents/tests suites run' has_result 'test: ide/LaunchAgents/tests/agents pass'
+check 'bash/bin/tests/*.bash suites run' has_result 'test: ide/bash/bin/tests/wrapper.bash pass'
+check 'other files in bash/bin/tests are not suites' absent 'notes.txt' "$results"
+check 'python unittest runs as a suite' has_result 'test: ide/python/tests fail'
+check 'python test failures are FAIL: lines' \
+      eval 'grep -q "^test: ide/python/tests FAIL: test_fail" "$results"'
+check 'python test errors are FAIL: lines' \
+      eval 'grep -q "^test: ide/python/tests FAIL: test_error" "$results"'
+check 'the python fresh_home test passes' \
+      eval '! grep -q "test_fresh" "$results"'
+check 'the conformance runner runs as a suite' \
+      has_result 'test: ide/python/tests/conformance/run.py pass'
+check 'suite output is tagged with the suite' \
+      eval 'grep -q "^ide/bash/tests/pass	PASS: fine" "$tmpdir/out"'
+check 'failed suites are listed on stderr' \
+      eval 'grep -q "^failed: ide/bash/tests/fail" "$tmpdir/err"'
+check 'the template is built once' test "$(wc -l < "$tmpdir/installs")" = 1
+check 'the run directory is removed' \
+      test -z "$(/usr/bin/find "$tmpdir/runtmp" -mindepth 1 -maxdepth 1)"
+
+run_fixture --suite bash/tests/pass --suite "$fover/bash/tests/overlay_pass"
+rc=$?
+check 'a passing --suite run exits 0' test "$rc" = 0
+check '--suite is repeatable' has_result 'test: ide/bash/tests/pass pass'
+check '--suite takes a path in the other root' \
+      has_result 'test: system-extensions/bash/tests/overlay_pass pass'
+check '--suite runs only those suites' \
+      eval '[[ $(grep -cE " (pass|fail)\$" "$results") == 2 ]]'
+check 'an unchanged tree reuses the template' test "$(wc -l < "$tmpdir/installs")" = 1
+
+suite "$fcore/bash/tests/dirty" <<'SUITE'
+touch dirty-file
+echo 'PASS: wrote'
+SUITE
+run_fixture --suite bash/tests/dirty
+rc=$?
+check 'a suite that changes the worktree fails' test "$rc" = 1
+check 'the worktree change is named' \
+      eval 'grep -q "^test: ide/bash/tests/dirty FAIL: .*dirty-file" "$results"'
+check 'an uncommitted change rebuilds the template' test "$(wc -l < "$tmpdir/installs")" = 2
+rm -f "$fcore/dirty-file" "$fcore/bash/tests/dirty"
+
+printf 'keep me\n' > "$fcore/precious"
+suite "$fcore/bash/tests/discard" <<'SUITE'
+rm -f precious
+echo 'PASS: removed'
+SUITE
+run_fixture --suite bash/tests/discard
+rc=$?
+check 'a suite that removes uncommitted work fails' test "$rc" = 1
+check 'the removed file is named' \
+      eval 'grep -q "^test: ide/bash/tests/discard FAIL: .*precious" "$results"'
+
+printf 'tracked\n' > "$fcore/tracked" &&
+  git -C "$fcore" add tracked &&
+  git -C "$fcore" -c commit.gpgsign=false commit -q -m tracked &&
+  printf 'my edit\n' > "$fcore/tracked" || exit 1
+suite "$fcore/bash/tests/overwrite" <<'SUITE'
+printf 'clobbered\n' > tracked
+echo 'PASS: overwrote'
+SUITE
+run_fixture --suite bash/tests/overwrite
+rc=$?
+check 'a suite that overwrites an already-changed file fails' test "$rc" = 1
+check 'the overwritten file is named' \
+      eval 'grep -q "^test: ide/bash/tests/overwrite FAIL: .*tracked" "$results"'
+printf 'my edit\n' > "$fcore/tracked"
+rm -f "$fcore/bash/tests/overwrite"
+
+suite "$fcore/bash/tests/hide_git" <<'SUITE'
+mv .git .git-hidden
+echo 'PASS: hid .git'
+SUITE
+run_fixture --suite bash/tests/hide_git
+rc=$?
+[[ ! -d $fcore/.git-hidden ]] || mv "$fcore/.git-hidden" "$fcore/.git"
+check 'a suite that leaves the worktree unreadable fails' test "$rc" = 1
+check 'the unreadable worktree is reported' \
+      eval 'grep -q "^test: ide/bash/tests/hide_git FAIL: can.t read the ide worktree" "$results"'
+rm -f "$fcore/bash/tests/hide_git"
+
+(cd "$fcore/bash" && TMPDIR="$tmpdir/runtmp" TIMVISHER_DEV_CI_RESULTS_FILE="$results" \
+  as_caller "$script" --overlay "$fover" --suite bash/tests/pass >/dev/null 2>&1)
+rc=$?
+check 'a repo-relative --suite works from a subdirectory' test "$rc" = 0
+
+(cd "$fcore" && as_caller "$script" --overlay "$fover" --timeout soon >/dev/null 2>&1)
+rc=$?
+check 'a non-numeric --timeout is a usage error' test "$rc" != 0
+
+pair_trunk="$tmpdir/pair-trunk"
+pair_branch=$(git -C "$fcore" symbolic-ref --short HEAD) || exit 1
+mkdir -p "$pair_trunk" &&
+  git -C "$pair_trunk" init -q -b pair-trunk &&
+  git -C "$pair_trunk" -c commit.gpgsign=false commit -q --allow-empty -m trunk &&
+  git -C "$pair_trunk" worktree add -q -b "$pair_branch" "$tmpdir/pair-branch" ||
+  exit 1
+ln -sfn "$pair_trunk" "$caller_home/.config/timvisher/ide" || exit 1
+paired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
+check 'the overlay defaults to its worktree on the current branch' \
+      test "$paired" = "$tmpdir/pair-branch"
+git -C "$pair_trunk" worktree remove -f "$tmpdir/pair-branch" || exit 1
+unpaired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
+check 'the overlay falls back to its trunk without a worktree on the branch' \
+      test "$unpaired" = "$pair_trunk"
+ln -sfn "$overlay" "$caller_home/.config/timvisher/ide" || exit 1
+
+suite "$fcore/bash/tests/linger" <<SUITE
+printf '%s\n' "\$\$" > '$tmpdir/linger.pid'
+sleep 600
+SUITE
+rm -f "$tmpdir/linger.pid"
+(
+  cd "$fcore" || exit 1
+  exec env HOME="$caller_home" XDG_CONFIG_HOME="$caller_home/.config" \
+    XDG_DATA_HOME="$caller_home/.local/share" XDG_STATE_HOME="$caller_home/.local/state" \
+    XDG_CACHE_HOME="$caller_home/.cache" TMPDIR="$tmpdir/runtmp" \
+    "$script" --overlay "$fover" --timeout 60 --suite bash/tests/linger </dev/null >/dev/null 2>&1
+) &
+runner_pid=$!
+for _ in {1..100}
+do
+  [[ -s $tmpdir/linger.pid ]] && break
+  sleep 0.1
+done
+kill -TERM "$runner_pid"
+wait "$runner_pid"
+check 'a cancelled run stops its suites' eval '! kill -0 "$(< "$tmpdir/linger.pid")" 2>/dev/null'
+check 'a cancelled run leaves no parallel behind' \
+      eval '! pgrep -f "parallel.*linger" >/dev/null'
+check 'a cancelled run removes its run directory' \
+      test -z "$(/usr/bin/find "$tmpdir/runtmp" -mindepth 1 -maxdepth 1)"
+rm -f "$fcore/bash/tests/linger"
+
+refused() {
+  local suite=$1 expected=$2
+  run_fixture --suite "bash/tests/$suite"
+  local rc=$?
+  check "$suite: the run fails" test "$rc" = 1
+  check "$suite: the suite is named with the reason" \
+        grep -q -- "bash/tests/$suite.*$expected" "$tmpdir/err"
+  check "$suite: the suite does not run" absent "ran-$suite" "$tmpdir/out"
+  check "$suite: the refusal is recorded" \
+        grep -q -- "^test: ide/bash/tests/$suite FAIL: .*$expected" "$results"
+  rm -f "$fcore/bash/tests/$suite"
+}
+
+printf 'echo ran-executable\n' > "$fcore/bash/tests/executable"
+chmod +x "$fcore/bash/tests/executable"
+refused executable 'is executable'
+
+printf '%s=/tmp/elsewhere\necho ran-sets_home\n' HOME > "$fcore/bash/tests/sets_home"
+refused sets_home 'assigns HOME'
+
+printf 'helper() {\n  export %s="$PWD/config"\n}\necho ran-exports_xdg\n' XDG_CONFIG_HOME > "$fcore/bash/tests/exports_xdg"
+refused exports_xdg 'assigns XDG_CONFIG_HOME'
+
+printf '%s=$(mktemp -d)\necho ran-substitutes_home\n' HOME > "$fcore/bash/tests/substitutes_home"
+refused substitutes_home 'assigns HOME'
+
+printf 'f() {\n  local -x %s=/tmp/x # fake\n}\necho ran-local_home\n' HOME > "$fcore/bash/tests/local_home"
+refused local_home 'assigns HOME'
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

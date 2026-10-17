@@ -1,0 +1,594 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1091
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/logging.bash" ||
+  {
+    echo 'Unable to source logging functions' >&2
+    exit 1
+  }
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_tests [--core <path>] [--overlay <path>] [--suite <path>]...
+                       [--timeout <seconds>]
+       timvisher_tests [--core <path>] [--overlay <path>] --shell [<cmd> [<arg>...]]
+
+Run the test suites of the worktrees under test at their repo roots,
+each in its own copy of a template HOME built with bash/install.bash
+from those worktrees, with an allowlisted environment and stdin from
+/dev/null. Bash suites run as 'bash <suite>'. A suite fails if it exits
+non-zero, times out, or the content of either worktree differs between
+its start and its end. Suites run in parallel, so a change made while a
+suite ran may be another suite's (or your own edit's); the FAIL: line
+names the changed paths.
+
+Suites are the regular files directly in bash/tests/,
+ai/HOME/.agents/skills/*/scripts/tests/ and LaunchAgents/tests/, and
+the bash/bin/tests/*.bash files, of each root (directories such as lib/
+hold helpers and are skipped), plus, when a root has
+python/tests/, 'python3 -m unittest discover' there and
+python/tests/conformance/run.py. The run is refused, naming the file,
+if a suite is executable, or if a line of it looks like it assigns HOME
+or an XDG_* variable for the suite itself. That check is a line-based
+heuristic: it misses some forms and can flag a heredoc.
+
+The current repo is one root under test. The other is --core or
+--overlay when given, otherwise that repo's worktree on the current
+branch if it has one, else its installed trunk (~/git/ide or
+~/.config/timvisher/ide). A relative --suite path is taken from the
+current directory, or else from the repo root.
+
+The HOME is a scratch copy, not a sandbox: ~/git/ide and
+~/.config/timvisher/ide in it link to the real worktrees under test,
+so writes through them land in those worktrees.
+
+Each FAIL: line a suite prints is reported, including when the suite
+times out. When TIMVISHER_DEV_CI_RESULTS_FILE is set, a pass/fail line
+per suite, and each failing suite's FAIL: lines, are appended to it.
+
+Suites can source ~/git/ide/bash/tests/lib/timvisher_tests.bash for
+timvisher_tests_fresh_home, which gives the calling subshell a fresh
+copy of the template HOME; Python tests can use
+timvisher.testing.fresh_home(). Both move HOME, the XDG_* directories
+and TIMVISHER_GIT_HOME only: PATH, PYTHONPATH and the GIT_CONFIG_*
+overrides keep pointing at the suite's own HOME. Both copies live under
+TMPDIR, which the runner removes when the run or --shell ends.
+timvisher_tests_with_home <dir> <cmd> runs one command with HOME, the
+XDG_* directories and TIMVISHER_GIT_HOME under <dir>.
+
+Options:
+  --core <path>       The ide root, when running from system-extensions.
+  --overlay <path>    The system-extensions root, when running from ide.
+  --suite <path>      Run only this suite. Repeatable.
+  --timeout <seconds> Kill a suite that runs longer (default: 1200).
+  --shell             Run <cmd> (default: bash) in a fresh HOME at the
+                      current repo root and return its exit status.
+                      Everything after it is the command.
+  -h, --help          Show this help.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+core=
+overlay=
+shell=
+cmd=()
+only=()
+timeout=1200
+
+args=("$@")
+
+while (( 0 < $# ))
+do
+  case $1 in
+    --core)
+      core=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
+    --overlay)
+      overlay=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
+    --suite)
+      only+=("${2-}")
+      shift 2 || { usage; exit 1; }
+      ;;
+    --timeout)
+      timeout=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
+    --shell)
+      shell=1
+      shift
+      cmd=("$@")
+      break
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if ! [[ $timeout =~ ^[0-9]+$ ]] || (( timeout < 1 ))
+then
+  usage
+  exit 1
+fi
+
+base_path=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+# The runner's own git calls bypass ~/bin/git: the wrapper's logging
+# would interleave with suite output and its side effects would run
+# against the worktrees under test.
+real_git=$(PATH=$base_path type -P git) || die "No git on '%s'" "$base_path"
+
+here=$("$real_git" rev-parse --show-toplevel) || die 'Not in a git repository'
+here=$(realpath "$here") || die "Can't resolve '%s'" "$here"
+
+branch=$("$real_git" -C "$here" symbolic-ref -q --short HEAD)
+
+# The other repo's worktree on this branch, if it has one: stacked
+# work spans both repos on one branch name, and its trunk would test
+# this branch against code it does not ship with.
+paired_root() {
+  local trunk=$1 line path=
+  if [[ -n $branch ]]
+  then
+    while IFS= read -r line
+    do
+      case $line in
+        'worktree '*) path=${line#worktree } ;;
+        "branch refs/heads/$branch") printf '%s\n' "$path"; return ;;
+      esac
+    done < <("$real_git" -C "$trunk" worktree list --porcelain 2>/dev/null)
+  fi
+  printf '%s\n' "$trunk"
+}
+
+if [[ -e $here/bash/install.bash ]]
+then
+  core=${core:-$here}
+  overlay=${overlay:-$(paired_root "$HOME/.config/timvisher/ide")}
+else
+  core=${core:-$(paired_root "$HOME/git/ide")}
+  overlay=${overlay:-$here}
+fi
+
+core=$(realpath "$core") || die "No core at '%s'" "$core"
+overlay=$(realpath "$overlay") || die "No overlay at '%s'" "$overlay"
+
+# Run the core-under-test's own runner, not whichever copy was invoked
+# (a hook or a trunk's ~/bin), so a branch that changes the runner is
+# tested by its own version.
+own=$core/bash/bin/timvisher_tests
+if [[ -x $own && ! $own -ef ${BASH_SOURCE[0]} ]]
+then
+  exec "$own" --core "$core" --overlay "$overlay" "${args[@]}"
+fi
+
+remove_tree() {
+  chflags -R nouchg "$1" 2>/dev/null
+  rm -rf -- "$1"
+}
+
+run_dir=
+cleanup() {
+  if [[ -n $run_dir ]]
+  then
+    remove_tree "$run_dir"
+  fi
+}
+trap cleanup EXIT
+run_dir=$(mktemp -d) || die "Can't create a run directory"
+run_dir=$(realpath "$run_dir") || die "Can't resolve '%s'" "$run_dir"
+
+tree_of() {
+  local root=$1 index rc
+  index=$(mktemp "$run_dir/index.XXXXXX") || return 1
+  /bin/cp "$("$real_git" -C "$root" rev-parse --path-format=absolute --git-path index)" "$index" 2>/dev/null ||
+    rm -f -- "$index"
+  GIT_INDEX_FILE=$index "$real_git" -C "$root" -c advice.addEmbeddedRepo=false add -A 2>/dev/null &&
+    GIT_INDEX_FILE=$index "$real_git" -C "$root" write-tree
+  rc=$?
+  rm -f -- "$index"
+  return "$rc"
+}
+
+core_tree=$(tree_of "$core") || die "Can't read the tree of '%s'" "$core"
+overlay_tree=$(tree_of "$overlay") || die "Can't read the tree of '%s'" "$overlay"
+key=$(printf '%s\n' "$core" "$core_tree" "$overlay" "$overlay_tree" |
+  shasum -a 256 | cut -d' ' -f1)
+
+templates=${XDG_STATE_HOME:-$HOME/.local/state}/timvisher_tests/templates
+template=$templates/$key/home
+
+# Installers link with absolute paths into the HOME they install, and a
+# copy of the template keeps them. Rewriting those as relative links,
+# rather than fixing every installer, is what makes each copy resolve
+# through its own ~/git/ide and ~/.config/timvisher/ide.
+make_relocatable() {
+  PATH=$base_path python3 -c '
+import os
+import sys
+
+root = sys.argv[1]
+for parent, dirs, files in os.walk(root):
+    for name in dirs + files:
+        link = os.path.join(parent, name)
+        if not os.path.islink(link):
+            continue
+        target = os.readlink(link)
+        if target == root or target.startswith(root + os.sep):
+            os.remove(link)
+            os.symlink(os.path.relpath(target, parent), link)
+' "$1"
+}
+
+if [[ ! -d $template ]]
+then
+  mkdir -p "$templates" || die "Can't create '%s'" "$templates"
+  build=$(mktemp -d "$templates/$key.XXXXXX") ||
+    die "Can't create a build directory in '%s'" "$templates"
+  mkdir "$build/home" || die "Can't create '%s'" "$build/home"
+  if ! env -i HOME="$build/home" PATH="$base_path" TMPDIR="${TMPDIR:-/tmp}" \
+    LANG="${LANG:-en_US.UTF-8}" \
+    bash "$core/bash/install.bash" --core "$core" --overlay "$overlay" \
+    </dev/null >"$build/install.log" 2>&1
+  then
+    cat "$build/install.log" >&2
+    die "bash/install.bash failed for core '%s' and overlay '%s'" "$core" "$overlay"
+  fi
+  make_relocatable "$build/home" ||
+    die "Can't make the template at '%s' relocatable" "$build/home"
+  ln -s "${build##*/}" "$templates/$key" 2>/dev/null
+  [[ -d $template ]] || die "Can't publish the template at '%s'" "$templates/$key"
+fi
+
+new_home() {
+  local home=$1
+  /bin/cp -R "$template" "$home" || return 1
+  mkdir -p "$home/.local/state/timvisher_tests/hooks" \
+           "$home/.local/state/timvisher/wrappers/git" || return 1
+}
+
+home_env() {
+  local home=$1 tmp=$2 paths path pythonpath var
+
+  # shellcheck disable=SC2016
+  paths=$(env -i HOME="$home" PATH="$base_path" bash -c '
+    source ~/.functions/path.bash || exit 1
+    timvisher_path_prepend_ide_roots ~/git/ide ~/.config/timvisher/ide
+    printf "%s\n%s\n" "$PATH" "$PYTHONPATH"
+  ') || return 1
+  {
+    IFS= read -r path
+    IFS= read -r pythonpath
+  } <<< "$paths"
+
+  env_args=(
+    HOME="$home"
+    XDG_CONFIG_HOME="$home/.config"
+    XDG_DATA_HOME="$home/.local/share"
+    XDG_STATE_HOME="$home/.local/state"
+    XDG_CACHE_HOME="$home/.cache"
+    TIMVISHER_GIT_HOME="$home/git"
+    TIMVISHER_TESTS_TEMPLATE="$template"
+    PATH="$path"
+    PYTHONPATH="$pythonpath"
+    TMPDIR="$tmp"
+    GIT_CONFIG_COUNT=2
+    GIT_CONFIG_KEY_0=trace2.eventTarget
+    GIT_CONFIG_VALUE_0="$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
+    GIT_CONFIG_KEY_1=core.hooksPath
+    GIT_CONFIG_VALUE_1="$home/.local/state/timvisher_tests/hooks"
+    GIT_AUTHOR_NAME=Test
+    GIT_AUTHOR_EMAIL=test@example.com
+    GIT_COMMITTER_NAME=Test
+    GIT_COMMITTER_EMAIL=test@example.com
+  )
+
+  for var in LANG TERM $(compgen -e LC_)
+  do
+    if [[ -n ${!var+set} ]]
+    then
+      env_args+=("$var=${!var}")
+    fi
+  done
+}
+
+if [[ -n $shell ]]
+then
+  if (( 0 == ${#cmd[@]} ))
+  then
+    cmd=(bash)
+  fi
+  new_home "$run_dir/home" || die "Can't copy the template to '%s'" "$run_dir/home"
+  mkdir "$run_dir/tmp" || die "Can't create '%s'" "$run_dir/tmp"
+  home_env "$run_dir/home" "$run_dir/tmp" ||
+    die "Can't build PATH from '%s'" "$run_dir/home/.functions/path.bash"
+  (cd "$here" && env -i "${env_args[@]}" "${cmd[@]}")
+  exit
+fi
+
+if ! command -v parallel >/dev/null 2>&1
+then
+  die "GNU parallel not found; install it with 'brew install parallel'"
+fi
+
+name_of() {
+  if [[ $1 == "$core" ]]
+  then
+    printf 'ide\n'
+  else
+    printf 'system-extensions\n'
+  fi
+}
+
+labels=()
+roots=()
+kinds=()
+targets=()
+
+add_suite() {
+  labels+=("$(name_of "$1")/$3")
+  roots+=("$1")
+  kinds+=("$2")
+  targets+=("$3")
+}
+
+for root in "$core" "$overlay"
+do
+  for t in "$root"/bash/tests/* "$root"/ai/HOME/.agents/skills/*/scripts/tests/* \
+    "$root"/LaunchAgents/tests/* "$root"/bash/bin/tests/*.bash
+  do
+    [[ -f $t ]] || continue
+    add_suite "$root" bash "${t#"$root"/}"
+  done
+  if [[ -d $root/python/tests ]]
+  then
+    add_suite "$root" unittest python/tests
+  fi
+  if [[ -f $root/python/tests/conformance/run.py ]]
+  then
+    add_suite "$root" conformance python/tests/conformance/run.py
+  fi
+done
+
+if (( 0 < ${#only[@]} ))
+then
+  all_labels=("${labels[@]}")
+  all_roots=("${roots[@]}")
+  all_kinds=("${kinds[@]}")
+  all_targets=("${targets[@]}")
+  labels=()
+  roots=()
+  kinds=()
+  targets=()
+  for path in "${only[@]}"
+  do
+    if [[ $path != /* && ! -e $path ]]
+    then
+      path=$here/$path
+    fi
+    path=$(realpath "$path") || die "No suite at '%s'" "$path"
+    found=
+    for i in "${!all_labels[@]}"
+    do
+      if [[ $path == "${all_roots[i]}/${all_targets[i]}" ]]
+      then
+        labels+=("${all_labels[i]}")
+        roots+=("${all_roots[i]}")
+        kinds+=("${all_kinds[i]}")
+        targets+=("${all_targets[i]}")
+        found=1
+      fi
+    done
+    [[ -n $found ]] || die "'%s' is not a suite of '%s' or '%s'" "$path" "$core" "$overlay"
+  done
+fi
+
+(( 0 < ${#labels[@]} )) || die 'No suites found'
+
+results=${TIMVISHER_DEV_CI_RESULTS_FILE:-}
+
+record() {
+  if [[ -n $results ]]
+  then
+    printf '%s\n' "$*" >> "$results"
+  fi
+}
+
+value='("[^"]*"|'"'[^']*'"'|\$\([^)]*\)|[^[:space:];&|#]*)'
+name_value="[[:alpha:]_][[:alnum:]_]*=${value}"
+assignment="^[[:space:]]*((export|local|declare|typeset|readonly)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*)?(${name_value}[[:space:]]+)*(HOME|XDG_[[:upper:]_]+)=${value}([[:space:]]+${name_value})*[[:space:]]*(;|&&|\|\||#.*)?\$"
+refusals=()
+for i in "${!labels[@]}"
+do
+  [[ ${kinds[i]} == bash ]] || continue
+  file=${roots[i]}/${targets[i]}
+  reasons=()
+  if [[ -x $file ]]
+  then
+    reasons+=('is executable; suites run only through timvisher_tests (chmod -x it)')
+  fi
+  while IFS=: read -r line text
+  do
+    [[ $text =~ $assignment ]] || continue
+    reasons+=("assigns ${BASH_REMATCH[6]} itself at line ${line}; the runner gives each suite its HOME (use timvisher_tests_fresh_home for a fresh one)")
+  done < <(grep -n -E "$assignment" "$file")
+  for reason in "${reasons[@]}"
+  do
+    refusals+=("${labels[i]}: $reason")
+    record "test: ${labels[i]} FAIL: $reason"
+  done
+  if (( 0 < ${#reasons[@]} ))
+  then
+    record "test: ${labels[i]} fail"
+  fi
+done
+
+if (( 0 < ${#refusals[@]} ))
+then
+  printf 'refused: %s\n' "${refusals[@]}" >&2
+  die 'Refusing to run: fix the suites above'
+fi
+
+show_log() {
+  local kind=$1 log=$2
+  if [[ $kind == unittest ]]
+  then
+    sed 's/^ERROR: /FAIL: /' "$log"
+  else
+    cat "$log"
+  fi
+}
+
+# Each suite compares the worktrees' content from its own start to its
+# own end, not to one snapshot from before the run: a change made and
+# left by one suite then fails that suite and the suites running
+# alongside it, never every suite that finishes later.
+run_suite() {
+  local i=$1
+  local label=${labels[i]} root=${roots[i]} kind=${kinds[i]} target=${targets[i]}
+  local dir=$run_dir/suites/$i
+  local -a env_args suite_cmd
+  local -A before
+
+  mkdir -p "$dir/tmp" || return 1
+  if ! new_home "$dir/home" || ! home_env "$dir/home" "$dir/tmp"
+  then
+    echo "FAIL: can't build a HOME for $label"
+    return 1
+  fi
+
+  case $kind in
+    bash) suite_cmd=(bash "$target") ;;
+    unittest) suite_cmd=(python3 -m unittest discover -s python/tests -t python/tests) ;;
+    conformance) suite_cmd=(python3 "$target") ;;
+  esac
+
+  local r name
+  for r in "$core" "$overlay"
+  do
+    if ! before[$r]=$(tree_of "$r")
+    then
+      echo "FAIL: can't read the $(name_of "$r") worktree before the suite"
+      return 1
+    fi
+  done
+
+  # shellcheck disable=SC2016
+  (cd "$root" && exec /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "$ARGV[0]: $!\n"' \
+    env -i "${env_args[@]}" "${suite_cmd[@]}") </dev/null >"$dir/log" 2>&1 &
+  local pid=$!
+  # shellcheck disable=SC2064
+  trap "kill -KILL -- -$pid 2>/dev/null; show_log $(printf %q "$kind") $(printf %q "$dir/log"); exit 143" INT HUP TERM
+  wait "$pid"
+  local rc=$?
+  kill -KILL -- "-$pid" 2>/dev/null
+  trap - INT HUP TERM
+
+  show_log "$kind" "$dir/log"
+
+  local after changes line
+  for r in "$core" "$overlay"
+  do
+    name=$(name_of "$r")
+    if ! after=$(tree_of "$r")
+    then
+      echo "FAIL: can't read the $name worktree after the suite"
+      rc=1
+      continue
+    fi
+    [[ $after != "${before[$r]}" ]] || continue
+    rc=1
+    if ! changes=$("$real_git" -C "$r" diff-tree -r --name-status "${before[$r]}" "$after")
+    then
+      echo "FAIL: changed the $name worktree while this suite ran"
+      continue
+    fi
+    while IFS= read -r line
+    do
+      echo "FAIL: changed the $name worktree while this suite ran: ${line//$'\t'/ }"
+    done <<< "$changes"
+  done
+
+  return "$rc"
+}
+
+{
+  printf 'core=%q\noverlay=%q\nrun_dir=%q\ntemplate=%q\nbase_path=%q\nreal_git=%q\n' \
+    "$core" "$overlay" "$run_dir" "$template" "$base_path" "$real_git"
+  for i in "${!labels[@]}"
+  do
+    printf 'labels[%d]=%q\nroots[%d]=%q\nkinds[%d]=%q\ntargets[%d]=%q\n' \
+      "$i" "${labels[i]}" "$i" "${roots[i]}" "$i" "${kinds[i]}" "$i" "${targets[i]}"
+  done
+  declare -f name_of new_home home_env tree_of show_log run_suite
+} > "$run_dir/state.bash" || die "Can't write '%s'" "$run_dir/state.bash"
+
+printf 'ide: %s\nsystem-extensions: %s\n' "$core" "$overlay"
+
+exec {log_fd}> >(tee "$run_dir/log")
+tee_pid=$!
+
+PARALLEL_SHELL=bash parallel --keep-order --halt never --timeout "$timeout" \
+  --link --tagstring '{1}' --joblog "$run_dir/joblog" \
+  "source $(printf '%q' "$run_dir/state.bash") && run_suite {2}" \
+  ::: "${labels[@]}" ::: "${!labels[@]}" </dev/null >&"$log_fd" 2>&1 {log_fd}>&- &
+parallel_pid=$!
+
+# On TERM, parallel ends each running job (run_suite, which kills its
+# suite's process group). Waiting for that keeps the EXIT cleanup from
+# deleting HOMEs out from under suites that are still running.
+cancel() {
+  kill -TERM "$parallel_pid" 2>/dev/null
+  wait "$parallel_pid"
+  exit 143
+}
+trap cancel INT TERM HUP
+wait "$parallel_pid"
+trap - INT TERM HUP
+exec {log_fd}>&-
+wait "$tee_pid"
+
+failed=()
+while read -r seq exitval signal
+do
+  t=${labels[seq - 1]}
+  if (( exitval == 0 && signal == 0 ))
+  then
+    record "test: $t pass"
+    continue
+  fi
+  failed+=("$t")
+  record "test: $t fail"
+  if (( exitval == -1 ))
+  then
+    record "test: $t FAIL: timed out"
+  fi
+  while IFS= read -r name
+  do
+    record "test: $t FAIL: $name"
+  done < <(awk -F'\t' -v suite="$t" '$1 == suite && $2 ~ /^FAIL: / { sub(/^FAIL: /, "", $2); print $2 }' "$run_dir/log" |
+    sed -e 's/ ([^()]*[:=].*//' | LC_ALL=C sort -u)
+done < <(awk -F'\t' 'NR > 1 { print $1, $7, ($8 == "" ? 0 : $8) }' "$run_dir/joblog" | sort -n)
+
+if (( ${#labels[@]} != $(tail -n +2 "$run_dir/joblog" | wc -l) ))
+then
+  die 'parallel did not run every suite (see the output above)'
+fi
+
+if (( 0 < ${#failed[@]} ))
+then
+  printf 'failed: %s\n' "${failed[@]}" >&2
+  exit 1
+fi
