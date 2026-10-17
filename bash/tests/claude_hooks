@@ -386,6 +386,79 @@ else
   fi
 fi
 
+# Topic anchoring: the hook asks `timvisher_bd_topics root` for the
+# lock root. Run the repo's copy of the tool, pointed at a sandboxed
+# topics root that is itself one git repo, like the real one.
+wlock_bin="$tmpdir/wlock-bin"
+mkdir -p "$wlock_bin" "$wlock_home/.config/timvisher/ide"
+ln -sf "${repo_root}/bash/bin/timvisher_bd_topics" "$wlock_bin/timvisher_bd_topics"
+TOPICS=$(wlock_init_worktree "$tmpdir/topics")
+printf '%s\n' "$TOPICS" > "$wlock_home/.config/timvisher/ide/bd_topics_root"
+mkdir -p "$TOPICS/T1/.beads" "$TOPICS/T1/sub/.beads" "$TOPICS/T2/.beads"
+wlock_run_pre_topics() { PATH="$wlock_bin:$PATH" wlock_run_pre; }
+LOCK_T1="$(wlock_lockdir "$TOPICS/T1")"
+LOCK_T1_SUB="$(wlock_lockdir "$TOPICS/T1/sub")"
+LOCK_T2="$(wlock_lockdir "$TOPICS/T2")"
+LOCK_TOPICS="$(wlock_lockdir "$TOPICS")"
+
+# T14: two topics in one repo lock independently.
+run_test
+out1=$(printf '%s' "$(wlock_input sess-T1 "$TOPICS/transcript.jsonl" Write "$TOPICS/T1/todo.org")" | wlock_run_pre_topics)
+out2=$(printf '%s' "$(wlock_input sess-T2 "$TOPICS/transcript.jsonl" Write "$TOPICS/T2/todo.org")" | wlock_run_pre_topics)
+if [[ -z $out1 && -z $out2 ]] \
+  && [[ $(jq -r .session_id "$LOCK_T1/active/owner.json" 2>/dev/null) == sess-T1 ]] \
+  && [[ $(jq -r .session_id "$LOCK_T2/active/owner.json" 2>/dev/null) == sess-T2 ]] \
+  && [[ ! -e "$LOCK_TOPICS/active" ]]
+then
+  pass "wlock-pre: topics in one repo take separate locks"
+else
+  fail "wlock-pre: topic anchoring — out1='$out1' out2='$out2'"
+fi
+
+# T15: a second session in the same topic is still denied.
+run_test
+out=$(printf '%s' "$(wlock_input sess-T2 "$TOPICS/transcript.jsonl" Edit "$TOPICS/T1/notes.org")" | wlock_run_pre_topics)
+if printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+then
+  pass "wlock-pre: same-topic contention denies"
+else
+  fail "wlock-pre: same-topic contention — expected deny JSON, got '$out'"
+fi
+
+# T16: a subtopic locks separately from its parent topic.
+run_test
+out=$(printf '%s' "$(wlock_input sess-T2 "$TOPICS/transcript.jsonl" Write "$TOPICS/T1/sub/todo.org")" | wlock_run_pre_topics)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_T1_SUB/active/owner.json" 2>/dev/null) == sess-T2 ]]
+then
+  pass "wlock-pre: subtopic locks separately from its parent"
+else
+  fail "wlock-pre: subtopic — out='$out'"
+fi
+
+# T17: a new file in a not-yet-existing dir anchors on the enclosing
+# topic.
+run_test
+out=$(printf '%s' "$(wlock_input sess-T2 "$TOPICS/transcript.jsonl" Write "$TOPICS/T2/new/dir/f.org")" | wlock_run_pre_topics)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_T2/active/owner.json" 2>/dev/null) == sess-T2 ]]
+then
+  pass "wlock-pre: new dir under a topic anchors on that topic"
+else
+  fail "wlock-pre: new dir — out='$out'"
+fi
+
+# T18: a file in the topics repo but outside any topic locks the repo.
+run_test
+out=$(printf '%s' "$(wlock_input sess-R "$TOPICS/transcript.jsonl" Write "$TOPICS/stray.org")" | wlock_run_pre_topics)
+if [[ -z $out ]] \
+  && [[ $(jq -r .session_id "$LOCK_TOPICS/active/owner.json" 2>/dev/null) == sess-R ]]
+then
+  pass "wlock-pre: non-topic file in topics repo locks the repo root"
+else
+  fail "wlock-pre: non-topic file — out='$out'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

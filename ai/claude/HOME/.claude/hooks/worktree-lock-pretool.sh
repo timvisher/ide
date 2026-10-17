@@ -8,10 +8,11 @@
 # (with a reason naming the holder) but their reads/thinking are
 # unrestricted because this hook only fires on the file-write tools.
 #
-# Anchor: the worktree containing the *target file* of the tool call,
-# not the agent's cwd. A session whose cwd is worktree X but writes a
-# file in worktree Y must contend with other Y-resident writers, not
-# X-resident ones. cwd-anchoring would have left Y unprotected.
+# Anchor: the root (bd topic dir or git worktree) containing the
+# *target file* of the tool call, not the agent's cwd. A session whose
+# cwd is worktree X but writes a file in worktree Y must contend with
+# other Y-resident writers, not X-resident ones. cwd-anchoring would
+# have left Y unprotected.
 #
 # Lock dir layout (per worktree):
 #   ~/.claude/locks/<slug>/                   parent dir, mkdir -p safe
@@ -52,12 +53,25 @@ esac
 # Without a target, no shared worktree is at risk.
 [[ -n $TARGET ]] || exit 0
 
-# Resolve the worktree from the target's parent dir. New-file writes
-# point at not-yet-existing paths, so anchor on dirname rather than
-# the path itself. Files outside any git repo no-op (no shared-worktree
-# coordination problem applies).
+# Resolve the lock root from the target's nearest existing ancestor dir.
+# New-file writes can point into dirs that don't exist yet, so walk up
+# rather than give up on them.
+#
+# `timvisher_bd_topics root` is the bd topic dir when the target is
+# inside one, else the git repo root. Plain `git rev-parse` is the
+# fallback when that tool is missing or unconfigured. It alone is not
+# enough: every topic lives in the one git repo at the topics root, so
+# anchoring on git would put all topics behind a single lock. Files
+# outside any repo or topic no-op (no shared-worktree coordination
+# problem applies).
 TARGET_DIR=$(dirname -- "$TARGET")
-WORKTREE=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null) || exit 0
+while [[ ! -d $TARGET_DIR ]]
+do
+    TARGET_DIR=$(dirname -- "$TARGET_DIR")
+done
+WORKTREE=$(cd -- "$TARGET_DIR" && timvisher_bd_topics root 2>/dev/null) \
+    || WORKTREE=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null) \
+    || exit 0
 
 SLUG=${WORKTREE//\//-}
 LOCKDIR="${HOME}/.claude/locks/${SLUG}"
