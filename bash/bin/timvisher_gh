@@ -15,6 +15,13 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
 gh_url_repo() {
   local spec owner repo _
   spec=$(timvisher_gh__repo_spec_from_url "$1")
@@ -863,18 +870,33 @@ gh_pr_ready() {
   done
 
   local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
-  local checks_out checks_json checks_refusal filtered_json total pending_count fail_count pass_count
+  local checks_json checks_refused line instruction filtered_json total pending_count fail_count pass_count
+
+  gh_pr_ready__checks_dir=''
+  trap '[[ -z $gh_pr_ready__checks_dir ]] || rm -rf -- "$gh_pr_ready__checks_dir"' EXIT
+  gh_pr_ready__checks_dir=$(mktemp -d "${TMPDIR:-/tmp}/timvisher_gh_pr_ready.XXXXXX") ||
+    die "Couldn't create a scratch directory to poll the checks of '%s'" "$pr_url"
 
   while true
   do
-    checks_out=$(command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket 2>&1) || true
-    checks_refusal=$(grep '^{"type":"instruction","level":"error"' <<<"$checks_out")
-    if [[ -n $checks_refusal ]]
+    : > "${gh_pr_ready__checks_dir}/aictl.jsonl"
+    checks_json=$(TIMVISHER_AICTL_LOG="${gh_pr_ready__checks_dir}/aictl.jsonl" \
+      command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket \
+      2>"${gh_pr_ready__checks_dir}/stderr") || true
+
+    checks_refused=false
+    while IFS= read -r line
+    do
+      instruction=$(aictl_parse "$line") ||
+        continue
+      [[ $(jq -r .level <<<"$instruction") == error ]] &&
+        checks_refused=true
+    done < "${gh_pr_ready__checks_dir}/aictl.jsonl"
+    if [[ $checks_refused == true ]]
     then
-      printf '%s\n' "$checks_refusal" >&2
+      cat -- "${gh_pr_ready__checks_dir}/stderr" >&2
       die "gh refused to check '%s'; not retrying" "$pr_url"
     fi
-    checks_json=$(grep -v '^{"type":"instruction"' <<<"$checks_out")
 
     # Validate we got parseable JSON; empty output or error text means no checks yet
     if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1

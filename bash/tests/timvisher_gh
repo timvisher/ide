@@ -105,10 +105,15 @@ then
   exit 1
 elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_REFUSE-} ]]
 then
-  echo '{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"}' >&2
-  exit 1
+  source ~/.functions/aictl.bash || exit 99
+  aictl_die --code gh_account_token_unavailable --message "no token"
 elif [[ $1 == pr && $2 == checks ]]
 then
+  if [[ -n ${MOCK_CHECKS_NOTICE-} ]]
+  then
+    source ~/.functions/aictl.bash || exit 99
+    aictl_notice --code gh_target_mismatch --message "a notice on stderr"
+  fi
   # Return contents of MOCK_CHECKS_FILE if set, otherwise empty array
   if [[ -r ${MOCK_CHECKS_FILE:-} ]]
   then
@@ -2445,19 +2450,46 @@ unset MOCK_GH_HANDLER
 
 # --- pr ready tests ---
 
+for audience in human agent
+do
+  audience_env=(-u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG)
+  refusal='ERROR gh_account_token_unavailable: no token'
+  if [[ $audience == agent ]]
+  then
+    audience_env+=(TIMVISHER_AGENT=1)
+    refusal='{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"'
+  fi
+  run_test
+  printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+  export MOCK_LOG="$tmpdir/log_pr_ready_refused_${audience}"
+  touch "$MOCK_LOG"
+  result=$(env "${audience_env[@]}" MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+    timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+  if (( rc != 0 && rc != 124 )) && [[ $result == *"$refusal"* && $result == *"not retrying"* ]] &&
+    ! grep -q 'mock-gh .* pr ready ' "$MOCK_LOG"
+  then
+    pass "pr ready (${audience}): stops when gh refuses instead of retrying forever"
+  else
+    fail "pr ready (${audience}) with a refusing gh: rc=${rc} result='${result}'"
+  fi
+  rm -f "$tmpdir/repo/pr.md.url"
+done
+
 run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
-export MOCK_LOG="$tmpdir/log_pr_ready_refused"
-touch "$MOCK_LOG"
-result=$(MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+printf '[{"name":"build","bucket":"pass"}]\n' > "$tmpdir/checks_notice.json"
+export MOCK_LOG="$tmpdir/log_pr_ready_notice"
+: > "$MOCK_LOG"
+result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG MOCK_CHECKS_NOTICE=1 \
+  MOCK_CHECKS_FILE="$tmpdir/checks_notice.json" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
   timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
-if (( rc != 0 && rc != 124 )) && [[ $result == *gh_account_token_unavailable* && $result == *"not retrying"* ]]
+if (( rc == 0 )) && grep -q 'mock-gh .* pr ready ' "$MOCK_LOG" && (( $(grep -c 'pr checks' "$MOCK_LOG") == 1 ))
 then
-  pass "pr ready: stops when gh refuses instead of retrying forever"
+  pass "pr ready: a human-form notice on gh's stderr doesn't spoil the checks JSON"
 else
-  fail "pr ready with a refusing gh: rc=${rc} result='${result}'"
+  fail "pr ready with a notice: rc=${rc} log=$(cat "$MOCK_LOG") result='${result: -400}'"
 fi
-rm -f "$tmpdir/repo/pr.md.url"
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/checks_notice.json"
 
 run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
