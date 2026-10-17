@@ -109,8 +109,8 @@ aictl__indent() {
   printf '%s' "${s//$'\n'/$'\n    '}"
 }
 
-# Renders the fields aictl__parse_args set. --data is left out: it is
-# the machine payload, and the message already says what a human needs.
+# --data is left out: it is the machine payload, and the message
+# already says what a human needs.
 aictl__render_human() {
   local level=$1 label ts s
 

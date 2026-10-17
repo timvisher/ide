@@ -90,7 +90,6 @@ fi
 # Missing aictl
 # ---------------------------------------------------------------------------
 
-# Test: without ~/.functions/aictl.bash the shim stops loudly
 run_test
 rc=0
 result=$(HOME=/nonexistent "$script" 2>&1) || rc=$?
