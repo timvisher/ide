@@ -34,6 +34,9 @@ export TIMVISHER_GIT_HOME="$tmpdir/git"
 export XDG_CONFIG_HOME="$tmpdir/config"
 mkdir -p "$TIMVISHER_GIT_HOME" "$XDG_CONFIG_HOME"
 
+export TIMVISHER_AGENT=1
+unset TIMVISHER_AICTL_LOG
+
 # ---------------------------------------------------------------------------
 # --help
 # ---------------------------------------------------------------------------

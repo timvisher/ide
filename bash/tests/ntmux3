@@ -28,7 +28,7 @@ script="$(cd "$(dirname "$0")/.." && pwd)/bin/ntmux3"
 
 # Test: shim emits aictl_die with correct code
 run_test
-result=$("$script" -d foo/bar 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 "$script" -d foo/bar 2>&1 || true)
 if [[ $result == *'"code":"ntmux3_not_a_binary"'* ]]
 then
   pass "emits aictl_die with code ntmux3_not_a_binary"
@@ -38,7 +38,7 @@ fi
 
 # Test: shim emits level:error
 run_test
-result=$("$script" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 "$script" 2>&1 || true)
 if [[ $result == *'"level":"error"'* ]]
 then
   pass "emits level:error"
@@ -48,7 +48,7 @@ fi
 
 # Test: shim mentions source ~/.bashrc in suggestions
 run_test
-result=$("$script" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 "$script" 2>&1 || true)
 if [[ $result == *'source ~/.bashrc'* ]]
 then
   pass "mentions source ~/.bashrc"
@@ -58,7 +58,7 @@ fi
 
 # Test: shim mentions timvisher_git info
 run_test
-result=$("$script" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 "$script" 2>&1 || true)
 if [[ $result == *'timvisher_git info'* ]]
 then
   pass "mentions timvisher_git info"
@@ -68,7 +68,7 @@ fi
 
 # Test: shim exits non-zero
 run_test
-"$script" >/dev/null 2>&1 && rc=0 || rc=$?
+TIMVISHER_AGENT=1 "$script" >/dev/null 2>&1 && rc=0 || rc=$?
 if (( 0 < rc ))
 then
   pass "exits non-zero"
@@ -78,7 +78,7 @@ fi
 
 # Test: shim teaches -T and that it blocks
 run_test
-result=$("$script" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 "$script" 2>&1 || true)
 if [[ $result == *'ntmux3 -T org/repo/branch-name'* ]] && [[ $result == *'run_in_background'* ]]
 then
   pass "mentions -T and that it blocks"
@@ -157,7 +157,7 @@ preamble="
 "
 
 emit() {
-  env -u TIMVISHER_AICTL_LOG bash -c "${preamble}"' aictl_info "$@"' _ "$@" 2>&1
+  env -u TIMVISHER_AICTL_LOG TIMVISHER_AGENT=1 bash -c "${preamble}"' aictl_info "$@"' _ "$@" 2>&1
 }
 
 classify() {
@@ -240,7 +240,7 @@ new_log() {
 
 run_test
 log=$(new_log fail)
-err=$(TIMVISHER_AICTL_LOG="$log" bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
+err=$(TIMVISHER_AICTL_LOG="$log" TIMVISHER_AGENT=1 bash -c "${preamble} ntmux3__fail 'boom'" 2>&1) || true
 if [[ $err == "boom"$'\n'"$(cat "$log")" ]] &&
   [[ $(jq -r '.code + " " + .message' "$log") == "ntmux3_failed boom" ]]
 then

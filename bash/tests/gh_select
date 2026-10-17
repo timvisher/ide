@@ -51,9 +51,11 @@ extra_env=()
 run_shim() {
   local dir=$1
   shift
+  : > "$tmpdir/aictl.jsonl"
   out=$(
     cd "$dir" &&
       env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+        TIMVISHER_AICTL_LOG="$tmpdir/aictl.jsonl" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         PATH="$tmpdir/mockbin:$PATH" \
         TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
@@ -62,28 +64,29 @@ run_shim() {
   )
   rc=$?
   err=$(< "$tmpdir/err")
+  log=$(< "$tmpdir/aictl.jsonl")
 }
 
 expect() {
-  local label=$1 want_out=$2 want_err=$3
+  local label=$1 want_out=$2 want_log=$3
   run_test
-  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_err || $err == *"$want_err"* ]]
+  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_log || $log == *"$want_log"* ]]
   then
     pass "$label"
   else
-    fail "$label; rc=$rc out='$out' err='$err'"
+    fail "$label; rc=$rc out='$out' err='$err' log='$log'"
   fi
 }
 
 expect_stop() {
-  local label=$1 want_err=${2-}
+  local label=$1 want_log=${2-}
   run_test
-  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_target_required"'* ]] &&
-     [[ -z $want_err || $err == *"$want_err"* ]]
+  if (( rc != 0 )) && [[ -z $out && $log == *'"code":"gh_target_required"'* ]] &&
+     [[ -z $want_log || $log == *"$want_log"* ]]
   then
     pass "$label"
   else
-    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err'"
+    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err' log='$log'"
   fi
 }
 
@@ -200,7 +203,7 @@ expect "an api path naming another owner is noted" \
   '"code":"gh_target_mismatch"'
 run_shim "$repo2" pr view https://github.com/ddoghq/x/pull/1
 run_test
-if [[ $err != *gh_target_mismatch* ]]
+if [[ $err != *gh_target_mismatch* && $log != *gh_target_mismatch* ]]
 then
   pass "a URL naming the picked owner isn't noted"
 else
@@ -237,7 +240,7 @@ expect "a blank mapping file counts as unmapped" \
 map brokenorg broken
 run_shim "$tmpdir/norepo" -R brokenorg/repo pr list
 run_test
-if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_account_token_unavailable"'* ]]
+if (( rc != 0 )) && [[ -z $out && $log == *'"code":"gh_account_token_unavailable"'* ]]
 then
   pass "a mapped account without a token stops the call"
 else
