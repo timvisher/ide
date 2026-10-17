@@ -87,28 +87,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Fallback aictl_die stub tests
+# Missing aictl
 # ---------------------------------------------------------------------------
 
-# Test: fallback stub produces valid JSON with correct code when aictl.bash
-# is not available (simulate by unsetting HOME to break the source path)
+# Test: without ~/.functions/aictl.bash the shim stops loudly
 run_test
-result=$(HOME=/nonexistent "$script" 2>&1 || true)
-if [[ $result == *'"code":"ntmux3_not_a_binary"'* ]]
+rc=0
+result=$(HOME=/nonexistent "$script" 2>&1) || rc=$?
+if (( rc != 0 )) && [[ $result == *'Unable to source aictl functions'* ]]
 then
-  pass "fallback stub produces correct code"
+  pass "a missing aictl.bash stops the shim loudly"
 else
-  fail "fallback stub code: got '${result}'"
-fi
-
-# Test: fallback stub produces correct message
-run_test
-result=$(HOME=/nonexistent "$script" 2>&1 || true)
-if [[ $result == *'shell function'* ]]
-then
-  pass "fallback stub produces correct message"
-else
-  fail "fallback stub message: got '${result}'"
+  fail "missing aictl.bash: rc=$rc got '${result}'"
 fi
 
 # ---------------------------------------------------------------------------
