@@ -843,7 +843,7 @@ function ntmux3__main() {
             ntmux3_command_from_clipboard=$(pbpaste)
             clone_target=${ntmux3_command_from_clipboard#ntmux3 }
         else
-            clone_target="$(osascript -e 'tell script "timvisher Browser" to getActiveTabUrl()')"
+            clone_target="$(timvisher_browser tab info url)"
 
             if [[ $clone_target == https://github.com/*/pull/* ]]
             then
