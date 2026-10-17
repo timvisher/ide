@@ -3340,6 +3340,10 @@ status__all_published() {
 worktree_gc__archive_dir="${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/worktree/archives"
 worktree_gc__protect_dir="${config_dir}/timvisher_git.config/worktree/gc"
 
+worktree_gc__is_pinned() {
+  [[ -f $1/.timvisher_dev_ci/protected ]]
+}
+
 # Collect dev_ci active worktree paths that should be protected from gc.
 # Delegates to timvisher_dev_ci worktrees active.
 # Populates the associative array whose name is passed as $1.
@@ -3693,18 +3697,21 @@ worktree_gc() {
         fi
       fi
 
-      # Skip worktrees protected by dev_ci or per-worktree keep file
+      # Skip worktrees protected by dev_ci or pinned by .timvisher_dev_ci/protected
       local resolved_wt
       resolved_wt=$(cd "$wt_path" && pwd -P 2>/dev/null) || resolved_wt="$wt_path"
       if [[ -n ${gc_protected["$resolved_wt"]+x} ]]; then
         continue
       fi
+      if worktree_gc__is_pinned "$wt_path"
+      then
+        continue
+      fi
       local wt_rel="${wt_path#"${live_repo_dir}/"}"
-      # `keep` pins a worktree forever; `frozen` means the gc already made
-      # its call and is awaiting human input (see the subsumption-detection
-      # workflow) — skip both, but for different reasons.
-      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/keep" \
-         || -f "${worktree_gc__protect_dir}/${wt_rel}/frozen" ]]; then
+      # `frozen` means the gc already made its call and is awaiting human
+      # input (see the subsumption-detection workflow).
+      if [[ -f "${worktree_gc__protect_dir}/${wt_rel}/frozen" ]]
+      then
         continue
       fi
 

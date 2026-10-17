@@ -970,6 +970,27 @@ else
   fail "worktree gc does not archive .timvisher_gh/ state"
 fi
 
+pin_dir="$tmpdir/worktree_gc_pin"
+mkdir -p "$pin_dir"
+
+run_test
+if ! worktree_gc__is_pinned "$pin_dir"
+then
+  pass "worktree gc does not pin a worktree without .timvisher_dev_ci/protected"
+else
+  fail "worktree gc pinned a worktree without .timvisher_dev_ci/protected"
+fi
+
+run_test
+mkdir -p "$pin_dir/.timvisher_dev_ci"
+: > "$pin_dir/.timvisher_dev_ci/protected"
+if worktree_gc__is_pinned "$pin_dir"
+then
+  pass "worktree gc pins a worktree with .timvisher_dev_ci/protected"
+else
+  fail "worktree gc does not pin a worktree with .timvisher_dev_ci/protected"
+fi
+
 # ---------------------------------------------------------------------------
 # Setup for is_branch_ish and clone_stacked integration tests
 # ---------------------------------------------------------------------------
