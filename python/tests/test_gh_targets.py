@@ -127,6 +127,14 @@ class TargetsTest(GhTestCase):
         target = self.resolve("thread", str(thread / "root-comment.md"))
         self.assertEqual(("thread", 66, "PRRT_1"), (target.kind, target.comment_id, target.object_id))
 
+    def test_a_file_deeper_in_an_objects_directory_is_not_that_object(self):
+        drafts = state.root() / "github.com/O/R/pull/7/comments"
+        drafts.mkdir(parents=True)
+        (drafts / "draft.md").write_text("new\n")
+        self.track("PR_7", PR, "github.com/O/R/pull/7")
+        target = self.resolve("comment", str(drafts / "draft.md"), creating=True)
+        self.assertEqual("source", target.kind)
+
     def test_a_legacy_url_beside_the_file_names_its_object(self):
         (self.work / "notes.md").write_text("hi\n")
         (self.work / "notes.md.url").write_text(f"{PR}#issuecomment-55\n")

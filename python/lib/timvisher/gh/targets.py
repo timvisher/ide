@@ -104,7 +104,7 @@ def _tracked(path, db):
         real = path.resolve()
         if real.is_relative_to(store):
             relative = real.relative_to(store)
-            candidates = [relative] + list(relative.parents)
+            candidates = [relative, relative.parent]
             for candidate in candidates:
                 rows = db.execute("SELECT id, url FROM objects WHERE store_path = ?", (str(candidate),)).fetchall()
                 if rows:
