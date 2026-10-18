@@ -2185,12 +2185,13 @@ Subcommands
       origin is behind            push
       origin is ahead             refuse (exit 4); pull --rebase first
       diverged, origin is what    push with a lease on it, if every
-      this worktree last pushed   commit only origin has is in your
+      this repo last pushed       commit only origin has is in your
                                   history (by patch-id) or on the base
                                   branch (origin's default, or --base)
       anything else diverged      a decision: asked when interactive,
                                   else exit 3 with the rerun commands
-    --ours pushes over origin with a lease on what it holds now;
+    --ours pushes over origin with a lease on what it holds now, also
+    when you're behind (to drop commits on purpose);
     --theirs keeps origin's and suggests how to catch up (exit 4).
     --plan prints the classification and exits 0, or 3 when a decision
     is needed.  Every successful push records the pushed SHA in
@@ -4247,6 +4248,14 @@ push__base_ref() {
 
 push__dropped_commits() {
   local remote_sha=$1 local_sha=$2 base_ref=$3 sign commit
+  while read -r commit
+  do
+    if [[ -n $base_ref ]] && command git merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null
+    then
+      continue
+    fi
+    printf '%s\n' "$commit"
+  done < <(command git rev-list --merges "$local_sha..$remote_sha")
   while read -r sign commit
   do
     [[ $sign == + ]] || continue
@@ -4414,6 +4423,11 @@ push__cmd() {
       return
       ;;
     behind)
+      if [[ $side == ours ]]
+      then
+        push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" false
+        return
+      fi
       aictl_error \
         --code timvisher_git_push_behind \
         --message "'${branch}' is behind ${remote}/${branch}; nothing to push." \

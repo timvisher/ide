@@ -4352,6 +4352,24 @@ push_run "$pf/work" --ours
 check_push '--ours pushes over origin and records it' \
   eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
 
+pf=$(push_fixture merge_resolution)
+pg -C "$pf/work" switch -q -c side main && push_commit "$pf/work" s1 &&
+  pg -C "$pf/work" switch -q feature &&
+  pg -C "$pf/work" merge -q --no-ff -m 'merge side' side ||
+  die 'merge side into feature'
+push_run "$pf/work"
+pg -C "$pf/work" rebase -q main feature || die 'linearize'
+push_run "$pf/work"
+check_push 'a rewrite that drops a merge only origin has needs a decision' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_decision* ]]'
+
+pf=$(push_fixture ours_behind)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 || die 'drop a2 on purpose'
+push_run "$pf/work" --ours
+check_push '--ours pushes over origin when behind, to drop commits on purpose' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
 pf=$(push_fixture failure)
 push_run "$pf/work"
 pg -C "$pf/origin.git" config receive.denyNonFastForwards true || die 'deny rewrites'
