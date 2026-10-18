@@ -4354,10 +4354,16 @@ push__cmd() {
   remote_sha=${listed%%[[:space:]]*}
   if [[ -n $remote_sha ]]
   then
-    command git fetch -q "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ||
-      die "push: couldn't fetch '%s' from %s" "$branch" "$remote"
-    remote_sha=$(command git rev-parse "refs/remotes/${remote}/${branch}") ||
-      die "push: couldn't resolve %s/%s" "$remote" "$branch"
+    if command git cat-file -e "${remote_sha}^{commit}" 2>/dev/null
+    then
+      command git update-ref "refs/remotes/${remote}/${branch}" "$remote_sha" ||
+        die "push: couldn't update %s/%s" "$remote" "$branch"
+    else
+      command git fetch -q "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ||
+        die "push: couldn't fetch '%s' from %s" "$branch" "$remote"
+      remote_sha=$(command git rev-parse "refs/remotes/${remote}/${branch}") ||
+        die "push: couldn't resolve %s/%s" "$remote" "$branch"
+    fi
   fi
 
   local class
