@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stdout: /' "$tmpdir/stdout" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" || exit 1
+
+cat > "$tmpdir/bin/timvisher_browser" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_BROWSER_DIR/calls"
+case "$1 ${2-}" in
+  'tab info')
+    printf '{"schema_version": 1, "url": "https://example.com/", "title": "Example Domain", "browser": "Vivaldi"}\n'
+    ;;
+  'tab close')
+    exit "${FAKE_CLOSE_RC:-0}"
+    ;;
+  *)
+    printf '%s\n' "$2"
+    ;;
+esac
+FAKE
+chmod +x "$tmpdir/bin/timvisher_browser" || exit 1
+
+hello() {
+  FAKE_BROWSER_DIR="$tmpdir" PATH="$tmpdir/bin:$PATH" \
+    timvisher_hello "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+hello
+rc=$?
+check 'before timvisher_uv builds the venv: exits 1' test "$rc" -eq 1
+check 'before timvisher_uv builds the venv: reports timvisher_uv_venv_missing' \
+      stderr_has timvisher_uv_venv_missing
+
+timvisher_uv timvisher_hello > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+rc=$?
+check 'timvisher_uv builds the venv' test "$rc" -eq 0
+venv=$(timvisher_uv timvisher_hello info .venv)
+check 'timvisher_uv: the venv is current' \
+      test "$(timvisher_uv timvisher_hello info .current 2>/dev/null)" = true
+
+hello
+rc=$?
+check 'hello: exits 0' test "$rc" -eq 0
+check 'hello: runs in the venv' stderr_has "hello from $venv/bin/python"
+check 'hello: the log line is text' eval "grep -qE '^[0-9T:+-]+ INFO hello: hello from ' '$tmpdir/stderr'"
+check 'hello: the instruction is text' \
+      eval "grep -qE '^[0-9T:+-]+ INFO timvisher_hello: timvisher_hello ran' '$tmpdir/stderr'"
+check 'hello: prints nothing on stdout' test ! -s "$tmpdir/stdout"
+
+TIMVISHER_AGENT=1 timvisher_logging_log_level=INFO hello
+rc=$?
+check 'hello, agent: exits 0' test "$rc" -eq 0
+check 'hello, agent: the log line is JSON' \
+      eval "jq -se 'map(select(.type == \"log\" and .level == \"INFO\" and (.message | startswith(\"hello from \")))) | length == 1' '$tmpdir/stderr' >/dev/null"
+check 'hello, agent: the instruction is JSON' \
+      eval "jq -se 'map(select(.type == \"instruction\" and .level == \"info\" and .code == \"timvisher_hello\")) | length == 1' '$tmpdir/stderr' >/dev/null"
+
+hello tab
+rc=$?
+check 'tab: exits 0' test "$rc" -eq 0
+check "tab: prints the active tab's record" \
+      test "$(jq -r .title "$tmpdir/stdout")" = 'Example Domain'
+check 'tab: opens example.com, reads the tab, then closes it by its URL' \
+      test "$(cat "$tmpdir/calls")" = "$(printf '%s\n' \
+        'tab https://example.com' \
+        'tab info --schema-version 1' \
+        'tab close https://example.com/')"
+
+rm -f "$tmpdir/calls"
+FAKE_CLOSE_RC=1 hello tab
+rc=$?
+check "tab: a failing timvisher_browser's exit code is the tool's, without a traceback" \
+      eval "(( rc == 1 )) && ! grep -q Traceback '$tmpdir/stderr'"
+
+hello bogus
+rc=$?
+check 'an unknown argument: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && grep -q 'Usage: timvisher_hello' '$tmpdir/stderr'"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

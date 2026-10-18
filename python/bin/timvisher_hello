@@ -1,0 +1,56 @@
+#!/usr/bin/env -S timvisher_uv exec timvisher_hello
+# /// script
+# requires-python = ">=3.15"
+# dependencies = []
+# ///
+import json
+import subprocess
+import sys
+
+from timvisher import aictl, browser, logging
+
+USAGE = """Usage: timvisher_hello [tab]
+
+  timvisher_hello      log one line and emit one aictl instruction
+  timvisher_hello tab  open https://example.com, print the active tab's
+                       record, then close that tab
+"""
+
+URL = "https://example.com"
+
+
+def hello():
+    logging.info("hello from %s", sys.executable)
+    aictl.info(
+        code="timvisher_hello",
+        message="timvisher_hello ran in its timvisher_uv venv.",
+        suggestions=["Run 'timvisher_hello tab' to exercise timvisher.browser"],
+    )
+
+
+def tab():
+    browser.open_tab(URL)
+    record = browser.active_tab()
+    print(json.dumps(record, indent=2))
+    browser.close_tab(record["url"])
+
+
+def main(argv):
+    match argv:
+        case []:
+            hello()
+        case ["tab"]:
+            try:
+                tab()
+            except subprocess.CalledProcessError as failure:
+                return failure.returncode
+        case ["-h" | "--help" | "help"]:
+            sys.stdout.write(USAGE)
+        case _:
+            sys.stderr.write(USAGE)
+            return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
