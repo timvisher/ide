@@ -109,9 +109,23 @@ def _tracked(path, db):
                 rows = db.execute("SELECT id, url FROM objects WHERE store_path = ?", (str(candidate),)).fetchall()
                 if rows:
                     break
+            if not rows:
+                rows = _by_export(real if real.is_dir() else real.parent, db)
     if rows:
         return rows[0]
     return None
+
+
+def _by_export(directory, db):
+    for export in sorted(directory.glob("*.json")):
+        try:
+            object_id = json.loads(export.read_text(encoding="utf-8")).get("id")
+        except (ValueError, AttributeError):
+            continue
+        rows = db.execute("SELECT id, url FROM objects WHERE id = ?", (object_id,)).fetchall()
+        if rows:
+            return rows
+    return []
 
 
 def _legacy_url(path):
@@ -210,6 +224,8 @@ def resolve(noun, argument, *, context, db=None, creating=False):
         found = _match(browser.active_tab()["url"], noun)
     except subprocess.CalledProcessError:
         found = None
+    if found is not None and noun == "pr" and found.kind in ("comment", "review_comment"):
+        found = Target("pr", owner=found.owner, repo=found.repo, number=found.number)
     if found is None or found.kind != noun:
         _nothing(noun, context)
     aictl.info(code="timvisher_gh_target_from_browser_tab",

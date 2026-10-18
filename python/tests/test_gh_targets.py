@@ -198,6 +198,26 @@ class TargetsTest(GhTestCase):
         with contextlib.redirect_stderr(stderr):
             self.assertEqual((7, "browser"), (lambda t: (t.number, t.via))(self.resolve("pr")))
 
+    def test_a_renamed_store_directory_still_resolves_by_its_exports_node_id(self):
+        renamed = state.root() / "github.com/O/R/pull/7/comments/renamed"
+        renamed.mkdir(parents=True)
+        (renamed / "comment.md").write_text("hi\n")
+        (renamed / "comment.json").write_text(json.dumps({"id": "IC_5"}))
+        with self.db.write() as db:
+            db.execute("INSERT INTO objects (id, kind, url, owner, repo, store_path) VALUES "
+                       "('IC_5', 'comment', ?, 'O', 'R', 'github.com/O/R/pull/7/comments/original')",
+                       (f"{PR}#issuecomment-5",))
+        self.assertEqual(("IC_5", 5), (lambda t: (t.object_id, t.comment_id))(
+            self.resolve("comment", str(renamed / "comment.md"))))
+
+    def test_a_pr_comment_tab_is_its_pr_for_the_pr_fallback(self):
+        self.github.respond(["pr", "list"], stdout="[]")
+        self.tab(f"{PR}#issuecomment-55")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            target = self.resolve("pr")
+        self.assertEqual(("pr", 7, "browser"), (target.kind, target.number, target.via))
+
     def test_the_browser_fallback_ignores_a_tab_of_another_kind(self):
         self.github.respond(["pr", "list"], stdout="[]")
         self.tab("https://github.com/O/R/issues/4")
