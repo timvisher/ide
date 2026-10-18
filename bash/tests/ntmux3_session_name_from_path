@@ -73,6 +73,9 @@ run_case() {
   (
     HOME=$fake_home
     XDG_CONFIG_HOME="${fake_home}/.config"
+    XDG_DATA_HOME="${fake_home}/.local/share"
+    XDG_STATE_HOME="${fake_home}/.local/state"
+    XDG_CACHE_HOME="${fake_home}/.cache"
     shopt -s extglob
     source "${funcs_dir}/tmux.bash"
     ntmux3__session_name_from_path "$input"
@@ -171,6 +174,9 @@ run_resolve() {
   (
     HOME=$fake_home
     XDG_CONFIG_HOME="${fake_home}/.config"
+    XDG_DATA_HOME="${fake_home}/.local/share"
+    XDG_STATE_HOME="${fake_home}/.local/state"
+    XDG_CACHE_HOME="${fake_home}/.cache"
     shopt -s extglob
     source "${funcs_dir}/tmux.bash"
     ntmux3__resolve_session_name "$@"
