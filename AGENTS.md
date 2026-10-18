@@ -16,3 +16,20 @@ bash with `"$@"`.
 
 Because `bash -c` is non-interactive, it does not source `.bashrc`
 automatically. To test shell functions, source it explicitly.
+
+## LaunchAgents
+
+Label a LaunchAgent with the reverse-DNS namespace of the tree it ships
+from, and name the plist `<label>.plist` to match:
+
+| Where it comes from | Namespace |
+|---|---|
+| This repo (personal IDE) | `com.twonegatives.<name>` |
+| An employer's system-extensions repo | `<reverse-dns company>.timvisher.ide-system-extensions.<name>` |
+| Other work for that employer | `<reverse-dns company>.timvisher.<name>` |
+
+Each system-extensions repo spells out its concrete namespaces in its
+own `CLAUDE.md`.
+
+The existing `com.timvisher.*` labels predate this; do not copy them.
+Deploy or reload one from this repo with `LaunchAgents/bin/start <label>`.
