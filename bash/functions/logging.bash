@@ -90,7 +90,7 @@ timvisher_logging__log() {
     then
       local formatted_message
       # shellcheck disable=SC2059
-      printf -v formatted_message "${1}" "${@:2}"
+      printf -v formatted_message -- "${1}" "${@:2}"
 
       if [[ $timvisher_logging__has_jq == true ]]
       then

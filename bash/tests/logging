@@ -53,6 +53,16 @@ else
   fail "info JSON output: got '${result}'"
 fi
 
+# Test: a format starting with '-' is not read as a printf option
+run_test
+result=$(run_agent_log "info '--- %s ---' 'header'")
+if printf '%s' "$result" | jq -e '.message == "--- header ---"' >/dev/null 2>&1
+then
+  pass "a format starting with '-' logs as a message"
+else
+  fail "dash-leading format: got '${result}'"
+fi
+
 # Test: error emits ERROR level
 run_test
 result=$(run_agent_log 'error "bad %s" "thing"')
