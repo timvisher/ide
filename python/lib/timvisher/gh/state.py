@@ -3,6 +3,7 @@ import datetime
 import os
 import pathlib
 import sqlite3
+import time
 
 from timvisher.gh.errors import fail
 
@@ -113,13 +114,29 @@ def _migrate(state, migrations):
             db.execute(f"PRAGMA user_version = {version + 1}")
 
 
+# Switching to WAL takes a lock without waiting on the busy timeout, so it
+# is retried here until that timeout runs out.
+def _wal(connection, busy_timeout):
+    deadline = time.monotonic() + busy_timeout
+    while True:
+        try:
+            if connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal":
+                return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error):
+                raise
+        if deadline < time.monotonic():
+            raise sqlite3.OperationalError("database is locked")
+        time.sleep(0.05)
+
+
 def open_state(path=None, *, migrations=MIGRATIONS, busy_timeout=BUSY_TIMEOUT):
     path = pathlib.Path(path) if path is not None else root() / "state.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=busy_timeout, isolation_level=None)
     state = State(path, connection)
     try:
-        connection.execute("PRAGMA journal_mode = WAL")
+        _wal(connection, busy_timeout)
         connection.execute("PRAGMA foreign_keys = ON")
         _migrate(state, migrations)
     except sqlite3.OperationalError as error:
