@@ -53,6 +53,17 @@ class BrowserTest(unittest.TestCase):
         self.assertEqual(url, browser.open_tab(url))
         self.assertEqual(f"tab {url}\n", self.calls.read_text())
 
+    def test_close_tab_hands_the_url_to_the_cli(self):
+        url = "https://example.com/"
+        self.fake_cli()
+        self.assertIsNone(browser.close_tab(url))
+        self.assertEqual(f"tab close {url}\n", self.calls.read_text())
+
+    def test_close_tab_raises_when_the_cli_fails(self):
+        self.fake_cli(status=1)
+        with self.assertRaises(subprocess.CalledProcessError):
+            browser.close_tab("https://example.com/")
+
     def test_a_failing_cli_raises(self):
         self.fake_cli(status=1)
         with self.assertRaises(subprocess.CalledProcessError):
