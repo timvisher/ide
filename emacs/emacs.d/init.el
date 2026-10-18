@@ -1,6 +1,12 @@
 ;;; init.el -*- lexical-binding: t -*-
 (setq startup-time (current-time))
 
+;;; Silencing via warning-suppress-types would hide every warning of
+;;; type emacs, and with-eval-after-load runs too late because
+;;; system-sleep.el enables itself at load time.
+(unless (or (featurep 'ns) (featurep 'w32) (featurep 'dbusbind))
+  (advice-add 'system-sleep-enable :override #'ignore))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Packages
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
