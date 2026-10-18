@@ -37,6 +37,9 @@ then
   exit "$FAKE_OSA_RC"
 fi
 case $osa_script in
+  *closeTabWithUrl*)
+    printf '%s\nVivaldi\n' "${FAKE_CLOSE:-closed}"
+    ;;
   *focusTabWithUrl*)
     printf '%s\n' "${FAKE_TAB:-opened}"
     ;;
@@ -170,6 +173,28 @@ browser tab js
 rc=$?
 check 'tab js without an expression: usage on stderr, exit 2' \
       eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab js <expression>' '$tmpdir/stderr'"
+
+browser tab close 'https://example.com/'
+rc=$?
+check 'tab close: exits 0 with nothing on stdout' eval '(( rc == 0 )) && stdout_empty'
+check 'tab close: hands the URL to the library' grep -qxF 'https://example.com/' "$tmpdir/args"
+check 'tab close: closes it with closeTabWithUrl' grep -q 'closeTabWithUrl(u)' "$tmpdir/script"
+
+FAKE_CLOSE=not_found browser tab close 'https://example.com/'
+rc=$?
+check 'tab close, no such tab: exits 1' test "$rc" -eq 1
+check 'tab close, no such tab: reports timvisher_browser_no_such_tab with the URL' \
+      eval 'stderr_has "\"code\":\"timvisher_browser_no_such_tab\"" && stderr_has "https://example.com/"'
+
+FAKE_OSA_RC=1 browser tab close 'https://example.com/'
+rc=$?
+check 'tab close: an osascript failure exits 1 with timvisher_browser_osascript_failed' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_osascript_failed\""'
+
+browser tab close
+rc=$?
+check 'tab close without a URL: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab close <url>' '$tmpdir/stderr'"
 
 browser tab info --help
 rc=$?

@@ -20,10 +20,12 @@ show_help() {
   cat <<'EOF'
 Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
        timvisher_browser tab js <expression>
+       timvisher_browser tab close <url>
        timvisher_browser tab <url>
 
   tab info   print the active tab's record (see 'timvisher_browser tab info --help')
   tab js     run a JavaScript expression in the active tab; prints its value
+  tab close  close the first tab with exactly that URL
   tab <url>  focus a tab with that URL, or open one; prints the URL
 
 The browser is the timvisher Browser AppleScript library's currentBrowser().
@@ -185,6 +187,35 @@ end run' "$expression") || return 1
   printf '%s\n' "$value"
 }
 
+timvisher_browser__close() {
+  local url=$1 out
+  out=$(timvisher_browser__osascript '
+on run argv
+	set u to item 1 of argv
+	tell script "timvisher Browser"
+		set b to currentBrowser()
+		if closeTabWithUrl(u) then return "closed" & linefeed & b
+	end tell
+	return "not_found" & linefeed & b
+end run' "$url") || return 1
+
+  local state browser
+  {
+    IFS= read -r state
+    IFS= read -r browser
+  } <<< "$out"
+
+  if [[ $state != closed ]]
+  then
+    aictl_error \
+      --code timvisher_browser_no_such_tab \
+      --message "${browser} has no tab with the URL ${url}." \
+      --reason "tab close matches the tab's URL exactly, as 'timvisher_browser tab info url' prints it." \
+      --suggestion "Check the URL with 'timvisher_browser tab info url' and retry"
+    return 1
+  fi
+}
+
 timvisher_browser__tab() {
   local url=$1
   timvisher_browser__osascript '
@@ -214,6 +245,10 @@ case ${1-} in
       js)
         (( 3 == $# )) || { usage; exit 2; }
         timvisher_browser__js "$3" || exit 1
+        ;;
+      close)
+        (( 3 == $# )) || { usage; exit 2; }
+        timvisher_browser__close "$3" || exit 1
         ;;
       ''|-*)
         usage
