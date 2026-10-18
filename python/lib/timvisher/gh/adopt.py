@@ -186,6 +186,9 @@ def adopt_directory(state, worktree, kind, lookup, now):
     store._link(directory, object_dir)
     if kind == "pr" and (worktree / "x.merged").is_symlink():
         (worktree / "x.merged").unlink()
+    for name, stored in ((f"{kind}.md", f"{kind}.md"), (f"{kind}.md.url", f"{kind}.url")):
+        if not os.path.lexists(worktree / name):
+            store._link(worktree / name, object_dir / stored)
     with state.write() as db:
         if (worktree / f"{kind}.md").is_symlink():
             db.execute("INSERT OR IGNORE INTO authored VALUES (?, ?)", (object_id, str(worktree / f"{kind}.md")))

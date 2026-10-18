@@ -201,7 +201,18 @@ class AdoptTest(GhTestCase):
         self.assertEqual({("title", '"Bug"'), ("body", '"It broke"')},
                          set(self.rows("SELECT name, base FROM fields WHERE object_id = 'I_3'")))
         self.assertEqual([], self.rows("SELECT * FROM context"))
+        self.assertEqual("Bug\n\nIt breaks\n", (self.work / "issue.md").read_text())
+        self.assertEqual(f"{issue}\n", (self.work / "issue.md.url").read_text())
+        self.assertEqual([("I_3", str(self.work / "issue.md"))], self.rows("SELECT * FROM authored"))
         self.assertIsNone(adopt.adopt_directory(self.state, self.work, "issue", self.lookup, NOW))
+
+    def test_directory_adoption_leaves_existing_root_files_alone(self):
+        self.bash_pr_directory()
+        (self.work / "pr.md.url").unlink()
+        self.write("pr.md.url", "mine\n")
+        adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW)
+        self.assertEqual("mine\n", (self.work / "pr.md.url").read_text())
+        self.assertFalse((self.work / "pr.md.url").is_symlink())
 
     def test_a_legacy_comment_file_and_url_are_adopted(self):
         self.facts[f"{PR}#issuecomment-5"] = {"id": "IC_5", "database_id": 5, "kind": "issue_comment",
