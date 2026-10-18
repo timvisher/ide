@@ -843,7 +843,7 @@ function ntmux3__main() {
             ntmux3_command_from_clipboard=$(pbpaste)
             clone_target=${ntmux3_command_from_clipboard#ntmux3 }
         else
-            clone_target="$(timvisher_browser tab info url)"
+            clone_target="$(timvisher_browser tab info .url)"
 
             if [[ $clone_target == https://github.com/*/pull/* ]]
             then
