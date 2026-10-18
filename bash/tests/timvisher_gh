@@ -1340,7 +1340,7 @@ printf 'Push title\n\nPush body\n' > "$tmpdir/repo/pr.md"
 result=$(run_v2 pr push 2>"$tmpdir/push_create.err") && rc=0 || rc=$?
 if (( rc == 0 )) &&
    [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
-   grep -q "mock-git-push push -v origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG" &&
+   grep -q "mock-git-push push origin ${fixture_head}:refs/heads/${fixture_branch}" "$MOCK_LOG" &&
    grep -q -- '--draft --base main --title Push title' "$MOCK_GH_HANDLER.created" &&
    [[ $(jq -r .url "$push_st/pr.json") == https://github.com/testuser/testrepo/pull/50 ]] &&
    [[ $(jq -r .posted.title "$push_st/pr.json") == 'Push title' ]] &&
@@ -1360,7 +1360,7 @@ v2_reset push_rerun
 write_edit_handler
 result=$(MOCK_REMOTE_SHA=$fixture_head run_v2 pr 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
-   [[ $result == *"Branch already pushed"* ]] &&
+   [[ $result == *timvisher_git_push_already_pushed* ]] &&
    [[ $result == *"description already current"* ]] &&
    ! grep -q mock-git-push "$MOCK_LOG" &&
    ! grep -q 'mock-gh pr create' "$MOCK_LOG" &&
@@ -1422,15 +1422,17 @@ else
   fail "pr push lease reconcile: rc=${rc} json=$(cat "$push_st/pr.json") got '${result: -400}'"
 fi
 
-# Test: --force-with-lease passes through with --force-if-includes
+# Test: --force-with-lease pushes over origin as timvisher_git push --ours does
 run_test
 v2_reset push_force
 write_edit_handler
-result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push --force-with-lease 2>&1) && rc=0 || rc=$?
+diverged_sha=$("$real_git" -C "$tmpdir/repo" commit-tree "${fixture_head}^{tree}" -m 'someone else') ||
+  die 'cannot create a diverged commit'
+result=$(MOCK_REMOTE_SHA=$diverged_sha run_v2 pr push --force-with-lease 2>&1) && rc=0 || rc=$?
 if (( rc == 0 )) &&
-   grep -q "mock-git-push push -v --force-with-lease --force-if-includes origin HEAD:refs/heads/${fixture_branch}" "$MOCK_LOG"
+   grep -q "mock-git-push push --force-with-lease=refs/heads/${fixture_branch}:${diverged_sha} origin ${fixture_head}:refs/heads/${fixture_branch}" "$MOCK_LOG"
 then
-  pass "pr push: --force-with-lease adds --force-if-includes"
+  pass "pr push: --force-with-lease leases on what origin holds, as --ours"
 else
   fail "pr push force: rc=${rc} log=$(cat "$MOCK_LOG") got '${result: -400}'"
 fi
@@ -1454,7 +1456,7 @@ v2_reset push_fail
 write_edit_handler
 result=$(MOCK_GIT_PUSH_FAIL=1 run_v2 pr push 2>&1) && rc=0 || rc=$?
 if (( rc != 0 )) &&
-   [[ $result == *"rerun with --force-with-lease"* ]] &&
+   [[ $result == *timvisher_git_push_failed* ]] &&
    ! grep -q 'mock-gh pr' "$MOCK_LOG"
 then
   pass "pr push: a failed git push stops before the PR steps"
@@ -1569,7 +1571,7 @@ make_hook "$ext_root/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo"
 make_hook "$core_root/repos/testuser/testrepo/pr/push/post.d/20-core-repo"
 make_hook "$ext_root/orgs/testuser/pr/push/post.d/10-ext-org"
 printf 'not a hook\n' > "$ext_root/orgs/testuser/pr/push/post.d/README"
-result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>"$tmpdir/hooks_push.err") && rc=0 || rc=$?
+result=$(run_v2 pr push 2>"$tmpdir/hooks_push.err") && rc=0 || rc=$?
 expected_order='core/orgs/testuser/pr/push/pre.d/10-core-org
 .config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo
 core/repos/testuser/testrepo/pr/push/post.d/20-core-repo
@@ -1609,7 +1611,7 @@ write_edit_handler
 make_hook "$core_root/orgs/testuser/pr/push/pre.d/10-gate" 1
 make_hook "$core_root/orgs/testuser/pr/push/pre.d/20-after"
 make_hook "$core_root/orgs/testuser/pr/push/post.d/10-post"
-result=$(MOCK_REMOTE_SHA=0000000000000000000000000000000000000000 run_v2 pr push 2>&1) && rc=0 || rc=$?
+result=$(run_v2 pr push 2>&1) && rc=0 || rc=$?
 if (( rc != 0 )) &&
    [[ $result == *"push pre-hook failed; not proceeding"* ]] &&
    ! grep -q mock-git-push "$MOCK_LOG" &&
