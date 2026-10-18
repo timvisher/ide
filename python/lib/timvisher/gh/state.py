@@ -56,6 +56,11 @@ class State:
     def __init__(self, path, connection):
         self.path = path
         self.db = connection
+        self.touched = set()
+        self.after_commit = None
+
+    def touch(self, object_id):
+        self.touched.add(object_id)
 
     @contextlib.contextmanager
     def write(self):
@@ -67,8 +72,12 @@ class State:
             yield self.db
         except BaseException:
             self.db.execute("ROLLBACK")
+            self.touched.clear()
             raise
         self.db.execute("COMMIT")
+        touched, self.touched = self.touched, set()
+        if touched and self.after_commit is not None:
+            self.after_commit(touched)
 
     def version(self):
         return self.db.execute("PRAGMA user_version").fetchone()[0]
