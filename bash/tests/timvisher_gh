@@ -2627,6 +2627,34 @@ rm_state pr.md.url
 rm -rf "$exclude_home"
 unset MOCK_CHECKS_FILE
 
+run_test
+exclude_home="$tmpdir/exclude_home_badregex"
+mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+ln -s "$funcs_dir" "$exclude_home/.functions"
+printf '(\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_CHECKS_FILE="$tmpdir/checks_badregex.json"
+printf '[{"name":"ci/test","bucket":"fail"}]\n' > "$MOCK_CHECKS_FILE"
+export MOCK_LOG="$tmpdir/log_pr_ready_badregex"
+: > "$MOCK_LOG"
+result=$(HOME="$exclude_home" \
+  XDG_CONFIG_HOME="$exclude_home/.config" \
+  XDG_DATA_HOME="$exclude_home/.local/share" \
+  XDG_STATE_HOME="$exclude_home/.local/state" \
+  XDG_CACHE_HOME="$exclude_home/.cache" \
+  TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && ! grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG" &&
+  [[ $result == *'is not a valid regex'* ]]
+then
+  pass "pr ready: an invalid exclude pattern stops instead of passing failing checks"
+else
+  fail "pr ready with an invalid exclude pattern: rc=${rc} log=$(cat "$MOCK_LOG") result='${result: -300}'"
+fi
+rm_state pr.md.url
+rm -rf "$exclude_home"
+unset MOCK_CHECKS_FILE
+
 # Test: pr ready - exclude patterns with comments and blank lines
 run_test
 exclude_home="$tmpdir/exclude_home2"

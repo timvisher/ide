@@ -876,7 +876,8 @@ gh_pr_ready__wait_for_checks() (
     filtered_json=$checks_json
     for pattern in "${exclude_patterns[@]}"
     do
-      filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json")
+      filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json") ||
+        die "Exclude pattern '%s' is not a valid regex; not marking '%s' ready" "$pattern" "$pr_url"
     done
 
     total=$(jq 'length' <<<"$filtered_json")
