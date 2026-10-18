@@ -4198,6 +4198,174 @@ else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
 fi
 
+# ---------------------------------------------------------------------------
+# push
+# ---------------------------------------------------------------------------
+
+push_root="$tmpdir/push"
+mkdir -p "$push_root" ||
+  die "cannot create '$push_root'"
+
+pg() {
+  "$test_git" -c commit.gpgsign=false -c init.defaultBranch=main "$@"
+}
+
+push_commit() {
+  local repo=$1 name=$2
+  printf '%s\n' "$name" > "$repo/$name" &&
+    pg -C "$repo" add "$name" &&
+    pg -C "$repo" commit -q -m "$name"
+}
+
+# push_fixture <name>: a bare origin with main, a worktree on feature
+# branched from it, and a second clone for other people's pushes.
+push_fixture() {
+  local name=$1 dir=$push_root/$1
+  pg init -q --bare "$dir/origin.git" &&
+    pg clone -q "$dir/origin.git" "$dir/seed" 2>/dev/null &&
+    push_commit "$dir/seed" m1 &&
+    pg -C "$dir/seed" push -q origin HEAD:refs/heads/main &&
+    pg -C "$dir/origin.git" symbolic-ref HEAD refs/heads/main &&
+    pg clone -q "$dir/origin.git" "$dir/work" &&
+    pg -C "$dir/work" switch -q -c feature &&
+    push_commit "$dir/work" a1 &&
+    pg clone -q "$dir/origin.git" "$dir/other" ||
+    die "cannot build push fixture '$name'"
+  printf '%s\n' "$dir"
+}
+
+push_out=
+push_err=
+push_rc=
+push_run() {
+  local repo=$1
+  shift
+  push_out=$(cd "$repo" &&
+    PATH="$(dirname "$test_git"):$PATH" TIMVISHER_AGENT=1 \
+      "$script" push "$@" </dev/null 2>"$push_root/err") && push_rc=0 || push_rc=$?
+  push_err=$(< "$push_root/err")
+}
+
+remote_feature() {
+  pg -C "$1/origin.git" rev-parse -q --verify refs/heads/feature
+}
+
+pushed_ref() {
+  pg -C "$1/work" rev-parse -q --verify refs/timvisher_git/pushed/origin/feature
+}
+
+head_of() {
+  pg -C "$1/work" rev-parse HEAD
+}
+
+check_push() {
+  local description=$1
+  shift
+  run_test
+  if "$@"
+  then
+    pass "push: $description"
+  else
+    fail "push: $description: rc=${push_rc} out='${push_out}' err='${push_err}'"
+  fi
+}
+
+pf=$(push_fixture basics)
+push_run "$pf/work"
+check_push 'a branch origin lacks is pushed and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'the same commit is reported as already pushed' \
+  eval '(( push_rc == 0 )) && [[ $push_err == *timvisher_git_push_already_pushed* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+push_commit "$pf/work" a2 || die 'commit a2'
+push_run "$pf/work" --plan
+check_push '--plan classifies a fast-forward and pushes nothing' \
+  eval '(( push_rc == 0 )) && [[ $push_out == fast-forward* && $(remote_feature "$pf") == "$recorded_before" ]]'
+push_run "$pf/work"
+check_push 'a fast-forward is pushed and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pg -C "$pf/other" fetch -q origin &&
+  pg -C "$pf/other" switch -q -c feature origin/feature &&
+  push_commit "$pf/other" o1 &&
+  pg -C "$pf/other" push -q origin feature ||
+  die 'other push'
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'behind origin is refused with exit 4 and the pull to run' \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_behind* && $push_err == *"git pull --rebase origin feature"* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+pf=$(push_fixture own_rewrite)
+push_run "$pf/work" || true
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" commit -q --amend -m 'a2, reworded' || die 'amend'
+push_run "$pf/work" --plan
+check_push '--plan classifies our own rewrite' eval '(( push_rc == 0 )) && [[ $push_out == own-rewrite* ]]'
+push_run "$pf/work"
+check_push 'our own rewrite is pushed with a lease and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture rewrite_drops)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 && push_commit "$pf/work" a3 || die 'drop a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push 'a rewrite that would drop a commit only origin has needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_decision* && $(remote_feature "$pf") == "$remote_before" && $(pushed_ref "$pf") == "$remote_before" ]]'
+check_push 'the non-interactive decision suggests --ours and --theirs' \
+  eval '[[ $push_err == *"timvisher_git push --ours"* && $push_err == *"timvisher_git push --theirs"* ]]'
+
+pf=$(push_fixture base_commit)
+push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&
+  pg -C "$pf/work" fetch -q origin && pg -C "$pf/work" rebase -q origin/main ||
+  die 'build on m2'
+push_run "$pf/work"
+pg -C "$pf/work" rebase -q --onto origin/main~1 origin/main feature || die 'rebase off m2'
+push_run "$pf/work"
+check_push 'a rewrite whose dropped commits are on the base branch is pushed with a lease' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture someone_else)
+push_run "$pf/work"
+pg -C "$pf/other" fetch -q origin &&
+  pg -C "$pf/other" switch -q -c feature origin/feature &&
+  pg -C "$pf/other" commit -q --amend -m 'a1, by someone else' &&
+  pg -C "$pf/other" push -q --force origin feature ||
+  die 'someone else rewrites'
+push_commit "$pf/work" a2 || die 'commit a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work" --plan
+check_push '--plan exits 3 when a decision is needed' eval '(( push_rc == 3 )) && [[ $push_out == decision* ]]'
+push_run "$pf/work"
+check_push "someone else's push needs a decision (exit 3) and changes nothing" \
+  eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" && $(pushed_ref "$pf") == "$recorded_before" ]]'
+push_run "$pf/work" --theirs
+check_push "--theirs keeps origin's branch (exit 4) and suggests catching up" \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_theirs* && $push_err == *"git rebase origin/feature"* && $(remote_feature "$pf") == "$remote_before" ]]'
+push_run "$pf/work" --ours
+check_push '--ours pushes over origin and records it' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture failure)
+push_run "$pf/work"
+pg -C "$pf/origin.git" config receive.denyNonFastForwards true || die 'deny rewrites'
+pg -C "$pf/work" commit -q --amend -m 'a1, reworded' || die 'amend'
+# shellcheck disable=SC2034
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'a rejected push fails and leaves the record alone' \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_failed* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+pg -C "$pf/work" switch -q --detach || die 'detach'
+push_run "$pf/work"
+check_push 'a detached HEAD is refused' eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_detached* ]]'
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

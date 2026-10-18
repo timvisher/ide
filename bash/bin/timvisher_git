@@ -2179,6 +2179,23 @@ Subcommands
   info --json
     Query metadata about the current worktree.  See "info" below.
 
+  push [--plan] [--ours|--theirs] [--base <branch>]
+    Push the current branch to origin, judging rewrites for you:
+      same commit                 nothing; already pushed
+      origin is behind            push
+      origin is ahead             refuse (exit 4); pull --rebase first
+      diverged, origin is what    push with a lease on it, if every
+      this worktree last pushed   commit only origin has is in your
+                                  history (by patch-id) or on the base
+                                  branch (origin's default, or --base)
+      anything else diverged      a decision: asked when interactive,
+                                  else exit 3 with the rerun commands
+    --ours pushes over origin with a lease on what it holds now;
+    --theirs keeps origin's and suggests how to catch up (exit 4).
+    --plan prints the classification and exits 0, or 3 when a decision
+    is needed.  Every successful push records the pushed SHA in
+    refs/timvisher_git/pushed/origin/<branch>.
+
   is-branch-ish <source> [<context>]
     Exit 0 if <source> is a branch-ish: a name for a branch that clone can
     resolve to a worktree.  A complete branch-ish resolves on its own (a
@@ -4203,6 +4220,237 @@ reconcile_maintenance_repos() {
   done
 }
 
+push__usage() {
+  cat <<'EOF'
+Usage: timvisher_git push [--plan] [--ours|--theirs] [--base <branch>]
+EOF
+}
+
+push__base_ref() {
+  local remote=$1 base=$2 head
+  if [[ -n $base ]]
+  then
+    printf 'refs/remotes/%s/%s\n' "$remote" "$base"
+    return
+  fi
+  if head=$(command git symbolic-ref -q "refs/remotes/${remote}/HEAD")
+  then
+    printf '%s\n' "$head"
+    return
+  fi
+  head=$(command git ls-remote --symref "$remote" HEAD 2>/dev/null |
+    sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$#\1#p')
+  [[ -n $head ]] || return 1
+  command git fetch -q "$remote" "+refs/heads/${head}:refs/remotes/${remote}/${head}" || return 1
+  printf 'refs/remotes/%s/%s\n' "$remote" "$head"
+}
+
+push__dropped_commits() {
+  local remote_sha=$1 local_sha=$2 base_ref=$3 sign commit
+  while read -r sign commit
+  do
+    [[ $sign == + ]] || continue
+    if [[ -n $base_ref ]] && command git merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null
+    then
+      continue
+    fi
+    printf '%s\n' "$commit"
+  done < <(command git cherry "$local_sha" "$remote_sha")
+}
+
+push__record() {
+  local ref=$1 new=$2 old=$3
+  command git update-ref -m 'timvisher_git push' "$ref" "$new" "$old" ||
+    warn "push: pushed, but couldn't record '%s' at %s" "$ref" "${new:0:12}"
+}
+
+push__send() {
+  local remote=$1 branch=$2 local_sha=$3 lease=$4 ref=$5 recorded=$6 includes=$7
+  local -a args=(push)
+  if [[ -n $lease ]]
+  then
+    args+=("--force-with-lease=refs/heads/${branch}:${lease}")
+    [[ $includes == false ]] || args+=(--force-if-includes)
+  fi
+  args+=("$remote" "${local_sha}:refs/heads/${branch}")
+  if ! command git "${args[@]}"
+  then
+    aictl_error \
+      --code timvisher_git_push_failed \
+      --message "git push of '${branch}' to ${remote} failed." \
+      --suggestion "Run 'timvisher_git push --plan' to see what ${remote} has now, then rerun"
+    return 1
+  fi
+  push__record "$ref" "$local_sha" "$recorded"
+  aictl_info \
+    --code timvisher_git_pushed \
+    --message "Pushed '${branch}' to ${remote} at ${local_sha:0:12}."
+}
+
+push__decision_logs() {
+  local remote=$1 branch=$2 remote_sha=$3 local_sha=$4
+  printf 'Only here (%s):\n' "$branch" >&2
+  command git log --oneline "$remote_sha..$local_sha" >&2
+  printf 'Only on %s/%s:\n' "$remote" "$branch" >&2
+  command git log --oneline "$local_sha..$remote_sha" >&2
+}
+
+push__theirs() {
+  local remote=$1 branch=$2
+  aictl_error \
+    --code timvisher_git_push_theirs \
+    --message "Keeping ${remote}'s '${branch}': nothing was pushed." \
+    --suggestion "Take ${remote}'s branch as is: git reset --hard ${remote}/${branch}" \
+    --suggestion "Or keep your commits on top of it: git rebase ${remote}/${branch}"
+  return 4
+}
+
+push__cmd() {
+  local plan=false side='' base=''
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --plan)
+        plan=true
+        ;;
+      --ours|--theirs)
+        [[ -z $side || $side == "${1#--}" ]] || { push__usage >&2; return 2; }
+        side=${1#--}
+        ;;
+      --base)
+        [[ -n ${2-} ]] || { push__usage >&2; return 2; }
+        base=$2
+        shift
+        ;;
+      -h|--help)
+        push__usage
+        return 0
+        ;;
+      *)
+        push__usage >&2
+        return 2
+        ;;
+    esac
+    shift
+  done
+
+  local branch remote=origin local_sha remote_sha recorded ref
+  branch=$(command git symbolic-ref -q --short HEAD) ||
+    aictl_die \
+      --code timvisher_git_push_detached \
+      --message 'push needs a checked-out branch; HEAD is detached.' \
+      --suggestion 'Check out the branch to push (git switch <branch>), then rerun'
+  local_sha=$(command git rev-parse HEAD) ||
+    die "push: couldn't resolve HEAD"
+  ref=refs/timvisher_git/pushed/${remote}/${branch}
+  recorded=$(command git rev-parse -q --verify "$ref") || recorded=
+
+  local listed
+  listed=$(command git ls-remote "$remote" "refs/heads/${branch}") ||
+    aictl_die \
+      --code timvisher_git_push_remote_unreachable \
+      --message "Couldn't read '${branch}' from ${remote}." \
+      --suggestion "Check that ${remote} is reachable (git ls-remote ${remote}), then rerun"
+  remote_sha=${listed%%[[:space:]]*}
+  if [[ -n $remote_sha ]]
+  then
+    command git fetch -q "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ||
+      die "push: couldn't fetch '%s' from %s" "$branch" "$remote"
+    remote_sha=$(command git rev-parse "refs/remotes/${remote}/${branch}") ||
+      die "push: couldn't resolve %s/%s" "$remote" "$branch"
+  fi
+
+  local class
+  if [[ -z $remote_sha ]]
+  then
+    class=new
+  elif [[ $remote_sha == "$local_sha" ]]
+  then
+    class=same
+  elif command git merge-base --is-ancestor "$remote_sha" "$local_sha"
+  then
+    class=fast-forward
+  elif command git merge-base --is-ancestor "$local_sha" "$remote_sha"
+  then
+    class=behind
+  elif [[ -n $recorded && $recorded == "$remote_sha" ]]
+  then
+    local base_ref dropped
+    base_ref=$(push__base_ref "$remote" "$base") || base_ref=
+    dropped=$(push__dropped_commits "$remote_sha" "$local_sha" "$base_ref")
+    if [[ -z $dropped ]]
+    then
+      class=own-rewrite
+    else
+      class=decision
+    fi
+  else
+    class=decision
+  fi
+
+  if [[ $plan == true ]]
+  then
+    printf '%s %s %s/%s %s..%s\n' "$class" "$branch" "$remote" "$branch" \
+      "${remote_sha:0:12}" "${local_sha:0:12}"
+    [[ $class == decision && -z $side ]] && return 3
+    return 0
+  fi
+
+  case $class in
+    same)
+      aictl_info \
+        --code timvisher_git_push_already_pushed \
+        --message "Already pushed: ${remote}'s '${branch}' is at ${local_sha:0:12}."
+      return 0
+      ;;
+    new|fast-forward)
+      push__send "$remote" "$branch" "$local_sha" '' "$ref" "$recorded" true
+      return
+      ;;
+    behind)
+      aictl_error \
+        --code timvisher_git_push_behind \
+        --message "'${branch}' is behind ${remote}/${branch}; nothing to push." \
+        --suggestion "Bring in ${remote}'s commits first: git pull --rebase ${remote} ${branch}"
+      return 4
+      ;;
+    own-rewrite)
+      push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" true
+      return
+      ;;
+  esac
+
+  if [[ -z $side && -t 0 && -z ${TIMVISHER_AGENT-} ]]
+  then
+    push__decision_logs "$remote" "$branch" "$remote_sha" "$local_sha"
+    local answer
+    read -r -p "Push yours over ${remote}'s (ours), keep ${remote}'s (theirs), or skip? [ours/theirs/skip] " answer
+    case $answer in
+      ours) side=ours ;;
+      theirs) side=theirs ;;
+    esac
+  fi
+
+  case $side in
+    ours)
+      push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" false
+      return
+      ;;
+    theirs)
+      push__theirs "$remote" "$branch"
+      return
+      ;;
+  esac
+
+  push__decision_logs "$remote" "$branch" "$remote_sha" "$local_sha"
+  aictl_error \
+    --code timvisher_git_push_decision \
+    --message "'${branch}' and ${remote}/${branch} have diverged, and ${remote} moved since this worktree last pushed it (or this would drop commits only ${remote} has)." \
+    --suggestion "Push yours over ${remote}'s: timvisher_git push --ours" \
+    --suggestion "Keep ${remote}'s: timvisher_git push --theirs"
+  return 3
+}
+
 chdir=
 chdir_args=()
 while [[ ${1-} == -C ]]
@@ -4262,6 +4510,7 @@ case $1 in
   clone)        in_chdir clone "${@:2}" ;;
   fork)         in_chdir fork "${@:2}" ;;
   info)         in_chdir info__cmd "${@:2}" ;;
+  push)         in_chdir push__cmd "${@:2}" ;;
   is-branch-ish) in_chdir is_branch_ish "${@:2}" ;;
   rewrite-trunk-subpath) in_chdir maybe_rewrite_trunk_subpath "${@:2}" ;;
   reconcile-repo-config) in_chdir reconcile_repo_config "${@:2}" ;;
