@@ -1,6 +1,12 @@
 import datetime
+import json
+import os
+import pathlib
 import re
+import shutil
 import unicodedata
+
+from timvisher.gh import state as state_db
 
 NAME_BYTES = 255
 SLUG_CHARS = 60
@@ -73,3 +79,131 @@ def unique(root, key, taken=()):
         candidate = f"{key}-{n}"
         n += 1
     return candidate
+
+
+def root():
+    return state_db.root()
+
+
+def _row(db, object_id):
+    row = db.execute("SELECT id, kind, url, owner, repo, number, database_id, parent_id, store_path, deleted_at "
+                     "FROM objects WHERE id = ?", (object_id,)).fetchone()
+    if row is None:
+        raise KeyError(object_id)
+    return dict(zip(("id", "kind", "url", "owner", "repo", "number", "database_id", "parent_id", "store_path",
+                     "deleted_at"), row))
+
+
+def register(db, *, id, kind, url, owner, repo, store_path, number=None, database_id=None, parent_id=None):
+    db.execute("INSERT INTO objects (id, kind, url, owner, repo, number, database_id, parent_id, store_path) "
+               "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET url = excluded.url",
+               (id, kind, url, owner, repo, number, database_id, parent_id, store_path))
+
+
+def set_base(db, object_id, name, value, at):
+    db.execute("INSERT INTO fields (object_id, name, base, base_at) VALUES (?, ?, ?, ?) "
+               "ON CONFLICT (object_id, name) DO UPDATE SET base = excluded.base, base_at = excluded.base_at",
+               (object_id, name, json.dumps(value), at))
+
+
+def set_remote(db, object_id, name, value, at):
+    db.execute("INSERT INTO fields (object_id, name, remote, remote_at) VALUES (?, ?, ?, ?) "
+               "ON CONFLICT (object_id, name) DO UPDATE SET remote = excluded.remote, remote_at = excluded.remote_at",
+               (object_id, name, json.dumps(value), at))
+
+
+def bases(db, object_id):
+    return {name: json.loads(base) for name, base in
+            db.execute("SELECT name, base FROM fields WHERE object_id = ? AND base IS NOT NULL", (object_id,))}
+
+
+def store_file(db, object_id):
+    row = _row(db, object_id)
+    return root() / row["store_path"] / FILES[row["kind"]]
+
+
+def source_text(kind, values):
+    if kind in ("pr", "issue"):
+        body = values.get("body") or ""
+        return f"{values.get('title') or ''}\n\n{body}\n" if body else f"{values.get('title') or ''}\n"
+    return f"{values.get('body') or ''}\n"
+
+
+def _write_atomic(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _link(link, target):
+    link.parent.mkdir(parents=True, exist_ok=True)
+    tmp = link.with_name(f".{link.name}.tmp-link")
+    if os.path.lexists(tmp):
+        tmp.unlink()
+    tmp.symlink_to(target)
+    os.replace(tmp, link)
+
+
+def promote(db, object_id, source):
+    source = pathlib.Path(source).absolute()
+    target = store_file(db, object_id)
+    if not (source.is_symlink() and source.resolve() == target.resolve()):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, target)
+        _link(source, target)
+    db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
+    return target
+
+
+def backfill(db, object_id, fetch=None):
+    restored = []
+    target = store_file(db, object_id)
+    if not target.exists():
+        values = bases(db, object_id)
+        if not values and fetch is not None:
+            values = fetch()
+        _write_atomic(target, source_text(_row(db, object_id)["kind"], values))
+        restored.append(target)
+    for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (object_id,)).fetchall():
+        link = pathlib.Path(path)
+        if not os.path.lexists(link):
+            _link(link, target)
+            restored.append(link)
+    return restored
+
+
+def archive(db, object_id, now):
+    row = _row(db, object_id)
+    key = row["store_path"]
+    moved = [r[0] for r in db.execute("SELECT id FROM objects WHERE store_path = ? OR store_path LIKE ? ESCAPE '\\'",
+                                      (key, key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"))]
+    old, new = root() / key, root() / "archive" / key
+    if old.exists():
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(old, new)
+    db.execute("UPDATE objects SET store_path = 'archive/' || store_path "
+               f"WHERE id IN ({', '.join('?' * len(moved))})", moved)
+    db.execute("UPDATE objects SET deleted_at = ? WHERE id = ?", (now, object_id))
+    for moved_id in moved:
+        for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (moved_id,)).fetchall():
+            if pathlib.Path(path).is_symlink():
+                _link(pathlib.Path(path), store_file(db, moved_id))
+    return new
+
+
+def export(db, object_ids, record_for, now):
+    for object_id in sorted(object_ids):
+        row = _row(db, object_id)
+        directory = root() / row["store_path"]
+        stem = row["kind"]
+        _write_atomic(directory / f"{stem}.json", json.dumps(record_for(object_id), indent=2, ensure_ascii=False) + "\n")
+        url_file = directory / f"{stem}.url"
+        if url_file.exists() and url_file.read_text(encoding="utf-8").strip() != row["url"]:
+            os.replace(url_file, directory / f"{stem}.url.bak.{now}")
+        if not url_file.exists() or url_file.read_text(encoding="utf-8").strip() != row["url"]:
+            _write_atomic(url_file, row["url"] + "\n")
+
+
+def exporting(state, record_for, clock):
+    state.after_commit = lambda touched: export(state.db, touched, record_for, clock())
