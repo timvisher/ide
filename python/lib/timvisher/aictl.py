@@ -45,6 +45,30 @@ def _data(value):
         return value
 
 
+_LABELS = {"error": "ERROR", "warning": "WARN", "info": "INFO", "bypass": "BYPASS"}
+
+
+def _indent(text):
+    return text.replace("\n", "\n    ")
+
+
+def _human(record):
+    level = record["level"]
+    label = _LABELS.get(level, level.upper())
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S+0000", time.gmtime())
+    head = record.get("code") or ""
+    if record.get("message"):
+        head += (": " if head else "") + _indent(record["message"])
+    lines = [f"{stamp} {label}" + (f" {head}" if head else "")]
+    if record.get("reason"):
+        lines.append(f"  reason: {_indent(record['reason'])}")
+    for suggestion in record.get("suggestions") or ():
+        lines.append(f"  suggestion: {_indent(suggestion)}")
+    if record.get("doc"):
+        lines.append(f"  doc: {_indent(record['doc'])}")
+    return "\n".join(lines)
+
+
 def _write(record):
     line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
     log = os.environ.get("TIMVISHER_AICTL_LOG")
@@ -54,7 +78,10 @@ def _write(record):
                 stream.write(line + "\n")
         except OSError:
             pass
-    sys.stderr.write(line + "\n")
+    if os.environ.get("TIMVISHER_AGENT"):
+        sys.stderr.write(line + "\n")
+    else:
+        sys.stderr.write(_human(record) + "\n")
     sys.stderr.flush()
 
 

@@ -50,9 +50,13 @@ last line is dropped);
 ## The aictl functions
 
 `aictl_die`, `aictl_error`, `aictl_info`, `aictl_notice` and
-`aictl_warn` emit one instruction as compact JSON on stderr, regardless
-of `TIMVISHER_AGENT`, and also append it to the file named by
-`TIMVISHER_AICTL_LOG` when that file exists. They take `--code`,
+`aictl_warn` emit one instruction. With `TIMVISHER_AGENT` set it is
+compact JSON on stderr; otherwise stderr gets the same fields as text:
+`<timestamp> <LEVEL> <code>: <message>` (`ERROR`, `WARN`, `INFO` or
+`BYPASS`; the `: <message>` is left out when the message is empty), then
+`  reason: `, one `  suggestion: ` per suggestion and `  doc: ` lines,
+with `--data` left out. The JSON is also appended to the file named by
+`TIMVISHER_AICTL_LOG` when that file exists, whoever reads stderr. They take `--code`,
 `--message`, `--reason`, `--doc`, `--command`, `--data` and repeated
 `--suggestion`, or positionally a code, a message and suggestions.
 
@@ -940,6 +944,10 @@ display_script <FIXTURE>
 
 ### Example 41: aictl_info with positional arguments
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl_info my_code 'Something happened' 'Try this'
 ```
@@ -956,6 +964,10 @@ aictl_info my_code 'Something happened' 'Try this'
 ```
 
 ### Example 42: aictl_info with every flag
+
+```env
+TIMVISHER_AGENT=1
+```
 
 ```call
 aictl_info --code my_code --message 'Done' --reason 'Because' --doc docs/x.md --suggestion 'First' --suggestion 'Second' --data '{"count":2}'
@@ -974,6 +986,10 @@ aictl_info --code my_code --message 'Done' --reason 'Because' --doc docs/x.md --
 
 ### Example 43: aictl_info with --data that is not JSON keeps it as a string
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl_info --code my_code --message 'Done' --data 'plain text'
 ```
@@ -990,6 +1006,10 @@ aictl_info --code my_code --message 'Done' --data 'plain text'
 ```
 
 ### Example 44: aictl_info with suggestions after --
+
+```env
+TIMVISHER_AGENT=1
+```
 
 ```call
 aictl_info --code c --message m -- 'one' 'two'
@@ -1008,6 +1028,10 @@ aictl_info --code c --message m -- 'one' 'two'
 
 ### Example 45: aictl_info escapes JSON specials
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl_info --code c --message $'say "hi"\nbye'
 ```
@@ -1023,11 +1047,7 @@ aictl_info --code c --message $'say "hi"\nbye'
 0
 ```
 
-### Example 46: aictl_info does not depend on TIMVISHER_AGENT
-
-```env
-TIMVISHER_AGENT=1
-```
+### Example 46: aictl_info writes text on stderr without TIMVISHER_AGENT
 
 ```call
 aictl_info c m
@@ -1037,7 +1057,7 @@ aictl_info c m
 ```
 
 ```stderr
-{"type":"instruction","level":"info","code":"c","message":"m"}
+<TS> INFO c: m
 ```
 
 ```status
@@ -1045,6 +1065,10 @@ aictl_info c m
 ```
 
 ### Example 47: aictl_error emits a non-retryable error and returns 1
+
+```env
+TIMVISHER_AGENT=1
+```
 
 ```call
 aictl_error --code bad --message 'It broke'
@@ -1063,6 +1087,10 @@ aictl_error --code bad --message 'It broke'
 
 ### Example 48: aictl_die emits a non-retryable error and exits 1
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl_die --code bad --message 'It broke' --suggestion 'Fix it'
 ```
@@ -1080,6 +1108,10 @@ aictl_die --code bad --message 'It broke' --suggestion 'Fix it'
 
 ### Example 49: aictl_notice emits a warning without retryable and returns 0
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl_notice --code heads_up --message 'Long op'
 ```
@@ -1096,6 +1128,10 @@ aictl_notice --code heads_up --message 'Long op'
 ```
 
 ### Example 50: aictl_warn without a bypass emits a retryable warning and exits 1
+
+```env
+TIMVISHER_AGENT=1
+```
 
 ```call
 aictl_warn --code guarded --message 'Refusing' --command 'rm -rf x' --doc docs/guard.md
@@ -1115,6 +1151,7 @@ aictl_warn --code guarded --message 'Refusing' --command 'rm -rf x' --doc docs/g
 ### Example 51: aictl_warn with NIRMI but no reason refuses with aictl_bypass_missing_reason
 
 ```env
+TIMVISHER_AGENT=1
 TIMVISHER_AGENT_NIRMI=1
 ```
 
@@ -1136,6 +1173,7 @@ aictl_warn --code guarded --message 'Refusing'
 ### Example 52: aictl_warn with NIRMI and a reason bypasses, logs the audit line and returns 0
 
 ```env
+TIMVISHER_AGENT=1
 TIMVISHER_AGENT_NIRMI=1
 TIMVISHER_AGENT_NIRMI_REASON=needed for the demo
 ```
@@ -1162,6 +1200,7 @@ aictl_warn --code guarded --message 'Refusing'
 ### Example 53: aictl_warn's audit line records the --command
 
 ```env
+TIMVISHER_AGENT=1
 TIMVISHER_AGENT_NIRMI=1
 TIMVISHER_AGENT_NIRMI_REASON=needed
 ```
@@ -1188,6 +1227,7 @@ aictl_warn --code guarded --message 'Refusing' --command 'rm -rf x'
 ### Example 54: a reason without NIRMI does not bypass
 
 ```env
+TIMVISHER_AGENT=1
 TIMVISHER_AGENT_NIRMI_REASON=needed
 ```
 
@@ -1206,7 +1246,7 @@ aictl_warn --code guarded --message 'Refusing'
 1
 ```
 
-### Example 55: TIMVISHER_AICTL_LOG also receives each instruction when the file exists
+### Example 55: TIMVISHER_AICTL_LOG receives the JSON while stderr is text
 
 ```env
 TIMVISHER_AICTL_LOG=<AICTL_LOG>
@@ -1220,7 +1260,7 @@ aictl_info c 'routed'
 ```
 
 ```stderr
-{"type":"instruction","level":"info","code":"c","message":"routed"}
+<TS> INFO c: routed
 ```
 
 ```status
@@ -1247,7 +1287,7 @@ aictl_warn --code guarded --message 'Refusing'
 ```
 
 ```stderr
-{"type":"instruction","level":"bypass","code":"guarded","message":"Guardrail bypassed with logged reason. Be sure you know what you are doing."}
+<TS> BYPASS guarded: Guardrail bypassed with logged reason. Be sure you know what you are doing.
 ```
 
 ```status
@@ -1276,7 +1316,7 @@ aictl_info c 'not routed'
 ```
 
 ```stderr
-{"type":"instruction","level":"info","code":"c","message":"not routed"}
+<TS> INFO c: not routed
 ```
 
 ```status
@@ -1344,6 +1384,10 @@ aictl_listening
 
 ### Example 61: the aictl CLI's info
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl info my_code 'Something happened' 'Try this'
 ```
@@ -1361,6 +1405,10 @@ aictl info my_code 'Something happened' 'Try this'
 
 ### Example 62: the aictl CLI's die exits 1
 
+```env
+TIMVISHER_AGENT=1
+```
+
 ```call
 aictl die my_code 'It broke'
 ```
@@ -1377,6 +1425,10 @@ aictl die my_code 'It broke'
 ```
 
 ### Example 63: the aictl CLI's warn exits 1 without a bypass
+
+```env
+TIMVISHER_AGENT=1
+```
 
 ```call
 aictl warn my_code 'Refusing'
@@ -1396,6 +1448,7 @@ aictl warn my_code 'Refusing'
 ### Example 64: the aictl CLI's warn bypasses with NIRMI and a reason
 
 ```env
+TIMVISHER_AGENT=1
 TIMVISHER_AGENT_NIRMI=1
 TIMVISHER_AGENT_NIRMI_REASON=needed
 ```
@@ -1417,4 +1470,60 @@ aictl warn my_code 'Refusing'
 
 ```audit-log
 {"ts":<EPOCH>,"code":"my_code","reason":"needed","cwd":"<CWD>"}
+```
+
+### Example 65: the text form carries reason, suggestions and doc, not data
+
+```call
+aictl_info --code my_code --message 'Done' --reason 'Because' --doc docs/x.md --suggestion 'First' --suggestion 'Second' --data '{"count":2}'
+```
+
+```stdout
+```
+
+```stderr
+<TS> INFO my_code: Done
+  reason: Because
+  suggestion: First
+  suggestion: Second
+  doc: docs/x.md
+```
+
+```status
+0
+```
+
+### Example 66: the text form of an empty message is the code alone
+
+```call
+aictl_info --code c --message ''
+```
+
+```stdout
+```
+
+```stderr
+<TS> INFO c
+```
+
+```status
+0
+```
+
+### Example 67: aictl_die in text form
+
+```call
+aictl_die --code bad --message 'It broke' --suggestion 'Fix it'
+```
+
+```stdout
+```
+
+```stderr
+<TS> ERROR bad: It broke
+  suggestion: Fix it
+```
+
+```status
+1
 ```

@@ -19,6 +19,7 @@ class AictlTest(unittest.TestCase):
         self.state = pathlib.Path(state.name)
         env = {k: v for k, v in os.environ.items() if k not in CLEARED}
         env["XDG_STATE_HOME"] = str(self.state)
+        env["TIMVISHER_AGENT"] = "1"
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -82,9 +83,24 @@ class AictlTest(unittest.TestCase):
         self.assertEqual(str(link), json.loads(audit.read_text())["cwd"])
 
     def test_listening(self):
+        del os.environ["TIMVISHER_AGENT"]
         self.assertFalse(aictl.listening())
         os.environ["TIMVISHER_AGENT"] = "1"
         self.assertTrue(aictl.listening())
+
+
+    def test_without_an_agent_stderr_is_text_and_the_log_stays_json(self):
+        del os.environ["TIMVISHER_AGENT"]
+        log = self.state / "aictl.log"
+        log.touch()
+        os.environ["TIMVISHER_AICTL_LOG"] = str(log)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            aictl.info(code="c", message="Done", reason="Because", doc="d", suggestions=["s1"], data={"n": 1})
+        lines = stderr.getvalue().splitlines()
+        self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+0000 INFO c: Done$")
+        self.assertEqual(["  reason: Because", "  suggestion: s1", "  doc: d"], lines[1:])
+        self.assertEqual({"n": 1}, json.loads(log.read_text())["data"])
 
 
 if __name__ == "__main__":
