@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1090
+
+source ~/.functions/aictl.bash ||
+  {
+    echo "aictl unavailable; cannot emit structured output" >&2
+    exit 1
+  }
+
+idle_threshold_seconds=600
+status_file="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/away-status/status.json"
+
+show_help() {
+  cat <<HELP
+Usage: timvisher_away_status [--write]
+
+Print a JSON object describing whether the human is away:
+
+  checked_at              ISO 8601 time of this check
+  checked_at_epoch        the same, in epoch seconds
+  idle_seconds            whole seconds since the last HID input event
+  idle_threshold_seconds  ${idle_threshold_seconds}
+  screensaver_active      ScreenSaverEngine is running
+  screen_locked           the console session's screen is locked
+  idle                    idle_threshold_seconds <= idle_seconds
+  away                    screensaver_active || screen_locked || idle
+  away_reasons            which of screensaver, locked, idle hold
+
+--write  write the object to the status file instead of stdout:
+         ${status_file}
+HELP
+}
+
+write=
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  --write)
+    write=1
+    ;;
+  '')
+    ;;
+  *)
+    show_help >&2
+    exit 1
+    ;;
+esac
+
+hid=$(ioreg -r -k HIDIdleTime -d 1) ||
+  aictl_die \
+    --code "away_status_ioreg_failed" \
+    --message "ioreg could not read IOHIDSystem HIDIdleTime"
+
+idle_ns=$(awk '/"HIDIdleTime" = / { print $NF; exit }' <<< "$hid")
+if [[ ! $idle_ns =~ ^[0-9]+$ ]]
+then
+  aictl_die \
+    --code "away_status_idle_unparsable" \
+    --message "HIDIdleTime missing or not an integer: '${idle_ns}'"
+fi
+idle_seconds=$(( idle_ns / 1000000000 ))
+
+console_users=$(ioreg -n Root -d 1 -a | plutil -extract IOConsoleUsers json -o - -) ||
+  aictl_die \
+    --code "away_status_console_users_failed" \
+    --message "could not read IOConsoleUsers from the IORegistry root"
+
+reasons=()
+
+screensaver_active=false
+if pgrep -qx ScreenSaverEngine
+then
+  screensaver_active=true
+  reasons+=('"screensaver"')
+fi
+
+screen_locked=false
+if [[ $console_users == *'"CGSSessionScreenIsLocked":true'* ]]
+then
+  screen_locked=true
+  reasons+=('"locked"')
+fi
+
+idle=false
+if (( idle_threshold_seconds <= idle_seconds ))
+then
+  idle=true
+  reasons+=('"idle"')
+fi
+
+away=false
+if (( 0 < ${#reasons[@]} ))
+then
+  away=true
+fi
+
+printf -v checked_at_epoch '%(%s)T' -1
+printf -v checked_at '%(%Y-%m-%dT%H:%M:%S%z)T' "$checked_at_epoch"
+
+away_reasons=$(IFS=,; printf '%s' "${reasons[*]}")
+
+json=$(printf '{"checked_at":"%s","checked_at_epoch":%d,"idle_seconds":%d,"idle_threshold_seconds":%d,"screensaver_active":%s,"screen_locked":%s,"idle":%s,"away":%s,"away_reasons":[%s]}' \
+  "$checked_at" "$checked_at_epoch" "$idle_seconds" "$idle_threshold_seconds" \
+  "$screensaver_active" "$screen_locked" "$idle" "$away" "$away_reasons")
+
+if [[ -z $write ]]
+then
+  printf '%s\n' "$json"
+  exit 0
+fi
+
+tmp=
+cleanup() {
+  [[ -z $tmp ]] || rm -f -- "$tmp"
+}
+trap cleanup EXIT
+
+status_dir=$(dirname "$status_file")
+[[ -d $status_dir ]] || mkdir -p -- "$status_dir" ||
+  aictl_die \
+    --code "away_status_mkdir_failed" \
+    --message "could not create '${status_dir}'"
+
+# Write beside the target and rename so readers never see a partial file.
+tmp=$(mktemp "${status_file}.XXXXXX") ||
+  aictl_die \
+    --code "away_status_mktemp_failed" \
+    --message "could not create a temp file beside '${status_file}'"
+
+if ! printf '%s\n' "$json" > "$tmp" || ! mv -f -- "$tmp" "$status_file"
+then
+  aictl_die \
+    --code "away_status_write_failed" \
+    --message "could not write '${status_file}'"
+fi
+tmp=

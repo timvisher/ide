@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_away_status
+
+failures=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+tmpdir=
+cleanup() {
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+tmpdir=$(mktemp -d) || exit 1
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_away_status"
+
+mkdir -- "$tmpdir/bin" || exit 1
+
+cat > "$tmpdir/bin/ioreg" <<'FAKE'
+#!/usr/bin/env bash
+case " $* " in
+  *' HIDIdleTime '*)
+    printf '+-o IOHIDSystem  <class IOHIDSystem>\n  {\n    "HIDIdleTime" = %s\n  }\n' "$FAKE_IDLE_NS"
+    ;;
+  *' Root '*)
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>IOConsoleUsers</key>
+  <array>
+    <dict>
+      <key>kCGSSessionOnConsoleKey</key>
+      <true/>
+      ${FAKE_LOCK_XML}
+    </dict>
+  </array>
+</dict>
+</plist>
+PLIST
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+FAKE
+
+cat > "$tmpdir/bin/pgrep" <<'FAKE'
+#!/usr/bin/env bash
+[[ -n $FAKE_SCREENSAVER ]]
+FAKE
+
+chmod +x "$tmpdir/bin/ioreg" "$tmpdir/bin/pgrep" || exit 1
+
+locked_xml='<key>CGSSessionScreenIsLocked</key><true/>'
+
+run() {
+  local idle_ns=$1 screensaver=$2 lock_xml=$3
+  shift 3
+  PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=$idle_ns FAKE_SCREENSAVER=$screensaver \
+    FAKE_LOCK_XML=$lock_xml XDG_STATE_HOME="$tmpdir/state" "$script" "$@"
+}
+
+strip_time() {
+  sed -E 's/^\{"checked_at":"[^"]*","checked_at_epoch":[0-9]+,/{/'
+}
+
+check() {
+  local name=$1 expected=$2
+  shift 2
+  local actual
+  actual=$(run "$@" | strip_time)
+  if [[ $actual == "$expected" ]]
+  then
+    pass "$name"
+  else
+    fail "$name: expected '${expected}', got '${actual}'"
+  fi
+}
+
+check "present" \
+  '{"idle_seconds":4,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":false,"away":false,"away_reasons":[]}' \
+  4126095583 '' ''
+
+check "idle just under the threshold" \
+  '{"idle_seconds":599,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":false,"away":false,"away_reasons":[]}' \
+  599999999999 '' ''
+
+check "idle at the threshold" \
+  '{"idle_seconds":600,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":true,"away":true,"away_reasons":["idle"]}' \
+  600000000000 '' ''
+
+check "screensaver running" \
+  '{"idle_seconds":30,"idle_threshold_seconds":600,"screensaver_active":true,"screen_locked":false,"idle":false,"away":true,"away_reasons":["screensaver"]}' \
+  30000000000 1 ''
+
+check "screen locked" \
+  '{"idle_seconds":0,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":true,"idle":false,"away":true,"away_reasons":["locked"]}' \
+  75872500 '' "$locked_xml"
+
+check "every reason at once" \
+  '{"idle_seconds":3600,"idle_threshold_seconds":600,"screensaver_active":true,"screen_locked":true,"idle":true,"away":true,"away_reasons":["screensaver","locked","idle"]}' \
+  3600000000000 1 "$locked_xml"
+
+check "lock key present but false" \
+  '{"idle_seconds":0,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":false,"away":false,"away_reasons":[]}' \
+  0 '' '<key>CGSSessionScreenIsLocked</key><false/>'
+
+now=$(date +%s)
+epoch=$(run 0 '' '' | sed -E 's/.*"checked_at_epoch":([0-9]+).*/\1/')
+if [[ $epoch =~ ^[0-9]+$ ]] && (( now - 5 <= epoch && epoch <= now + 5 ))
+then
+  pass "checked_at_epoch is the current time"
+else
+  fail "checked_at_epoch is the current time: got '${epoch}', now '${now}'"
+fi
+
+status_file="$tmpdir/state/timvisher/away-status/status.json"
+stdout=$(run 600000000000 '' '' --write)
+if [[ -z $stdout && -f $status_file ]] &&
+  [[ $(strip_time < "$status_file") == *'"away":true,"away_reasons":["idle"]}' ]]
+then
+  pass "--write writes the status file and nothing to stdout"
+else
+  fail "--write writes the status file and nothing to stdout: stdout '${stdout}'"
+fi
+
+run 0 '' '' --write
+if [[ $(strip_time < "$status_file") == *'"away":false,"away_reasons":[]}' ]] &&
+  [[ -z $(find "$tmpdir/state/timvisher/away-status" -name 'status.json.*') ]]
+then
+  pass "--write replaces the status file and leaves no temp files"
+else
+  fail "--write replaces the status file and leaves no temp files"
+fi
+
+if PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=bogus "$script" >/dev/null 2>&1
+then
+  fail "unparsable HIDIdleTime exits non-zero"
+else
+  pass "unparsable HIDIdleTime exits non-zero"
+fi
+
+if [[ -n $("$script" --help 2>/dev/null) ]]
+then
+  pass "--help prints to stdout"
+else
+  fail "--help prints to stdout"
+fi
+
+if [[ -z $("$script" bogus 2>/dev/null) ]] && ! "$script" bogus >/dev/null 2>&1
+then
+  pass "bad argument prints nothing to stdout and exits non-zero"
+else
+  fail "bad argument prints nothing to stdout and exits non-zero"
+fi
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
