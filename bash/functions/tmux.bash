@@ -16,11 +16,11 @@ ntmux3__define_code NTMUX3_CODE_TERMINAL_TIMEOUT ntmux3_terminal_timeout
 ntmux3__define_code NTMUX3_CODE_TERMINAL_NOT_STARTED ntmux3_terminal_not_started
 
 function ntmux3__aictl_listening() {
-    declare -F aictl_listening &>/dev/null && aictl_listening
+    aictl_listening
 }
 
 function ntmux3__emit_started() {
-    if [[ -n ${TIMVISHER_AICTL_LOG:-} ]] && declare -F aictl_info &>/dev/null
+    if [[ -n ${TIMVISHER_AICTL_LOG:-} ]]
     then
         aictl_info \
             --code "$NTMUX3_CODE_STARTED" \
@@ -471,11 +471,6 @@ function ntmux3__terminal() (
 
     if [[ -n ${TIMVISHER_AGENT:-} ]]
     then
-        if ! declare -F aictl_parse &>/dev/null || ! declare -F aictl_error &>/dev/null
-        then
-            echo 'ntmux3 -T needs the aictl functions (~/.functions/aictl.bash) to report back to an agent.' >&2
-            return 1
-        fi
         log=$(mktemp "${TMPDIR:-/tmp}/ntmux3-terminal.XXXXXX") ||
             {
                 ntmux3__fail 'Unable to create the instruction log for ntmux3 -T'
