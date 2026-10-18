@@ -26,7 +26,8 @@ Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
   tab info   print the active tab's record (see 'timvisher_browser tab info --help')
   tab js     run a JavaScript expression in the active tab; prints its value
   tab close  close the first tab with exactly that URL
-  tab <url>  focus a tab with that URL, or open one; prints the URL
+  tab <url>  focus a tab with that URL, or open one in the front window,
+             once it has loaded; prints the URL
 
 The browser is the timvisher Browser AppleScript library's currentBrowser().
 EOF
@@ -223,7 +224,7 @@ on run argv
 	set u to item 1 of argv
 	tell script "timvisher Browser"
 		if focusTabWithUrl(u) then return "focused"
-		openUrl(u)
+		openTabWithUrl(u)
 	end tell
 	return "opened"
 end run' "$url" > /dev/null || return 1

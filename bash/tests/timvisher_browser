@@ -136,8 +136,8 @@ rc=$?
 check 'tab <url>: exits 0' test "$rc" -eq 0
 check 'tab <url>: prints the URL' test "$(cat "$tmpdir/stdout")" = 'https://github.com/DataDog/x/pull/8'
 check 'tab <url>: hands the URL to the library' grep -qxF 'https://github.com/DataDog/x/pull/8' "$tmpdir/args"
-check 'tab <url>: focuses an existing tab, else opens one' \
-      eval "grep -q 'focusTabWithUrl' '$tmpdir/script' && grep -q 'openUrl' '$tmpdir/script'"
+check 'tab <url>: focuses an existing tab, else opens one and waits for it to load' \
+      eval "grep -q 'focusTabWithUrl' '$tmpdir/script' && grep -q 'openTabWithUrl(u)' '$tmpdir/script'"
 
 FAKE_TAB=focused browser tab 'https://github.com/DataDog/x/pull/8'
 rc=$?
