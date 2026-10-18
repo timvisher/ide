@@ -1498,10 +1498,14 @@ gh_pr__converge_branch() {
   fi
 
   plan=$("${SELF_DIR}/timvisher_git" "${push_args[@]}" --plan) && rc=0 || rc=$?
-  if [[ $plan != same* ]]
-  then
-    hooks__run_pre push
-  fi
+  case ${plan%% *} in
+    new|fast-forward|own-rewrite)
+      hooks__run_pre push
+      ;;
+    behind|decision)
+      [[ $force == false ]] || hooks__run_pre push
+      ;;
+  esac
 
   "${SELF_DIR}/timvisher_git" "${push_args[@]}" && rc=0 || rc=$?
   (( rc == 0 )) || exit "$rc"

@@ -1603,6 +1603,24 @@ else
   fail "hooks push already: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
 fi
 
+# Test: push pre-hooks are skipped when origin is ahead and nothing is pushed
+run_test
+: > "$hook_log"
+v2_reset hooks_push_behind
+write_edit_handler
+ahead_sha=$("$real_git" -C "$tmpdir/repo" commit-tree "${fixture_head}^{tree}" -p "$fixture_head" -m 'ahead on origin') ||
+  die 'cannot create an ahead commit'
+result=$(MOCK_REMOTE_SHA=$ahead_sha run_v2 pr push 2>&1) && rc=0 || rc=$?
+if (( rc == 4 )) &&
+   [[ $result == *timvisher_git_push_behind* ]] &&
+   ! grep -q 'pre.d' "$hook_log" &&
+   ! grep -q mock-git-push "$MOCK_LOG"
+then
+  pass "hooks: push pre-hooks skipped when behind; pr push exits 4"
+else
+  fail "hooks push behind: rc=${rc} hooks=$(cat "$hook_log") got '${result: -400}'"
+fi
+
 # Test: a failing push pre-hook stops before git push
 run_test
 reset_hooks
