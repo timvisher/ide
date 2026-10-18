@@ -1535,42 +1535,54 @@ github_repo_of_url() {
 # overriding its URL for the update, not with --reference: --reference
 # still fetches from the real URL (network), and leaves alternates that
 # a cache prune could break.
+#
+# A submodule that can't be checked out is a warning, not a failure:
+# the worktree is usable without it, and a failed worktree build can't
+# be retried cleanly.
 init_submodules() {
   local worktree=$1
   [[ -f $worktree/.gitmodules ]] ||
     return 0
 
-  local key path name url repo cache module
+  local key path name url repo cache module updated
   while read -r key path
   do
     name=${key#submodule.}
     name=${name%.path}
-    url=$(command git config --file "$worktree/.gitmodules" --get "submodule.${name}.url") ||
-      {
-        error "Submodule '%s' in '%s' has no URL in .gitmodules" "$name" "$worktree"
-        return 1
-      }
-    repo=$(github_repo_of_url "$url") ||
-      {
-        error "Submodule '%s' has URL '%s'; only github.com submodules are supported. Check out '%s' by hand with git submodule update --init." "$name" "$url" "$path"
-        return 1
-      }
-    cache=$(cache_trunk "$repo") ||
-      {
-        error "Unable to cache '%s' for submodule '%s'" "$repo" "$name"
-        return 1
-      }
+    if ! url=$(command git config --file "$worktree/.gitmodules" --get "submodule.${name}.url")
+    then
+      warn "Submodule '%s' in '%s' has no URL in .gitmodules; not checking it out" "$name" "$worktree"
+      continue
+    fi
+    if ! repo=$(github_repo_of_url "$url")
+    then
+      warn "Submodule '%s' has URL '%s', and only github.com URLs check out from the cache; to check it out from its URL: git -C '%s' submodule update --init -- '%s'" "$name" "$url" "$worktree" "$path"
+      continue
+    fi
+    if ! cache=$(cache_trunk "$repo")
+    then
+      warn "Unable to cache '%s' for submodule '%s'; to check it out from its URL: git -C '%s' submodule update --init -- '%s'" "$repo" "$name" "$worktree" "$path"
+      continue
+    fi
     info "Checking out submodule '%s' from cache '%s'" "$path" "$cache"
     if ! module=$(command git -C "$worktree" rev-parse --path-format=absolute --git-path "modules/${name}") ||
        ! command git -C "$worktree" submodule init -- "$path" >&2 ||
-       { [[ -f $module/config ]] && ! command git config --file "$module/config" remote.origin.url "$cache"; } ||
-       ! command git -C "$worktree" -c protocol.file.allow=always \
-           -c "submodule.${name}.url=${cache}" submodule update -- "$path" >&2 ||
-       [[ ! -f $module/config ]] ||
-       ! command git config --file "$module/config" remote.origin.url "$url"
+       { [[ -f $module/config ]] && ! command git config --file "$module/config" remote.origin.url "$cache"; }
     then
-      error "Unable to check out submodule '%s' in '%s'" "$path" "$worktree"
-      return 1
+      warn "Unable to prepare submodule '%s' in '%s'; to check it out from its URL: git -C '%s' submodule update --init -- '%s'" "$path" "$worktree" "$worktree" "$path"
+      continue
+    fi
+    updated=true
+    command git -C "$worktree" -c protocol.file.allow=always \
+      -c "submodule.${name}.url=${cache}" submodule update -- "$path" >&2 ||
+      updated=false
+    if [[ -f $module/config ]] && ! command git config --file "$module/config" remote.origin.url "$url"
+    then
+      warn "Unable to point submodule '%s' back at '%s'; fix it with: git -C '%s/%s' remote set-url origin '%s'" "$path" "$url" "$worktree" "$path" "$url"
+    fi
+    if [[ $updated == false ]]
+    then
+      warn "Unable to check out submodule '%s' in '%s'; to retry from its URL: git -C '%s' submodule update --init -- '%s'" "$path" "$worktree" "$worktree" "$path"
     fi
   done < <(command git config --file "$worktree/.gitmodules" --get-regexp '^submodule\..*\.path$')
 }

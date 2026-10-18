@@ -3176,6 +3176,52 @@ else
   fail "submodule worktree remove: '$(ls -d "$sm_moved" 2>&1)'"
 fi
 
+sm_rel_src="$tmpdir/sm_rel_src"
+sm_git init -q -b main "$sm_rel_src"
+printf 'rel\n' > "$sm_rel_src/r"
+sm_git -C "$sm_rel_src" add r
+sm_git -C "$sm_rel_src" commit -q -m rel
+sm_git -C "$sm_rel_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_rel_src" config -f .gitmodules submodule.m.url ../smsub
+sm_git -C "$sm_rel_src" add .gitmodules
+sm_git -C "$sm_rel_src" commit -q -m 'add relative submodule'
+sm_rel_cache="$cache_dir/repo_trunks/smorg/smrel"
+sm_git init -q --bare "$sm_rel_cache"
+sm_git -C "$sm_rel_cache" remote add origin "$sm_rel_src"
+sm_git -C "$sm_rel_cache" fetch -q origin
+sm_git -C "$sm_rel_cache" remote set-head origin -a >/dev/null 2>&1
+
+run_test
+sm_rel_err="$tmpdir/sm_rel.err"
+sm_rel_wt=$(ensure_worktree "smorg/smrel/rel-feature" 2>"$sm_rel_err") && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ -f $sm_rel_wt/r ]] &&
+   grep -q "submodule update --init -- 'm'" "$sm_rel_err"
+then
+  pass "ensure_worktree: a submodule it can't check out warns with the command and keeps the worktree"
+else
+  fail "ensure_worktree relative submodule: rc=${sm_rc} wt='${sm_rel_wt}' err='$(tail -3 "$sm_rel_err")'"
+fi
+
+run_test
+sm_gone=$(sm_git -C "$sm_sub_src" commit-tree "$(sm_git -C "$sm_sub_src" rev-parse 'HEAD^{tree}')" -m 'not in the cache')
+sm_git -C "$sm_super_src" checkout -q -b sm-missing
+sm_git -C "$sm_super_src" update-index --cacheinfo "160000,${sm_gone},m"
+sm_git -C "$sm_super_src" commit -q -m 'point m at a commit the cache lacks'
+sm_git -C "$sm_super_src" checkout -q main
+sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" fetch -q origin
+sm_missing=$(ensure_worktree "smorg/smsuper/sm-missing-wt" 2>/dev/null)
+sm_git -C "$sm_missing" reset -q --hard origin/sm-missing >/dev/null 2>&1
+init_submodules "$sm_missing" >/dev/null 2>"$tmpdir/sm_missing.err" && sm_rc=0 || sm_rc=$?
+sm_missing_module=$(sm_git -C "$sm_missing" rev-parse --path-format=absolute --git-path modules/m)
+if (( sm_rc == 0 )) &&
+   [[ $(sm_git config --file "$sm_missing_module/config" remote.origin.url) == https://github.com/smorg/smsub ]] &&
+   grep -q "Unable to check out submodule 'm'" "$tmpdir/sm_missing.err"
+then
+  pass "init_submodules: a failed checkout warns and points the submodule back at its real URL"
+else
+  fail "init_submodules failed checkout: rc=${sm_rc} url='$(sm_git config --file "$sm_missing_module/config" remote.origin.url 2>&1)' err='$(tail -3 "$tmpdir/sm_missing.err")'"
+fi
+
 run_test
 printf 'sub content 2\n' > "$sm_sub_src/f"
 sm_git -C "$sm_sub_src" commit -q -am 'sub 2'
@@ -3213,10 +3259,10 @@ sm_git -C "$sm_bad_cache" remote add origin "$sm_bad_src"
 sm_git -C "$sm_bad_cache" fetch -q origin
 sm_git -C "$sm_bad_cache" remote set-head origin -a >/dev/null 2>&1
 sm_bad_err=$(ensure_worktree "smorg/smbad/sm-feature" 2>&1 >/dev/null) && sm_rc=0 || sm_rc=$?
-if (( sm_rc != 0 )) && [[ $sm_bad_err == *gitlab.example.com* ]] &&
-   [[ ! -e $live_repo_dir/smorg/smbad/sm-feature ]]
+if (( sm_rc == 0 )) && [[ $sm_bad_err == *gitlab.example.com* ]] &&
+   [[ -e $live_repo_dir/smorg/smbad/sm-feature ]]
 then
-  pass "ensure_worktree: a non-github submodule URL fails the build, naming the URL"
+  pass "ensure_worktree: a non-github submodule URL warns, naming the URL, and keeps the worktree"
 else
   fail "ensure_worktree non-github submodule: rc=${sm_rc} err='${sm_bad_err}'"
 fi
