@@ -91,3 +91,21 @@ on focusTabWithUrl(u)
 	end tell
 	return false
 end focusTabWithUrl
+
+on closeTabWithUrl(u)
+	if application "Vivaldi" is not running then
+		return false
+	end if
+	
+	tell application "Vivaldi"
+		repeat with w in windows
+			repeat with t in tabs of w
+				if URL of t is u then
+					close t
+					return true
+				end if
+			end repeat
+		end repeat
+	end tell
+	return false
+end closeTabWithUrl

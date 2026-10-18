@@ -91,3 +91,7 @@ on focusTabWithUrl(u)
 end focusTabWithUrl
 
 -- getTabWithUrl("https://www.youtube.com/@PogoMusic")
+
+on closeTabWithUrl(u)
+	tell script (my currentBrowser()) to closeTabWithUrl(u)
+end closeTabWithUrl
