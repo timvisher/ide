@@ -100,10 +100,12 @@ on closeTabWithUrl(u)
 	tell application "Vivaldi"
 		repeat with w in windows
 			repeat with t in tabs of w
-				if URL of t is u then
-					close t
-					return true
-				end if
+				considering case
+					if URL of t is u then
+						close t
+						return true
+					end if
+				end considering
 			end repeat
 		end repeat
 	end tell
