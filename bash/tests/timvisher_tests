@@ -152,6 +152,8 @@ mkdir -p ~/git ~/.config/timvisher ~/.config/app &&
   ln -s ~/.config/app ~/.app &&
   ln -s '$core/bash/functions' ~/.functions || exit 1
 printf 'x\n' >> '$tmpdir/installs'
+"\$TIMVISHER_INSTALL_UV" > '$tmpdir/install_uv.out'
+printf '%s\n' "\$?" > '$tmpdir/install_uv.rc'
 INSTALL
 
 suite() {
@@ -242,6 +244,8 @@ SUITE
 suite "$fover/bash/tests/overlay_pass" <<'SUITE'
 echo 'PASS: overlay'
 SUITE
+mkdir -p "$fover/python/tests" || exit 1
+printf 'empty\n' > "$fover/python/tests/README"
 mkdir -p "$fcore/LaunchAgents/tests" "$fcore/bash/bin/tests" || exit 1
 suite "$fcore/LaunchAgents/tests/agents" <<'SUITE'
 echo 'PASS: launch agents'
@@ -360,11 +364,17 @@ check 'the python fresh_home test passes' \
       eval '! grep -q "test_fresh" "$results"'
 check 'the conformance runner runs as a suite' \
       has_result 'test: ide/python/tests/conformance/run.py pass'
+check 'an empty python/tests is not a failure' \
+      has_result 'test: system-extensions/python/tests pass'
+
 check 'suite output is tagged with the suite' \
       eval 'grep -q "^ide/bash/tests/pass	PASS: fine" "$tmpdir/out"'
 check 'failed suites are listed on stderr' \
       eval 'grep -q "^failed: ide/bash/tests/fail" "$tmpdir/err"'
 check 'the template is built once' test "$(wc -l < "$tmpdir/installs")" = 1
+check 'the template build runs a timvisher_uv stub, not the real one' \
+      grep -q 'not building tool venvs' "$tmpdir/install_uv.out"
+check 'the timvisher_uv stub succeeds' test "$(cat "$tmpdir/install_uv.rc")" = 0
 check 'the run directory is removed' \
       test -z "$(/usr/bin/find "$tmpdir/runtmp" -mindepth 1 -maxdepth 1)"
 
@@ -510,6 +520,24 @@ refused substitutes_home 'assigns HOME'
 
 printf 'f() {\n  local -x %s=/tmp/x # fake\n}\necho ran-local_home\n' HOME > "$fcore/bash/tests/local_home"
 refused local_home 'assigns HOME'
+
+cat > "$fover/python/tests/test_setup.py" <<'PY'
+import unittest
+
+
+def setUpModule():
+    raise RuntimeError("module setup broke")
+
+
+class Setup(unittest.TestCase):
+    def test_never_runs(self):
+        pass
+PY
+run_fixture --suite "$fover/python/tests"
+rc=$?
+check 'a python suite whose module setup fails is a failure' \
+      eval '(( rc == 1 )) && has_result "test: system-extensions/python/tests fail"'
+rm -f "$fover/python/tests/test_setup.py"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"

@@ -145,6 +145,14 @@ then
 fi
 ~/git/ide/bash/bin/timvisher_agents_install "${agent_homes[@]}" || exit 1
 
+# shellcheck source=/dev/null
+source ~/.functions/path.bash || exit 1
+timvisher_path_prepend_ide_roots ~/git/ide ~/.config/timvisher/ide
+if ! "${TIMVISHER_INSTALL_UV:-$HOME/git/ide/bash/bin/timvisher_uv}"
+then
+    echo "# timvisher_uv could not build every tool's venv; rerun 'timvisher_uv' once the cause above is fixed" >&2
+fi
+
 # Enable Touch ID for sudo now if we're at a terminal on a capable Mac. The
 # command self-gates (macOS, sensor, tty, already-configured) and always exits
 # 0, so this is a silent no-op when unattended or not applicable. bashrc calls

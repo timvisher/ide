@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd -P)/bin/timvisher_browser"
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" || exit 1
+
+cat > "$tmpdir/bin/osascript" <<'FAKE'
+#!/usr/bin/env bash
+[[ $1 == -e ]] || exit 99
+osa_script=$2
+shift 2
+printf '%s\n' "$osa_script" > "$FAKE_OSA_DIR/script"
+printf '%s\n' "$@" > "$FAKE_OSA_DIR/args"
+if [[ -n ${FAKE_OSA_RC-} ]]
+then
+  echo "execution error: Vivaldi got an error (-1728)" >&2
+  exit "$FAKE_OSA_RC"
+fi
+case $osa_script in
+  *closeTabWithUrl*)
+    printf '%s\nVivaldi\n' "${FAKE_CLOSE:-closed}"
+    ;;
+  *focusTabWithUrl*)
+    printf '%s\n' "${FAKE_TAB:-opened}"
+    ;;
+  *getActiveTabUrl*)
+    case ${FAKE_STATE:-ok} in
+      ok) printf 'ok\nVivaldi\n%s\n%s\n' "$FAKE_URL" "$FAKE_TITLE" ;;
+      *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
+    esac
+    ;;
+  *executeJsInActiveTab*)
+    case ${FAKE_STATE:-ok} in
+      ok) printf 'ok\nVivaldi\n%s\n' "$FAKE_JS_VALUE" ;;
+      *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
+    esac
+    ;;
+esac
+FAKE
+chmod +x "$tmpdir/bin/osascript" || exit 1
+
+browser() {
+  FAKE_OSA_DIR="$tmpdir" \
+  FAKE_URL='https://github.com/DataDog/x/pull/7' \
+  FAKE_TITLE='Fix the "thing" · Pull Request #7' \
+  PATH="$tmpdir/bin:$PATH" \
+  TIMVISHER_AGENT=1 \
+    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+field() {
+  jq -r "$1" "$tmpdir/stdout"
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+stdout_empty() {
+  [[ ! -s $tmpdir/stdout ]]
+}
+
+browser tab info
+rc=$?
+check 'tab info: exits 0' test "$rc" -eq 0
+check 'tab info: prints the record as JSON' jq -e . "$tmpdir/stdout"
+check 'tab info: schema_version is 1' test "$(field .schema_version)" = 1
+check 'tab info: url' test "$(field .url)" = 'https://github.com/DataDog/x/pull/7'
+check 'tab info: title' test "$(field .title)" = 'Fix the "thing" · Pull Request #7'
+check 'tab info: browser' test "$(field .browser)" = Vivaldi
+check 'tab info: the url is the canonicalized one from getActiveTabUrl' \
+      grep -q 'getActiveTabUrl()' "$tmpdir/script"
+check 'tab info: checks the browser is running before reading the tab' \
+      eval "awk '/is not running/ { r = NR } /getActiveTabUrl/ { g = NR } END { exit !(r && g && r < g) }' '$tmpdir/script'"
+
+browser tab info .url
+check 'tab info: a component prints bare' \
+      test "$(cat "$tmpdir/stdout")" = 'https://github.com/DataDog/x/pull/7'
+
+browser tab info --schema-version 1 .browser
+rc=$?
+check 'tab info --schema-version: a match exits 0' test "$rc" -eq 0
+check 'tab info --schema-version: a match prints the record' test "$(cat "$tmpdir/stdout")" = Vivaldi
+browser tab info --schema-version 2
+rc=$?
+check 'tab info --schema-version: a mismatch exits 1' test "$rc" -eq 1
+check 'tab info --schema-version: a mismatch reports timvisher_browser_schema_version_mismatch' \
+      stderr_has '"code":"timvisher_browser_schema_version_mismatch"'
+check 'tab info --schema-version: the suggestion names the current version and the help' \
+      eval 'stderr_has "--schema-version 1" && stderr_has "tab info --help"'
+check 'tab info --schema-version: a mismatch prints nothing on stdout' stdout_empty
+
+FAKE_STATE=not_running browser tab info
+rc=$?
+check 'not running: exits 1' test "$rc" -eq 1
+check 'not running: reports timvisher_browser_not_running' \
+      stderr_has '"code":"timvisher_browser_not_running"'
+check 'not running: suggests opening the browser or a tab' \
+      eval 'stderr_has "Open Vivaldi" && stderr_has "timvisher_browser tab <url>"'
+check 'not running: prints nothing on stdout' stdout_empty
+
+FAKE_STATE=no_window browser tab info
+rc=$?
+check 'no window: exits 1' test "$rc" -eq 1
+check 'no window: reports timvisher_browser_no_window' \
+      stderr_has '"code":"timvisher_browser_no_window"'
+
+FAKE_OSA_RC=1 browser tab info
+rc=$?
+check 'osascript failure: exits 1' test "$rc" -eq 1
+check 'osascript failure: reports timvisher_browser_osascript_failed with its error' \
+      eval 'stderr_has "\"code\":\"timvisher_browser_osascript_failed\"" && stderr_has "got an error (-1728)"'
+
+browser tab 'https://github.com/DataDog/x/pull/8'
+rc=$?
+check 'tab <url>: exits 0' test "$rc" -eq 0
+check 'tab <url>: prints the URL' test "$(cat "$tmpdir/stdout")" = 'https://github.com/DataDog/x/pull/8'
+check 'tab <url>: hands the URL to the library' grep -qxF 'https://github.com/DataDog/x/pull/8' "$tmpdir/args"
+check 'tab <url>: focuses an existing tab, else opens one and waits for it to load' \
+      eval "grep -q 'focusTabWithUrl' '$tmpdir/script' && grep -q 'openTabWithUrl(u)' '$tmpdir/script'"
+
+FAKE_TAB=focused browser tab 'https://github.com/DataDog/x/pull/8'
+rc=$?
+check 'tab <url>: a focused tab also prints the URL' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == https://github.com/DataDog/x/pull/8 ]]"
+
+FAKE_OSA_RC=1 browser tab 'https://github.com/DataDog/x/pull/8'
+rc=$?
+check 'tab <url>: an osascript failure exits 1 with timvisher_browser_osascript_failed' \
+      eval "(( rc == 1 )) && grep -qF '\"code\":\"timvisher_browser_osascript_failed\"' '$tmpdir/stderr'"
+
+expression='document.querySelector(".head-ref").textContent'
+FAKE_JS_VALUE='timvisher-dd:my-branch' browser tab js "$expression"
+rc=$?
+check 'tab js: exits 0' test "$rc" -eq 0
+check "tab js: prints the expression's value" test "$(cat "$tmpdir/stdout")" = 'timvisher-dd:my-branch'
+check 'tab js: hands the expression to the library' grep -qxF "$expression" "$tmpdir/args"
+check 'tab js: runs it with executeJsInActiveTab' grep -q 'executeJsInActiveTab(e)' "$tmpdir/script"
+check 'tab js: checks the browser is running before running it' \
+      grep -q 'is not running then return "not_running"' "$tmpdir/script"
+
+FAKE_STATE=not_running browser tab js "$expression"
+rc=$?
+check 'tab js, not running: exits 1 with timvisher_browser_not_running and nothing on stdout' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_not_running\"" && stdout_empty'
+
+FAKE_STATE=no_window browser tab js "$expression"
+rc=$?
+check 'tab js, no window: exits 1 with timvisher_browser_no_window' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_no_window\""'
+
+browser tab js
+rc=$?
+check 'tab js without an expression: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab js <expression>' '$tmpdir/stderr'"
+
+browser tab close 'https://example.com/'
+rc=$?
+check 'tab close: exits 0 with nothing on stdout' eval '(( rc == 0 )) && stdout_empty'
+check 'tab close: hands the URL to the library' grep -qxF 'https://example.com/' "$tmpdir/args"
+check 'tab close: closes it with closeTabWithUrl' grep -q 'closeTabWithUrl(u)' "$tmpdir/script"
+
+FAKE_CLOSE=not_found browser tab close 'https://example.com/'
+rc=$?
+check 'tab close, no such tab: exits 1' test "$rc" -eq 1
+check 'tab close, no such tab: reports timvisher_browser_no_such_tab with the URL' \
+      eval 'stderr_has "\"code\":\"timvisher_browser_no_such_tab\"" && stderr_has "https://example.com/"'
+
+FAKE_OSA_RC=1 browser tab close 'https://example.com/'
+rc=$?
+check 'tab close: an osascript failure exits 1 with timvisher_browser_osascript_failed' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_osascript_failed\""'
+
+browser tab close
+rc=$?
+check 'tab close without a URL: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab close <url>' '$tmpdir/stderr'"
+
+browser tab info --help
+rc=$?
+check 'tab info --help: exits 0 with the fields and schema version on stdout' \
+      eval "(( rc == 0 )) && grep -q 'schema_version' '$tmpdir/stdout' && grep -qi 'version.*1' '$tmpdir/stdout'"
+
+browser --help
+rc=$?
+check '--help: exits 0 with usage on stdout' \
+      eval "(( rc == 0 )) && grep -q 'Usage: timvisher_browser' '$tmpdir/stdout'"
+
+browser
+rc=$?
+check 'no arguments: usage on stderr, nothing on stdout, exit 2' \
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'Usage: timvisher_browser' '$tmpdir/stderr'"
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

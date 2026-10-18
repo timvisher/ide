@@ -74,12 +74,12 @@ show_help() {
     - Idempotent: every step checks GitHub first and reports when there
       is nothing to do, so rerunning after any failure converges
     - Requires a clean git status and a checked-out branch
-    - Branch: pushes HEAD to origin, or reports 'already pushed' when
-      origin's branch is already at HEAD.  A rewritten branch needs
-      --force-with-lease, which runs 'git push --force-with-lease
-      --force-if-includes' (a fetch in another worktree sharing the
-      ref store cannot satisfy the lease behind your back).
-      --force-with-lease=<sha> leases the branch against <sha>;
+    - Branch: converged by 'timvisher_git push' (see its help): already
+      pushed, a fast-forward and your own rewrite go through on their
+      own; behind origin stops with exit 4, and anything else needs a
+      decision (exit 3 when not interactive).  --force-with-lease
+      pushes over origin as 'timvisher_git push --ours' does.
+      --force-with-lease=<sha> leases the branch against <sha> instead;
       --force-with-lease=<ref>:<sha> passes through as is
     - PR: with no recorded PR, adopts an open PR for the branch or
       creates a draft from pr.md (title line 1, body line 3+)
@@ -1132,7 +1132,7 @@ gh_pr_wait_until_merged() {
   local pr_url=$1
   local poll_interval=${TIMVISHER_GH_PR_MERGE_POLL_INTERVAL:-10}
   local timeout=${TIMVISHER_GH_PR_MERGE_TIMEOUT:-7200}
-  local waited=0
+  local started=$SECONDS waited=0
   local view state
 
   while true
@@ -1150,6 +1150,7 @@ gh_pr_wait_until_merged() {
         ;;
     esac
 
+    waited=$(( SECONDS - started ))
     if (( timeout <= waited ))
     then
       die 'Timed out after %ds waiting for merge to complete: %s (merge may still land; cookie not dropped)' \
@@ -1158,7 +1159,6 @@ gh_pr_wait_until_merged() {
 
     info 'Waiting for merge to complete (state=%s); retrying in %ds' "${state:-unknown}" "$poll_interval"
     sleep "$poll_interval"
-    (( waited += poll_interval ))
   done
 }
 
@@ -1489,6 +1489,28 @@ gh_pr__push_branch() {
   info "Pushed '%s' at %s" "$branch" "${head:0:12}"
 }
 
+gh_pr__converge_branch() {
+  local force=$1 plan rc
+  local -a push_args=(push)
+  if [[ $force == true ]]
+  then
+    push_args+=(--ours)
+  fi
+
+  plan=$("${SELF_DIR}/timvisher_git" "${push_args[@]}" --plan) && rc=0 || rc=$?
+  case ${plan%% *} in
+    new|fast-forward|own-rewrite)
+      hooks__run_pre push
+      ;;
+    behind|decision)
+      [[ $force == false ]] || hooks__run_pre push
+      ;;
+  esac
+
+  "${SELF_DIR}/timvisher_git" "${push_args[@]}" && rc=0 || rc=$?
+  (( rc == 0 )) || exit "$rc"
+}
+
 gh_pr__create() {
   local branch=$1 pr_md=$2
 
@@ -1575,10 +1597,15 @@ gh_pr_push() {
   fi
 
   hooks__open=$open
-  if ! gh_pr__branch_pushed "$branch"
+  if [[ $force == true && -n $lease ]]
   then
-    hooks__run_pre push
-    gh_pr__push_branch "$force" "$lease" "$branch"
+    if ! gh_pr__branch_pushed "$branch"
+    then
+      hooks__run_pre push
+      gh_pr__push_branch "$force" "$lease" "$branch"
+    fi
+  else
+    gh_pr__converge_branch "$force"
   fi
 
   local created=false

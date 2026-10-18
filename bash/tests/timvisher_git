@@ -3074,6 +3074,200 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# submodule tests
+# ---------------------------------------------------------------------------
+
+sm_git() {
+  "$test_git" -c user.email=test@test.com -c user.name=Test \
+    -c core.hooksPath=/dev/null -c protocol.file.allow=always "$@"
+}
+
+sm_sub_src="$tmpdir/sm_sub_src"
+sm_super_src="$tmpdir/sm_super_src"
+sm_git init -q -b main "$sm_sub_src"
+printf 'sub content\n' > "$sm_sub_src/f"
+sm_git -C "$sm_sub_src" add f
+sm_git -C "$sm_sub_src" commit -q -m sub
+sm_git init -q -b main "$sm_super_src"
+printf 'super\n' > "$sm_super_src/r"
+sm_git -C "$sm_super_src" add r
+sm_git -C "$sm_super_src" commit -q -m super
+sm_git -C "$sm_super_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_super_src" config -f .gitmodules submodule.m.url https://github.com/smorg/smsub
+sm_git -C "$sm_super_src" add .gitmodules
+sm_git -C "$sm_super_src" commit -q -m 'add submodule'
+sm_recorded=$(sm_git -C "$sm_super_src" rev-parse HEAD:m)
+
+for sm_pair in "smsub:$sm_sub_src" "smsuper:$sm_super_src"
+do
+  sm_cache="$cache_dir/repo_trunks/smorg/${sm_pair%%:*}"
+  mkdir -p "$(dirname "$sm_cache")"
+  sm_git init -q --bare "$sm_cache"
+  sm_git -C "$sm_cache" remote add origin "${sm_pair#*:}"
+  sm_git -C "$sm_cache" fetch -q origin
+  sm_git -C "$sm_cache" remote set-head origin -a >/dev/null 2>&1
+done
+
+run_test
+sm_wt=$(ensure_worktree "smorg/smsuper/sm-feature" 2>/dev/null) && sm_rc=0 || sm_rc=$?
+sm_status=$(sm_git -C "$sm_wt" submodule status 2>/dev/null) || sm_status=""
+if (( sm_rc == 0 )) && [[ $sm_status == " ${sm_recorded} m"* ]]
+then
+  pass "ensure_worktree: checks out submodules at their recorded commits"
+else
+  fail "ensure_worktree submodules: rc=${sm_rc} status='${sm_status}' recorded='${sm_recorded}'"
+fi
+
+run_test
+if [[ $(cat "$sm_wt/m/f" 2>/dev/null) == 'sub content' ]]
+then
+  pass "ensure_worktree: submodule contents are present"
+else
+  fail "ensure_worktree submodule contents: '$(cat "$sm_wt/m/f" 2>&1)'"
+fi
+
+run_test
+sm_origin=$(sm_git -C "$sm_wt/m" remote get-url origin 2>/dev/null) || sm_origin=""
+sm_config_url=$(sm_git -C "$sm_wt" config submodule.m.url 2>/dev/null) || sm_config_url=""
+if [[ $sm_origin == https://github.com/smorg/smsub && $sm_config_url == https://github.com/smorg/smsub ]]
+then
+  pass "ensure_worktree: submodule remotes point at the real URL, not the cache"
+else
+  fail "ensure_worktree submodule url: origin='${sm_origin}' config='${sm_config_url}'"
+fi
+
+run_test
+sm_module=$(sm_git -C "$sm_wt" rev-parse --path-format=absolute --git-path modules/m 2>/dev/null) || sm_module=""
+if [[ -d $sm_module && ! -e $sm_module/objects/info/alternates ]]
+then
+  pass "ensure_worktree: submodule objects are copied, not borrowed from the cache"
+else
+  fail "ensure_worktree submodule alternates: module='${sm_module}'"
+fi
+
+run_test
+if [[ $(sm_git -C "$sm_wt/m" rev-parse --show-toplevel 2>/dev/null) == "$sm_wt/m" ]]
+then
+  pass "ensure_worktree: submodules work at the published path"
+else
+  fail "ensure_worktree submodule after publish: '$(sm_git -C "$sm_wt/m" rev-parse --show-toplevel 2>&1)'"
+fi
+
+run_test
+sm_moved="$live_repo_dir/smorg/smsuper/deeper/still/sm-moved"
+mkdir -p "$(dirname "$sm_moved")" &&
+  mv "$sm_wt" "$sm_moved" &&
+  sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" worktree repair "$sm_moved" >/dev/null 2>&1 &&
+  repair_submodule_worktrees "$sm_moved" 2>/dev/null && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ $(sm_git -C "$sm_moved/m" rev-parse --show-toplevel 2>/dev/null) == "$sm_moved/m" ]] &&
+   [[ $(sm_git -C "$sm_moved" submodule status 2>/dev/null) == " ${sm_recorded} m"* ]]
+then
+  pass "repair_submodule_worktrees: submodules work after the worktree moves to a different depth"
+else
+  fail "repair_submodule_worktrees: rc=${sm_rc} '$(sm_git -C "$sm_moved/m" rev-parse --show-toplevel 2>&1)'"
+fi
+
+run_test
+if sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" worktree remove --force "$sm_moved" >/dev/null 2>&1 &&
+   [[ ! -e $sm_moved ]]
+then
+  pass "a worktree with submodules can be removed"
+else
+  fail "submodule worktree remove: '$(ls -d "$sm_moved" 2>&1)'"
+fi
+
+sm_rel_src="$tmpdir/sm_rel_src"
+sm_git init -q -b main "$sm_rel_src"
+printf 'rel\n' > "$sm_rel_src/r"
+sm_git -C "$sm_rel_src" add r
+sm_git -C "$sm_rel_src" commit -q -m rel
+sm_git -C "$sm_rel_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_rel_src" config -f .gitmodules submodule.m.url ../smsub
+sm_git -C "$sm_rel_src" add .gitmodules
+sm_git -C "$sm_rel_src" commit -q -m 'add relative submodule'
+sm_rel_cache="$cache_dir/repo_trunks/smorg/smrel"
+sm_git init -q --bare "$sm_rel_cache"
+sm_git -C "$sm_rel_cache" remote add origin "$sm_rel_src"
+sm_git -C "$sm_rel_cache" fetch -q origin
+sm_git -C "$sm_rel_cache" remote set-head origin -a >/dev/null 2>&1
+
+run_test
+sm_rel_err="$tmpdir/sm_rel.err"
+sm_rel_wt=$(ensure_worktree "smorg/smrel/rel-feature" 2>"$sm_rel_err") && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ -f $sm_rel_wt/r ]] &&
+   grep -q "submodule update --init -- 'm'" "$sm_rel_err"
+then
+  pass "ensure_worktree: a submodule it can't check out warns with the command and keeps the worktree"
+else
+  fail "ensure_worktree relative submodule: rc=${sm_rc} wt='${sm_rel_wt}' err='$(tail -3 "$sm_rel_err")'"
+fi
+
+run_test
+sm_gone=$(sm_git -C "$sm_sub_src" commit-tree "$(sm_git -C "$sm_sub_src" rev-parse 'HEAD^{tree}')" -m 'not in the cache')
+sm_git -C "$sm_super_src" checkout -q -b sm-missing
+sm_git -C "$sm_super_src" update-index --cacheinfo "160000,${sm_gone},m"
+sm_git -C "$sm_super_src" commit -q -m 'point m at a commit the cache lacks'
+sm_git -C "$sm_super_src" checkout -q main
+sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" fetch -q origin
+sm_missing=$(ensure_worktree "smorg/smsuper/sm-missing-wt" 2>/dev/null)
+sm_git -C "$sm_missing" reset -q --hard origin/sm-missing >/dev/null 2>&1
+init_submodules "$sm_missing" >/dev/null 2>"$tmpdir/sm_missing.err" && sm_rc=0 || sm_rc=$?
+sm_missing_module=$(sm_git -C "$sm_missing" rev-parse --path-format=absolute --git-path modules/m)
+if (( sm_rc == 0 )) &&
+   [[ $(sm_git config --file "$sm_missing_module/config" remote.origin.url) == https://github.com/smorg/smsub ]] &&
+   grep -q "Unable to check out submodule 'm'" "$tmpdir/sm_missing.err"
+then
+  pass "init_submodules: a failed checkout warns and points the submodule back at its real URL"
+else
+  fail "init_submodules failed checkout: rc=${sm_rc} url='$(sm_git config --file "$sm_missing_module/config" remote.origin.url 2>&1)' err='$(tail -3 "$tmpdir/sm_missing.err")'"
+fi
+
+run_test
+printf 'sub content 2\n' > "$sm_sub_src/f"
+sm_git -C "$sm_sub_src" commit -q -am 'sub 2'
+sm_git -C "$cache_dir/repo_trunks/smorg/smsub" fetch -q origin
+sm_git -C "$sm_super_src" checkout -q -b sm-base
+sm_git -C "$sm_super_src/m" pull -q origin main >/dev/null 2>&1
+sm_git -C "$sm_super_src" add m
+sm_git -C "$sm_super_src" commit -q -m 'bump submodule'
+sm_base_recorded=$(sm_git -C "$sm_super_src" rev-parse HEAD:m)
+sm_git -C "$sm_super_src" checkout -q main
+sm_git -C "$cache_dir/repo_trunks/smorg/smsuper" fetch -q origin
+sm_stack=$(ensure_worktree "smorg/smsuper/sm-stack" 2>/dev/null)
+sm_git -C "$sm_stack" reset -q --hard origin/sm-base >/dev/null 2>&1 &&
+  init_submodules "$sm_stack" >/dev/null 2>&1 && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ $sm_base_recorded != "$sm_recorded" ]] &&
+   [[ $(sm_git -C "$sm_stack" submodule status 2>/dev/null) == " ${sm_base_recorded} m"* ]] &&
+   [[ $(cat "$sm_stack/m/f" 2>/dev/null) == 'sub content 2' ]]
+then
+  pass "init_submodules after a reset updates submodules to the new recorded commits (as clone_stacked does)"
+else
+  fail "init_submodules after reset: rc=${sm_rc} base='${sm_base_recorded}' status='$(sm_git -C "$sm_stack" submodule status 2>&1)'"
+fi
+
+run_test
+sm_bad_src="$tmpdir/sm_bad_src"
+sm_git init -q -b main "$sm_bad_src"
+sm_git -C "$sm_bad_src" commit -q --allow-empty -m bad
+sm_git -C "$sm_bad_src" submodule add -q "$sm_sub_src" m >/dev/null 2>&1
+sm_git -C "$sm_bad_src" config -f .gitmodules submodule.m.url https://gitlab.example.com/x/y
+sm_git -C "$sm_bad_src" add .gitmodules
+sm_git -C "$sm_bad_src" commit -q -m 'add submodule'
+sm_bad_cache="$cache_dir/repo_trunks/smorg/smbad"
+sm_git init -q --bare "$sm_bad_cache"
+sm_git -C "$sm_bad_cache" remote add origin "$sm_bad_src"
+sm_git -C "$sm_bad_cache" fetch -q origin
+sm_git -C "$sm_bad_cache" remote set-head origin -a >/dev/null 2>&1
+sm_bad_err=$(ensure_worktree "smorg/smbad/sm-feature" 2>&1 >/dev/null) && sm_rc=0 || sm_rc=$?
+if (( sm_rc == 0 )) && [[ $sm_bad_err == *gitlab.example.com* ]] &&
+   [[ -e $live_repo_dir/smorg/smbad/sm-feature ]]
+then
+  pass "ensure_worktree: a non-github submodule URL warns, naming the URL, and keeps the worktree"
+else
+  fail "ensure_worktree non-github submodule: rc=${sm_rc} err='${sm_bad_err}'"
+fi
+
+# ---------------------------------------------------------------------------
 # die_if_git_component tests
 # ---------------------------------------------------------------------------
 
@@ -4049,6 +4243,192 @@ then
 else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
 fi
+
+# ---------------------------------------------------------------------------
+# push
+# ---------------------------------------------------------------------------
+
+push_root="$tmpdir/push"
+mkdir -p "$push_root" ||
+  die "cannot create '$push_root'"
+
+pg() {
+  "$test_git" -c commit.gpgsign=false -c init.defaultBranch=main "$@"
+}
+
+push_commit() {
+  local repo=$1 name=$2
+  printf '%s\n' "$name" > "$repo/$name" &&
+    pg -C "$repo" add "$name" &&
+    pg -C "$repo" commit -q -m "$name"
+}
+
+# push_fixture <name>: a bare origin with main, a worktree on feature
+# branched from it, and a second clone for other people's pushes.
+push_fixture() {
+  local name=$1 dir=$push_root/$1
+  pg init -q --bare "$dir/origin.git" &&
+    pg clone -q "$dir/origin.git" "$dir/seed" 2>/dev/null &&
+    push_commit "$dir/seed" m1 &&
+    pg -C "$dir/seed" push -q origin HEAD:refs/heads/main &&
+    pg -C "$dir/origin.git" symbolic-ref HEAD refs/heads/main &&
+    pg clone -q "$dir/origin.git" "$dir/work" &&
+    pg -C "$dir/work" switch -q -c feature &&
+    push_commit "$dir/work" a1 &&
+    pg clone -q "$dir/origin.git" "$dir/other" ||
+    die "cannot build push fixture '$name'"
+  printf '%s\n' "$dir"
+}
+
+push_out=
+push_err=
+push_rc=
+push_run() {
+  local repo=$1
+  shift
+  push_out=$(cd "$repo" &&
+    PATH="$(dirname "$test_git"):$PATH" TIMVISHER_AGENT=1 \
+      "$script" push "$@" </dev/null 2>"$push_root/err") && push_rc=0 || push_rc=$?
+  push_err=$(< "$push_root/err")
+}
+
+remote_feature() {
+  pg -C "$1/origin.git" rev-parse -q --verify refs/heads/feature
+}
+
+pushed_ref() {
+  pg -C "$1/work" rev-parse -q --verify refs/timvisher_git/pushed/origin/feature
+}
+
+head_of() {
+  pg -C "$1/work" rev-parse HEAD
+}
+
+check_push() {
+  local description=$1
+  shift
+  run_test
+  if "$@"
+  then
+    pass "push: $description"
+  else
+    fail "push: $description: rc=${push_rc} out='${push_out}' err='${push_err}'"
+  fi
+}
+
+pf=$(push_fixture basics)
+push_run "$pf/work"
+check_push 'a branch origin lacks is pushed and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'the same commit is reported as already pushed' \
+  eval '(( push_rc == 0 )) && [[ $push_err == *timvisher_git_push_already_pushed* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+push_commit "$pf/work" a2 || die 'commit a2'
+push_run "$pf/work" --plan
+check_push '--plan classifies a fast-forward and pushes nothing' \
+  eval '(( push_rc == 0 )) && [[ $push_out == fast-forward* && $(remote_feature "$pf") == "$recorded_before" ]]'
+push_run "$pf/work"
+check_push 'a fast-forward is pushed and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pg -C "$pf/other" fetch -q origin &&
+  pg -C "$pf/other" switch -q -c feature origin/feature &&
+  push_commit "$pf/other" o1 &&
+  pg -C "$pf/other" push -q origin feature ||
+  die 'other push'
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'behind origin is refused with exit 4 and the pull to run' \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_behind* && $push_err == *"git pull --rebase origin feature"* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+pf=$(push_fixture own_rewrite)
+push_run "$pf/work" || true
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" commit -q --amend -m 'a2, reworded' || die 'amend'
+push_run "$pf/work" --plan
+check_push '--plan classifies our own rewrite' eval '(( push_rc == 0 )) && [[ $push_out == own-rewrite* ]]'
+push_run "$pf/work"
+check_push 'our own rewrite is pushed with a lease and recorded' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture rewrite_drops)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 && push_commit "$pf/work" a3 || die 'drop a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push 'a rewrite that would drop a commit only origin has needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_decision* && $(remote_feature "$pf") == "$remote_before" && $(pushed_ref "$pf") == "$remote_before" ]]'
+check_push 'the non-interactive decision suggests --ours and --theirs' \
+  eval '[[ $push_err == *"timvisher_git push --ours"* && $push_err == *"timvisher_git push --theirs"* ]]'
+
+pf=$(push_fixture base_commit)
+push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&
+  pg -C "$pf/work" fetch -q origin && pg -C "$pf/work" rebase -q origin/main ||
+  die 'build on m2'
+push_run "$pf/work"
+pg -C "$pf/work" rebase -q --onto origin/main~1 origin/main feature || die 'rebase off m2'
+push_run "$pf/work"
+check_push 'a rewrite whose dropped commits are on the base branch is pushed with a lease' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture someone_else)
+push_run "$pf/work"
+pg -C "$pf/other" fetch -q origin &&
+  pg -C "$pf/other" switch -q -c feature origin/feature &&
+  pg -C "$pf/other" commit -q --amend -m 'a1, by someone else' &&
+  pg -C "$pf/other" push -q --force origin feature ||
+  die 'someone else rewrites'
+push_commit "$pf/work" a2 || die 'commit a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work" --plan
+check_push '--plan exits 3 when a decision is needed' eval '(( push_rc == 3 )) && [[ $push_out == decision* ]]'
+push_run "$pf/work"
+check_push "someone else's push needs a decision (exit 3) and changes nothing" \
+  eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" && $(pushed_ref "$pf") == "$recorded_before" ]]'
+push_run "$pf/work" --theirs
+check_push "--theirs keeps origin's branch (exit 4) and suggests catching up" \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_theirs* && $push_err == *"git rebase origin/feature"* && $(remote_feature "$pf") == "$remote_before" ]]'
+push_run "$pf/work" --ours
+check_push '--ours pushes over origin and records it' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture merge_resolution)
+pg -C "$pf/work" switch -q -c side main && push_commit "$pf/work" s1 &&
+  pg -C "$pf/work" switch -q feature &&
+  pg -C "$pf/work" merge -q --no-ff -m 'merge side' side ||
+  die 'merge side into feature'
+push_run "$pf/work"
+pg -C "$pf/work" rebase -q main feature || die 'linearize'
+push_run "$pf/work"
+check_push 'a rewrite that drops a merge only origin has needs a decision' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_decision* ]]'
+
+pf=$(push_fixture ours_behind)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 || die 'drop a2 on purpose'
+push_run "$pf/work" --ours
+check_push '--ours pushes over origin when behind, to drop commits on purpose' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") && $(pushed_ref "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture failure)
+push_run "$pf/work"
+pg -C "$pf/origin.git" config receive.denyNonFastForwards true || die 'deny rewrites'
+pg -C "$pf/work" commit -q --amend -m 'a1, reworded' || die 'amend'
+# shellcheck disable=SC2034
+recorded_before=$(pushed_ref "$pf")
+push_run "$pf/work"
+check_push 'a rejected push fails and leaves the record alone' \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_failed* && $(pushed_ref "$pf") == "$recorded_before" ]]'
+
+pg -C "$pf/work" switch -q --detach || die 'detach'
+push_run "$pf/work"
+check_push 'a detached HEAD is refused' eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_detached* ]]'
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"

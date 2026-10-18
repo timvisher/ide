@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
+timvisher_browser__schema_version=1
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
+       timvisher_browser tab js <expression>
+       timvisher_browser tab close <url>
+       timvisher_browser tab <url>
+
+  tab info   print the active tab's record (see 'timvisher_browser tab info --help')
+  tab js     run a JavaScript expression in the active tab; prints its value
+  tab close  close the first tab with exactly that URL
+  tab <url>  focus a tab with that URL, or open one in the front window,
+             once it has loaded; prints the URL
+
+The browser is the timvisher Browser AppleScript library's currentBrowser().
+EOF
+}
+
+show_info_help() {
+  cat <<'EOF'
+Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
+
+Print the active tab's record as JSON, or one <component> of it: a jq
+path, with jq -r semantics (scalars print bare, anything else as JSON).
+
+Fields:
+  schema_version  the record's contract version (currently 1)
+  url             the active tab's URL, canonicalized by active-tab-url.js
+  title           the active tab's title
+  browser         the browser the library uses (currentBrowser())
+
+--schema-version <N> exits 1 unless the current schema_version is <N>.
+
+Schema versions:
+  1  the first version; no breaking changes yet.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+timvisher_browser__osascript() {
+  local out
+  if ! out=$(osascript -e "$@" 2>&1)
+  then
+    aictl_error \
+      --code timvisher_browser_osascript_failed \
+      --message "osascript failed talking to the browser." \
+      --reason "$out" \
+      --suggestion "Check that the timvisher Browser AppleScript library is installed (bash ~/git/ide/bash/install.bash) and that the browser is responding, then retry"
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+timvisher_browser__has_tab() {
+  local state=$1 browser=$2
+  case $state in
+    not_running)
+      aictl_error \
+        --code timvisher_browser_not_running \
+        --message "${browser} is not running, so there is no active tab." \
+        --suggestion "Open ${browser} and retry" \
+        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
+      return 1
+      ;;
+    no_window)
+      aictl_error \
+        --code timvisher_browser_no_window \
+        --message "${browser} has no window, so there is no active tab." \
+        --suggestion "Open a ${browser} window and retry" \
+        --suggestion "Or run 'timvisher_browser tab <url>' to open a tab"
+      return 1
+      ;;
+  esac
+}
+
+timvisher_browser__info() {
+  local component='' pin=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      -h|--help)
+        show_info_help
+        return 0
+        ;;
+      --schema-version)
+        pin=${2-}
+        shift 2 || { show_info_help >&2; return 2; }
+        ;;
+      *)
+        component=$1
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n $pin && $pin != "$timvisher_browser__schema_version" ]]
+  then
+    aictl_error \
+      --code timvisher_browser_schema_version_mismatch \
+      --message "timvisher_browser's tab record is schema_version ${timvisher_browser__schema_version}, not ${pin}." \
+      --reason "tab info --schema-version pins the record contract; this tool serves only its current version." \
+      --suggestion "Update the caller for schema_version ${timvisher_browser__schema_version} and pass --schema-version ${timvisher_browser__schema_version}" \
+      --suggestion "See 'timvisher_browser tab info --help' for the fields and what changed between versions"
+    return 1
+  fi
+
+  local out
+  out=$(timvisher_browser__osascript '
+on run
+	tell script "timvisher Browser" to set b to currentBrowser()
+	if application b is not running then return "not_running" & linefeed & b
+	tell application b
+		if (count of windows) is 0 then return "no_window" & linefeed & b
+	end tell
+	tell script "timvisher Browser"
+		set u to getActiveTabUrl()
+		set t to executeJsInActiveTab("document.title")
+	end tell
+	return "ok" & linefeed & b & linefeed & u & linefeed & t
+end run') || return 1
+
+  local state browser url title
+  {
+    IFS= read -r state
+    IFS= read -r browser
+    IFS= read -r url
+    title=$(cat)
+  } <<< "$out"
+
+  timvisher_browser__has_tab "$state" "$browser" || return 1
+
+  local record
+  record=$(jq -n \
+    --argjson schema_version "$timvisher_browser__schema_version" \
+    --arg url "$url" --arg title "$title" --arg browser "$browser" \
+    '{schema_version: $schema_version, url: $url, title: $title, browser: $browser}') ||
+    return 1
+  if [[ -n $component ]]
+  then
+    jq -r "$component" <<< "$record"
+  else
+    jq . <<< "$record"
+  fi
+}
+
+timvisher_browser__js() {
+  local expression=$1 out state browser value
+  out=$(timvisher_browser__osascript '
+on run argv
+	set e to item 1 of argv
+	tell script "timvisher Browser" to set b to currentBrowser()
+	if application b is not running then return "not_running" & linefeed & b
+	tell application b
+		if (count of windows) is 0 then return "no_window" & linefeed & b
+	end tell
+	tell script "timvisher Browser" to set r to executeJsInActiveTab(e)
+	return "ok" & linefeed & b & linefeed & r
+end run' "$expression") || return 1
+
+  {
+    IFS= read -r state
+    IFS= read -r browser
+    value=$(cat)
+  } <<< "$out"
+
+  timvisher_browser__has_tab "$state" "$browser" || return 1
+  printf '%s\n' "$value"
+}
+
+timvisher_browser__close() {
+  local url=$1 out
+  out=$(timvisher_browser__osascript '
+on run argv
+	set u to item 1 of argv
+	tell script "timvisher Browser"
+		set b to currentBrowser()
+		if closeTabWithUrl(u) then return "closed" & linefeed & b
+	end tell
+	return "not_found" & linefeed & b
+end run' "$url") || return 1
+
+  local state browser
+  {
+    IFS= read -r state
+    IFS= read -r browser
+  } <<< "$out"
+
+  if [[ $state != closed ]]
+  then
+    aictl_error \
+      --code timvisher_browser_no_such_tab \
+      --message "${browser} has no tab with the URL ${url}." \
+      --reason "tab close matches the tab's URL exactly, as 'timvisher_browser tab info url' prints it." \
+      --suggestion "Check the URL with 'timvisher_browser tab info url' and retry"
+    return 1
+  fi
+}
+
+timvisher_browser__tab() {
+  local url=$1
+  timvisher_browser__osascript '
+on run argv
+	set u to item 1 of argv
+	tell script "timvisher Browser"
+		if focusTabWithUrl(u) then return "focused"
+		openTabWithUrl(u)
+	end tell
+	return "opened"
+end run' "$url" > /dev/null || return 1
+  printf '%s\n' "$url"
+}
+
+case ${1-} in
+  -h|--help|help)
+    show_help
+    exit 0
+    ;;
+  tab)
+    case ${2-} in
+      info)
+        shift 2
+        timvisher_browser__info "$@"
+        exit
+        ;;
+      js)
+        (( 3 == $# )) || { usage; exit 2; }
+        timvisher_browser__js "$3" || exit 1
+        ;;
+      close)
+        (( 3 == $# )) || { usage; exit 2; }
+        timvisher_browser__close "$3" || exit 1
+        ;;
+      ''|-*)
+        usage
+        exit 2
+        ;;
+      *)
+        (( 2 == $# )) || { usage; exit 2; }
+        timvisher_browser__tab "$2" || exit 1
+        ;;
+    esac
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
