@@ -315,6 +315,16 @@ else
   fail "agent unmapped owner; rc=$rc err='$err'"
 fi
 
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view 5
+run_test
+if (( rc == 0 )) && [[ $err == *' INFO gh_account_selected: Using gh account '* && $err != *'"type":"instruction"'* ]] &&
+  [[ $log == '{"type":"instruction","level":"info","code":"gh_account_selected",'* ]]
+then
+  pass "with only TIMVISHER_AICTL_LOG set, the log gets JSON and stderr gets text"
+else
+  fail "log-only account selection; rc=$rc err='$err' log='$log'"
+fi
+
 run_audience human "$repo2" pr view https://github.com/otherorg/x/pull/1
 run_test
 if (( rc == 0 )) && [[ $err == *' WARN gh_target_mismatch: '* && $err != *'"type":"instruction"'* ]]
