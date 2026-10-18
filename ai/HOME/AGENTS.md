@@ -122,6 +122,21 @@ When starting a session, read the Beads and Topics section below and use the `be
   exempt. Treat a leftover explanatory one as a failing lint: you are not done
   until it is gone.
 
+## When a Step Needs Tim and Tim Is Away
+
+- Some steps only work while a human approval is cached: 1Password
+  (commit signing, `op`, credential lookups; ~30 minutes) and browser
+  sign-in (SSO, device codes; ~24 hours). When one starts failing,
+  hanging or prompting, check whether Tim is away with the
+  `away-status` skill before retrying.
+- If Tim is away, lightly prefer forward progress that can be validated
+  or backfilled later over halting because the usual way isn't
+  working: commit unsigned and re-sign before pushing, write the
+  script Tim will run, make a reversible call and record it as an
+  assumption. Record every such fallback in the bead and the handoff.
+  The `away-status` skill has the specific fallbacks. This never
+  relaxes a guardrail.
+
 ## Documentation Index
 
 ### Guides (Required)
