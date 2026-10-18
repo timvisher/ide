@@ -84,11 +84,17 @@ rc=$?
 check 'tab: exits 0' test "$rc" -eq 0
 check "tab: prints the active tab's record" \
       test "$(jq -r .title "$tmpdir/stdout")" = 'Example Domain'
-check 'tab: opens example.com, reads the tab, then closes it by its URL' \
-      test "$(cat "$tmpdir/calls")" = "$(printf '%s\n' \
-        'tab https://example.com' \
-        'tab info --schema-version 1' \
-        'tab close https://example.com/')"
+check 'tab: opens a fresh example.com URL, reads the tab, then closes that URL' \
+      eval "awk '
+        NR == 1 { opened = \$2; ok = \$1 == \"tab\" && opened ~ /^https:\\/\\/example\\.com\\/\\?timvisher_hello=[0-9a-f]+\$/ }
+        NR == 2 { ok = ok && \$0 == \"tab info --schema-version 1\" }
+        NR == 3 { ok = ok && \$0 == \"tab close \" opened }
+        END { exit !(ok && NR == 3) }' '$tmpdir/calls'"
+first_url=$(awk 'NR == 1 { print $2 }' "$tmpdir/calls")
+rm -f "$tmpdir/calls"
+hello tab
+check 'tab: each run opens a different URL' \
+      test "$(awk 'NR == 1 { print $2 }' "$tmpdir/calls")" != "$first_url"
 
 rm -f "$tmpdir/calls"
 FAKE_CLOSE_RC=1 hello tab

@@ -6,17 +6,16 @@
 import json
 import subprocess
 import sys
+import uuid
 
 from timvisher import aictl, browser, logging
 
 USAGE = """Usage: timvisher_hello [tab]
 
   timvisher_hello      log one line and emit one aictl instruction
-  timvisher_hello tab  open https://example.com, print the active tab's
-                       record, then close that tab
+  timvisher_hello tab  open https://example.com in a new tab, print the
+                       active tab's record, then close the new tab
 """
-
-URL = "https://example.com"
 
 
 def hello():
@@ -29,10 +28,14 @@ def hello():
 
 
 def tab():
-    browser.open_tab(URL)
+    # A URL no other tab has, closed by that URL rather than the record's:
+    # bare https://example.com would focus, and then close, a tab the user
+    # already had open there.
+    url = f"https://example.com/?timvisher_hello={uuid.uuid4().hex}"
+    browser.open_tab(url)
     record = browser.active_tab()
     print(json.dumps(record, indent=2))
-    browser.close_tab(record["url"])
+    browser.close_tab(url)
 
 
 def main(argv):
