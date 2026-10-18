@@ -1,9 +1,12 @@
+import contextlib
+import io
 import json
 import pathlib
 import tempfile
 import unittest
 
 from timvisher.gh import state, store
+from timvisher.gh.errors import Exit
 from timvisher.testing import fresh_home
 
 PR = "https://github.com/O/R/pull/7"
@@ -65,6 +68,38 @@ class StoreTest(unittest.TestCase):
         self.assertEqual("T\n", target.read_text())
         self.assertEqual(1, self.db.execute("SELECT count(*) FROM authored").fetchone()[0])
 
+    def test_promotion_never_overwrites_a_different_store_file(self):
+        self.add_pr()
+        target = store.store_file(self.db, "PR_7")
+        target.parent.mkdir(parents=True)
+        target.write_text("store edits\n")
+        source = self.work / "pr.md"
+        source.write_text("worktree version\n")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(Exit), self.state.write() as db:
+            store.promote(db, "PR_7", source)
+        self.assertEqual(("store edits\n", "worktree version\n"), (target.read_text(), source.read_text()))
+        self.assertFalse(source.is_symlink())
+        self.assertIn("timvisher_gh_store_conflict", stderr.getvalue())
+
+    def test_promoting_an_identical_copy_links_it(self):
+        self.add_pr()
+        target = store.store_file(self.db, "PR_7")
+        target.parent.mkdir(parents=True)
+        target.write_text("same\n")
+        source = self.work / "pr.md"
+        source.write_text("same\n")
+        with self.state.write() as db:
+            store.promote(db, "PR_7", source)
+        self.assertEqual(target, source.resolve())
+
+    def test_free_names_never_reuse_an_existing_one(self):
+        taken = self.work / "f"
+        taken.write_text("1")
+        first = store.free(taken)
+        first.write_text("2")
+        self.assertEqual(("f.adopted", "f.adopted-2"), (first.name, store.free(taken).name))
+
     def test_backfill_restores_the_store_file_from_the_base_and_the_symlink(self):
         self.add_pr()
         source = self.work / "pr.md"
@@ -110,6 +145,27 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(("2026-10-11T00-00-00+0000", None), (deleted["PRRT_1"], deleted["PR_7"]))
         self.assertEqual(store.root() / "archive" / REPLY_KEY / "comment.md", source.resolve())
         self.assertEqual("ok\n", source.read_text())
+
+    def test_archiving_a_parent_after_a_child_merges_into_the_archive(self):
+        self.add_thread()
+        reply = store.store_file(self.db, "PRRC_67")
+        reply.parent.mkdir(parents=True)
+        reply.write_text("ok\n")
+        (store.root() / THREAD_KEY / "root-comment.md").write_text("nit\n")
+        with self.state.write() as db:
+            store.archive(db, "PRRC_67", "t1")
+        (store.root() / THREAD_KEY / "replies" / "r2").mkdir(parents=True)
+        (store.root() / THREAD_KEY / "replies" / "r2" / "comment.md").write_text("two\n")
+        with self.state.write() as db:
+            store.archive(db, "PRRT_1", "t2")
+        archived = store.root() / "archive" / THREAD_KEY
+        self.assertEqual(("nit\n", "ok\n", "two\n"),
+                         ((archived / "root-comment.md").read_text(),
+                          (store.root() / "archive" / REPLY_KEY / "comment.md").read_text(),
+                          (archived / "replies" / "r2" / "comment.md").read_text()))
+        self.assertFalse((store.root() / THREAD_KEY).exists())
+        self.assertEqual(f"archive/{REPLY_KEY}",
+                         self.db.execute("SELECT store_path FROM objects WHERE id = 'PRRC_67'").fetchone()[0])
 
     def test_archiving_matches_children_by_path_not_by_like_wildcards(self):
         self.add_pr()

@@ -7,6 +7,7 @@ import shutil
 import unicodedata
 
 from timvisher.gh import state as state_db
+from timvisher.gh.errors import fail
 
 NAME_BYTES = 255
 SLUG_CHARS = 60
@@ -145,12 +146,41 @@ def _link(link, target):
     os.replace(tmp, link)
 
 
+def free(path):
+    candidate, n = path, 2
+    while os.path.lexists(candidate):
+        candidate = path.with_name(f"{path.name}.adopted" + ("" if n == 2 else f"-{n - 1}"))
+        n += 1
+    return candidate
+
+
+def merge_move(source, target):
+    if not os.path.lexists(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, target)
+    elif source.is_dir() and not source.is_symlink() and target.is_dir():
+        for child in sorted(source.iterdir()):
+            merge_move(child, target / child.name)
+        source.rmdir()
+    else:
+        shutil.move(source, free(target))
+
+
 def promote(db, object_id, source):
     source = pathlib.Path(source).absolute()
     target = store_file(db, object_id)
     if not (source.is_symlink() and source.resolve() == target.resolve()):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(source, target)
+        if target.exists() and target.read_bytes() != source.read_bytes():
+            fail("timvisher_gh_store_conflict",
+                 f"'{source}' and its store file '{target}' differ, so neither replaces the other.",
+                 reason="The store already holds this object's source, from another worktree or an earlier run.",
+                 suggestions=[f"Fold what you want from '{source}' into '{target}', then remove '{source}' and rerun",
+                              f"Or replace it: 'ln -sf {target} {source}' after copying your text there"])
+        if target.exists():
+            source.unlink()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(source, target)
         _link(source, target)
     db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
     return target
@@ -180,8 +210,7 @@ def archive(db, object_id, now):
                                       (key, key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"))]
     old, new = root() / key, root() / "archive" / key
     if old.exists():
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(old, new)
+        merge_move(old, new)
     db.execute("UPDATE objects SET store_path = 'archive/' || store_path "
                f"WHERE id IN ({', '.join('?' * len(moved))})", moved)
     db.execute("UPDATE objects SET deleted_at = ? WHERE id = ?", (now, object_id))

@@ -145,6 +145,41 @@ class AdoptTest(GhTestCase):
         self.assertEqual([(str(self.work), "O", "R", "main", "PR_7")], self.rows("SELECT * FROM context"))
         self.assertEqual({"id": "PRRT_1"}, json.loads((store.root() / thread_key / "thread.json").read_text()))
 
+    def test_comments_with_the_same_name_in_one_adoption_get_their_own_directories(self):
+        base = ".timvisher_gh/pr"
+        self.write(f"{base}/pr.json", json.dumps({"url": PR}))
+        for n, body in ((1, "LGTM"), (2, "LGTM")):
+            self.write(f"{base}/comments/c{n}.md", f"{body} {n}\n")
+            self.write(f"{base}/comments/c{n}.md.json", json.dumps({
+                "kind": "issue_comment", "id": f"IC_{n}", "database_id": n, "url": f"{PR}#issuecomment-{n}",
+                "author": "alice", "created_at": "2026-10-10T10:00:00Z", "posted": {"body": body}}))
+        adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
+        paths = dict(self.rows("SELECT id, store_path FROM objects WHERE kind = 'comment'"))
+        self.assertNotEqual(paths["IC_1"], paths["IC_2"])
+        self.assertEqual(("LGTM 1\n", "LGTM 2\n"), tuple((store.root() / paths[i] / "comment.md").read_text()
+                                                         for i in ("IC_1", "IC_2")))
+
+    def test_a_second_adoption_of_the_same_pr_keeps_both_copies(self):
+        self.bash_pr_directory()
+        adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
+        other = self.tmp / "other"
+        (other / ".timvisher_gh/pr/comments").mkdir(parents=True)
+        (other / ".timvisher_gh/pr/pr.json").write_text(json.dumps({"url": PR}))
+        (other / ".timvisher_gh/pr/pr.md").write_text("Other title\n")
+        (other / ".timvisher_gh/pr/comments/draft.md").write_text("other draft\n")
+        adopt.adopt_pr_directory(self.state, other, self.lookup, NOW)
+        pr_dir = store.root() / PR_KEY
+        self.assertEqual(("Title\n\nBody\n", "Other title\n"),
+                         ((pr_dir / "pr.md").read_text(), (pr_dir / "pr.md.adopted").read_text()))
+        self.assertEqual(("not posted yet\n", "other draft\n"),
+                         ((pr_dir / "comments/draft.md").read_text(),
+                          (pr_dir / "comments/draft.md.adopted").read_text()))
+
+    def test_x_merged_stays_when_there_is_no_pr_to_record_it_on(self):
+        self.write("x.merged", "")
+        adopt.adopt_root(self.state, self.work, self.lookup, NOW)
+        self.assertTrue((self.work / "x.merged").exists())
+
     def test_a_bash_pr_directory_is_adopted_once(self):
         self.bash_pr_directory()
         adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
@@ -160,7 +195,8 @@ class AdoptTest(GhTestCase):
         self.assertEqual("IC_5", adopt.adopt_comment(self.state, source, self.lookup, NOW))
         target = store.root() / PR_KEY / "comments/2026-10-10T10-00-00+0000-testuser-hello/comment.md"
         self.assertEqual(target, source.resolve())
-        self.assertFalse(os.path.lexists(self.work / "reply.md.url"))
+        self.assertEqual(target.parent / "comment.url", (self.work / "reply.md.url").resolve())
+        self.assertEqual(f"{PR}#issuecomment-5\n", (self.work / "reply.md.url").read_text())
         self.assertEqual([("IC_5", str(source))], self.rows("SELECT * FROM authored"))
 
     def test_a_sidecar_json_reply_registers_its_thread_and_posted_body(self):
@@ -176,7 +212,8 @@ class AdoptTest(GhTestCase):
         kinds = dict(self.rows("SELECT id, parent_id FROM objects"))
         self.assertEqual({"PR_7": None, "PRRT_1": "PR_7", "PRRC_67": "PRRT_1"}, kinds)
         self.assertEqual([("PRRC_67", "body", '"ok"')], self.rows("SELECT object_id, name, base FROM fields"))
-        self.assertFalse(os.path.lexists(self.work / "ok.md.json"))
+        self.assertTrue((self.work / "ok.md.json").is_symlink())
+        self.assertEqual({"id": "PRRC_67"}, json.loads((self.work / "ok.md.json").read_text()))
 
     def test_a_sidecar_that_does_not_name_a_comment_is_an_error(self):
         source = self.write("x.md", "x\n")

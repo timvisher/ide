@@ -50,9 +50,8 @@ def _read_url(path):
 
 
 def _merged(db, pr_id, path, now):
-    if os.path.lexists(path):
-        if pr_id is not None:
-            store.set_remote(db, pr_id, "state", "merged", now)
+    if os.path.lexists(path) and pr_id is not None:
+        store.set_remote(db, pr_id, "state", "merged", now)
         path.unlink()
 
 
@@ -84,7 +83,7 @@ def adopt_root(state, worktree, lookup, now):
     return pr_id
 
 
-def _comment_object(db, pr_id, pr_target, item, now, threads):
+def _comment_object(db, pr_id, pr_target, item, now, threads, taken):
     kind = item.get("kind")
     posted = item.get("posted") or {}
     body = item.get("body", posted.get("body", ""))
@@ -111,7 +110,8 @@ def _comment_object(db, pr_id, pr_target, item, now, threads):
     else:
         return None
     existing = db.execute("SELECT store_path FROM objects WHERE id = ?", (object_id,)).fetchone()
-    key = existing[0] if existing else store.unique(store.root(), key)
+    key = existing[0] if existing else store.unique(store.root(), key, taken)
+    taken.add(key)
     store.register(db, id=object_id, kind=object_kind, url=item["url"], parent_id=parent, store_path=key, **common)
     if "body" in posted:
         store.set_base(db, object_id, "body", posted["body"], now)
@@ -138,11 +138,8 @@ def _sidecars(directory):
 
 
 def _move(source, target):
-    if source.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            target = target.with_name(f"{target.name}.adopted")
-        shutil.move(source, target)
+    if os.path.lexists(source):
+        store.merge_move(source, target)
 
 
 def adopt_pr_directory(state, worktree, lookup, now):
@@ -165,9 +162,9 @@ def adopt_pr_directory(state, worktree, lookup, now):
             if name in posted:
                 store.set_base(db, pr_id, name, posted[name], now)
         pr_dir = store.root() / store.pr_key(pr_target.owner, pr_target.repo, pr_target.number)
-        threads = {}
+        threads, taken = {}, set()
         for sidecar, item in items:
-            object_id = _comment_object(db, pr_id, pr_target, item, now, threads)
+            object_id = _comment_object(db, pr_id, pr_target, item, now, threads, taken)
             if object_id is not None:
                 state.touch(object_id)
                 moves.append((sidecar, store.store_file(db, object_id)))
@@ -219,12 +216,13 @@ def adopt_comment(state, path, lookup, now):
             if facts.get("thread") and _object_for(db, facts["thread"]["url"]) is None:
                 thread = facts["thread"]
                 _comment_object(db, pr_id, target, {**thread, "kind": "review_comment", "in_reply_to": None},
-                                now, {})
+                                now, {}, set())
             threads = dict(db.execute("SELECT id, store_path FROM objects WHERE kind = 'thread'"))
             facts = {**facts, "url": target.url, "posted": item.get("posted") or {}}
-            existing = _comment_object(db, pr_id, target, facts, now, threads)
+            existing = _comment_object(db, pr_id, target, facts, now, threads, set())
         state.touch(existing)
-        store.promote(db, existing, path)
-    sidecar.unlink(missing_ok=True)
-    url_file.unlink(missing_ok=True)
+        stored = store.promote(db, existing, path)
+    for legacy, export in ((sidecar, "comment.json"), (url_file, "comment.url")):
+        if legacy.is_file() and not legacy.is_symlink():
+            store._link(legacy, stored.parent / export)
     return existing
