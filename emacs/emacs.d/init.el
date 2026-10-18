@@ -874,6 +874,7 @@ the secret references cannot be resolved."
              agent-shell-openai-start-codex
              agent-shell-resume-session)
   :bind (("C-c A" . agent-shell)
+         ("C-c R" . agent-shell-resume-session)
          :map agent-shell-mode-map
          ("C-c F" . agent-shell-fork)
          ("C-c C" . agent-shell-prompt-compose))
