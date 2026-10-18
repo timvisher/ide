@@ -5,6 +5,8 @@ import subprocess
 import sys
 
 STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 404: "Not Found", 422: "Unprocessable Entity"}
+REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
+PER_PAGE = 30
 
 
 class Reply(Exception):
@@ -16,6 +18,16 @@ class Reply(Exception):
 
 def not_found():
     return Reply(404, {"message": "Not Found"})
+
+
+def invalid(message):
+    return Reply(422, {"message": f"Validation Failed: {message}"})
+
+
+def require(fields, *names):
+    missing = [name for name in names if fields.get(name) in (None, "")]
+    if missing:
+        raise invalid(", ".join(f"{name} is missing" for name in missing))
 
 
 def load():
@@ -58,7 +70,7 @@ def typed(value):
 
 def parse_api(args):
     request = {"method": None, "path": None, "fields": {}, "jq": None, "include": False,
-               "silent": False, "input": None, "hostname": None}
+               "silent": False, "input": None, "hostname": None, "paginate": False}
     i = 0
     while i < len(args):
         arg = args[i]
@@ -87,7 +99,10 @@ def parse_api(args):
         elif arg == "--silent":
             request["silent"] = True
             i += 1
-        elif arg in ("--paginate", "--slurp", "--verbose", "--allow-escape-sequences"):
+        elif arg == "--paginate":
+            request["paginate"] = True
+            i += 1
+        elif arg in ("--slurp", "--verbose", "--allow-escape-sequences"):
             i += 1
         else:
             request["path"] = arg
@@ -98,7 +113,10 @@ def parse_api(args):
         else:
             with open(request["input"], encoding="utf-8") as stream:
                 body = stream.read()
-        request["fields"].update(json.loads(body) if body.strip() else {})
+        payload = json.loads(body) if body.strip() else {}
+        if request["path"] == "graphql":
+            payload = {"query": payload.get("query", ""), **payload.get("variables", {})}
+        request["fields"].update(payload)
     if request["method"] is None:
         request["method"] = "POST" if request["fields"] and request["path"] != "graphql" else "GET"
     if request["path"] == "graphql":
@@ -106,6 +124,9 @@ def parse_api(args):
     path = request["path"] or ""
     request["path"], _, query = path.lstrip("/").partition("?")
     request["query"] = dict(pair.partition("=")[::2] for pair in query.split("&") if pair)
+    if request["method"] == "GET":
+        request["query"].update({key: str(value) for key, value in request["fields"].items()})
+        request["fields"] = {}
     return request
 
 
@@ -114,18 +135,31 @@ def user(login):
 
 
 def comment_view(state, kind, comment):
-    view = {key: value for key, value in comment.items() if key not in ("repo",)}
+    view = {key: value for key, value in comment.items() if key not in ("repo", "issue_number", "pull_number")}
+    api = f"https://api.github.com/repos/{comment['repo']}"
+    if kind == "issue_comment":
+        view["issue_url"] = f"{api}/issues/{comment['issue_number']}"
+    else:
+        view["pull_request_url"] = f"{api}/pulls/{comment['pull_number']}"
     view["user"] = user(comment["user"])
     view["reactions"] = reaction_summary(state, kind, comment["id"])
     return view
 
 
 def reaction_summary(state, kind, comment_id):
-    summary = {"total_count": 0}
+    summary = {"total_count": 0, **dict.fromkeys(REACTIONS, 0)}
     for reaction in state["reactions"].get(f"{kind}:{comment_id}", []):
-        summary[reaction["content"]] = summary.get(reaction["content"], 0) + 1
+        summary[reaction["content"]] += 1
         summary["total_count"] += 1
     return summary
+
+
+def page(request, items):
+    if request["paginate"]:
+        return items
+    size = int(request["query"].get("per_page", PER_PAGE))
+    number = int(request["query"].get("page", 1))
+    return items[(number - 1) * size: number * size]
 
 
 def find_comment(state, kind, repo, comment_id):
@@ -182,16 +216,20 @@ def rest(state, request):
 
         case "GET", ["pulls"]:
             head = request["query"].get("head")
+            wanted = request["query"].get("state", "open")
             pulls = list(state["pulls"].get(repo, {}).values())
             if head:
                 pulls = [p for p in pulls if f"{p['head_owner']}:{p['head']}" == head]
-            return 200, [pull_view(repo, p) for p in pulls]
+            if wanted != "all":
+                pulls = [p for p in pulls if p["state"] == wanted]
+            return 200, page(request, [pull_view(repo, p, listed=True) for p in pulls])
         case "POST", ["pulls"]:
+            require(fields, "head", "base")
             number = next_number(state, repo)
             created = {"number": number, "title": fields.get("title", ""), "body": fields.get("body", ""),
                        "head": fields["head"].split(":")[-1],
                        "head_owner": fields["head"].split(":")[0] if ":" in fields["head"] else repo.split("/")[0],
-                       "base": fields.get("base") or state["repos"].get(repo, {}).get("default_branch", "main"),
+                       "base": fields["base"],
                        "draft": bool(fields.get("draft", False)), "state": "open", "merged": False}
             state["pulls"].setdefault(repo, {})[str(number)] = created
             return 201, pull_view(repo, created)
@@ -205,6 +243,7 @@ def rest(state, request):
             return 200, pull_view(repo, found)
 
         case "POST", ["issues"]:
+            require(fields, "title")
             number = next_number(state, repo)
             created = {"number": number, "title": fields.get("title", ""), "body": fields.get("body", ""),
                        "state": "open"}
@@ -220,15 +259,20 @@ def rest(state, request):
             return 200, issue_view(repo, found)
 
         case "GET", ["issues", number, "comments"]:
-            return 200, [comment_view(state, "issue_comment", c) for c in state["issue_comments"].values()
-                         if c["repo"] == repo and c["issue_number"] == int(number)]
+            return 200, page(request, [comment_view(state, "issue_comment", c) for c in state["issue_comments"].values()
+                                       if c["repo"] == repo and c["issue_number"] == int(number)])
         case "POST", ["issues", number, "comments"]:
-            if str(number) not in state["pulls"].get(repo, {}) and str(number) not in state["issues"].get(repo, {}):
+            if str(number) in state["pulls"].get(repo, {}):
+                kind = "pull"
+            elif str(number) in state["issues"].get(repo, {}):
+                kind = "issues"
+            else:
                 raise not_found()
+            require(fields, "body")
             comment_id = new_id(state)
             created = {"id": comment_id, "node_id": f"IC_{comment_id}", "repo": repo, "issue_number": int(number),
-                       "body": fields.get("body", ""), "user": state["viewer"],
-                       "html_url": f"https://github.com/{repo}/pull/{number}#issuecomment-{comment_id}"}
+                       "body": fields["body"], "user": state["viewer"],
+                       "html_url": f"https://github.com/{repo}/{kind}/{number}#issuecomment-{comment_id}"}
             state["issue_comments"][str(comment_id)] = created
             return 201, comment_view(state, "issue_comment", created)
         case "GET", ["issues", "comments", comment_id]:
@@ -244,8 +288,8 @@ def rest(state, request):
             return 204, None
 
         case "GET", ["pulls", number, "comments"]:
-            return 200, [comment_view(state, "review_comment", c) for c in state["review_comments"].values()
-                         if c["repo"] == repo and c["pull_number"] == int(number)]
+            return 200, page(request, [comment_view(state, "review_comment", c) for c in state["review_comments"].values()
+                                       if c["repo"] == repo and c["pull_number"] == int(number)])
         case "POST", ["pulls", number, "comments"]:
             pull(state, repo, number)
             reply_to = fields.get("in_reply_to")
@@ -274,8 +318,11 @@ def rest(state, request):
             find_comment(state, kind, repo, comment_id)
             reactions = state["reactions"].setdefault(f"{kind}:{comment_id}", [])
             if method == "GET" and not rid:
-                return 200, [{"id": r["id"], "content": r["content"], "user": user(r["user"])} for r in reactions]
+                return 200, page(request, [{"id": r["id"], "content": r["content"], "user": user(r["user"])}
+                                           for r in reactions])
             if method == "POST" and not rid:
+                if fields.get("content") not in REACTIONS:
+                    raise invalid(f"content must be one of {', '.join(REACTIONS)}")
                 for existing in reactions:
                     if existing["content"] == fields["content"] and existing["user"] == state["viewer"]:
                         return 200, {"id": existing["id"], "content": existing["content"], "user": user(existing["user"])}
@@ -292,6 +339,11 @@ def rest(state, request):
 
 
 def add_review_comment(state, repo, number, fields, reply_to):
+    require(fields, "body")
+    if reply_to is None:
+        require(fields, "commit_id", "path")
+        if fields.get("subject_type") != "file":
+            require(fields, "line")
     comment_id = new_id(state)
     created = {"id": comment_id, "node_id": f"PRRC_{comment_id}", "repo": repo, "pull_number": number,
                "body": fields.get("body", ""), "user": state["viewer"],
@@ -304,20 +356,25 @@ def add_review_comment(state, repo, number, fields, reply_to):
     else:
         root = find_comment(state, "review_comment", repo, reply_to)
         root_id = root.get("in_reply_to_id") or root["id"]
+        root = find_comment(state, "review_comment", repo, root_id)
+        created.update({key: root[key] for key in ("path", "line", "start_line", "side", "commit_id")})
         created["in_reply_to_id"] = root_id
         state["threads"][thread_of(state, root_id)]["comments"].append(comment_id)
     state["review_comments"][str(comment_id)] = created
     return comment_view(state, "review_comment", created)
 
 
-def pull_view(repo, found):
+def pull_view(repo, found, listed=False):
     owner = repo.split("/")[0]
-    return {"number": found["number"], "node_id": f"PR_{repo}#{found['number']}", "title": found["title"],
-            "body": found["body"], "state": found["state"], "draft": found["draft"], "merged": found["merged"],
+    view = {"number": found["number"], "node_id": f"PR_{repo}#{found['number']}", "title": found["title"],
+            "body": found["body"], "state": found["state"], "draft": found["draft"],
             "head": {"ref": found["head"], "label": f"{found['head_owner']}:{found['head']}",
                      "repo": {"owner": {"login": found["head_owner"]}}},
             "base": {"ref": found["base"], "repo": {"owner": {"login": owner}, "full_name": repo}},
             "html_url": f"https://github.com/{repo}/pull/{found['number']}"}
+    if not listed:
+        view["merged"] = found["merged"]
+    return view
 
 
 def issue_view(repo, found):

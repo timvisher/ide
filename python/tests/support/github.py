@@ -70,7 +70,7 @@ class FakeGitHub:
             s["issue_comments"][str(comment_id)] = {
                 "id": comment_id, "node_id": f"IC_{comment_id}", "repo": repo, "issue_number": number,
                 "body": body, "user": user or s["viewer"],
-                "html_url": f"https://github.com/{repo}/pull/{number}#issuecomment-{comment_id}"}
+                "html_url": f"https://github.com/{repo}/{'pull' if str(number) in s['pulls'].get(repo, {}) else 'issues'}/{number}#issuecomment-{comment_id}"}
             return comment_id
         return self._update(change)
 
@@ -83,10 +83,12 @@ class FakeGitHub:
                        "body": body, "user": user or s["viewer"],
                        "html_url": f"https://github.com/{repo}/pull/{number}#discussion_r{comment_id}"}
             if reply_to is None:
-                comment.update(path=path, line=line, start_line=None, side=side, commit_id=None)
+                comment.update(path=path, line=line, start_line=None, side=side, commit_id="0" * 40)
                 s["threads"][f"PRRT_{comment_id}"] = {"repo": repo, "pull_number": number,
                                                       "comments": [comment_id], "resolved": False}
             else:
+                root = s["review_comments"][str(reply_to)]
+                comment.update({key: root[key] for key in ("path", "line", "start_line", "side", "commit_id")})
                 comment["in_reply_to_id"] = reply_to
                 next(t for t in s["threads"].values() if reply_to in t["comments"])["comments"].append(comment_id)
             s["review_comments"][str(comment_id)] = comment
