@@ -22,11 +22,6 @@ funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 
 unset TIMVISHER_AGENT TIMVISHER_AICTL_LOG TIMVISHER_AGENT_NIRMI TIMVISHER_AGENT_NIRMI_REASON
 
-suite_state=''
-trap '[[ -z $suite_state ]] || rm -rf -- "$suite_state"' EXIT
-suite_state=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-export XDG_STATE_HOME="$suite_state"
-
 # ---------------------------------------------------------------------------
 # Schema structure tests
 # ---------------------------------------------------------------------------
@@ -249,7 +244,7 @@ fi
 # Test: aictl_warn NIRMI+REASON appends a log event (ts, code, reason, cwd)
 run_test
 tmp_state=
-trap 'rm -rf -- "$suite_state" "$tmp_state"' EXIT
+trap 'rm -rf -- "$tmp_state"' EXIT
 tmp_state=$(mktemp -d)
 XDG_STATE_HOME="$tmp_state" TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="why we bypassed" \
   TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code test_logged --message m --command 'git log main..HEAD'" 2>/dev/null
@@ -508,7 +503,7 @@ fi
 # ---------------------------------------------------------------------------
 
 log_dir=
-trap 'rm -rf -- "$suite_state" "$tmp_state" "$log_dir"' EXIT
+trap 'rm -rf -- "$tmp_state" "$log_dir"' EXIT
 log_dir=$(mktemp -d)
 
 assert_logged() {
