@@ -1132,7 +1132,7 @@ gh_pr_wait_until_merged() {
   local pr_url=$1
   local poll_interval=${TIMVISHER_GH_PR_MERGE_POLL_INTERVAL:-10}
   local timeout=${TIMVISHER_GH_PR_MERGE_TIMEOUT:-7200}
-  local waited=0
+  local started=$SECONDS waited=0
   local view state
 
   while true
@@ -1150,6 +1150,7 @@ gh_pr_wait_until_merged() {
         ;;
     esac
 
+    waited=$(( SECONDS - started ))
     if (( timeout <= waited ))
     then
       die 'Timed out after %ds waiting for merge to complete: %s (merge may still land; cookie not dropped)' \
@@ -1158,7 +1159,6 @@ gh_pr_wait_until_merged() {
 
     info 'Waiting for merge to complete (state=%s); retrying in %ds' "${state:-unknown}" "$poll_interval"
     sleep "$poll_interval"
-    (( waited += poll_interval ))
   done
 }
 
