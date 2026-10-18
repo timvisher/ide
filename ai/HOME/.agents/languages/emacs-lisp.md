@@ -1,3 +1,24 @@
+### Lexical Binding (Required)
+
+_*ALWAYS*_ use lexical binding. Every `.el` file you write — library,
+test, init file or throwaway scratch script — starts with the cookie
+on its first line:
+
+```elisp
+;;; foo.el --- Summary -*- lexical-binding: t -*-
+```
+
+For a scratch file a bare `;;; -*- lexical-binding: t -*-` is enough.
+
+Since Emacs 31, `load`ing or visiting a `.el` file without the cookie
+raises a `Warning (files): Missing 'lexical-binding' cookie` in Tim's
+live Emacs, and the file is still evaluated with dynamic binding. A
+scratch file `load`ed through `emacsclient` counts.
+
+When evaluating code without a file, pass lexical binding explicitly:
+`(eval form t)`, not `(eval form)`. `emacsclient --eval` and
+`emacs --batch --eval` already evaluate lexically.
+
 ### Emacs Lisp Testing (ERT)
 
 - Use ERT (Emacs Lisp Regression Testing) for testing Emacs Lisp code

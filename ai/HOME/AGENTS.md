@@ -208,7 +208,8 @@ The list is not the guide — read the file.
   even with no taggable resources yet. Recalculate every `../` depth
   when a root module moves.
 - `~/.agents/languages/emacs-lisp.md` —
-  `--batch` has everything a GUI Emacs has except a TTY, so do _*NOT*_
+  _*ALWAYS*_ put `-*- lexical-binding: t -*-` on the first line of
+  every `.el` file, scratch files included. `--batch` has everything a GUI Emacs has except a TTY, so do _*NOT*_
   write batch-mode workarounds; do _*NOT*_ use `(while t (sit-for N))`
   — use `accept-process-output`. `nil` is the only falsy value: `""`,
   `[]` and `0` are all truthy. ERT for tests.
