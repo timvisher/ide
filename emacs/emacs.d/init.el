@@ -875,7 +875,8 @@ the secret references cannot be resolved."
              agent-shell-resume-session)
   :bind (("C-c A" . agent-shell)
          :map agent-shell-mode-map
-         ("C-c F" . agent-shell-fork))
+         ("C-c F" . agent-shell-fork)
+         ("C-c C" . agent-shell-prompt-compose))
   :custom
   (agent-shell-session-strategy 'new)
   (agent-shell-cwd-function (lambda () command-line-default-directory))
