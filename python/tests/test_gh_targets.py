@@ -149,12 +149,52 @@ class TargetsTest(GhTestCase):
     def test_omitted_pr_target_comes_from_the_states_worktree_context_first(self):
         self.track("PR_7", PR, "github.com/O/R/pull/7")
         with self.db.write() as db:
-            db.execute("INSERT INTO context VALUES (?, 'O', 'R', 'main', 'PR_7')", (self.context.toplevel,))
+            db.execute("INSERT INTO context VALUES (?, 'testuser', 'testrepo', 'main', 'PR_7')",
+                       (self.context.toplevel,))
         (self.work / "pr.md").write_text("T\n")
         self.tab("https://github.com/O/R/pull/99")
         target = self.resolve("pr")
         self.assertEqual((7, "PR_7", "context"), (target.number, target.object_id, target.via))
         self.assertFalse(any(c["argv"][2:4] == ["pr", "list"] for c in self.github.calls))
+
+    def test_the_states_context_is_only_for_the_branch_it_recorded(self):
+        self.track("PR_7", PR, "github.com/O/R/pull/7")
+        with self.db.write() as db:
+            db.execute("INSERT INTO context VALUES (?, 'testuser', 'testrepo', 'main', 'PR_7')",
+                       (self.context.toplevel,))
+        git("checkout", "-q", "-b", "feature", cwd=self.work)
+        self.github.respond(["pr", "list"], stdout=json.dumps([{"number": 9, "state": "OPEN"}]))
+        self.assertEqual((9, None), (lambda t: (t.number, t.object_id))(self.resolve("pr")))
+        git("checkout", "-q", "--detach", cwd=self.work)
+        self.tab(PR)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual("browser", self.resolve("pr").via)
+
+    def test_a_tracked_store_directory_is_its_object(self):
+        store = state.root() / "github.com/O/R/pull/7"
+        store.mkdir(parents=True)
+        self.track("PR_7", PR, "github.com/O/R/pull/7")
+        (self.work / ".timvisher_gh").mkdir()
+        (self.work / ".timvisher_gh" / "pr").symlink_to(store)
+        for path in (store, self.work / ".timvisher_gh" / "pr"):
+            self.assertEqual("PR_7", self.resolve("pr", str(path)).object_id, path)
+        status, instruction = self.refused("pr", str(self.work))
+        self.assertEqual((2, "timvisher_gh_target_invalid"), (status, instruction["code"]))
+
+    def test_an_untracked_root_pr_md_is_skipped_by_commands_that_dont_create(self):
+        self.github.respond(["pr", "list"], stdout="[]")
+        (self.work / "pr.md").write_text("T\n")
+        self.tab(PR)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual((7, "browser"), (lambda t: (t.number, t.via))(self.resolve("pr")))
+
+    def test_the_browser_fallback_ignores_a_tab_of_another_kind(self):
+        self.github.respond(["pr", "list"], stdout="[]")
+        self.tab("https://github.com/O/R/issues/4")
+        status, instruction = self.refused("pr")
+        self.assertEqual((1, "timvisher_gh_target_none"), (status, instruction["code"]))
 
     def test_omitted_pr_target_then_comes_from_gh_pr_list_head(self):
         git("checkout", "-q", "-b", "feature", cwd=self.work)
@@ -192,7 +232,8 @@ class TargetsTest(GhTestCase):
     def test_issues_never_use_the_pr_context(self):
         self.track("PR_7", PR, "github.com/O/R/pull/7")
         with self.db.write() as db:
-            db.execute("INSERT INTO context VALUES (?, 'O', 'R', 'main', 'PR_7')", (self.context.toplevel,))
+            db.execute("INSERT INTO context VALUES (?, 'testuser', 'testrepo', 'main', 'PR_7')",
+                       (self.context.toplevel,))
         self.tab("https://github.com/O/R/issues/4")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):

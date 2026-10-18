@@ -143,14 +143,16 @@ def _git(*args, cwd):
 
 
 def _context_pr(context, db, noun):
-    if db is not None:
-        row = db.execute("SELECT o.id, o.url FROM context c JOIN objects o ON o.id = c.pr_id WHERE c.worktree = ?",
-                         (context.toplevel,)).fetchone()
-        if row is not None:
-            return dataclasses.replace(parse_url(row[1], noun), object_id=row[0], via="context")
     branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=context.toplevel)
     if not branch or branch == "HEAD":
         return None
+    owner, repo = context.spec.split("/")
+    if db is not None:
+        row = db.execute("SELECT o.id, o.url FROM context c JOIN objects o ON o.id = c.pr_id "
+                         "WHERE c.worktree = ? AND c.owner = ? AND c.repo = ? AND c.branch = ?",
+                         (context.toplevel, owner, repo, branch)).fetchone()
+        if row is not None:
+            return dataclasses.replace(parse_url(row[1], noun), object_id=row[0], via="context")
     done = subprocess.run(["gh", "-R", context.spec, "pr", "list", "--head", branch, "--state", "all",
                            "--json", "number,state"], stdout=subprocess.PIPE, text=True)
     if done.returncode != 0:
@@ -162,7 +164,6 @@ def _context_pr(context, db, noun):
     # An open PR wins over closed ones for the same branch name, then the
     # newest: branch names get reused after a merge.
     chosen = max(pulls, key=lambda p: (p["state"] == "OPEN", p["number"]))
-    owner, repo = context.spec.split("/")
     return Target("pr", owner=owner, repo=repo, number=chosen["number"], via="context")
 
 
@@ -183,6 +184,9 @@ def resolve(noun, argument, *, context, db=None, creating=False):
         path = pathlib.Path(argument)
         if path.is_file():
             return _from_file(path, noun, db, creating)
+        if path.is_dir() and (tracked := _tracked(path, db)) is not None:
+            object_id, url = tracked
+            return dataclasses.replace(parse_url(url, noun), object_id=object_id, via="tracked")
         fail("timvisher_gh_target_invalid", f"'{argument}' is neither a target URL nor a file.", status=USAGE,
              suggestions=[f"Pass a file, '{BROWSER_TAB}', or one of: {shape}" for shape in SHAPES])
 
@@ -199,12 +203,14 @@ def resolve(noun, argument, *, context, db=None, creating=False):
             return found
     root_source = pathlib.Path(context.toplevel) / f"{noun}.md"
     if os.path.lexists(root_source):
-        return _from_file(root_source, noun, db, creating)
+        tracked = _tracked(root_source, db)
+        if tracked is not None or _legacy_url(root_source) is not None or creating:
+            return _from_file(root_source, noun, db, creating)
     try:
         found = _match(browser.active_tab()["url"], noun)
     except subprocess.CalledProcessError:
         found = None
-    if found is None:
+    if found is None or found.kind != noun:
         _nothing(noun, context)
     aictl.info(code="timvisher_gh_target_from_browser_tab",
                message=f"Using the current browser tab's {found.url} as the {noun} target.",
