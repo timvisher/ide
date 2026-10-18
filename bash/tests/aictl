@@ -697,6 +697,17 @@ assert_human "multi-line fields indent their continuation lines" 0 \
 human_snippet="aictl_info --code '' --message 'no code'"
 assert_human "an empty code leaves out the code prefix" 0 'INFO no code'
 
+human_snippet="aictl_info --code tc --message ''"
+assert_human "an empty message leaves no trailing separator" 0 'INFO tc'
+
+human_snippet="aictl_info tc 'msg'"
+assert_human "CLAUDECODE and TIMVISHER_CODEX alone still get the human form" 0 'INFO tc: msg' \
+  CLAUDECODE=1 TIMVISHER_CODEX=1
+
+human_snippet="aictl_info tc 'msg'"
+assert_human "an empty TIMVISHER_AGENT gets the human form" 0 'INFO tc: msg' \
+  TIMVISHER_AGENT=
+
 human_snippet="aictl_warn --code tc --message m --command 'git log abc..HEAD' --reason r --suggestion s --doc d.md"
 assert_human "aictl_warn shows no command and no bypass mechanism" 1 \
   $'WARN tc: m\n  reason: r\n  suggestion: s\n  doc: d.md'

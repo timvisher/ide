@@ -13,7 +13,8 @@
 #   aictl_listening - True when an agent is listening for instructions
 #   aictl_parse - Print a line back as compact JSON if it is an instruction
 #
-# Output is rendered for whoever reads it, the way logging.bash does:
+# Output is rendered for whoever reads it, choosing JSON or text the
+# same way logging.bash does:
 #   - TIMVISHER_AGENT set: one JSON line to stderr
 #       {"type":"instruction","level":"error|warning|bypass|info","code":"...","message":"...", ...}
 #   - TIMVISHER_AICTL_LOG names an existing file: the JSON line is also
@@ -27,8 +28,8 @@
 #     with ERROR, WARN, INFO or BYPASS for the level. --data is JSON-only.
 # Exit and return status is the same for both audiences.
 #
-# Neither form carries a ready-to-paste bypass command or any
-# mechanism detail. Agents that need to bypass must read the
+# Neither form of a warning carries a ready-to-paste bypass command
+# or any mechanism detail. Agents that need to bypass must read the
 # doc reference (--doc) and assemble the env vars themselves. Data from
 # 2026-04-17..2026-04-21 showed 48 bypasses across 6 sessions; a big
 # chunk came from the agent copying the `command` field we used to emit.
@@ -112,7 +113,7 @@ aictl__indent() {
 # --data is left out: it is the machine payload, and the message
 # already says what a human needs.
 aictl__render_human() {
-  local level=$1 label ts s
+  local level=$1 label ts s head=$_code
 
   case $level in
     error) label=ERROR ;;
@@ -123,7 +124,11 @@ aictl__render_human() {
   esac
 
   TZ=UTC0 printf -v ts '%(%FT%T%z)T' -1
-  printf '%s %s %s%s\n' "$ts" "$label" "${_code:+${_code}: }" "$(aictl__indent "$_message")"
+  if [[ -n $_message ]]
+  then
+    head+="${head:+: }$(aictl__indent "$_message")"
+  fi
+  printf '%s %s%s\n' "$ts" "$label" "${head:+ ${head}}"
 
   if [[ -n $_reason ]]
   then
@@ -151,6 +156,8 @@ aictl__write() {
 
   # The log alone does not make stderr JSON: under ntmux3 -T a human
   # watches stderr in the window while the agent reads the log.
+  # CLAUDECODE and TIMVISHER_CODEX don't count either, as in
+  # logging.bash: the claude and codex wrappers export TIMVISHER_AGENT.
   if [[ -n ${TIMVISHER_AGENT:-} ]]
   then
     printf '%s\n' "$line" >&2
