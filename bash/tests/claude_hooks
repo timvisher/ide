@@ -211,8 +211,15 @@ wlock_input() {
   fi
 }
 
-wlock_run_pre() { HOME="$wlock_home" "${hooks_dir}/worktree-lock-pretool.sh"; }
-wlock_run_end() { HOME="$wlock_home" "${hooks_dir}/worktree-lock-sessionend.sh"; }
+wlock_env=(
+  HOME="$wlock_home"
+  XDG_CONFIG_HOME="$wlock_home/.config"
+  XDG_DATA_HOME="$wlock_home/.local/share"
+  XDG_STATE_HOME="$wlock_home/.local/state"
+  XDG_CACHE_HOME="$wlock_home/.cache"
+)
+wlock_run_pre() { env "${wlock_env[@]}" "${hooks_dir}/worktree-lock-pretool.sh"; }
+wlock_run_end() { env "${wlock_env[@]}" "${hooks_dir}/worktree-lock-sessionend.sh"; }
 
 WT_A=$(wlock_init_worktree "$tmpdir/wt-A")
 WT_B=$(wlock_init_worktree "$tmpdir/wt-B")

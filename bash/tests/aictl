@@ -2,8 +2,6 @@
 
 # Tests for aictl structured messaging functions
 
-set -euo pipefail
-
 failures=0
 tests=0
 
@@ -22,13 +20,20 @@ run_test() {
 
 funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 
+unset TIMVISHER_AGENT TIMVISHER_AICTL_LOG TIMVISHER_AGENT_NIRMI TIMVISHER_AGENT_NIRMI_REASON
+
+suite_state=''
+trap '[[ -z $suite_state ]] || rm -rf -- "$suite_state"' EXIT
+suite_state=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+export XDG_STATE_HOME="$suite_state"
+
 # ---------------------------------------------------------------------------
 # Schema structure tests
 # ---------------------------------------------------------------------------
 
 # Test: type is always "instruction"
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
 if [[ $result == *'"type":"instruction"'* ]]
 then
   pass "type is 'instruction'"
@@ -42,7 +47,7 @@ fi
 
 # Test: aictl_die outputs level:error with code and message
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'test message'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'test message'" 2>&1 || true)
 if [[ $result == *'"level":"error"'* ]] && [[ $result == *'"code":"test_code"'* ]] && [[ $result == *'test message'* ]]
 then
   pass "aictl_die outputs level:error with code and message"
@@ -53,7 +58,7 @@ fi
 # Test: aictl_die exits non-zero
 run_test
 rc=0
-bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" >/dev/null 2>&1 || rc=$?
+TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" >/dev/null 2>&1 || rc=$?
 if (( 0 < rc ))
 then
   pass "aictl_die exits non-zero"
@@ -63,7 +68,7 @@ fi
 
 # Test: aictl_die includes retryable:false
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
 if [[ $result == *'"retryable":false'* ]]
 then
   pass "aictl_die includes retryable:false"
@@ -73,7 +78,7 @@ fi
 
 # Test: aictl_die with --flag syntax
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die --code test_flag --message 'flag msg' --reason 'because' --doc 'docs.md' --suggestion 'fix it'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die --code test_flag --message 'flag msg' --reason 'because' --doc 'docs.md' --suggestion 'fix it'" 2>&1 || true)
 if [[ $result == *'"code":"test_flag"'* ]] && [[ $result == *'"reason":"because"'* ]] && [[ $result == *'"doc":"docs.md"'* ]] && [[ $result == *'"fix it"'* ]]
 then
   pass "aictl_die with --flag syntax"
@@ -83,7 +88,7 @@ fi
 
 # Test: aictl_die includes suggestions array
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_die --code tc --message m --suggestion 'fix one' --suggestion 'fix two'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die --code tc --message m --suggestion 'fix one' --suggestion 'fix two'" 2>&1 || true)
 if [[ $result == *'"suggestions":'* ]] && [[ $result == *'"fix one"'* ]] && [[ $result == *'"fix two"'* ]]
 then
   pass "aictl_die includes multiple suggestions"
@@ -93,7 +98,7 @@ fi
 
 # Test: aictl_die is NOT bypassed by NIRMI
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_die test_code 'msg'" 2>&1 || true)
 if [[ $result == *'"level":"error"'* ]]
 then
   pass "aictl_die not bypassed by NIRMI"
@@ -111,7 +116,7 @@ fi
 # reason aictl_error exists: aictl_die's `exit 1` would kill the shell
 # when called from a function sourced into an interactive session.
 run_test
-result=$(bash -c "
+result=$(TIMVISHER_AGENT=1 bash -c "
   source '${funcs_dir}/aictl.bash'
   wrap() {
     aictl_error test_code 'msg'
@@ -132,7 +137,7 @@ fi
 # Test: aictl_error returns 1 (wrap in function so return works)
 run_test
 rc=0
-bash -c "
+TIMVISHER_AGENT=1 bash -c "
   source '${funcs_dir}/aictl.bash'
   wrap() { aictl_error tc 'msg'; }
   wrap
@@ -146,7 +151,7 @@ fi
 
 # Test: aictl_error supports --flag syntax and suggestions like aictl_die
 run_test
-result=$(bash -c "
+result=$(TIMVISHER_AGENT=1 bash -c "
   source '${funcs_dir}/aictl.bash'
   wrap() {
     aictl_error --code tc --message m --reason why --doc d.md --suggestion 'fix one' --suggestion 'fix two'
@@ -170,7 +175,7 @@ fi
 
 # Test: aictl_warn outputs level:warning
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'warn msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'warn msg'" 2>&1 || true)
 if [[ $result == *'"level":"warning"'* ]] && [[ $result == *'"code":"test_warn"'* ]]
 then
   pass "aictl_warn outputs level:warning"
@@ -181,7 +186,7 @@ fi
 # Test: aictl_warn exits non-zero without NIRMI
 run_test
 rc=0
-bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" >/dev/null 2>&1 || rc=$?
+TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" >/dev/null 2>&1 || rc=$?
 if (( 0 < rc ))
 then
   pass "aictl_warn exits non-zero without NIRMI"
@@ -192,7 +197,7 @@ fi
 # Test: aictl_warn does NOT include a bypass object (agents had been
 # copying the ready-to-paste bypass command rather than reconsidering)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1 || true)
 if [[ $result != *'"bypass":'* ]] && [[ $result != *'"mechanism"'* ]]
 then
   pass "aictl_warn omits bypass object"
@@ -203,7 +208,7 @@ fi
 # Test: aictl_warn does NOT leak TIMVISHER_AGENT_NIRMI into output
 # when --command is passed (used to be emitted as ready-to-paste)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m --command 'git log abc..HEAD'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m --command 'git log abc..HEAD'" 2>&1 || true)
 if [[ $result != *'"command":"TIMVISHER_AGENT_NIRMI=1'* ]] && [[ $result != *'TIMVISHER_AGENT_NIRMI=1 git log'* ]]
 then
   pass "aictl_warn does not emit ready-to-paste bypass command"
@@ -213,7 +218,7 @@ fi
 
 # Test: aictl_warn with NIRMI only (no REASON) emits aictl_bypass_missing_reason
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1 || true)
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1 || true)
 if [[ $result == *'"code":"aictl_bypass_missing_reason"'* ]] && [[ $result != *"continued"* ]]
 then
   pass "aictl_warn with NIRMI only requires REASON"
@@ -223,7 +228,7 @@ fi
 
 # Test: aictl_warn with NIRMI + REASON bypasses and continues
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="testing bypass" bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="testing bypass" TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'; echo 'continued'" 2>&1)
 if [[ $result == *'"level":"bypass"'* ]] && [[ $result == *"continued"* ]]
 then
   pass "aictl_warn NIRMI+REASON bypasses and continues"
@@ -233,7 +238,7 @@ fi
 
 # Test: aictl_warn NIRMI+REASON bypass does NOT emit level:warning
 run_test
-result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
+result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn test_warn 'msg'" 2>&1)
 if [[ $result != *'"level":"warning"'* ]]
 then
   pass "aictl_warn bypass path does not emit warning"
@@ -243,10 +248,11 @@ fi
 
 # Test: aictl_warn NIRMI+REASON appends a log event (ts, code, reason, cwd)
 run_test
+tmp_state=
+trap 'rm -rf -- "$suite_state" "$tmp_state"' EXIT
 tmp_state=$(mktemp -d)
-trap 'rm -rf "$tmp_state"' EXIT
 XDG_STATE_HOME="$tmp_state" TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="why we bypassed" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code test_logged --message m --command 'git log main..HEAD'" 2>/dev/null
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code test_logged --message m --command 'git log main..HEAD'" 2>/dev/null
 log_file="$tmp_state/timvisher/wrappers/aictl-bypass/log.jsonl"
 if [[ -f $log_file ]] && \
    grep -q '"code":"test_logged"' "$log_file" && \
@@ -260,7 +266,7 @@ fi
 
 # Test: aictl_warn with --flag syntax including reason and doc
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m --reason 'why' --doc 'ref.md' --suggestion 's'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m --reason 'why' --doc 'ref.md' --suggestion 's'" 2>&1 || true)
 if [[ $result == *'"reason":"why"'* ]] && [[ $result == *'"doc":"ref.md"'* ]]
 then
   pass "aictl_warn with reason and doc"
@@ -273,7 +279,7 @@ fi
 run_test
 tmp_state_ts=$(mktemp -d)
 XDG_STATE_HOME="$tmp_state_ts" TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
 log_file_ts="$tmp_state_ts/timvisher/wrappers/aictl-bypass/log.jsonl"
 if [[ -f $log_file_ts ]] && grep -E -q '"ts":([0-9]+|null)' "$log_file_ts"
 then
@@ -296,7 +302,7 @@ STUB
 chmod +x "$stub_dir_ts2/date"
 PATH="$stub_dir_ts2:$PATH" XDG_STATE_HOME="$tmp_state_ts2" \
   TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code tc --message m" 2>/dev/null
 log_file_ts2="$tmp_state_ts2/timvisher/wrappers/aictl-bypass/log.jsonl"
 if [[ -f $log_file_ts2 ]] && grep -q '"ts":null' "$log_file_ts2"
 then
@@ -309,11 +315,8 @@ rm -rf "$tmp_state_ts2" "$stub_dir_ts2"
 # Test: bypass JSON message has _code JSON-escaped (no unescaped " or \)
 run_test
 result=$(TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON="r" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code 'has\"quote' --message m" 2>&1)
-# The bypass JSON should contain the escaped form (\") and must not break
-# parseability: a naive unescaped emission would produce code":"has"quote"
-if [[ $result == *'"code":"has\"quote"'* ]] ||
-     [[ $result == *'"code":"has\\"quote"'* ]]
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn --code 'has\"quote' --message m" 2>&1)
+if [[ $(jq -r .code <<<"$result" 2>/dev/null) == 'has"quote' ]]
 then
   pass "bypass JSON escapes quote in code"
 else
@@ -326,7 +329,7 @@ fi
 
 # Test: aictl_info outputs level:info with code and message
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'info message'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'info message'" 2>&1 || true)
 if [[ $result == *'"level":"info"'* ]] && [[ $result == *'"code":"test_code"'* ]] && [[ $result == *'info message'* ]]
 then
   pass "aictl_info outputs level:info with code and message"
@@ -337,7 +340,7 @@ fi
 # Test: aictl_info exits zero (success channel — it's not a failure)
 run_test
 rc=0
-bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" >/dev/null 2>&1 || rc=$?
+TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" >/dev/null 2>&1 || rc=$?
 if (( rc == 0 ))
 then
   pass "aictl_info exits zero"
@@ -347,7 +350,7 @@ fi
 
 # Test: aictl_info does NOT include retryable field — info is not a failure
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info test_code 'msg'" 2>&1 || true)
 if [[ $result != *'"retryable"'* ]]
 then
   pass "aictl_info omits retryable field"
@@ -357,7 +360,7 @@ fi
 
 # Test: aictl_info supports --flag syntax including suggestions
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --doc 'd.md' --suggestion 'do x' --suggestion 'then y'" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --doc 'd.md' --suggestion 'do x' --suggestion 'then y'" 2>&1)
 if [[ $result == *'"code":"tc"'* ]] && [[ $result == *'"doc":"d.md"'* ]] && [[ $result == *'"do x"'* ]] && [[ $result == *'"then y"'* ]]
 then
   pass "aictl_info with --flag syntax and suggestions"
@@ -367,7 +370,7 @@ fi
 
 # Test: aictl_info still type:instruction (consistent shape across levels)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1)
 if [[ $result == *'"type":"instruction"'* ]]
 then
   pass "aictl_info type is 'instruction'"
@@ -379,7 +382,7 @@ fi
 run_test
 bin_aictl="$(cd "$(dirname "$0")/../bin" && pwd)/aictl"
 rc=0
-result=$("$bin_aictl" info bin_test 'from bin' 2>&1) || rc=$?
+result=$(TIMVISHER_AGENT=1 "$bin_aictl" info bin_test 'from bin' 2>&1) || rc=$?
 if (( rc == 0 )) && [[ $result == *'"level":"info"'* ]] && [[ $result == *'"code":"bin_test"'* ]]
 then
   pass "bin/aictl info subcommand exits 0 with level:info"
@@ -389,7 +392,7 @@ fi
 
 # Test: aictl_info supports --reason (other levels emit it; info should too)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --reason 'because reasons'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --reason 'because reasons'" 2>&1 || true)
 if [[ $result == *'"reason":"because reasons"'* ]]
 then
   pass "aictl_info emits --reason"
@@ -401,8 +404,8 @@ fi
 # on this; the main payload must not bleed into stdout where it would
 # collide with non-aictl-aware callers.
 run_test
-out=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>/dev/null)
-err=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+out=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>/dev/null)
+err=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
 if [[ -z $out ]] && [[ $err == *'"level":"info"'* ]]
 then
   pass "aictl_info writes to stderr only (stdout is empty)"
@@ -414,7 +417,7 @@ fi
 # concatenation. A naive implementation that joined them would still
 # pass the substring tests above, so this asserts the array shape.
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --suggestion 'do x' --suggestion 'then y'" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --suggestion 'do x' --suggestion 'then y'" 2>&1)
 if [[ $result == *'"suggestions":["do x","then y"]'* ]]
 then
   pass "aictl_info suggestions emit as JSON array"
@@ -425,7 +428,7 @@ fi
 # Test: aictl_info JSON-escapes the code field (regression for
 # aictl__emit emitting _code raw)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code 'has\"quote' --message m" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code 'has\"quote' --message m" 2>&1)
 if [[ $result == *'"code":"has\"quote"'* ]]
 then
   pass "aictl_info escapes quote in code"
@@ -436,7 +439,7 @@ fi
 # Test: aictl_info accepts empty --code and --message (consistency with
 # the other levels — no validation on either field)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code '' --message ''" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code '' --message ''" 2>&1)
 if [[ $result == *'"code":""'* ]] && [[ $result == *'"message":""'* ]]
 then
   pass "aictl_info accepts empty code and message"
@@ -450,7 +453,7 @@ fi
 
 # Test: aictl_notice emits level:warning (for visual weight)
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
 if [[ $result == *'"level":"warning"'* && $result == *'"code":"nc"'* ]]
 then
   pass "aictl_notice emits level:warning"
@@ -461,7 +464,7 @@ fi
 # Test: aictl_notice returns zero (non-blocking; not a guardrail)
 run_test
 rc=0
-bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" >/dev/null 2>&1 || rc=$?
+TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" >/dev/null 2>&1 || rc=$?
 if (( rc == 0 ))
 then
   pass "aictl_notice returns zero"
@@ -471,7 +474,7 @@ fi
 
 # Test: aictl_notice omits retryable — a notice is not a failed action
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>&1 || true)
 if [[ $result != *'"retryable"'* ]]
 then
   pass "aictl_notice omits retryable field"
@@ -482,7 +485,7 @@ fi
 # Test: aictl_notice does not leak _aictl_suppress_retryable so a later
 # real aictl_warn in the same shell still emits retryable:true
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'm' 2>/dev/null; aictl__emit warning wc 'm'" 2>&1 || true)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'm' 2>/dev/null; aictl__emit warning wc 'm'" 2>&1 || true)
 if [[ $result == *'"retryable":true'* ]]
 then
   pass "aictl_notice does not leak retryable suppression"
@@ -492,7 +495,7 @@ fi
 
 # Test: aictl_notice writes to stderr only
 run_test
-out=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>/dev/null)
+out=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_notice nc 'msg'" 2>/dev/null)
 if [[ -z $out ]]
 then
   pass "aictl_notice writes to stderr only (stdout empty)"
@@ -505,17 +508,19 @@ fi
 # ---------------------------------------------------------------------------
 
 log_dir=
-trap 'rm -rf "$tmp_state" "$log_dir"' EXIT
+trap 'rm -rf -- "$suite_state" "$tmp_state" "$log_dir"' EXIT
 log_dir=$(mktemp -d)
 
 assert_logged() {
-  local desc=$1 level=$2 want_rc=$3 snippet=$4
+  local desc=$1 level=$2 label=$3 want_rc=$4 snippet=$5
   local log="${log_dir}/${desc// /_}.jsonl"
-  local rc=0 out err
+  local rc out err
+
   run_test
+  rc=0
   : > "$log"
   out=$(TIMVISHER_AICTL_LOG="$log" XDG_STATE_HOME="$log_dir/state" \
-    bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>"${log_dir}/err") || rc=$?
+    TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>"${log_dir}/err") || rc=$?
   err=$(cat "${log_dir}/err")
   if (( rc == want_rc )) &&
     [[ -z $out ]] &&
@@ -523,27 +528,45 @@ assert_logged() {
     [[ $(jq -r .level "$log") == "$level" ]] &&
     [[ $err == "$(cat "$log")" ]]
   then
-    pass "TIMVISHER_AICTL_LOG gets ${desc} as well as stderr"
+    pass "TIMVISHER_AICTL_LOG plus TIMVISHER_AGENT: ${desc} JSON in the log and on stderr"
   else
-    fail "TIMVISHER_AICTL_LOG ${desc}: rc=${rc} stdout='${out}' stderr='${err}' log='$(cat "$log")'"
+    fail "TIMVISHER_AICTL_LOG plus TIMVISHER_AGENT ${desc}: rc=${rc} stdout='${out}' stderr='${err}' log='$(cat "$log")'"
+  fi
+
+  run_test
+  rc=0
+  : > "$log"
+  out=$(env -u TIMVISHER_AGENT TIMVISHER_AICTL_LOG="$log" XDG_STATE_HOME="$log_dir/state" \
+    bash -c "source '${funcs_dir}/aictl.bash'; ${snippet}" 2>"${log_dir}/err") || rc=$?
+  err=$(cat "${log_dir}/err")
+  if (( rc == want_rc )) &&
+    [[ -z $out ]] &&
+    (( $(wc -l < "$log") == 1 )) &&
+    [[ $(jq -r .level "$log") == "$level" ]] &&
+    [[ $err =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\+0000\ ${label}\  ]] &&
+    [[ $err != *'"type":"instruction"'* ]]
+  then
+    pass "TIMVISHER_AICTL_LOG alone: ${desc} JSON in the log, ${label} text on stderr"
+  else
+    fail "TIMVISHER_AICTL_LOG alone ${desc}: rc=${rc} stdout='${out}' stderr='${err}' log='$(cat "$log")'"
   fi
 }
 
-assert_logged "aictl_die" error 1 "aictl_die tc 'msg'"
-assert_logged "aictl_error" error 1 "aictl_error tc 'msg'"
-assert_logged "aictl_warn" warning 1 "aictl_warn tc 'msg'"
-assert_logged "aictl_info" info 0 "aictl_info tc 'msg'"
-assert_logged "aictl_notice" warning 0 "aictl_notice tc 'msg'"
-assert_logged "aictl_warn missing reason" error 1 \
+assert_logged "aictl_die" error ERROR 1 "aictl_die tc 'msg'"
+assert_logged "aictl_error" error ERROR 1 "aictl_error tc 'msg'"
+assert_logged "aictl_warn" warning WARN 1 "aictl_warn tc 'msg'"
+assert_logged "aictl_info" info INFO 0 "aictl_info tc 'msg'"
+assert_logged "aictl_notice" warning WARN 0 "aictl_notice tc 'msg'"
+assert_logged "aictl_warn missing reason" error ERROR 1 \
   "TIMVISHER_AGENT_NIRMI=1 aictl_warn tc 'msg'"
-assert_logged "aictl_warn bypass" bypass 0 \
+assert_logged "aictl_warn bypass" bypass BYPASS 0 \
   "TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON=r aictl_warn tc 'msg'"
 
 run_test
 rc=0
 : > "${log_dir}/warn-blocks.jsonl"
 out=$(TIMVISHER_AICTL_LOG="${log_dir}/warn-blocks.jsonl" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn tc 'msg'; echo continued" 2>/dev/null) || rc=$?
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_warn tc 'msg'; echo continued" 2>/dev/null) || rc=$?
 if (( 0 < rc )) && [[ -z $out ]]
 then
   pass "aictl_warn still blocks when a log is set"
@@ -552,7 +575,7 @@ else
 fi
 
 run_test
-result=$(bash -c "unset TIMVISHER_AICTL_LOG; source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+result=$(TIMVISHER_AGENT=1 bash -c "unset TIMVISHER_AICTL_LOG; source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
 if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]]
 then
   pass "unset TIMVISHER_AICTL_LOG leaves stderr output unchanged"
@@ -563,7 +586,7 @@ fi
 run_test
 missing_log="${log_dir}/never-created.jsonl"
 result=$(TIMVISHER_AICTL_LOG="$missing_log" \
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc 'msg'" 2>&1 >/dev/null)
 if [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"msg"}' ]] &&
   [[ ! -e $missing_log ]]
 then
@@ -575,7 +598,7 @@ fi
 run_test
 log="${log_dir}/multiline.jsonl"
 : > "$log"
-TIMVISHER_AICTL_LOG="$log" bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message \$'line one\nline two' --suggestion \$'a\nb'" 2>/dev/null
+TIMVISHER_AICTL_LOG="$log" TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message \$'line one\nline two' --suggestion \$'a\nb'" 2>/dev/null
 if (( $(wc -l < "$log") == 1 )) && [[ $(jq -r .message "$log") == $'line one\nline two' ]]
 then
   pass "multi-line fields are written as a single log line"
@@ -590,7 +613,7 @@ long_message=$(head -c 65000 /dev/zero | tr '\0' x)
 writers=()
 for w in {1..8}
 do
-  TIMVISHER_AICTL_LOG="$log" bash -c "
+  TIMVISHER_AICTL_LOG="$log" TIMVISHER_AGENT=1 bash -c "
     source '${funcs_dir}/aictl.bash'
     for i in {1..25}
     do
@@ -610,13 +633,124 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Human audience tests (no TIMVISHER_AGENT, no TIMVISHER_AICTL_LOG)
+# ---------------------------------------------------------------------------
+
+human_run() {
+  human_rc=0
+  human_out=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG XDG_STATE_HOME="$log_dir/state" \
+    "$@" bash -c "source '${funcs_dir}/aictl.bash'; ${human_snippet}" 2>"${log_dir}/human-err") ||
+    human_rc=$?
+  human_err=$(cat "${log_dir}/human-err")
+  human_text=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+0000 //' <<<"$human_err")
+}
+
+assert_human() {
+  local desc=$1 want_rc=$2 want=$3
+  shift 3
+  run_test
+  human_run "$@"
+  if (( human_rc == want_rc )) &&
+    [[ -z $human_out ]] &&
+    [[ $human_text == "$want" ]] &&
+    [[ $human_err =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\+0000\  ]]
+  then
+    pass "human form: ${desc}"
+  else
+    fail "human form ${desc}: rc=${human_rc} (want ${want_rc}) stdout='${human_out}' stderr='${human_err}'"
+  fi
+}
+
+human_snippet="aictl_die tc 'it broke'; echo continued"
+assert_human "aictl_die is ERROR and exits 1" 1 'ERROR tc: it broke'
+
+human_snippet="wrap() { aictl_error tc 'it broke'; }; wrap; echo \"rc=\$?\" >&2"
+assert_human "aictl_error is ERROR and returns 1" 0 $'ERROR tc: it broke\nrc=1'
+
+human_snippet="aictl_warn tc 'careful'; echo continued"
+assert_human "aictl_warn is WARN and blocks" 1 'WARN tc: careful'
+
+human_snippet="aictl_info tc 'did it'"
+assert_human "aictl_info is INFO and returns 0" 0 'INFO tc: did it'
+
+human_snippet="aictl_notice tc 'heads up'"
+assert_human "aictl_notice is WARN and returns 0" 0 'WARN tc: heads up'
+
+human_snippet="aictl_warn tc 'careful'; echo continued >&2"
+assert_human "aictl_warn bypass is a BYPASS line and continues" 0 \
+  $'BYPASS tc: Guardrail bypassed with logged reason. Be sure you know what you are doing.\ncontinued' \
+  TIMVISHER_AGENT_NIRMI=1 TIMVISHER_AGENT_NIRMI_REASON=r
+
+human_snippet="aictl_warn tc 'careful'; echo continued"
+assert_human "aictl_warn with NIRMI but no reason is ERROR and blocks" 1 \
+  $'ERROR aictl_bypass_missing_reason: TIMVISHER_AGENT_NIRMI=1 was set but TIMVISHER_AGENT_NIRMI_REASON is empty. Bypassing a guardrail now requires an explicit reason, which is logged for audit.\n  reason: NIRMI-only bypasses were being used reflexively. Requiring a reason surfaces intent and creates an audit trail.\n  suggestion: Set TIMVISHER_AGENT_NIRMI_REASON=\'<why this specific bypass is necessary>\' and retry\n  suggestion: Or reconsider — the guard exists for a reason; try the suggested alternative instead' \
+  TIMVISHER_AGENT_NIRMI=1
+
+human_snippet="aictl_info --code tc --message 'did it' --reason 'because' --suggestion 'do x' --suggestion 'then y' --doc d.md --data '{\"k\":1}'"
+assert_human "reason, suggestions and doc go on indented lines; data is left out" 0 \
+  $'INFO tc: did it\n  reason: because\n  suggestion: do x\n  suggestion: then y\n  doc: d.md'
+
+human_snippet="aictl_info --code tc --message \$'line one\nline two' --suggestion \$'a\nb'"
+assert_human "multi-line fields indent their continuation lines" 0 \
+  $'INFO tc: line one\n    line two\n  suggestion: a\n    b'
+
+human_snippet="aictl_info --code '' --message 'no code'"
+assert_human "an empty code leaves out the code prefix" 0 'INFO no code'
+
+human_snippet="aictl_info --code tc --message ''"
+assert_human "an empty message leaves no trailing separator" 0 'INFO tc'
+
+human_snippet="aictl_info tc 'msg'"
+assert_human "CLAUDECODE and TIMVISHER_CODEX alone still get the human form" 0 'INFO tc: msg' \
+  CLAUDECODE=1 TIMVISHER_CODEX=1
+
+human_snippet="aictl_info tc 'msg'"
+assert_human "an empty TIMVISHER_AGENT gets the human form" 0 'INFO tc: msg' \
+  TIMVISHER_AGENT=
+
+human_snippet="aictl_warn --code tc --message m --command 'git log abc..HEAD' --reason r --suggestion s --doc d.md"
+assert_human "aictl_warn shows no command and no bypass mechanism" 1 \
+  $'WARN tc: m\n  reason: r\n  suggestion: s\n  doc: d.md'
+
+run_test
+human_snippet="aictl_warn --code tc --message m --command 'git log abc..HEAD' --reason r --suggestion s --doc d.md"
+human_run
+if [[ $human_err != *NIRMI* && $human_err != *'git log abc..HEAD'* && $human_err != *bypass* ]]
+then
+  pass "human form of aictl_warn never reveals NIRMI or the command"
+else
+  fail "human form of aictl_warn leaks the bypass: '${human_err}'"
+fi
+
+run_test
+missing_log="${log_dir}/human-never-created.jsonl"
+human_snippet="aictl_info tc 'msg'"
+human_run TIMVISHER_AICTL_LOG="$missing_log"
+if [[ $human_text == 'INFO tc: msg' && ! -e $missing_log ]]
+then
+  pass "a missing TIMVISHER_AICTL_LOG without an agent gives the human form and is never created"
+else
+  fail "missing log, human: stderr='${human_err}' exists=$([[ -e $missing_log ]] && echo yes)"
+fi
+
+run_test
+rc=0
+result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG "$bin_aictl" info bin_test 'from bin' 2>&1) || rc=$?
+if (( rc == 0 )) && [[ $result == *' INFO bin_test: from bin' ]]
+then
+  pass "bin/aictl info gives the human form without an agent"
+else
+  fail "bin/aictl info human: rc=$rc, got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
 # Argument parsing tests
 # ---------------------------------------------------------------------------
 
 for flag in --code --message --reason --doc --suggestion --command --data
 do
   run_test
-  bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc ${flag}" >/dev/null 2>&1 &
+  TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc ${flag}" >/dev/null 2>&1 &
   parse_pid=$!
   for _ in {1..50}
   do
@@ -665,10 +799,10 @@ assert_data() {
   local desc=$1 data=$2 want=$3
   local result
   run_test
-  result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --data \"\$1\"" _ "$data" 2>&1)
+  result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message m --data \"\$1\"" _ "$data" 2>&1)
   if [[ $result == *",\"data\":${want}}" ]] &&
     (( $(wc -l <<<"$result") == 1 )) &&
-    [[ -n $(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$result") ]]
+    [[ -n $(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$result") ]]
   then
     pass "--data ${desc}"
   else
@@ -682,7 +816,7 @@ assert_data "emits malformed JSON as a string" '{"session":' '"{\"session\":"'
 assert_data "emits a multi-line non-JSON value as an escaped string" $'not\njson' '"not\njson"'
 
 run_test
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc m" 2>&1)
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info tc m" 2>&1)
 if [[ $result != *'"data"'* ]]
 then
   pass "no --data omits the data field"
@@ -695,9 +829,9 @@ fi
 # ---------------------------------------------------------------------------
 
 run_test
-line=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message 'm' --data '{\"k\": [1, 2]}'" 2>&1)
+line=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_info --code tc --message 'm' --data '{\"k\": [1, 2]}'" 2>&1)
 rc=0
-result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$line" 2>&1) || rc=$?
+result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$line" 2>&1) || rc=$?
 if (( rc == 0 )) && [[ $result == '{"type":"instruction","level":"info","code":"tc","message":"m","data":{"k":[1,2]}}' ]]
 then
   pass "aictl_parse prints an instruction back as compact JSON"
@@ -709,7 +843,7 @@ assert_parse_rejects() {
   local desc=$1 input=$2
   local rc=0 result
   run_test
-  result=$(bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$input" 2>&1) || rc=$?
+  result=$(TIMVISHER_AGENT=1 bash -c "source '${funcs_dir}/aictl.bash'; aictl_parse \"\$1\"" _ "$input" 2>&1) || rc=$?
   if (( rc != 0 )) && [[ -z $result ]]
   then
     pass "aictl_parse rejects ${desc}"

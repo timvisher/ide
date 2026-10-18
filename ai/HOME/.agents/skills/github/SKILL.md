@@ -259,7 +259,7 @@ Otherwise the call stops with `gh_target_required`, as does any flag before the 
 **The shim doesn't work out what gh will target beyond that.** If a call targets something other than the cwd's repo, such as a PR URL in another org, pass `-R` before the subcommand. A `gh_target_mismatch` notice appears when a github.com URL or `gh api` path in the call names a different owner; the call still runs.
 
 - **`gh repo view|clone|fork|...` ignore `GH_REPO`.** Pass the repository as the argument too: `gh -R OWNER/REPO repo view OWNER/REPO`.
-- **Each selecting call prints an aictl instruction** to stderr (`gh_account_selected` or `gh_account_active`). Don't merge gh's stderr into output you parse.
+- **Each selecting call tells a listening agent which account it used** with an aictl instruction (`gh_account_selected` or `gh_account_active`): JSON on stderr under `TIMVISHER_AGENT`, and always in `TIMVISHER_AICTL_LOG` when that is set. With neither set, nothing is printed; with only the log set, stderr gets it as text. Don't merge gh's stderr into output you parse: it may be text, not JSON.
 - **A mapped account without a token stops the call** with `gh_account_token_unavailable`.
 - **A `GH_TOKEN` or `GITHUB_TOKEN` already in the environment wins**, with a `gh_account_deferred` notice.
 - **`gh auth`, `config`, `alias`, `extension`, `help`, `completion` and `version` pass straight through.**

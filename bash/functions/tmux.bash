@@ -16,11 +16,11 @@ ntmux3__define_code NTMUX3_CODE_TERMINAL_TIMEOUT ntmux3_terminal_timeout
 ntmux3__define_code NTMUX3_CODE_TERMINAL_NOT_STARTED ntmux3_terminal_not_started
 
 function ntmux3__aictl_listening() {
-    declare -F aictl_listening &>/dev/null && aictl_listening
+    aictl_listening
 }
 
 function ntmux3__emit_started() {
-    if [[ -n ${TIMVISHER_AICTL_LOG:-} ]] && declare -F aictl_info &>/dev/null
+    if [[ -n ${TIMVISHER_AICTL_LOG:-} ]]
     then
         aictl_info \
             --code "$NTMUX3_CODE_STARTED" \
@@ -320,15 +320,11 @@ function ntmux3__usage() {
 }
 
 function ntmux3__fail() {
-    echo "$1" >&2
-    if ntmux3__aictl_listening
-    then
-        aictl_error \
-            --code "$NTMUX3_CODE_FAILED" \
-            --message "$1" \
-            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
-        ntmux3__mark_verdict
-    fi
+    aictl_error \
+        --code "$NTMUX3_CODE_FAILED" \
+        --message "$1" \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+    ntmux3__mark_verdict
     return 1
 }
 
@@ -475,11 +471,6 @@ function ntmux3__terminal() (
 
     if [[ -n ${TIMVISHER_AGENT:-} ]]
     then
-        if ! declare -F aictl_parse &>/dev/null || ! declare -F aictl_error &>/dev/null
-        then
-            echo 'ntmux3 -T needs the aictl functions (~/.functions/aictl.bash) to report back to an agent.' >&2
-            return 1
-        fi
         log=$(mktemp "${TMPDIR:-/tmp}/ntmux3-terminal.XXXXXX") ||
             {
                 ntmux3__fail 'Unable to create the instruction log for ntmux3 -T'
@@ -499,15 +490,10 @@ function ntmux3__terminal() (
 
     if ! osascript -e "tell script \"timvisher Terminal\" to runCommandInteractively(\"${applescript_command}\")" >/dev/null
     then
-        if declare -F aictl_error &>/dev/null
-        then
-            aictl_error \
-                --code "$NTMUX3_CODE_TERMINAL_OPEN_FAILED" \
-                --message "Unable to open a terminal window running: ${command}" \
-                --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
-        else
-            echo "Unable to open a terminal window running: ${command}" >&2
-        fi
+        aictl_error \
+            --code "$NTMUX3_CODE_TERMINAL_OPEN_FAILED" \
+            --message "Unable to open a terminal window running: ${command}" \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
         return 1
     fi
 
@@ -954,31 +940,22 @@ function ntmux3__main() {
             info 'arg 2 is a branch-ish; stacking %s on %s' \
                 "$clone_target" "$base_dir_or_target_file"
             stack_on_base="$base_dir_or_target_file"
-        elif ntmux3__aictl_listening
-        then
+        else
             aictl_notice \
                 --code "ntmux3_arg2_ignored" \
                 --message "arg 2 '${base_dir_or_target_file}' is neither an existing file nor a branch-ish, so it was ignored and nothing is stacked." \
                 --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
-        else
-            warn "arg 2 '%s' is neither an existing file nor a branch-ish; ignoring it" \
-                "$base_dir_or_target_file"
         fi
     fi
 
     if [[ -z $detached && -n $TMUX ]]
     then
-        if ntmux3__aictl_listening
-        then
-            aictl_error \
-                --code "ntmux3_inside_tmux" \
-                --message "ntmux3 cannot attach a new tmux session from inside an existing one — use -d for detached mode." \
-                --reason "Without -d, ntmux3 tries to replace the current tmux client, which isn't supported. Detached mode creates the worktree + session without attaching, which is what agents want anyway." \
-                --doc "ai/HOME/.agents/skills/worktree/SKILL.md" \
-                --suggestion "ntmux3 -d ${clone_target:-<org/repo/branch>}"
-        else
-            echo 'Running ntmux3 inside a tmux session is not supported (pass -d for detached mode)' >&2
-        fi
+        aictl_error \
+            --code "ntmux3_inside_tmux" \
+            --message "ntmux3 cannot attach a new tmux session from inside an existing one — use -d for detached mode." \
+            --reason "Without -d, ntmux3 tries to replace the current tmux client, which isn't supported. Detached mode creates the worktree + session without attaching." \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md" \
+            --suggestion "ntmux3 -d ${clone_target:-<org/repo/branch>}"
         return 1
     fi
 

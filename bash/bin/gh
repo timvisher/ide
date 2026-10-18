@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
@@ -7,6 +8,7 @@ source ~/.functions/logging.bash ||
   }
 
 # Source aictl for structured agent messaging
+# shellcheck source=/dev/null
 source ~/.functions/aictl.bash ||
   {
     echo "Unable to source aictl functions" >&2
@@ -408,10 +410,11 @@ gh_account__select() {
   fi
   if [[ -z $account ]]
   then
-    aictl_info \
-      --code gh_account_active \
-      --message "No gh account is configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \
-      --doc "$gh_account__doc"
+    aictl_listening &&
+      aictl_info \
+        --code gh_account_active \
+        --message "No gh account is configured for '${gh_account__owner}' (from ${gh_account__source}); gh will run as its active account." \
+        --doc "$gh_account__doc"
     return 0
   fi
 
@@ -426,10 +429,12 @@ gh_account__select() {
   fi
 
   export GH_TOKEN=$token
-  aictl_info \
-    --code gh_account_selected \
-    --message "Using gh account '${account}' for '${gh_account__owner}' (from ${gh_account__source})." \
-    --doc "$gh_account__doc"
+  aictl_listening &&
+    aictl_info \
+      --code gh_account_selected \
+      --message "Using gh account '${account}' for '${gh_account__owner}' (from ${gh_account__source})." \
+      --doc "$gh_account__doc"
+  return 0
 }
 
 gh_account__select

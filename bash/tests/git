@@ -23,8 +23,10 @@ run_test() {
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/git"
 funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+export XDG_STATE_HOME="$tmpdir/state"
 
 # Create a mock brew prefix with git inside it
 mkdir -p "$tmpdir/prefix/bin"
@@ -755,7 +757,7 @@ ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
 test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
 
 run_wrapper_real_git() {
-  TIMVISHER_AGENT= CLAUDECODE= TIMVISHER_CODEX= \
+  TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
   PATH="$test_path_real_git" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
@@ -959,7 +961,7 @@ sf_setup() {
 # Run the wrapper's fetch with real git and a sandboxed HOME.
 sf_fetch() {
   ( cd "$sf_work" && \
-    TIMVISHER_AGENT= CLAUDECODE= TIMVISHER_CODEX= HOME="$sf_home" \
+    TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
     PATH="$test_path_real_git" \
     bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch" 2>&1 ) || true
 }
@@ -1361,6 +1363,24 @@ then
   pass "--help after -- is not a help request"
 else
   fail "add -f -- --help: got '${result}'"
+fi
+
+run_test
+noaictl_home="$tmpdir/noaictl_home"
+mkdir -p "$noaictl_home/.functions"
+cp -- "${funcs_dir}/logging.bash" "${funcs_dir}/git.bash" "$noaictl_home/.functions/"
+rc=0
+result=$(HOME="$noaictl_home" \
+  XDG_CONFIG_HOME="$noaictl_home/.config" \
+  XDG_DATA_HOME="$noaictl_home/.local/share" \
+  XDG_STATE_HOME="$noaictl_home/.local/state" \
+  XDG_CACHE_HOME="$noaictl_home/.cache" \
+  PATH="$test_path" "$script" status 2>&1) || rc=$?
+if (( rc == 1 )) && [[ $result == *'Unable to source aictl functions'* && $result != *real-git* ]]
+then
+  pass "git wrapper stops loudly without aictl.bash"
+else
+  fail "git wrapper without aictl.bash: rc=$rc got '${result}'"
 fi
 
 echo "Results: $((tests - failures))/${tests} passed"

@@ -58,7 +58,8 @@ lint flags, and env vars the raw commands miss.
 
 ## Errors
 
-All errors emit structured JSON via `aictl_die`. Read the `code`,
+All errors go through `aictl_die`: structured JSON on stderr under
+`TIMVISHER_AGENT`, readable text for a human. Read the `code`,
 `reason`, and `suggestions` fields — the suggestions point at the
 next concrete step.
 

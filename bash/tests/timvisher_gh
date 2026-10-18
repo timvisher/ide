@@ -99,16 +99,25 @@ then
 elif [[ $1 == pr && $2 == edit ]]
 then
   echo "mock-pr-edit"
+elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_RM_SCRATCH-} ]]
+then
+  rm -rf -- "$(dirname -- "$TIMVISHER_AICTL_LOG")"
+  exit 1
 elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_ERR-} ]]
 then
   echo "$MOCK_CHECKS_ERR" >&2
   exit 1
 elif [[ $1 == pr && $2 == checks && -n ${MOCK_CHECKS_REFUSE-} ]]
 then
-  echo '{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"}' >&2
-  exit 1
+  source ~/.functions/aictl.bash || exit 99
+  aictl_die --code gh_account_token_unavailable --message "no token"
 elif [[ $1 == pr && $2 == checks ]]
 then
+  if [[ -n ${MOCK_CHECKS_NOTICE-} ]]
+  then
+    source ~/.functions/aictl.bash || exit 99
+    aictl_notice --code gh_target_mismatch --message "a notice on stderr"
+  fi
   # Return contents of MOCK_CHECKS_FILE if set, otherwise empty array
   if [[ -r ${MOCK_CHECKS_FILE:-} ]]
   then
@@ -2445,29 +2454,89 @@ unset MOCK_GH_HANDLER
 
 # --- pr ready tests ---
 
+for audience in human agent
+do
+  audience_env=(-u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG)
+  refusal='ERROR gh_account_token_unavailable: no token'
+  if [[ $audience == agent ]]
+  then
+    audience_env+=(TIMVISHER_AGENT=1)
+    refusal='{"type":"instruction","level":"error","code":"gh_account_token_unavailable","message":"no token"'
+  fi
+  run_test
+  printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+  export MOCK_LOG="$tmpdir/log_pr_ready_refused_${audience}"
+  touch "$MOCK_LOG"
+  result=$(env "${audience_env[@]}" MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+    timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+  if (( rc != 0 && rc != 124 )) && [[ $result == *"$refusal"* && $result == *"not retrying"* ]] &&
+    ! grep -q 'mock-gh .* pr ready ' "$MOCK_LOG"
+  then
+    pass "pr ready (${audience}): stops when gh refuses instead of retrying forever"
+  else
+    fail "pr ready (${audience}) with a refusing gh: rc=${rc} result='${result}'"
+  fi
+  rm -f "$tmpdir/repo/pr.md.url"
+done
+
 run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
-export MOCK_LOG="$tmpdir/log_pr_ready_refused"
-touch "$MOCK_LOG"
-result=$(MOCK_CHECKS_REFUSE=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+printf '[{"name":"build","bucket":"pass"}]\n' > "$tmpdir/checks_outer.json"
+: > "$tmpdir/outer_aictl.jsonl"
+export MOCK_LOG="$tmpdir/log_pr_ready_outer"
+: > "$MOCK_LOG"
+result=$(env -u TIMVISHER_AGENT TIMVISHER_AICTL_LOG="$tmpdir/outer_aictl.jsonl" MOCK_CHECKS_NOTICE=1 \
+  MOCK_CHECKS_FILE="$tmpdir/checks_outer.json" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
   timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
-if (( rc != 0 && rc != 124 )) && [[ $result == *gh_account_token_unavailable* && $result == *"not retrying"* ]]
+if (( rc == 0 )) && grep -qF '"code":"gh_target_mismatch"' "$tmpdir/outer_aictl.jsonl"
 then
-  pass "pr ready: stops when gh refuses instead of retrying forever"
+  pass "pr ready: gh's instructions reach the caller's TIMVISHER_AICTL_LOG"
 else
-  fail "pr ready with a refusing gh: rc=${rc} result='${result}'"
+  fail "pr ready outer log: rc=${rc} log='$(cat "$tmpdir/outer_aictl.jsonl")' result='${result: -400}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/checks_outer.json" "$tmpdir/outer_aictl.jsonl"
+
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_LOG="$tmpdir/log_pr_ready_scratch"
+: > "$MOCK_LOG"
+result=$(MOCK_CHECKS_RM_SCRATCH=1 TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && [[ $result == *"Couldn't write the scratch files"* ]]
+then
+  pass "pr ready: stops when its scratch files go missing instead of polling forever"
+else
+  fail "pr ready lost scratch: rc=${rc} result='${result: -400}'"
 fi
 rm -f "$tmpdir/repo/pr.md.url"
 
 run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+printf '[{"name":"build","bucket":"pass"}]\n' > "$tmpdir/checks_notice.json"
+export MOCK_LOG="$tmpdir/log_pr_ready_notice"
+: > "$MOCK_LOG"
+result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG MOCK_CHECKS_NOTICE=1 \
+  MOCK_CHECKS_FILE="$tmpdir/checks_notice.json" TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc == 0 )) && grep -q 'mock-gh .* pr ready ' "$MOCK_LOG" && (( $(grep -c 'pr checks' "$MOCK_LOG") == 1 ))
+then
+  pass "pr ready: a human-form notice on gh's stderr doesn't spoil the checks JSON"
+else
+  fail "pr ready with a notice: rc=${rc} log=$(cat "$MOCK_LOG") result='${result: -400}'"
+fi
+rm -f "$tmpdir/repo/pr.md.url" "$tmpdir/checks_notice.json"
+
+run_test
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
 export MOCK_LOG="$tmpdir/log_pr_ready_transient"
 : > "$MOCK_LOG"
-result=$(MOCK_CHECKS_ERR='HTTP 502: Bad Gateway' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG timvisher_logging_log_level=INFO \
+  MOCK_CHECKS_ERR='HTTP 502: Bad Gateway' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
   timeout 3 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
-if (( rc == 124 )) && (( 1 < $(grep -c 'pr checks' "$MOCK_LOG") ))
+if (( rc == 124 )) && (( 1 < $(grep -c 'pr checks' "$MOCK_LOG") )) &&
+  [[ $result == *'gh pr checks: HTTP 502: Bad Gateway'* ]]
 then
-  pass "pr ready: keeps retrying through ordinary gh errors"
+  pass "pr ready: keeps retrying through ordinary gh errors and shows them"
 else
   fail "pr ready with a transient error: rc=${rc} result='${result:0:300}'"
 fi
@@ -2553,6 +2622,34 @@ then
   pass "pr ready: exclude patterns allow ignoring pending checks"
 else
   fail "pr ready: exclude patterns allow ignoring pending checks: got $(cat "$MOCK_LOG")"
+fi
+rm_state pr.md.url
+rm -rf "$exclude_home"
+unset MOCK_CHECKS_FILE
+
+run_test
+exclude_home="$tmpdir/exclude_home_badregex"
+mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+ln -s "$funcs_dir" "$exclude_home/.functions"
+printf '(\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
+export MOCK_CHECKS_FILE="$tmpdir/checks_badregex.json"
+printf '[{"name":"ci/test","bucket":"fail"}]\n' > "$MOCK_CHECKS_FILE"
+export MOCK_LOG="$tmpdir/log_pr_ready_badregex"
+: > "$MOCK_LOG"
+result=$(HOME="$exclude_home" \
+  XDG_CONFIG_HOME="$exclude_home/.config" \
+  XDG_DATA_HOME="$exclude_home/.local/share" \
+  XDG_STATE_HOME="$exclude_home/.local/state" \
+  XDG_CACHE_HOME="$exclude_home/.cache" \
+  TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
+  timeout 30 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
+if (( rc != 0 && rc != 124 )) && ! grep -q 'mock-gh -R testuser/testrepo pr ready' "$MOCK_LOG" &&
+  [[ $result == *'is not a valid regex'* ]]
+then
+  pass "pr ready: an invalid exclude pattern stops instead of passing failing checks"
+else
+  fail "pr ready with an invalid exclude pattern: rc=${rc} log=$(cat "$MOCK_LOG") result='${result: -300}'"
 fi
 rm_state pr.md.url
 rm -rf "$exclude_home"

@@ -15,6 +15,13 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
 gh_url_repo() {
   local spec owner repo _
   spec=$(timvisher_gh__repo_spec_from_url "$1")
@@ -812,6 +819,96 @@ hooks__finish() {
 
 # --- subcommand: pr ---
 
+# A subshell, so the scratch-directory trap stays local; die ends only
+# the subshell and the caller exits on its status.
+gh_pr_ready__wait_for_checks() (
+  local pr_url=$1 poll_interval=$2
+  shift 2
+  local -a exclude_patterns=("$@")
+  local checks_dir='' checks_json checks_refused line instruction pattern
+  local filtered_json total pending_count fail_count pass_count
+
+  trap '[[ -z $checks_dir ]] || rm -rf -- "$checks_dir"' EXIT
+  checks_dir=$(mktemp -d "${TMPDIR:-/tmp}/timvisher_gh_pr_ready.XXXXXX") ||
+    die "Couldn't create a scratch directory to poll the checks of '%s'" "$pr_url"
+
+  while true
+  do
+    if ! : > "${checks_dir}/aictl.jsonl" || ! : > "${checks_dir}/stderr"
+    then
+      die "Couldn't write the scratch files in '%s' to poll the checks of '%s'" "$checks_dir" "$pr_url"
+    fi
+    checks_json=$(TIMVISHER_AICTL_LOG="${checks_dir}/aictl.jsonl" \
+      command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket \
+      2>"${checks_dir}/stderr") || true
+
+    if [[ -n ${TIMVISHER_AICTL_LOG:-} && -f $TIMVISHER_AICTL_LOG ]]
+    then
+      cat -- "${checks_dir}/aictl.jsonl" >> "$TIMVISHER_AICTL_LOG"
+    fi
+
+    checks_refused=false
+    while IFS= read -r line
+    do
+      instruction=$(aictl_parse "$line") ||
+        continue
+      [[ $(jq -r .level <<<"$instruction") == error ]] &&
+        checks_refused=true
+    done < "${checks_dir}/aictl.jsonl"
+    if [[ $checks_refused == true ]]
+    then
+      cat -- "${checks_dir}/stderr" >&2
+      die "gh refused to check '%s'; not retrying" "$pr_url"
+    fi
+
+    if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
+    then
+      while IFS= read -r line
+      do
+        info 'gh pr checks: %s' "$line"
+      done < "${checks_dir}/stderr"
+      info 'No checks found yet; retrying in %ds' "$poll_interval"
+      sleep "$poll_interval"
+      continue
+    fi
+
+    # Filter out excluded checks
+    filtered_json=$checks_json
+    for pattern in "${exclude_patterns[@]}"
+    do
+      filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json") ||
+        die "Exclude pattern '%s' is not a valid regex; not marking '%s' ready" "$pattern" "$pr_url"
+    done
+
+    total=$(jq 'length' <<<"$filtered_json")
+    pending_count=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$filtered_json")
+    fail_count=$(jq '[.[] | select(.bucket == "fail")] | length' <<<"$filtered_json")
+    pass_count=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$filtered_json")
+
+    info 'Checks: %d total, %d pass, %d pending, %d fail' \
+         "$total" "$pass_count" "$pending_count" "$fail_count"
+
+    if (( 0 < fail_count ))
+    then
+      jq -r '.[] | select(.bucket == "fail") | .name' <<<"$filtered_json" |
+        while IFS= read -r name
+        do
+          error 'Failed check: %s' "$name"
+        done
+      die 'CI checks failed; not marking as ready'
+    fi
+
+    if (( pending_count == 0 ))
+    then
+      info 'All %d check(s) passed (or excluded)' "$total"
+      break
+    fi
+
+    info 'Waiting for %d pending check(s); retrying in %ds' "$pending_count" "$poll_interval"
+    sleep "$poll_interval"
+  done
+)
+
 gh_pr_ready() {
   local pr_url
   pr_url=$(state__require_url pr) ||
@@ -862,62 +959,9 @@ gh_pr_ready() {
     info 'Loaded exclude pattern(s) from %s' "$exclude_file"
   done
 
-  local poll_interval=${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}
-  local checks_out checks_json checks_refusal filtered_json total pending_count fail_count pass_count
-
-  while true
-  do
-    checks_out=$(command gh -R "$(gh_url_repo "$pr_url")" pr checks "$pr_url" --json name,bucket 2>&1) || true
-    checks_refusal=$(grep '^{"type":"instruction","level":"error"' <<<"$checks_out")
-    if [[ -n $checks_refusal ]]
-    then
-      printf '%s\n' "$checks_refusal" >&2
-      die "gh refused to check '%s'; not retrying" "$pr_url"
-    fi
-    checks_json=$(grep -v '^{"type":"instruction"' <<<"$checks_out")
-
-    # Validate we got parseable JSON; empty output or error text means no checks yet
-    if [[ -z $checks_json ]] || ! jq -e 'type == "array"' <<<"$checks_json" >/dev/null 2>&1
-    then
-      info 'No checks found yet; retrying in %ds' "$poll_interval"
-      sleep "$poll_interval"
-      continue
-    fi
-
-    # Filter out excluded checks
-    filtered_json=$checks_json
-    for pattern in "${exclude_patterns[@]}"
-    do
-      filtered_json=$(jq --arg pat "$pattern" '[.[] | select(.name | test($pat) | not)]' <<<"$filtered_json")
-    done
-
-    total=$(jq 'length' <<<"$filtered_json")
-    pending_count=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$filtered_json")
-    fail_count=$(jq '[.[] | select(.bucket == "fail")] | length' <<<"$filtered_json")
-    pass_count=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$filtered_json")
-
-    info 'Checks: %d total, %d pass, %d pending, %d fail' \
-         "$total" "$pass_count" "$pending_count" "$fail_count"
-
-    if (( 0 < fail_count ))
-    then
-      jq -r '.[] | select(.bucket == "fail") | .name' <<<"$filtered_json" |
-        while IFS= read -r name
-        do
-          error 'Failed check: %s' "$name"
-        done
-      die 'CI checks failed; not marking as ready'
-    fi
-
-    if (( pending_count == 0 ))
-    then
-      info 'All %d check(s) passed (or excluded)' "$total"
-      break
-    fi
-
-    info 'Waiting for %d pending check(s); retrying in %ds' "$pending_count" "$poll_interval"
-    sleep "$poll_interval"
-  done
+  gh_pr_ready__wait_for_checks "$pr_url" "${TIMVISHER_GH_PR_READY_POLL_INTERVAL:-10}" \
+    ${exclude_patterns[@]+"${exclude_patterns[@]}"} ||
+    exit 1
 
   hooks__run_pre ready
 

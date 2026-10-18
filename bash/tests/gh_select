@@ -51,9 +51,11 @@ extra_env=()
 run_shim() {
   local dir=$1
   shift
+  : > "$tmpdir/aictl.jsonl"
   out=$(
     cd "$dir" &&
       env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+        TIMVISHER_AICTL_LOG="$tmpdir/aictl.jsonl" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         PATH="$tmpdir/mockbin:$PATH" \
         TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
@@ -62,28 +64,29 @@ run_shim() {
   )
   rc=$?
   err=$(< "$tmpdir/err")
+  log=$(< "$tmpdir/aictl.jsonl")
 }
 
 expect() {
-  local label=$1 want_out=$2 want_err=$3
+  local label=$1 want_out=$2 want_log=$3
   run_test
-  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_err || $err == *"$want_err"* ]]
+  if (( rc == 0 )) && [[ $out == "$want_out" ]] && [[ -z $want_log || $log == *"$want_log"* ]]
   then
     pass "$label"
   else
-    fail "$label; rc=$rc out='$out' err='$err'"
+    fail "$label; rc=$rc out='$out' err='$err' log='$log'"
   fi
 }
 
 expect_stop() {
-  local label=$1 want_err=${2-}
+  local label=$1 want_log=${2-}
   run_test
-  if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_target_required"'* ]] &&
-     [[ -z $want_err || $err == *"$want_err"* ]]
+  if (( rc != 0 )) && [[ -z $out && $log == *'"code":"gh_target_required"'* ]] &&
+     [[ -z $want_log || $log == *"$want_log"* ]]
   then
     pass "$label"
   else
-    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err'"
+    fail "$label; expected gh_target_required; rc=$rc out='$out' err='$err' log='$log'"
   fi
 }
 
@@ -200,7 +203,7 @@ expect "an api path naming another owner is noted" \
   '"code":"gh_target_mismatch"'
 run_shim "$repo2" pr view https://github.com/ddoghq/x/pull/1
 run_test
-if [[ $err != *gh_target_mismatch* ]]
+if [[ $err != *gh_target_mismatch* && $log != *gh_target_mismatch* ]]
 then
   pass "a URL naming the picked owner isn't noted"
 else
@@ -237,7 +240,7 @@ expect "a blank mapping file counts as unmapped" \
 map brokenorg broken
 run_shim "$tmpdir/norepo" -R brokenorg/repo pr list
 run_test
-if (( rc != 0 )) && [[ -z $out && $err == *'"code":"gh_account_token_unavailable"'* ]]
+if (( rc != 0 )) && [[ -z $out && $log == *'"code":"gh_account_token_unavailable"'* ]]
 then
   pass "a mapped account without a token stops the call"
 else
@@ -254,6 +257,92 @@ then
   pass "every argument reaches gh with its boundaries intact once -R is removed"
 else
   fail "argument boundaries changed: $(od -c < "$tmpdir/argv")"
+fi
+
+run_audience() {
+  local audience=$1 dir=$2
+  shift 2
+  local -a audience_env=()
+  [[ $audience == agent ]] &&
+    audience_env=(TIMVISHER_AGENT=1)
+  out=$(
+    cd "$dir" &&
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        PATH="$tmpdir/mockbin:$PATH" \
+        TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+        ${audience_env[@]+"${audience_env[@]}"} \
+        ${extra_env[@]+"${extra_env[@]}"} \
+        "$script" "$@" 2>"$tmpdir/err"
+  )
+  rc=$?
+  err=$(< "$tmpdir/err")
+}
+
+run_audience human "$tmpdir/norepo" -R ddoghq/dd-source pr view 5
+run_test
+if (( rc == 0 )) && [[ $out == "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO=ddoghq/dd-source pr view 5" && -z $err ]]
+then
+  pass "with no agent listening, selecting an account says nothing"
+else
+  fail "human account selection should be silent; rc=$rc out='$out' err='$err'"
+fi
+
+run_audience human "$tmpdir/norepo" -R unmapped/repo pr list
+run_test
+if (( rc == 0 )) && [[ -z $err ]]
+then
+  pass "with no agent listening, running as the active account says nothing"
+else
+  fail "human unmapped owner should be silent; rc=$rc err='$err'"
+fi
+
+run_audience agent "$tmpdir/norepo" -R ddoghq/dd-source pr view 5
+run_test
+if (( rc == 0 )) && [[ $err == '{"type":"instruction","level":"info","code":"gh_account_selected",'* ]]
+then
+  pass "an agent gets gh_account_selected as instruction JSON"
+else
+  fail "agent account selection; rc=$rc err='$err'"
+fi
+
+run_audience agent "$tmpdir/norepo" -R unmapped/repo pr list
+run_test
+if (( rc == 0 )) && [[ $err == '{"type":"instruction","level":"info","code":"gh_account_active",'* ]]
+then
+  pass "an agent gets gh_account_active as instruction JSON"
+else
+  fail "agent unmapped owner; rc=$rc err='$err'"
+fi
+
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view 5
+run_test
+if (( rc == 0 )) && [[ $err == *' INFO gh_account_selected: Using gh account '* && $err != *'"type":"instruction"'* ]] &&
+  [[ $log == '{"type":"instruction","level":"info","code":"gh_account_selected",'* ]]
+then
+  pass "with only TIMVISHER_AICTL_LOG set, the log gets JSON and stderr gets text"
+else
+  fail "log-only account selection; rc=$rc err='$err' log='$log'"
+fi
+
+run_audience human "$repo2" pr view https://github.com/otherorg/x/pull/1
+run_test
+if (( rc == 0 )) && [[ $err == *' WARN gh_target_mismatch: '* && $err != *'"type":"instruction"'* ]]
+then
+  pass "a human sees gh_target_mismatch as text"
+else
+  fail "human mismatch; rc=$rc err='$err'"
+fi
+
+extra_env=(GH_TOKEN=caller)
+run_audience human "$tmpdir/norepo" api user
+extra_env=()
+run_test
+if (( rc == 0 )) && [[ $err == *' WARN gh_account_deferred: '* && $err != *'"type":"instruction"'* ]]
+then
+  pass "a human sees gh_account_deferred as text"
+else
+  fail "human deferred; rc=$rc err='$err'"
 fi
 
 echo ""
