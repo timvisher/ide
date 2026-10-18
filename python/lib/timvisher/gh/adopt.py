@@ -142,55 +142,55 @@ def _move(source, target):
         store.merge_move(source, target)
 
 
-def adopt_pr_directory(state, worktree, lookup, now):
+def adopt_directory(state, worktree, kind, lookup, now):
     worktree = pathlib.Path(worktree)
-    directory = worktree / ".timvisher_gh" / "pr"
+    directory = worktree / ".timvisher_gh" / kind
     if directory.is_symlink() or not directory.is_dir():
         return None
-    meta_file = directory / "pr.json"
+    meta_file = directory / f"{kind}.json"
     meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.is_file() else {}
     if not meta.get("url"):
         return None
-    pr_target = targets.parse_url(meta["url"], "pr", f" (from {meta_file})")
-    items = _sidecars(directory / "comments")
+    target = targets.parse_url(meta["url"], kind, f" (from {meta_file})")
+    items = _sidecars(directory / "comments") if kind == "pr" else []
     moves = []
     with state.write() as db:
-        pr_id = ensure_parent(db, pr_target, lookup)
-        state.touch(pr_id)
+        object_id = ensure_parent(db, target, lookup)
+        state.touch(object_id)
         posted = meta.get("posted") or {}
         for name in ("title", "body"):
             if name in posted:
-                store.set_base(db, pr_id, name, posted[name], now)
-        pr_dir = store.root() / store.pr_key(pr_target.owner, pr_target.repo, pr_target.number)
+                store.set_base(db, object_id, name, posted[name], now)
+        object_dir = store.store_file(db, object_id).parent
         threads, taken = {}, set()
         for sidecar, item in items:
-            object_id = _comment_object(db, pr_id, pr_target, item, now, threads, taken)
-            if object_id is not None:
-                state.touch(object_id)
-                moves.append((sidecar, store.store_file(db, object_id)))
-        _merged(db, pr_id, directory / "merged", now)
-        _record_context(db, worktree, pr_id)
-    for sidecar, target in moves:
-        _move(sidecar.with_suffix(""), target)
+            comment_id = _comment_object(db, object_id, target, item, now, threads, taken)
+            if comment_id is not None:
+                state.touch(comment_id)
+                moves.append((sidecar, store.store_file(db, comment_id)))
+        if kind == "pr":
+            _merged(db, object_id, directory / "merged", now)
+            _record_context(db, worktree, object_id)
+    for sidecar, stored in moves:
+        _move(sidecar.with_suffix(""), stored)
         sidecar.unlink()
         sidecar.with_suffix(".url").unlink(missing_ok=True)
-    _move(directory / "pr.md", pr_dir / "pr.md")
-    for leftover in ("pr.json", "pr.url"):
+    _move(directory / f"{kind}.md", object_dir / f"{kind}.md")
+    for leftover in (f"{kind}.json", f"{kind}.url"):
         (directory / leftover).unlink(missing_ok=True)
     for path in sorted(directory.rglob("*"), reverse=True):
         if path.is_file() or path.is_symlink():
-            _move(path, pr_dir / path.relative_to(directory))
+            _move(path, object_dir / path.relative_to(directory))
     shutil.rmtree(directory)
-    pr_dir.mkdir(parents=True, exist_ok=True)
-    store._link(directory, pr_dir)
-    if (worktree / "x.merged").is_symlink():
+    object_dir.mkdir(parents=True, exist_ok=True)
+    store._link(directory, object_dir)
+    if kind == "pr" and (worktree / "x.merged").is_symlink():
         (worktree / "x.merged").unlink()
     with state.write() as db:
-        for link in ("pr.md",):
-            if (worktree / link).is_symlink():
-                db.execute("INSERT OR IGNORE INTO authored VALUES (?, ?)", (pr_id, str(worktree / link)))
-        state.touch(pr_id)
-    return pr_id
+        if (worktree / f"{kind}.md").is_symlink():
+            db.execute("INSERT OR IGNORE INTO authored VALUES (?, ?)", (object_id, str(worktree / f"{kind}.md")))
+        state.touch(object_id)
+    return object_id
 
 
 def adopt_comment(state, path, lookup, now):

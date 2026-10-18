@@ -110,7 +110,7 @@ class AdoptTest(GhTestCase):
 
     def test_a_bash_pr_directory_is_adopted_into_the_store(self):
         self.bash_pr_directory()
-        self.assertEqual("PR_7", adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW))
+        self.assertEqual("PR_7", adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW))
         pr_dir = store.root() / PR_KEY
         link = self.work / ".timvisher_gh" / "pr"
         self.assertTrue(link.is_symlink())
@@ -153,7 +153,7 @@ class AdoptTest(GhTestCase):
             self.write(f"{base}/comments/c{n}.md.json", json.dumps({
                 "kind": "issue_comment", "id": f"IC_{n}", "database_id": n, "url": f"{PR}#issuecomment-{n}",
                 "author": "alice", "created_at": "2026-10-10T10:00:00Z", "posted": {"body": body}}))
-        adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
+        adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW)
         paths = dict(self.rows("SELECT id, store_path FROM objects WHERE kind = 'comment'"))
         self.assertNotEqual(paths["IC_1"], paths["IC_2"])
         self.assertEqual(("LGTM 1\n", "LGTM 2\n"), tuple((store.root() / paths[i] / "comment.md").read_text()
@@ -161,13 +161,13 @@ class AdoptTest(GhTestCase):
 
     def test_a_second_adoption_of_the_same_pr_keeps_both_copies(self):
         self.bash_pr_directory()
-        adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
+        adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW)
         other = self.tmp / "other"
         (other / ".timvisher_gh/pr/comments").mkdir(parents=True)
         (other / ".timvisher_gh/pr/pr.json").write_text(json.dumps({"url": PR}))
         (other / ".timvisher_gh/pr/pr.md").write_text("Other title\n")
         (other / ".timvisher_gh/pr/comments/draft.md").write_text("other draft\n")
-        adopt.adopt_pr_directory(self.state, other, self.lookup, NOW)
+        adopt.adopt_directory(self.state, other, "pr", self.lookup, NOW)
         pr_dir = store.root() / PR_KEY
         self.assertEqual(("Title\n\nBody\n", "Other title\n"),
                          ((pr_dir / "pr.md").read_text(), (pr_dir / "pr.md.adopted").read_text()))
@@ -182,9 +182,26 @@ class AdoptTest(GhTestCase):
 
     def test_a_bash_pr_directory_is_adopted_once(self):
         self.bash_pr_directory()
-        adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW)
-        self.assertIsNone(adopt.adopt_pr_directory(self.state, self.work, self.lookup, NOW))
+        adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW)
+        self.assertIsNone(adopt.adopt_directory(self.state, self.work, "pr", self.lookup, NOW))
         self.assertEqual([PR], self.lookups)
+
+    def test_a_bash_issue_directory_is_adopted_into_the_store(self):
+        base = ".timvisher_gh/issue"
+        issue = "https://github.com/O/R/issues/3"
+        self.write(f"{base}/issue.md", "Bug\n\nIt breaks\n")
+        self.write(f"{base}/issue.json", json.dumps({"url": issue, "posted": {"title": "Bug", "body": "It broke"}}))
+        self.write(f"{base}/issue.url", f"{issue}\n")
+        self.assertEqual("I_3", adopt.adopt_directory(self.state, self.work, "issue", self.lookup, NOW))
+        issue_dir = store.root() / "github.com/O/R/issues/3"
+        link = self.work / ".timvisher_gh" / "issue"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(issue_dir.resolve(), link.resolve())
+        self.assertEqual("Bug\n\nIt breaks\n", (issue_dir / "issue.md").read_text())
+        self.assertEqual({("title", '"Bug"'), ("body", '"It broke"')},
+                         set(self.rows("SELECT name, base FROM fields WHERE object_id = 'I_3'")))
+        self.assertEqual([], self.rows("SELECT * FROM context"))
+        self.assertIsNone(adopt.adopt_directory(self.state, self.work, "issue", self.lookup, NOW))
 
     def test_a_legacy_comment_file_and_url_are_adopted(self):
         self.facts[f"{PR}#issuecomment-5"] = {"id": "IC_5", "database_id": 5, "kind": "issue_comment",
