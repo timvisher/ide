@@ -2530,7 +2530,7 @@ run_test
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
 export MOCK_LOG="$tmpdir/log_pr_ready_transient"
 : > "$MOCK_LOG"
-result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG -u timvisher_logging_log_level \
+result=$(env -u TIMVISHER_AGENT -u TIMVISHER_AICTL_LOG timvisher_logging_log_level=INFO \
   MOCK_CHECKS_ERR='HTTP 502: Bad Gateway' TIMVISHER_GH_PR_READY_POLL_INTERVAL=0 PATH="$test_path" \
   timeout 3 bash -c "source '${funcs_dir}/logging.bash'; '$script' pr ready" 2>&1) && rc=0 || rc=$?
 if (( rc == 124 )) && (( 1 < $(grep -c 'pr checks' "$MOCK_LOG") )) &&
