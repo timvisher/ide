@@ -97,8 +97,10 @@ def _browser_url():
 def _tracked(path, db):
     if db is None:
         return None
-    rows = db.execute("SELECT o.id, o.url FROM authored a JOIN objects o ON o.id = a.object_id WHERE a.path = ?",
-                      (str(path.absolute()),)).fetchall()
+    rows = []
+    if path.is_symlink() or not os.path.lexists(path):
+        rows = db.execute("SELECT o.id, o.url FROM authored a JOIN objects o ON o.id = a.object_id WHERE a.path = ?",
+                          (str(path.absolute()),)).fetchall()
     if not rows:
         store = state_db.root().resolve()
         real = path.resolve()
@@ -219,10 +221,12 @@ def resolve(noun, argument, *, context, db=None, creating=False):
         if found is not None:
             return found
     root_source = pathlib.Path(context.toplevel) / f"{noun}.md"
-    if os.path.lexists(root_source):
-        tracked = _tracked(root_source, db)
-        if tracked is not None or _legacy_url(root_source) is not None or creating:
-            return _from_file(root_source, noun, db, creating)
+    tracked = _tracked(root_source, db)
+    if tracked is not None:
+        object_id, url = tracked
+        return dataclasses.replace(parse_url(url, noun), object_id=object_id, via="tracked")
+    if os.path.lexists(root_source) and (_legacy_url(root_source) is not None or creating):
+        return _from_file(root_source, noun, db, creating)
     try:
         found = _match(browser.active_tab()["url"], noun)
     except subprocess.CalledProcessError:

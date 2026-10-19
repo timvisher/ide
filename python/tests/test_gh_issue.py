@@ -42,6 +42,19 @@ class IssueTest(GhTestCase):
         self.assertTrue((self.work / "issue.md").is_symlink())
         self.assertEqual("Bug\n\nIt breaks\n", (self.work / "issue.md").read_text())
 
+    def test_a_new_issue_md_after_the_first_files_a_second_issue(self):
+        self.create()
+        (self.work / "issue.md").unlink()
+        (self.work / "issue.md").write_text("Another bug\n\nAlso breaks\n")
+        rc, out = self.issue()
+        self.assertEqual((0, f"https://github.com/{REPO}/issues/2\n"), (rc, out), self.err)
+        self.assertEqual(("Bug", "Another bug"), (self.on_github(1)["title"], self.on_github(2)["title"]))
+        self.assertTrue((self.work / "issue.md").is_symlink())
+        self.assertEqual("2\n", self.issue("info", ".number")[1])
+        (self.work / "issue.md").write_text("Another bug, edited\n\nAlso breaks\n")
+        (self.work / "issue.md").unlink()
+        self.assertEqual("2\n", self.issue("info", ".number")[1])
+
     def test_push_sends_title_and_body(self):
         self.create("push")
         (self.work / "issue.md").write_text("Bug, worse\n\nIt really breaks\n")

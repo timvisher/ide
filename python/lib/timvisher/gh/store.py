@@ -182,6 +182,7 @@ def promote(db, object_id, source):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(source, target)
         _link(source, target)
+    db.execute("DELETE FROM authored WHERE path = ? AND object_id != ?", (str(source), object_id))
     db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
     return target
 
