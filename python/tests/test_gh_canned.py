@@ -41,11 +41,14 @@ class CannedTest(GhTestCase):
         self.comment("arp-review")
         self.assertEqual(2, len(self.bodies()))
 
-    def test_the_core_root_is_searched_before_the_overlay(self):
+    def test_the_overlay_is_searched_before_the_core_root(self):
         self.write(self.core, "arp-review", "core\n")
         self.write(self.ext, "arp-review", "overlay\n")
         self.assertEqual(0, self.comment("arp-review")[0], self.err)
-        self.assertEqual(["core"], self.bodies())
+        self.assertEqual(["overlay"], self.bodies())
+        self.write(self.core, "only-core", "core only\n")
+        self.assertEqual(0, self.comment("only-core")[0], self.err)
+        self.assertEqual(["overlay", "core only"], self.bodies())
 
     def test_a_file_of_the_same_name_is_posted_instead(self):
         self.write(self.ext, "arp-review", "canned\n")

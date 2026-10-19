@@ -16,8 +16,8 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
        timvisher_gh [-C <path>] comment delete [--force] <target>
 
   comment [<target>] <name>  with no file <name>, post the canned comment
-                             timvisher_gh.config/comments/<name>.md (core root, then
-                             overlay) on the PR
+                             timvisher_gh.config/comments/<name>.md (overlay root, then
+                             core) on the PR
   comment [<target>] <file>  sync <file>, creating the comment on its first push.
                              A PR target (or none: the worktree's PR) makes a
                              top-level comment; a review comment or thread target
@@ -213,11 +213,12 @@ def _create(opened, where, source, now):
     return created["html_url"]
 
 
-# The core root before the overlay, as #6's comment__canned searched them.
+# The overlay before the core root, so an overlay comment overrides core's of
+# the same name; #6's comment__canned searched core first.
 def canned(name):
     if not name or "/" in name:
         return None
-    for root in hooks.roots():
+    for root in reversed(hooks.roots()):
         path = root / "comments" / f"{name}.md"
         if path.is_file():
             return path
