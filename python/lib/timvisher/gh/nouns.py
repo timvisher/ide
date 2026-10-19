@@ -147,8 +147,11 @@ def info(noun, context, args):
 def run(noun, context, args):
     if args[:1] == ["info"]:
         return info(noun, context, args[1:])
+    # Imported here, not at the top: the noun modules import this one.
     if noun == "pr":
-        # Imported here, not at the top: timvisher.gh.pr imports this module.
         from timvisher.gh import pr
         return pr.run(context, args)
+    if noun == "issue":
+        from timvisher.gh import issue
+        return issue.run(context, args)
     usage(f"Unknown {noun} command: '{args[0] if args else ''}'", f"Commands: {noun} info")
