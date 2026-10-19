@@ -7,7 +7,7 @@ import tempfile
 
 from timvisher import aictl
 from timvisher.gh import store
-from timvisher.gh.errors import ERROR, fail
+from timvisher.gh.errors import ERROR
 
 DECISION = 3
 REFUSED = 4
@@ -145,9 +145,10 @@ def emit_plan(plans, stream=None):
 
 
 def _conflict(plans, rerun):
-    urls = [p.item.url for p in plans if p.action == "decision"]
-    fail("timvisher_gh_sync_conflict", f"{len(urls)} object(s) changed both here and on GitHub: {', '.join(urls)}.",
-         status=DECISION, reason="Nothing was applied to them, and their files are untouched.",
+    urls = [p.item.url for p in plans]
+    aictl.error(code="timvisher_gh_sync_conflict",
+         message=f"{len(urls)} object(s) changed both here and on GitHub: {', '.join(urls)}.",
+         reason="Nothing was applied to them, and their files are untouched.",
          suggestions=[f"{rerun} --ours   (push yours over GitHub's change)",
                       f"{rerun} --theirs (overwrite your file from GitHub)",
                       f"{rerun} --merge  (git merge-file, then apply if it merges cleanly)"])
@@ -193,9 +194,13 @@ class Engine:
         for name, value in values.items():
             store.set_base(self.state.db, item.object_id, name, value, self.now)
 
+    def _write(self, plan, values):
+        plan.source.update(values)
+        plan.item.adapter.write_source(plan.item, dict(plan.source))
+
     def _refresh(self, plan, names):
         values = {name: plan.remote[name] for name in names}
-        plan.item.adapter.write_source(plan.item, {**plan.source, **values})
+        self._write(plan, values)
         self._record_base(plan.item, values)
 
     def _push(self, plan, names):
@@ -214,7 +219,7 @@ class Engine:
     def _resolve(self, plan, names):
         choice = self.resolution
         if choice is None and self.ask is not None:
-            emit_plan([plan], self.out)
+            emit_plan([plan], sys.stderr)
             choice = self.ask(plan)
         match choice:
             case "ours":
@@ -232,7 +237,7 @@ class Engine:
                     conflicts, text = merge_field(plan.base.get(name), plan.source.get(name), plan.remote.get(name))
                     merged[name] = text
                     conflicted = conflicted or 0 < conflicts
-                plan.item.adapter.write_source(plan.item, {**plan.source, **merged})
+                self._write(plan, merged)
                 if conflicted:
                     aictl.error(code="timvisher_gh_merge_conflict",
                                 message=f"Merging {plan.item.url} left conflict markers in its source.",
@@ -254,13 +259,13 @@ class Engine:
 
     def _apply(self, plan):
         names = lambda action: [n for n, r in plan.fields.items() if r == action]
+        if names("refused") and self.resolution not in ("ours", "theirs"):
+            return "refused"
         if names("decision"):
             outcome = self._resolve(plan, names("decision"))
             if outcome != "done":
                 return "done" if outcome == "replanned" else outcome
         if names("refused"):
-            if self.resolution not in ("ours", "theirs"):
-                return "refused"
             self._resolve(plan, names("refused"))
         if names("base"):
             self._record_base(plan.item, {name: plan.remote[name] for name in names("base")})
@@ -296,21 +301,22 @@ class Engine:
                     outcomes.append((plan, "undecided"))
                 else:
                     outcomes.append((plan, self._apply(plan)))
-        if self.failed:
-            return ERROR
         undecided = [plan for plan, outcome in outcomes if outcome == "undecided"]
         if undecided:
-            emit_plan(undecided, self.out)
+            emit_plan(undecided, sys.stderr)
             _conflict(undecided, self.rerun)
-        if any(outcome == "conflict" for _, outcome in outcomes):
-            return DECISION
         refused = [plan.item.url for plan, outcome in outcomes if outcome == "refused"]
         if refused:
-            fail("timvisher_gh_push_refused", f"GitHub has changes to pull first: {', '.join(refused)}.",
-                 status=REFUSED, reason="Pushing would overwrite them; nothing was pushed to those objects.",
-                 suggestions=[f"{self.rerun.replace(' push', ' pull', 1)} first, then rerun this",
-                              f"Or {self.rerun} --ours to overwrite them"])
-        return 0
+            aictl.error(code="timvisher_gh_push_refused",
+                        message=f"GitHub has changes to pull first: {', '.join(refused)}.",
+                        reason="Pushing would overwrite them; nothing was pushed to those objects.",
+                        suggestions=[f"{self.rerun.replace(' push', ' pull', 1)} first, then rerun this",
+                                     f"Or {self.rerun} --ours to overwrite them"])
+        if self.failed:
+            return ERROR
+        if undecided or any(outcome == "conflict" for _, outcome in outcomes):
+            return DECISION
+        return REFUSED if refused else 0
 
 
 def prompt(plan, stream=None):

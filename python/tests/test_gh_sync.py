@@ -72,7 +72,8 @@ class SyncTest(unittest.TestCase):
                 rc = engine.run([item])
             except Exit as stop:
                 rc = stop.status
-        instructions = [json.loads(line) for line in err.getvalue().splitlines() if line.startswith("{")]
+        self.stderr = err.getvalue()
+        instructions = [json.loads(line) for line in self.stderr.splitlines() if line.startswith("{")]
         return rc, out.getvalue(), instructions
 
     def bases(self):
@@ -129,7 +130,8 @@ class SyncTest(unittest.TestCase):
                 self.assertEqual("timvisher_gh_sync_conflict", conflict["code"])
                 for flag in ("--ours", "--theirs", "--merge"):
                     self.assertTrue(any(f"timvisher_gh pr {verb} {flag}" in s for s in conflict["suggestions"]))
-                self.assertIn("! pr", out)
+                self.assertEqual("", out)
+                self.assertIn("! pr", self.stderr)
                 self.assertEqual("B", self.bases()["body"])
 
     def test_someone_elses_object_is_only_pulled(self):
@@ -194,6 +196,37 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(([], {"title": "T", "body": "theirs"}, "theirs"),
                          (adapter.pushes, adapter.source, self.bases()["body"]))
 
+    def test_theirs_on_several_fields_keeps_every_refreshed_value(self):
+        item, adapter = self.setup(self.BASE, {"title": "T", "body": "mine"}, {"title": "T2", "body": "theirs"})
+        self.assertEqual(0, self.run_engine("sync", item, resolution="theirs")[0])
+        self.assertEqual({"title": "T2", "body": "theirs"}, adapter.source)
+        item2, adapter2 = self.setup(None, dict(adapter.source), dict(adapter.remote))
+        self.assertEqual((0, []), (self.run_engine("sync", item2)[0], adapter2.pushes))
+
+    def test_an_interactive_ours_never_pushes_to_an_object_that_is_refused(self):
+        item, adapter = self.setup(self.BASE, {"title": "T", "body": "mine"}, {"title": "T2", "body": "theirs"})
+        rc, _, instructions = self.run_engine("push", item, ask=lambda plan: "ours")
+        self.assertEqual((4, []), (rc, adapter.pushes))
+        self.assertEqual("timvisher_gh_push_refused", instructions[-1]["code"])
+
+    def test_a_stale_object_doesnt_hide_another_objects_decision(self):
+        stale, stale_adapter = self.setup(self.BASE, {"title": "T2", "body": "B"}, dict(self.BASE))
+        stale_adapter.on_fetch = lambda a: a.remote.update(body=f"moved {a.fetches}") if a.fetches == 2 else None
+        with self.state.write() as db:
+            store.register(db, id="PR_8", kind="pr", url=URL[:-1] + "8", owner="O", repo="R", number=8,
+                           store_path="github.com/O/R/pull/8")
+            for name, value in self.BASE.items():
+                store.set_base(db, "PR_8", name, value, "t0")
+        torn = sync.Item("PR_8", "pr", URL[:-1] + "8", Adapter({"title": "T", "body": "theirs"},
+                                                               {"title": "T", "body": "mine"}))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = sync.Engine(self.state, "push", now="t1", rerun="timvisher_gh pr push").run([stale, torn])
+        codes = [json.loads(line)["code"] for line in err.getvalue().splitlines() if line.startswith("{")]
+        self.assertEqual(1, rc)
+        self.assertIn("timvisher_gh_stale", codes)
+        self.assertIn("timvisher_gh_sync_conflict", codes)
+
     def test_merge_applies_a_clean_merge(self):
         base = {"title": "T", "body": "one\ntwo\nthree"}
         item, adapter = self.setup(base, {"title": "T", "body": "ONE\ntwo\nthree"}, {"title": "T", "body": "one\ntwo\nTHREE"})
@@ -224,7 +257,7 @@ class SyncTest(unittest.TestCase):
             item, adapter = self.setup(self.BASE, {"title": "T", "body": "mine"}, {"title": "T", "body": "theirs"})
             rc, out, _ = self.run_engine("sync", item, ask=lambda plan: answer)
             self.assertEqual(expected, rc, answer)
-            self.assertIn("decision: changed here and on GitHub", out)
+            self.assertIn("decision: changed here and on GitHub", self.stderr)
 
     def test_the_prompt_reads_an_answer(self):
         with contextlib.redirect_stderr(io.StringIO()):
