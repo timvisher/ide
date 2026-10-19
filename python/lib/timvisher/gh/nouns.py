@@ -154,4 +154,7 @@ def run(noun, context, args):
     if noun == "issue":
         from timvisher.gh import issue
         return issue.run(context, args)
+    if noun == "comment":
+        from timvisher.gh import comment
+        return comment.run(context, args)
     usage(f"Unknown {noun} command: '{args[0] if args else ''}'", f"Commands: {noun} info")
