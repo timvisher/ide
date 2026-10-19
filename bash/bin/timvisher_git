@@ -3570,18 +3570,19 @@ worktree_gc__gh_repo() {
 }
 
 # The PR state timvisher_gh records for a worktree, as "<state> <merged_at>".
-# Only for a worktree whose PR is known (the .timvisher_gh/pr link, or a
-# recorded URL): with no target, pr info falls back to the browser's tab.
+# The target is always named (the .timvisher_gh/pr link, or a recorded URL):
+# with none, pr info falls back to whatever PR the browser shows.
 worktree_gc__pr_state() {
-  local wt_path=$1 url_file
-  local -a target=()
-  if [[ ! -L ${wt_path}/.timvisher_gh/pr ]]
+  local wt_path=$1 url_file target
+  if [[ -L ${wt_path}/.timvisher_gh/pr ]]
   then
+    target=${wt_path}/.timvisher_gh/pr
+  else
     url_file=$(pr_url_file "$wt_path") ||
       return 1
-    target=("$(tr -d '[:space:]' < "$url_file")")
+    target=$(tr -d '[:space:]' < "$url_file")
   fi
-  timvisher_gh -C "$wt_path" pr info --schema-version 1 ${target[@]+"${target[@]}"} \
+  timvisher_gh -C "$wt_path" pr info --schema-version 1 "$target" \
     '.state + " " + (.merged_at // "")' 2>/dev/null
 }
 
@@ -3853,9 +3854,14 @@ worktree_gc() {
       # detection/stale either way.
       local remove_kind="" detail="" pr_state="" merged_at=""
       read -r pr_state merged_at < <(worktree_gc__pr_state "$wt_path")
+      local merged_epoch=0 last_commit_epoch=0
       if [[ $pr_state == merged ]]; then
-        local merged_epoch
         merged_epoch=$(gdate -d "$merged_at" +%s 2>/dev/null) || merged_epoch=0
+        last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null) || last_commit_epoch=0
+      fi
+      # Work committed after the merge means the worktree was reused, so the
+      # merge says nothing about it: it goes through the usual detection.
+      if [[ $pr_state == merged ]] && (( last_commit_epoch <= merged_epoch )); then
         if (( merged_epoch < merged_cutoff )); then
           remove_kind="MERGED"
           detail="PR merged"

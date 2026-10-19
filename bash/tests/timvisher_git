@@ -4179,7 +4179,8 @@ gc_protect="$gc_base/protect"
 gc_cache="$gc_trunks/gcorg/gcrepo"
 mkdir -p "$gc_trunks/gcorg" "$gc_live/gcorg/gcrepo" "$gc_protect/gcorg/gcrepo"
 "$test_git" init "$gc_origin" >/dev/null 2>&1
-"$test_git" -C "$gc_origin" -c user.email=t@t -c user.name=t \
+GIT_AUTHOR_DATE=2019-01-01T00:00:00Z GIT_COMMITTER_DATE=2019-01-01T00:00:00Z \
+  "$test_git" -C "$gc_origin" -c user.email=t@t -c user.name=t \
   -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
 gc_trunk=$("$test_git" -C "$gc_origin" rev-parse --abbrev-ref HEAD)
 "$test_git" init --bare "$gc_cache" >/dev/null 2>&1
@@ -4190,7 +4191,8 @@ gc_bin="$gc_base/bin"
 mkdir -p "$gc_bin" "$gc_base/store"
 cat > "$gc_bin/timvisher_gh" <<'FAKE'
 #!/usr/bin/env bash
-[[ $1 == -C && $3 == pr && $4 == info && $5 == --schema-version && $6 == 1 ]] || exit 2
+[[ $1 == -C && $3 == pr && $4 == info && $5 == --schema-version && $6 == 1 && $7 == "$2/.timvisher_gh/pr" ]] ||
+  exit 2
 case ${2##*/} in
   open) echo 'open ' ;;
   recent) printf 'merged %s\n' "$(gdate -u -d '1 day ago' '+%FT%TZ')" ;;
@@ -4198,12 +4200,17 @@ case ${2##*/} in
 esac
 FAKE
 chmod +x "$gc_bin/timvisher_gh"
-for gc_name in unpinned pinned frozen legacy recent open
+for gc_name in unpinned pinned frozen legacy recent open reused
 do
   gc_wt="$gc_live/gcorg/gcrepo/$gc_name"
   "$test_git" -C "$gc_cache" worktree add -b "$gc_name" "$gc_wt" "origin/$gc_trunk" >/dev/null 2>&1
   mkdir -p "$gc_wt/.timvisher_gh"
   ln -s "$gc_base/store" "$gc_wt/.timvisher_gh/pr"
+done
+for gc_name in reused open
+do
+  "$test_git" -C "$gc_live/gcorg/gcrepo/$gc_name" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+    commit --allow-empty -m 'recent work' >/dev/null 2>&1
 done
 mkdir -p "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci"
 : > "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci/protected"
@@ -4237,7 +4244,7 @@ else
   fail "worktree gc should reap by timvisher_gh's merged state: ${gc_out}"
 fi
 
-for gc_name in pinned frozen legacy recent open
+for gc_name in pinned frozen legacy recent open reused
 do
   run_test
   if [[ $gc_out =~ MERGED[^$'\n']*" ${gc_name} " ]]
