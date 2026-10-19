@@ -191,7 +191,7 @@ def _nothing(noun, context):
          suggestions=suggestions)
 
 
-def resolve(noun, argument, *, context, db=None, creating=False):
+def resolve(noun, argument, *, context, db=None, creating=False, browser_fallback=True):
     if argument == BROWSER_TAB:
         return dataclasses.replace(parse_url(_browser_url(), noun, " (the current browser tab)"), via="browser")
     if argument is not None:
@@ -227,6 +227,8 @@ def resolve(noun, argument, *, context, db=None, creating=False):
         return dataclasses.replace(parse_url(url, noun), object_id=object_id, via="tracked")
     if os.path.lexists(root_source) and (_legacy_url(root_source) is not None or creating):
         return _from_file(root_source, noun, db, creating)
+    if not browser_fallback:
+        return None
     try:
         found = _match(browser.active_tab()["url"], noun)
     except subprocess.CalledProcessError:

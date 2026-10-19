@@ -19,7 +19,8 @@ Usage: timvisher_gh [-C <path>] pr [fetch|pull|push|edit] [<target>] [options]
   pr pull             fetch, then write GitHub's changes into the store, for objects
                       whose source is unchanged
   pr push             fetch, then push the branch and the description, creating a
-                      draft PR from the source if there is none
+                      draft PR from the source if there is none; with no target, no
+                      PR and no source, push only the branch
   pr edit             as push, but an error if the PR doesn't exist
   pr ready            wait for the checks, then mark the PR ready (see 'pr ready --help')
   pr merge            merge the PR and wait for it (see 'pr merge --help')
@@ -296,7 +297,17 @@ def run(context, args):
         if context is not None:
             adopt.adopt_root(opened, context.toplevel, _lookup, nouns.now())
             adopt.adopt_directory(opened, context.toplevel, "pr", _lookup, nouns.now())
-        found = targets.resolve("pr", target, context=context, db=opened.db, creating=True)
+        # A push never syncs the browser's PR: with nothing else to name one, it
+        # pushes the branch alone.
+        found = targets.resolve("pr", target, context=context, db=opened.db, creating=True,
+                                browser_fallback=verb not in ("push", "sync"))
+        if found is None:
+            rc = _push_branch(context, flags)
+            if rc == 0:
+                aictl.info(code="timvisher_gh_pr_none",
+                           message=f"Pushed the branch; there's no PR for {context.toplevel} to update.",
+                           suggestions=[f"Write {context.toplevel}/pr.md and rerun '{rerun}' to create one"])
+            return rc
         if found.kind == "source":
             if verb == "edit":
                 fail("timvisher_gh_pr_missing", f"There's no PR for {found.source} to edit.",

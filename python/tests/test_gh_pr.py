@@ -202,6 +202,19 @@ class PrTest(GhTestCase):
         self.assertEqual(0, self.pr("push")[0], self.err)
         self.assertFalse(self.pull_state()["draft"])
 
+    def test_push_with_no_pr_pushes_the_branch_and_never_asks_the_browser(self):
+        self.github.add_pull(REPO, 9, head="elsewhere", title="In the browser")
+        for verb in (["push"], []):
+            git("commit", "-q", "--allow-empty", "-m", f"more {verb}", cwd=self.work)
+            rc, out = self.pr(*verb)
+            self.assertEqual((0, ""), (rc, out), self.err)
+            self.assertIn("timvisher_gh_pr_none", self.codes())
+            self.assertEqual(git("rev-parse", "HEAD", cwd=self.work),
+                             git("rev-parse", "refs/heads/feature", cwd=self.remote))
+        self.assertFalse(self.browser_log.exists())
+        self.assertEqual([], self.mutations())
+        self.assertEqual("In the browser", self.pull_state(9)["title"])
+
     def test_fetch_and_pull_with_only_an_untracked_pr_md_have_nothing_to_do(self):
         (self.work / "pr.md").write_text("T\n")
         for verb in ("fetch", "pull"):
