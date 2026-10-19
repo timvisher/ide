@@ -241,6 +241,12 @@ class SyncTest(unittest.TestCase):
         self.assertIn("<<<<<<<", adapter.source["body"])
         self.assertEqual("timvisher_gh_merge_conflict", instructions[-1]["code"])
 
+    def test_merge_only_merges_text(self):
+        item, adapter = self.setup({"title": "T", "body": True}, {"title": "T", "body": False}, {"title": "T", "body": None})
+        rc, _, instructions = self.run_engine("sync", item, resolution="merge")
+        self.assertEqual((3, [], []), (rc, adapter.pushes, adapter.writes))
+        self.assertEqual("timvisher_gh_merge_not_text", instructions[-1]["code"])
+
     def test_ours_overrides_a_refusal(self):
         item, adapter = self.setup(self.BASE, dict(self.BASE), {"title": "T", "body": "B2"})
         self.assertEqual(0, self.run_engine("push", item, resolution="ours")[0])

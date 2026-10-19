@@ -232,6 +232,12 @@ class Engine:
                 self._refresh(plan, names)
                 return "done"
             case "merge":
+                if any(not isinstance(plan.source.get(name), str) for name in names):
+                    aictl.error(code="timvisher_gh_merge_not_text",
+                                message=f"{plan.item.url}: only text fields merge; "
+                                        f"{', '.join(n for n in names if not isinstance(plan.source.get(n), str))} "
+                                        "needs --ours or --theirs.")
+                    return "conflict"
                 merged, conflicted = {}, False
                 for name in names:
                     conflicts, text = merge_field(plan.base.get(name), plan.source.get(name), plan.remote.get(name))
