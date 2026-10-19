@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 
-from timvisher import browser
+from timvisher import aictl, browser
 from timvisher.gh import adopt, fetch, nouns, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
@@ -238,11 +238,9 @@ def _create(opened, context, source, flags):
     return 0, created["html_url"]
 
 
-def _conversation_items(opened, pr_id):
+def _conversation_items(opened, pr_id, viewer):
     db = opened.db
     adapter = ConversationAdapter(opened)
-    viewer = db.execute("SELECT json_extract(payload, '$.user.login') FROM raw WHERE object_id = ?",
-                        (pr_id,)).fetchone()
     rows = db.execute(
         "SELECT o.id, o.kind, o.url, r.payload FROM objects o JOIN raw r ON r.object_id = o.id "
         "WHERE o.deleted_at IS NULL AND o.store_path NOT LIKE 'archive/%' AND (o.parent_id = ? OR o.parent_id IN "
@@ -252,7 +250,8 @@ def _conversation_items(opened, pr_id):
     for object_id, kind, url, payload in rows:
         raw = json.loads(payload)
         author = (raw.get("root") or raw).get("user", {}).get("login")
-        items.append(sync.Item(object_id, kind, url, adapter, mine=kind != "review" and author == viewer[0]))
+        items.append(sync.Item(object_id, kind, url, adapter,
+                               mine=kind != "review" and (author or "").lower() == viewer.lower()))
     return items
 
 
@@ -268,15 +267,16 @@ def run(context, args):
         if context is not None:
             adopt.adopt_root(opened, context.toplevel, _lookup, nouns.now())
             adopt.adopt_directory(opened, context.toplevel, "pr", _lookup, nouns.now())
-        found = targets.resolve("pr", target, context=context, db=opened.db,
-                                creating=verb in ("sync", "push", "edit"))
+        found = targets.resolve("pr", target, context=context, db=opened.db, creating=True)
         if found.kind == "source":
             if verb == "edit":
                 fail("timvisher_gh_pr_missing", f"There's no PR for {found.source} to edit.",
                      suggestions=["Create it with 'timvisher_gh pr push' (or the bare 'timvisher_gh pr')"])
             if verb in ("fetch", "pull"):
-                fail("timvisher_gh_pr_missing", f"There's no PR yet for {found.source}.",
-                     suggestions=["Create it with 'timvisher_gh pr push'"])
+                aictl.info(code="timvisher_gh_nothing_to_do",
+                           message=f"There's no PR yet for {found.source}, so {verb} has nothing to do.",
+                           suggestions=["Create it with 'timvisher_gh pr push'"])
+                return 0
             if context is None:
                 fail("timvisher_gh_target_none", "Creating a PR needs a worktree.",
                      suggestions=["Run it in the PR's worktree, or with -C <worktree>"])
@@ -295,26 +295,34 @@ def run(context, args):
             pr_id = fetcher.pr(found.owner, found.repo, found.number, conversation=verb in ("fetch", "pull", "sync"))
         object_id = object_id or pr_id
         url = opened.db.execute("SELECT url FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
+        viewer = fetcher.viewer(f"{found.owner}/{found.repo}")
+        worktree_pr = _is_worktree_pr(context, opened, object_id)
+        if worktree_pr and not flags["plan"]:
+            with opened.write() as db:
+                adopt.link_context(db, context.toplevel, object_id)
         if verb == "fetch":
             print(url)
             return 0
         if verb in ("pull", "sync"):
-            items = _conversation_items(opened, object_id)
+            items = _conversation_items(opened, object_id, viewer)
             if items:
                 rc = sync.Engine(opened, "pull", now=now, rerun=rerun, resolution=flags["resolution"],
                                  plan_only=flags["plan"], ask=sync.prompt if sync.interactive() else None).run(items)
                 if rc not in (0,):
                     return rc
-        if verb in ("push", "sync", "edit") and _is_worktree_pr(context, opened, object_id):
+        if verb in ("push", "sync", "edit") and worktree_pr:
             rc = _push_branch(context, flags)
             if rc != 0:
                 return rc
         raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
-        viewer = fetcher.viewer(f"{found.owner}/{found.repo}")
         item = sync.Item(object_id, "pr", url, PrAdapter(opened, fetcher, flags),
                          mine=raw["user"]["login"].lower() == viewer.lower())
         rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"], plan_only=flags["plan"],
                          ask=sync.prompt if sync.interactive() else None).run([item])
+        given = {name: flags[name] for name in ("draft", "base") if flags[name] is not None}
+        if rc == 0 and not flags["plan"] and given and verb in ("push", "sync", "edit"):
+            with opened.write() as db:
+                set_source_state(db, object_id, given, now)
         if rc == 0 and not flags["plan"]:
             print(url)
             if flags["open"]:

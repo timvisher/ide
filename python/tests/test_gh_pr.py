@@ -167,6 +167,59 @@ class PrTest(GhTestCase):
         self.assertNotEqual(0, rc)
         self.assertEqual("Title", self.pull_state()["title"])
 
+    def test_your_comments_on_someone_elses_pr_are_yours(self):
+        self.github.add_pull(REPO, 5, head="theirs", title="Theirs", author="alice")
+        url = f"https://github.com/{REPO}/pull/5"
+        mine = self.github.add_issue_comment(REPO, 5, "mine")
+        self.github.add_issue_comment(REPO, 5, "by the author", user="alice")
+        self.pr("pull", url)
+        path = next(p for p in state.root().rglob("comment.md") if p.read_text() == "mine\n")
+        path.write_text("my edit\n")
+        self.github._update(lambda s: s["issue_comments"][str(mine)].update(body="edited on GitHub"))
+        rc, _ = self.pr("pull", url)
+        self.assertEqual(3, rc)
+        self.assertEqual("my edit\n", path.read_text())
+        self.assertIn("timvisher_gh_sync_conflict", self.codes())
+
+    def test_resolving_an_existing_pr_links_the_worktree(self):
+        git("push", "-q", "-u", "origin", "feature", cwd=self.work)
+        self.github.add_pull(REPO, 3, head="feature", title="Made on the web")
+        self.github._update(lambda s: s.update(responses=[]))
+        self.github.respond(["pr", "list"], stdout=json.dumps([{"number": 3, "state": "OPEN"}]))
+        self.assertEqual(0, self.pr("pull")[0], self.err)
+        link = self.work / ".timvisher_gh" / "pr"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual("Made on the web\n", (link / "pr.md").read_text())
+        mark = len(self.github.calls)
+        self.pr("fetch")
+        self.assertEqual([], [c for c in self.github.calls[mark:] if c["argv"][2:4] == ["pr", "list"]])
+
+    def test_flags_are_kept_even_when_github_already_matches(self):
+        self.create()
+        self.github._update(lambda s: s["pulls"][REPO]["1"].update(draft=False))
+        self.pr("pull")
+        self.assertEqual(0, self.pr("push", "--ready-for-review")[0], self.err)
+        self.assertEqual(0, self.pr("push")[0], self.err)
+        self.assertFalse(self.pull_state()["draft"])
+
+    def test_fetch_and_pull_with_only_an_untracked_pr_md_have_nothing_to_do(self):
+        (self.work / "pr.md").write_text("T\n")
+        for verb in ("fetch", "pull"):
+            rc, out = self.pr(verb)
+            self.assertEqual((0, ""), (rc, out), verb)
+            self.assertIn("timvisher_gh_nothing_to_do", self.codes())
+        self.assertEqual({}, self.github.state["pulls"])
+
+    def test_a_partial_thread_page_archives_nothing(self):
+        self.create()
+        root = self.github.add_review_comment(REPO, 1, "nit", user="bob")
+        self.pr("pull")
+        self.github._update(lambda s: s["threads"].clear())
+        self.github._update(lambda s: s.update(partial_threads=True))
+        self.assertEqual(0, self.pr("pull")[0], self.err)
+        self.assertFalse((state.root() / "archive").exists())
+        del root
+
     def test_someone_elses_pr_is_only_pulled(self):
         self.github.add_pull(REPO, 5, head="theirs", title="Theirs", author="alice")
         url = f"https://github.com/{REPO}/pull/5"
