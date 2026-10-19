@@ -204,6 +204,15 @@ class CommentTest(GhTestCase):
         self.assertIn("/archive/", str(source.resolve()))
         self.assertEqual("Bye\n", source.read_text())
 
+    def test_delete_of_a_comment_already_gone_archives_our_copy(self):
+        source = self.write("note.md", "Bye\n")
+        self.comment(PR, str(source))
+        [comment_id] = self.issue_comments()
+        self.github._update(lambda s: s["issue_comments"].pop(str(comment_id)))
+        self.assertEqual((0, ""), self.comment("delete", "--force", str(source)), self.err)
+        self.assertIn("timvisher_gh_already_deleted", self.codes())
+        self.assertIn("/archive/", str(source.resolve()))
+
     def test_delete_force_deletes_yours_and_refuses_someone_elses(self):
         mine = self.github.add_issue_comment(REPO, 7, "mine")
         theirs = self.github.add_issue_comment(REPO, 7, "theirs", user="alice")

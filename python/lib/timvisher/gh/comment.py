@@ -290,9 +290,22 @@ def _thread_of(db, object_id):
     return object_id if kind == "thread" else (parent if parent_kind == "thread" else None)
 
 
+def _archive_deleted(opened, target, now):
+    row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (target.url,)).fetchone()
+    if row:
+        with opened.write() as db:
+            store.archive(db, row[0], now)
+            opened.touch(row[0])
+
+
 def _delete(opened, target, force, viewer, now):
     spec, endpoint = _endpoint(target)
-    found = fetch.api(spec, endpoint)
+    try:
+        found = fetch.api(spec, endpoint)
+    except fetch.NotFound:
+        _archive_deleted(opened, target, now)
+        aictl.info(code="timvisher_gh_already_deleted", message=f"{target.url} is already gone from GitHub.")
+        return 0
     theirs = found["user"]["login"].lower() != viewer.lower()
     if force and theirs:
         fail("timvisher_gh_delete_not_yours",
@@ -308,11 +321,7 @@ def _delete(opened, target, force, viewer, now):
     try:
         fetch.api(spec, endpoint)
     except fetch.NotFound:
-        row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (target.url,)).fetchone()
-        if row:
-            with opened.write() as db:
-                store.archive(db, row[0], now)
-                opened.touch(row[0])
+        _archive_deleted(opened, target, now)
         return 0
     fail("timvisher_gh_delete_unconfirmed", f"GitHub still shows {target.url} after deleting it; our copy is kept.",
          suggestions=["Rerun the delete"])
