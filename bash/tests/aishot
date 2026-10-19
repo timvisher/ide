@@ -230,7 +230,7 @@ ln -s "$store" "$repo/.timvisher_gh/pr"
 ln -s "$store/pr.md" "$repo/pr.md"
 cat > "$repo.bin/timvisher_gh" <<FAKE
 #!/usr/bin/env bash
-[[ \$* == 'pr info --schema-version 1 .source.path' ]] || exit 2
+[[ \$* == 'pr info --schema-version 1 .timvisher_gh/pr .source.path' ]] || exit 2
 echo '$store/pr.md'
 FAKE
 chmod +x "$repo.bin/timvisher_gh"

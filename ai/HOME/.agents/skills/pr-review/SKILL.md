@@ -18,7 +18,7 @@ description: Review a GitHub pull request by checking CI status, analyzing failu
 Resolve the PR in this order:
 
 1. **Explicit URL or PR number** — if the user provided one, use it directly.
-2. **The worktree's recorded PR** — `timvisher_gh pr info --schema-version 1 .url` prints it when `timvisher_gh` knows the worktree's PR (see the `github` skill).
+2. **The worktree's recorded PR** — if `$(git rev-parse --show-toplevel)/.timvisher_gh/pr` exists, `timvisher_gh pr info --schema-version 1 "$(git rev-parse --show-toplevel)/.timvisher_gh/pr" .url` prints its URL (see the `github` skill). Name that path as the target: with no target, `pr info` falls back to the browser's active tab.
 3. **Current branch** — try `gh pr checks --json link,state,name` which auto-detects the PR for the current branch.
 4. **Commit SHA fallback** — if no PR is found:
    ```bash

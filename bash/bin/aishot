@@ -428,7 +428,7 @@ $(cat -- "$f")
     then
         if [[ -L .timvisher_gh/pr ]]
         then
-            draft=$(timvisher_gh pr info --schema-version 1 .source.path 2>/dev/null) || draft=""
+            draft=$(timvisher_gh pr info --schema-version 1 .timvisher_gh/pr .source.path 2>/dev/null) || draft=""
             [[ $draft == null ]] && draft=""
         fi
         if [[ -d .timvisher_gh/pr ]]
