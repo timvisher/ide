@@ -345,7 +345,7 @@ show_help() {
     repo before path scope.  Config roots:
       core       timvisher_gh.config/ beside this script
                  (TIMVISHER_GH_CORE_CONFIG_DIR overrides)
-      extension  ~/.config/timvisher/ide/bash/bin/timvisher_gh.config/
+      extension  ~/.config/timvisher/ide/python/bin/timvisher_gh.config/
                  (TIMVISHER_GH_CONFIG_DIR overrides)
     Scopes:
       orgs/OWNER
@@ -660,7 +660,7 @@ state__require_md() {
 
 config_roots() {
   local core=${TIMVISHER_GH_CORE_CONFIG_DIR:-${SELF_DIR}/timvisher_gh.config}
-  local ext=${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}
+  local ext=${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/python/bin/timvisher_gh.config}
   printf '%s\n' "$core"
   if [[ $ext != "$core" ]]
   then

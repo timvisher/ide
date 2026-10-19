@@ -235,7 +235,7 @@ Both are idempotent: an already-merged PR reports "already merged in <commit>", 
 
 ## Hooks and canned comments
 
-Org-, repo- and path-specific steps (ARP review kicks, readiness gates, release watchers) are hooks, not ad hoc scripts: executables under `timvisher_gh.config/<scope>/pr/<push|ready|merge>/{pre,post}.d/` in either config root (`bash/bin/timvisher_gh.config/` in this repo, or `~/.config/timvisher/ide/bash/bin/timvisher_gh.config/`). `<scope>` is `orgs/OWNER`, `repos/OWNER/REPO`, or `repos/OWNER/REPO/paths/<dir>` (fires only when the PR touches `<dir>`). Pre-hooks gate a transition and are skipped once it has happened; post-hooks run every time and must check their own end state. `timvisher_gh --help` lists the environment they receive.
+Org-, repo- and path-specific steps (ARP review kicks, readiness gates, release watchers) are hooks, not ad hoc scripts: executables under `timvisher_gh.config/<scope>/pr/<push|ready|merge>/{pre,post}.d/` in either config root (`python/bin/timvisher_gh.config/` in this repo, or `~/.config/timvisher/ide/python/bin/timvisher_gh.config/`). `<scope>` is `orgs/OWNER`, `repos/OWNER/REPO`, or `repos/OWNER/REPO/paths/<dir>` (fires only when the PR touches `<dir>`). Pre-hooks gate a transition and are skipped once it has happened; post-hooks run every time and must check their own end state. `timvisher_gh --help` lists the environment they receive.
 
 `timvisher_gh comment <name>` posts the canned comment `timvisher_gh.config/comments/<name>.md` when `<name>` is not a file (e.g. `timvisher_gh comment arp-review`).
 

@@ -873,7 +873,7 @@ run_v2() {
       PATH="$v2_path" \
       TIMVISHER_AGENT='' \
       timvisher_logging_log_level=INFO \
-      TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config" \
+      TIMVISHER_GH_CONFIG_DIR="$v2_home/.config/timvisher/ide/python/bin/timvisher_gh.config" \
       TIMVISHER_GH_CORE_CONFIG_DIR="$v2_home/core" \
       TIMVISHER_GH_PR_MERGE_POLL_INTERVAL=0 \
       TIMVISHER_GH_PR_MERGE_TIMEOUT=2 \
@@ -1527,7 +1527,7 @@ unset MOCK_REMOTE_DESC MOCK_GH_HANDLER
 # --- hook tests ---
 
 core_root="$v2_home/core"
-ext_root="$v2_home/.config/timvisher/ide/bash/bin/timvisher_gh.config"
+ext_root="$v2_home/.config/timvisher/ide/python/bin/timvisher_gh.config"
 hook_log="$tmpdir/hook.log"
 export MOCK_REMOTE_DESC="$tmpdir/remote_hooks.json"
 
@@ -1573,9 +1573,9 @@ make_hook "$ext_root/orgs/testuser/pr/push/post.d/10-ext-org"
 printf 'not a hook\n' > "$ext_root/orgs/testuser/pr/push/post.d/README"
 result=$(run_v2 pr push 2>"$tmpdir/hooks_push.err") && rc=0 || rc=$?
 expected_order='core/orgs/testuser/pr/push/pre.d/10-core-org
-.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo
+.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/push/pre.d/10-ext-repo
 core/repos/testuser/testrepo/pr/push/post.d/20-core-repo
-.config/timvisher/ide/bash/bin/timvisher_gh.config/orgs/testuser/pr/push/post.d/10-ext-org'
+.config/timvisher/ide/python/bin/timvisher_gh.config/orgs/testuser/pr/push/post.d/10-ext-org'
 if (( rc == 0 )) &&
    [[ $result == https://github.com/testuser/testrepo/pull/50 ]] &&
    [[ $(cut -d' ' -f1 "$hook_log") == "$expected_order" ]] &&
@@ -2628,9 +2628,9 @@ export MOCK_LOG="$tmpdir/log_pr_ready_exclude"
 touch "$MOCK_LOG"
 # Set up fake HOME with .functions symlink and exclude config
 exclude_home="$tmpdir/exclude_home1"
-mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+mkdir -p "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-printf 'mergegate\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+printf 'mergegate\n' > "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
 # mergegate is pending but should be excluded; other checks pass
 export MOCK_CHECKS_FILE="$tmpdir/checks_with_excluded.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
@@ -2649,9 +2649,9 @@ unset MOCK_CHECKS_FILE
 
 run_test
 exclude_home="$tmpdir/exclude_home_badregex"
-mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+mkdir -p "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-printf '(\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+printf '(\n' > "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
 printf 'https://github.com/testuser/testrepo/pull/1\n' > "$tmpdir/repo/pr.md.url"
 export MOCK_CHECKS_FILE="$tmpdir/checks_badregex.json"
 printf '[{"name":"ci/test","bucket":"fail"}]\n' > "$MOCK_CHECKS_FILE"
@@ -2678,9 +2678,9 @@ unset MOCK_CHECKS_FILE
 # Test: pr ready - exclude patterns with comments and blank lines
 run_test
 exclude_home="$tmpdir/exclude_home2"
-mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+mkdir -p "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-cat > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt" <<'EXCL'
+cat > "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt" <<'EXCL'
 # This is a comment
 mergegate
 
@@ -2827,9 +2827,9 @@ echo "https://github.com/testuser/testrepo/pull/42" > "$tmpdir/repo/pr.md.url"
 export MOCK_LOG="$tmpdir/log_pr_ready_all_excluded"
 touch "$MOCK_LOG"
 exclude_home="$tmpdir/exclude_home3"
-mkdir -p "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
+mkdir -p "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready"
 ln -s "$funcs_dir" "$exclude_home/.functions"
-printf '.*\n' > "$exclude_home/.config/timvisher/ide/bash/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
+printf '.*\n' > "$exclude_home/.config/timvisher/ide/python/bin/timvisher_gh.config/repos/testuser/testrepo/pr/ready/exclude-checks.txt"
 export MOCK_CHECKS_FILE="$tmpdir/checks_all_excluded.json"
 cat > "$MOCK_CHECKS_FILE" <<'JSON'
 [{"name":"ci/build","bucket":"pending"},{"name":"ci/test","bucket":"pending"}]
