@@ -204,6 +204,9 @@ def resolve(noun, argument, *, context, db=None, creating=False):
         fail("timvisher_gh_target_invalid", f"'{argument}' is neither a target URL nor a file.", status=USAGE,
              suggestions=[f"Pass a file, '{BROWSER_TAB}', or one of: {shape}" for shape in SHAPES])
 
+    if context is None:
+        fail("timvisher_gh_target_none", f"No {noun} target: none was given, and this isn't a worktree.",
+             suggestions=[f"Pass the {noun}'s URL or file", "Or run it in a worktree, or with -C <worktree>"])
     if noun in ("comment", "thread"):
         found = _context_pr(context, db, noun)
         if found is None:

@@ -80,7 +80,7 @@ def _run(argv):
     if repo_option is not None:
         context = repo.from_option(repo_option)
     else:
-        context = repo.from_worktree(chdir)
+        context = repo.from_worktree(chdir, required=command == "info" or chdir is not None)
     return COMMANDS[command](context, args)
 
 

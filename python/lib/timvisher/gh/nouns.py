@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 import subprocess
 import sys
 
@@ -49,7 +50,7 @@ def _parse_info(noun, args):
             if not rest:
                 usage("--schema-version requires <N>")
             pin = rest.pop(0)
-        elif arg.startswith(".") and component is None:
+        elif arg.startswith(".") and not os.path.lexists(arg) and component is None:
             component = arg
         elif target is None and component is None:
             target = arg
@@ -58,12 +59,33 @@ def _parse_info(noun, args):
     return target, component, pin
 
 
+OWN_KIND = {"pr": "pr", "issue": "issue", "thread": "thread"}
+
+
 def _object_id(db, found, noun):
-    if found.object_id:
-        return found.object_id
-    url = found.pr_url if noun == "pr" else found.url
-    row = db.execute("SELECT id FROM objects WHERE url = ?", (url,)).fetchone()
-    return row and row[0]
+    object_id = found.object_id
+    if object_id is None:
+        url = found.pr_url if noun == "pr" else found.url
+        row = db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (url,)).fetchone()
+        object_id = row and row[0]
+    while object_id is not None and noun in OWN_KIND:
+        kind, parent = db.execute("SELECT kind, parent_id FROM objects WHERE id = ?", (object_id,)).fetchone()
+        if kind == OWN_KIND[noun] or parent is None:
+            break
+        object_id = parent
+    return object_id
+
+
+def _remember_context(opened, context, found, object_id):
+    if found.via != "context" or found.object_id is not None or context is None:
+        return
+    branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=context.toplevel,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    owner, repo = context.spec.split("/")
+    with opened.write() as db:
+        db.execute("INSERT INTO context VALUES (?, ?, ?, ?, ?) ON CONFLICT (worktree) DO UPDATE SET "
+                   "owner = excluded.owner, repo = excluded.repo, branch = excluded.branch, pr_id = excluded.pr_id",
+                   (context.toplevel, owner, repo, branch, object_id))
 
 
 def _fetch(opened, found, noun):
@@ -105,6 +127,7 @@ def info(noun, context, args):
         if object_id is None:
             fail("timvisher_gh_not_found", f"GitHub has no {noun} at {found.url}.",
                  suggestions=[f"Check the URL; 'timvisher_gh pr fetch {found.pr_url}' lists the PR's conversation"])
+        _remember_context(opened, context, found, object_id)
         kind = opened.db.execute("SELECT kind FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
         if noun == "comment" and kind == "thread":
             result = record.as_comment(opened.db, object_id)

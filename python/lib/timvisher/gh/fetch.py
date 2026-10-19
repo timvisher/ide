@@ -76,6 +76,8 @@ class Fetcher:
     def pr(self, owner, repo, number, *, conversation=True, only_new=False):
         spec = f"{owner}/{repo}"
         pull = api(spec, f"repos/{spec}/pulls/{number}")
+        owner, repo = pull["html_url"].split("/")[3:5]
+        spec = f"{owner}/{repo}"
         pr_key = store.pr_key(owner, repo, number)
         state = "merged" if pull.get("merged") else pull["state"]
         self._put(id=pull["node_id"], kind="pr", url=pull["html_url"], owner=owner, repo=repo, number=number,
@@ -133,6 +135,7 @@ class Fetcher:
     def issue(self, owner, repo, number, *, only_new=False):
         spec = f"{owner}/{repo}"
         found = api(spec, f"repos/{spec}/issues/{number}")
+        owner, repo = found["html_url"].split("/")[3:5]
         self._put(id=found["node_id"], kind="issue", url=found["html_url"], owner=owner, repo=repo, number=number,
                   database_id=found.get("id"), key=store.issue_key(owner, repo, number), raw=found, only_new=only_new,
                   remote={"title": found["title"], "body": found.get("body") or "", "state": found["state"]})

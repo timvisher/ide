@@ -46,11 +46,13 @@ def _target_remote(toplevel):
     return "origin"
 
 
-def from_worktree(path):
+def from_worktree(path, required=True):
     if path is not None and not os.path.isdir(path):
         fail("timvisher_gh_no_such_path", f"Option -C: unable to enter '{path}'",
              suggestions=["Pass -C a worktree directory that exists"])
     shown = _git("rev-parse", "--show-toplevel", cwd=path or ".")
+    if shown.returncode != 0 and not required:
+        return None
     if shown.returncode != 0:
         fail("timvisher_gh_not_a_repo", "Not in a git repository",
              suggestions=["Run timvisher_gh inside a worktree, or pass -C <worktree>",

@@ -168,6 +168,48 @@ class RecordsTest(GhTestCase):
         rc, _, err = self.run_gh("pr", "info", f"https://github.com/{REPO}/pull/99", TIMVISHER_AGENT="1")
         self.assertEqual((1, "timvisher_gh_not_found"), (rc, json.loads(err.splitlines()[-1])["code"]))
 
+    def test_a_target_path_starting_with_a_dot_is_a_target_not_a_component(self):
+        self.info("pr", "info", PR)
+        pr_dir = next(state.root().rglob("pr.json")).parent
+        (self.work / ".timvisher_gh").mkdir()
+        (self.work / ".timvisher_gh" / "pr").symlink_to(pr_dir)
+        (pr_dir / "pr.md").write_text("Fix it\n\nBecause\n")
+        mark = len(self.github.calls)
+        rc, out, _ = self.run_gh("pr", "info", ".timvisher_gh/pr/pr.md", ".title")
+        self.assertEqual((0, "Fix it\n"), (rc, out))
+        rc, out, _ = self.run_gh("pr", "info", "./.timvisher_gh/pr/pr.md", ".number")
+        self.assertEqual((0, "7\n"), (rc, out))
+        self.assertEqual([], self.calls_since(mark))
+
+    def test_pr_info_on_a_childs_file_is_the_pr_and_thread_info_on_a_reply_is_its_thread(self):
+        self.info("pr", "info", PR)
+        reply_dir = next(p.parent for p in state.root().rglob("comment.json") if "replies" in str(p))
+        (reply_dir / "comment.md").write_text("fixed\n")
+        self.assertEqual("pr", self.info("pr", "info", str(reply_dir / "comment.md"))["kind"])
+        self.assertEqual(self.thread, self.info("thread", "info", str(reply_dir / "comment.md"))["id"])
+        self.assertEqual(self.thread, self.info("thread", "info", f"{PR}#discussion_r{self.reply}")["id"])
+
+    def test_owner_and_repo_in_another_case_resolve_to_the_canonical_object(self):
+        upper = "https://github.com/TestUser/TestRepo/pull/7"
+        pr = self.info("pr", "info", upper)
+        self.assertEqual((PR, "testuser", "testrepo"), (pr["url"], pr["owner"], pr["repo"]))
+        mark = len(self.github.calls)
+        self.info("pr", "info", upper)
+        self.assertEqual([], self.calls_since(mark))
+
+    def test_info_on_a_url_needs_no_worktree(self):
+        rc, out, _ = self.run_gh("pr", "info", PR, ".title", cwd=self.tmp)
+        self.assertEqual((0, "Fix it\n"), (rc, out))
+        rc, _, err = self.run_gh("pr", "info", cwd=self.tmp, TIMVISHER_AGENT="1")
+        self.assertEqual((1, "timvisher_gh_target_none"), (rc, json.loads(err.splitlines()[-1])["code"]))
+
+    def test_a_bare_info_remembers_the_worktrees_pr(self):
+        self.github.respond(["pr", "list"], stdout=json.dumps([{"number": 7, "state": "OPEN"}]))
+        self.run_gh("pr", "info", ".number")
+        mark = len(self.github.calls)
+        rc, out, _ = self.run_gh("pr", "info", ".number")
+        self.assertEqual((0, "7\n", []), (rc, out, self.calls_since(mark)))
+
     def test_an_omitted_target_uses_the_worktree_pr(self):
         self.github.respond(["pr", "list"], stdout=json.dumps([{"number": 7, "state": "OPEN"}]))
         rc, out, _ = self.run_gh("pr", "info", ".number")
