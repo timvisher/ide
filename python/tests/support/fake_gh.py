@@ -483,7 +483,41 @@ def gql_set_draft(draft):
     return handler
 
 
+def gql_merge_state(state, fields):
+    repo = canonical(state, f"{fields['owner']}/{fields['repo']}")
+    found = pull(state, repo, fields["number"])
+    comments = [{"__typename": "IssueComment", "createdAt": c["created_at"], "body": c["body"],
+                 "author": {"login": c["user"]}}
+                for c in state["issue_comments"].values()
+                if c["repo"] == repo and c["issue_number"] == int(fields["number"])]
+    pushes = [{"__typename": "HeadRefForcePushedEvent", "createdAt": at} for at in found.get("force_pushed_at", [])]
+    return {"viewer": {"login": state["viewer"]}, "repository": {"pullRequest": {
+        "state": "MERGED" if found["merged"] else ("CLOSED" if found["state"] == "closed" else "OPEN"),
+        "baseRefName": found["base"], "isInMergeQueue": bool(found.get("in_merge_queue")),
+        "autoMergeRequest": {"enabledAt": state["now"]} if found.get("auto_merge") else None,
+        "mergeCommit": {"oid": found["merge_commit_sha"]} if found.get("merge_commit_sha") else None,
+        "commits": {"nodes": [{"commit": {"committedDate": found.get("last_commit_at") or found["created_at"]}}]},
+        "timelineItems": {"nodes": comments + pushes}}}}
+
+
+def pr_merge(state, args):
+    strategy = next((a[2:] for a in args if a in ("--merge", "--squash", "--rebase")), None)
+    url = next(a for a in args if a.startswith("https://"))
+    owner, repo, _, number = url.split("/")[3:7]
+    found = pull(state, canonical(state, f"{owner}/{repo}"), number)
+    found.setdefault("merge_attempts", []).append({"strategy": strategy, "args": list(args)})
+    if strategy in found.get("merge_fail", []):
+        save(state)
+        sys.stderr.write(f"X Pull request {url} is not mergeable with {strategy}\n")
+        return 1
+    found.update(merged=True, state="closed", merged_at=state["now"], merge_commit_sha="m" * 40,
+                 merge_strategy=strategy)
+    save(state)
+    return 0
+
+
 GRAPHQL = {
+    "MergeState": gql_merge_state,
     "Viewer": gql_viewer,
     "ReviewThreads": gql_review_threads,
     "ThreadPage": gql_review_threads,
@@ -540,6 +574,12 @@ def main(argv):
     entry = {"argv": list(argv), "repo": repo, "cwd": os.getcwd(), "gh_token": os.environ.get("GH_TOKEN")}
     if args[:1] != ["api"]:
         record(entry)
+        if args[:2] == ["pr", "merge"] and not any(r["argv"][:2] == ["pr", "merge"] for r in state["responses"]):
+            try:
+                return pr_merge(state, args[2:])
+            except Reply:
+                sys.stderr.write("fake gh: no such PR\n")
+                return 1
         return canned(state, args)
     request = parse_api(args[1:])
     hostname = request["hostname"]

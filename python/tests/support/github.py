@@ -42,11 +42,17 @@ class FakeGitHub:
     def calls(self):
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
-    def add_repo(self, repo, default_branch="main", fork=False, source=None, archived=False):
+    def add_repo(self, repo, default_branch="main", fork=False, source=None, archived=False,
+                 merge=True, squash=False, rebase=False):
         def change(state):
             state["repos"][repo] = {"default_branch": default_branch, "fork": fork,
-                                    "source": source and {"full_name": source}, "archived": archived}
+                                    "source": source and {"full_name": source}, "archived": archived,
+                                    "allow_merge_commit": merge, "allow_squash_merge": squash,
+                                    "allow_rebase_merge": rebase}
         self._update(change)
+
+    def update_pull(self, repo, number, **changes):
+        self._update(lambda s: s["pulls"][repo][str(number)].update(changes))
 
     def set_now(self, when):
         self._update(lambda s: s.update(now=when))
