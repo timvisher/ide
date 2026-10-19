@@ -1,6 +1,8 @@
 import sys
 
-from timvisher.gh import info, repo
+import functools
+
+from timvisher.gh import info, nouns, repo
 from timvisher.gh.errors import Exit, usage
 
 HELP = """\
@@ -24,11 +26,18 @@ Commands:
                   .forkNetwork.mainOwner  its owner
   info --json   'timvisher_git info --json' plus a timvisher_gh object with
                 those fields; needs a worktree
+  pr info [<target>] [<component>]       a PR's record (see 'pr info --help')
+  issue info [<target>] [<component>]    an issue's record
+  comment info [<target>] [<component>]  a comment's record
+  thread info [<target>] [<component>]   a review thread's record
+
+A <target> is a github.com PR, issue or comment URL, current-browser-tab,
+or a tracked file; omitted, it comes from the worktree.
 
 Exit status: 0 success, 1 error, 2 usage.
 """
 
-COMMANDS = {"info": info.run}
+COMMANDS = {"info": info.run} | {noun: functools.partial(nouns.run, noun) for noun in nouns.NOUNS}
 
 
 def _parse_globals(argv):
