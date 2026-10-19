@@ -284,3 +284,54 @@ def run(context, args):
              suggestions=["Check the URL, and that your gh account can see the repository"])
     finally:
         opened.close()
+
+
+RELEASE_USAGE = """\
+Usage: timvisher_gh [-C <path>] pr release [<target>] [--{no-}watch] [--{no-}open] [-- <gh pr merge args>]
+
+Merge the PR as 'pr merge' does, then, unless --no-watch, run the merge
+post-hooks (which watch the release) with TIMVISHER_GH_MERGE_COMMIT set.
+--open opens the PR first and gives the hooks TIMVISHER_GH_OPEN=true.
+"""
+
+
+def release(context, args):
+    watch, rest = True, []
+    for arg in args:
+        if arg in ("-h", "--help"):
+            sys.stdout.write(RELEASE_USAGE)
+            return 0
+        if arg in ("--watch", "--no-watch"):
+            watch = arg == "--watch"
+        else:
+            rest.append(arg)
+    parsed = parse(rest)
+    if parsed is None:
+        return 0
+    target, extra, open_ = parsed
+    opened = state.open_state()
+    try:
+        store.exporting(opened, lambda object_id: record.record(opened.db, object_id), nouns.now)
+        found = resolve(opened, context, target)
+        now = nouns.now()
+        with opened.write():
+            fetch.Fetcher(opened, now).pr(found.owner, found.repo, found.number, conversation=False)
+        if open_:
+            browser.open_tab(found.pr_url)
+        commit = merge(opened, context, found, extra, open_, now, hooks_for(opened, context, found, open_))
+        if not watch:
+            aictl.info(code="timvisher_gh_release_not_watched",
+                       message=f"Merged {found.pr_url}; not watching the release (--no-watch).")
+            print(found.pr_url)
+            return 0
+        if not hooks_for(opened, context, found, open_, merge_commit=commit).post("merge"):
+            print(found.pr_url)
+            return ERROR
+        aictl.info(code="timvisher_gh_release_converged", message=f"Release converged: {found.pr_url}.")
+        print(found.pr_url)
+        return 0
+    except fetch.NotFound as missing:
+        fail("timvisher_gh_not_found", f"GitHub has no such PR ({missing}).",
+             suggestions=["Check the URL, and that your gh account can see the repository"])
+    finally:
+        opened.close()

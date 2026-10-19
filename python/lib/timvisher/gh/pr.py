@@ -23,6 +23,7 @@ Usage: timvisher_gh [-C <path>] pr [fetch|pull|push|edit] [<target>] [options]
   pr edit             as push, but an error if the PR doesn't exist
   pr ready            wait for the checks, then mark the PR ready (see 'pr ready --help')
   pr merge            merge the PR and wait for it (see 'pr merge --help')
+  pr release          merge, then run the merge post-hooks (see 'pr release --help')
 
 Options: --plan, --ours, --theirs, --merge, --open, --draft, --ready-for-review,
          --base <branch>
@@ -281,6 +282,9 @@ def run(context, args):
     if args[:1] == ["merge"]:
         from timvisher.gh import merge
         return merge.run(context, args[1:])
+    if args[:1] == ["release"]:
+        from timvisher.gh import merge
+        return merge.release(context, args[1:])
     parsed = parse(args)
     if parsed is None:
         return 0
