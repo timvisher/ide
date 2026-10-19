@@ -217,7 +217,9 @@ def rest(state, request):
         case "GET", []:
             if repo not in state["repos"]:
                 raise not_found()
-            return 200, {"full_name": repo, **state["repos"][repo]}
+            settings = {key: value for key, value in state["repos"][repo].items() if not key.startswith("allow_")}
+            return 200, {"full_name": repo, **settings, "allow_merge_commit": None, "allow_squash_merge": None,
+                         "allow_rebase_merge": None}
 
         case "GET", ["pulls"]:
             head = request["query"].get("head")
@@ -500,9 +502,32 @@ def gql_merge_state(state, fields):
         "timelineItems": {"nodes": comments + pushes}}}}
 
 
+def repo_view(state, args):
+    name = canonical(state, next(a for a in args if not a.startswith("-") and "/" in a))
+    repo = state["repos"].get(name)
+    if repo is None:
+        sys.stderr.write(f"GraphQL: Could not resolve to a Repository with the name '{name}'.\n")
+        return 1
+    view = {"mergeCommitAllowed": bool(repo.get("allow_merge_commit")),
+            "squashMergeAllowed": bool(repo.get("allow_squash_merge")),
+            "rebaseMergeAllowed": bool(repo.get("allow_rebase_merge")),
+            "defaultBranchRef": {"name": repo["default_branch"]}}
+    wanted = args[args.index("--json") + 1].split(",") if "--json" in args else list(view)
+    body = {key: view[key] for key in wanted if key in view}
+    if "--jq" in args:
+        done = subprocess.run(["jq", "-r", args[args.index("--jq") + 1]], input=json.dumps(body),
+                              stdout=subprocess.PIPE, text=True)
+        sys.stdout.write(done.stdout)
+        return done.returncode
+    sys.stdout.write(json.dumps(body) + "\n")
+    return 0
+
+
 def pr_merge(state, args):
     strategy = next((a[2:] for a in args if a in ("--merge", "--squash", "--rebase")), None)
-    url = next(a for a in args if a.startswith("https://"))
+    url = next((a for a in args if a.startswith("https://")), None)
+    if url is None:
+        return canned(state, ["pr", "merge", *args])
     owner, repo, _, number = url.split("/")[3:7]
     found = pull(state, canonical(state, f"{owner}/{repo}"), number)
     found.setdefault("merge_attempts", []).append({"strategy": strategy, "args": list(args)})
@@ -574,6 +599,8 @@ def main(argv):
     entry = {"argv": list(argv), "repo": repo, "cwd": os.getcwd(), "gh_token": os.environ.get("GH_TOKEN")}
     if args[:1] != ["api"]:
         record(entry)
+        if args[:2] == ["repo", "view"] and not any(r["argv"][:2] == ["repo", "view"] for r in state["responses"]):
+            return repo_view(state, args[2:])
         if args[:2] == ["pr", "merge"] and not any(r["argv"][:2] == ["pr", "merge"] for r in state["responses"]):
             try:
                 return pr_merge(state, args[2:])

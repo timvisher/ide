@@ -49,6 +49,8 @@ class FakeGitHub:
                                     "source": source and {"full_name": source}, "archived": archived,
                                     "allow_merge_commit": merge, "allow_squash_merge": squash,
                                     "allow_rebase_merge": rebase}
+        # GitHub's REST repos/O/R reports the allow_* settings as null below
+        # admin, so the fake serves them only through 'gh repo view'.
         self._update(change)
 
     def update_pull(self, repo, number, **changes):
