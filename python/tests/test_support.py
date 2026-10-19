@@ -213,6 +213,11 @@ class FakeGhTest(GhTestCase):
         self.api(f"repos/{REPO}/issues/99/comments", "-f", "body=nowhere")
         self.assertEqual(before, self.github.state)
 
+    def test_one_shot_canned_responses_are_served_once_in_order(self):
+        self.github.respond(["pr", "checks"], stdout="first\n", once=True)
+        self.github.respond(["pr", "checks"], stdout="then\n")
+        self.assertEqual(["first\n", "then\n", "then\n"], [self.gh("pr", "checks")[1] for _ in range(3)])
+
     def test_canned_responses_serve_other_commands(self):
         self.github.respond(["pr", "checks"], stdout="[]\n")
         self.assertEqual((0, "[]\n"), self.gh("pr", "checks", "7", "--json", "state")[:2])

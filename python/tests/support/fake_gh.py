@@ -517,6 +517,9 @@ def emit(request, status, body):
 def canned(state, argv):
     for response in state["responses"]:
         if argv[: len(response["argv"])] == response["argv"]:
+            if response.get("once"):
+                state["responses"].remove(response)
+                save(state)
             sys.stdout.write(response.get("stdout", ""))
             sys.stderr.write(response.get("stderr", ""))
             return response.get("status", 0)
