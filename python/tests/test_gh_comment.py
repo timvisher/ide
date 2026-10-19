@@ -204,6 +204,17 @@ class CommentTest(GhTestCase):
         self.assertIn("/archive/", str(source.resolve()))
         self.assertEqual("Bye\n", source.read_text())
 
+    def test_a_posted_file_aimed_at_another_pr_is_refused(self):
+        self.github.add_pull(REPO, 8, head="other", title="O")
+        source = self.write("note.md", "Hi\n")
+        self.assertEqual(0, self.comment(PR, str(source))[0], self.err)
+        source.write_text("Hi again\n")
+        rc, _ = self.comment(f"https://github.com/{REPO}/pull/8", str(source))
+        self.assertEqual(2, rc, self.err)
+        self.assertEqual(["Hi"], [c["body"] for c in self.github.state["issue_comments"].values()])
+        self.assertEqual(0, self.comment(PR, str(source))[0], self.err)
+        self.assertEqual(["Hi again"], [c["body"] for c in self.github.state["issue_comments"].values()])
+
     def test_delete_of_a_comment_already_gone_archives_our_copy(self):
         source = self.write("note.md", "Bye\n")
         self.comment(PR, str(source))

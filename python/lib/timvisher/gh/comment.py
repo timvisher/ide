@@ -435,6 +435,11 @@ def run(context, args):
             if opened.db.execute("SELECT 1 FROM raw WHERE object_id = ?", (object_id,)).fetchone() is None:
                 with opened.write():
                     CommentAdapter(opened, now).fetch(sync.Item(object_id, "comment", tracked.url, None))
+            if where is not None and where.kind in ("pr", "issue") and (
+                    (tracked.owner or "").lower(), (tracked.repo or "").lower(), tracked.number) != (
+                    where.owner.lower(), where.repo.lower(), where.number):
+                usage(f"{file_arg} is already posted as {tracked.url}, not on {where.url}.",
+                      "Use a new file for a comment on another PR")
             if where is not None and where.kind in ("review_comment", "thread"):
                 wanted = _object(opened, where, now)
                 if _thread_of(opened.db, object_id) != _thread_of(opened.db, wanted):
