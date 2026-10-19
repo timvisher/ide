@@ -21,6 +21,7 @@ Usage: timvisher_gh [-C <path>] pr [fetch|pull|push|edit] [<target>] [options]
   pr push             fetch, then push the branch and the description, creating a
                       draft PR from the source if there is none
   pr edit             as push, but an error if the PR doesn't exist
+  pr ready            wait for the checks, then mark the PR ready (see 'pr ready --help')
 
 Options: --plan, --ours, --theirs, --merge, --open, --draft, --ready-for-review,
          --base <branch>
@@ -272,6 +273,10 @@ def _conversation_items(opened, pr_id, viewer):
 
 
 def run(context, args):
+    if args[:1] == ["ready"]:
+        # Imported here, not at the top: timvisher.gh.ready imports this module.
+        from timvisher.gh import ready
+        return ready.run(context, args[1:])
     parsed = parse(args)
     if parsed is None:
         return 0
