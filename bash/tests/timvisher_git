@@ -255,7 +255,19 @@ case $pr_url in
 esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
-ln -s "${script_dir}/bin/timvisher_gh" "$tmpdir/mockbin/timvisher_gh"
+# The real timvisher_gh is a Python tool with no venv in the test HOME, so
+# its 'info .archived' contract (covered by python/tests/test_gh_info.py) is
+# faked here from the mock gh's repo table.
+cat > "$tmpdir/mockbin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+[[ $1 == -R && $3 == info && $4 == .archived ]] || exit 2
+case $2 in
+  oldorg/testrepo)  echo true ;;
+  liveorg/testrepo) echo false ;;
+  *) exit 1 ;;
+esac
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_gh"
 
 # Declare the associative array at global scope BEFORE sourcing the script.
 # typeset -A inside a function creates a local, so the eval'd script body's
