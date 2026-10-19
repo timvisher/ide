@@ -523,7 +523,7 @@ def main(argv):
     while args and args[0] in ("-R", "--repo"):
         repo, args = args[1], args[2:]
     state = load()
-    entry = {"argv": list(argv), "repo": repo, "cwd": os.getcwd()}
+    entry = {"argv": list(argv), "repo": repo, "cwd": os.getcwd(), "gh_token": os.environ.get("GH_TOKEN")}
     if args[:1] != ["api"]:
         record(entry)
         return canned(state, args)
