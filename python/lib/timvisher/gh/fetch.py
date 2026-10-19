@@ -19,6 +19,36 @@ REVIEW_THREADS = """query ReviewThreads($owner: String!, $repo: String!, $number
 }"""
 
 
+THREAD_PAGE = """query ThreadPage($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line startLine diffSide
+          comments(first: 1) { nodes { databaseId id url } }
+        }
+      }
+    }
+  }
+}"""
+
+
+def thread_of_root(spec, owner, repo, number, database_id):
+    after = []
+    while True:
+        found = api(spec, "graphql", "-f", f"query={THREAD_PAGE}", "-f", f"owner={owner}", "-f", f"repo={repo}",
+                    "-F", f"number={number}", *after)
+        connection = found["data"]["repository"]["pullRequest"]["reviewThreads"]
+        for node in connection["nodes"]:
+            if node["comments"]["nodes"] and node["comments"]["nodes"][0]["databaseId"] == database_id:
+                return node
+        page = connection.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return None
+        after = ["-f", f"after={page['endCursor']}"]
+
+
 class NotFound(Exception):
     pass
 

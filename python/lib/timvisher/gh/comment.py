@@ -162,10 +162,10 @@ def _lookup(target):
     if target.kind == "comment":
         return facts
     root_id = found.get("in_reply_to_id") or found["id"]
-    threads = fetch.api(spec, "graphql", "-f", f"query={fetch.REVIEW_THREADS}", "-f", f"owner={target.owner}",
-                        "-f", f"repo={target.repo}", "-F", f"number={target.number}")
-    node = next(n for n in threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-                if n["comments"]["nodes"] and n["comments"]["nodes"][0]["databaseId"] == root_id)
+    node = fetch.thread_of_root(spec, target.owner, target.repo, target.number, root_id)
+    if node is None:
+        fail("timvisher_gh_not_found", f"GitHub doesn't list a review thread for {target.url}.",
+             suggestions=["Check the URL; the comment may have been deleted"])
     facts.update(thread_id=node["id"], in_reply_to=found.get("in_reply_to_id"), path=found.get("path"),
                  line=found.get("line"))
     if found.get("in_reply_to_id"):

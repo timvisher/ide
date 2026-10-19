@@ -44,6 +44,29 @@ class ThreadTest(GhTestCase):
         self.assertIn("/threads/", str(source.resolve()))
         self.assertEqual("root-comment.md", source.resolve().name)
 
+    def test_a_new_thread_anchors_to_the_prs_current_head(self):
+        self.run_gh("pr", "info", PR)
+        self.github._update(lambda s: s["pulls"][REPO]["7"].update(head_sha="d" * 40))
+        self.assertEqual(0, self.thread(PR, str(self.write("n.md", "x\n")), "--path", "a", "--line", "1")[0], self.err)
+        self.assertEqual(["d" * 40], [r["commit_id"] for r in self.roots()])
+
+    def test_a_new_thread_past_the_first_page_of_threads_is_tracked(self):
+        self.github.add_review_comment(REPO, 7, "one", user="bob")
+        self.github.add_review_comment(REPO, 7, "two", path="b.go", user="bob")
+        self.github._update(lambda s: s.update(thread_page_size=1))
+        source = self.write("n.md", "third\n")
+        self.assertEqual(0, self.thread(PR, str(source), "--path", "c.go", "--line", "3")[0], self.err)
+        self.assertTrue(source.is_symlink())
+
+    def test_resolve_on_a_legacy_adopted_thread(self):
+        root = self.github.add_review_comment(REPO, 7, "nit")
+        source = self.write("nit.md", "nit\n")
+        self.write("nit.md.url", f"{PR}#discussion_r{root}\n")
+        rc, _, err = self.run_gh("comment", str(source), TIMVISHER_AGENT="1")
+        self.assertEqual(0, rc, err)
+        self.assertEqual(0, self.thread("resolve", str(source))[0], self.err)
+        self.assertTrue(self.github.state["threads"][self.github.thread_of(root)]["resolved"])
+
     def test_a_multi_line_anchor_on_the_left_side(self):
         rc, _ = self.thread(str(self.write("n.md", "x\n")), "--path", "a.go", "--line", "9", "--start-line", "5",
                             "--side", "left")

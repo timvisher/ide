@@ -76,12 +76,13 @@ def _parse(args):
 
 
 def _thread_node(spec, owner, repo, number, database_id):
-    found = fetch.api(spec, "graphql", "-f", f"query={fetch.REVIEW_THREADS}", "-f", f"owner={owner}",
-                      "-f", f"repo={repo}", "-F", f"number={number}")
-    for node in found["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]:
-        if node["comments"]["nodes"] and node["comments"]["nodes"][0]["databaseId"] == database_id:
-            return node
-    return None
+    return fetch.thread_of_root(spec, owner, repo, number, database_id)
+
+
+def _ensure_raw(opened, object_id, url, now):
+    if opened.db.execute("SELECT 1 FROM raw WHERE object_id = ?", (object_id,)).fetchone() is None:
+        with opened.write():
+            comment.CommentAdapter(opened, now).fetch(sync.Item(object_id, "thread", url, None))
 
 
 def _create(opened, where, source, flags, now):
@@ -89,7 +90,7 @@ def _create(opened, where, source, flags, now):
         usage("A new review thread needs --path and --line", "Or target an existing thread to update its root comment")
     spec = f"{where.owner}/{where.repo}"
     pr_id = comment._object(opened, targets.Target("pr", owner=where.owner, repo=where.repo, number=where.number), now)
-    head = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (pr_id,)).fetchone()[0])
+    head = fetch.api(spec, f"repos/{spec}/pulls/{where.number}")
     body = sync.normalize(pathlib.Path(source).read_text(encoding="utf-8"))
     fields = ["-f", f"body={body}", "-f", f"path={flags['path']}", "-F", f"line={flags['line']}",
               "-f", f"side={flags['side'] or 'RIGHT'}", "-f", f"commit_id={head['head']['sha']}"]
@@ -125,6 +126,7 @@ def _resolve(opened, found, unresolve, plan, now):
         fail("timvisher_gh_not_found", f"GitHub has no review thread at {found.url}.",
              suggestions=["Address a thread by its root comment's #discussion_r<ID> URL"])
     spec = f"{found.owner}/{found.repo}"
+    _ensure_raw(opened, object_id, found.url, now)
     database_id = opened.db.execute("SELECT database_id FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
     node = _thread_node(spec, found.owner, found.repo, found.number, database_id)
     wanted = not unresolve
@@ -220,6 +222,7 @@ def run(context, args):
             return 0
 
         object_id = tracked.object_id or comment._object(opened, tracked, now)
+        _ensure_raw(opened, object_id, tracked.url, now)
         if where is not None and where.kind == "thread" and comment._object(opened, where, now) != object_id:
             usage(f"{file_arg} is already {tracked.url}'s root comment, not {where.url}'s.")
         number = opened.db.execute("SELECT o.number FROM objects o JOIN objects t ON t.parent_id = o.id "

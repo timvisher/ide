@@ -448,8 +448,14 @@ def gql_review_threads(state, fields):
     pull(state, repo, fields["number"])
     nodes = [thread_node(state, node_id, t) for node_id, t in state["threads"].items()
              if t["repo"] == repo and t["pull_number"] == int(fields["number"])]
-    return {"repository": {"pullRequest": {"reviewThreads": {
-        "pageInfo": {"hasNextPage": bool(state.get("partial_threads"))}, "nodes": nodes}}}}
+    size = state.get("thread_page_size")
+    if size:
+        start = int(fields.get("after") or 0)
+        page_info = {"hasNextPage": start + size < len(nodes), "endCursor": str(start + size)}
+        nodes = nodes[start:start + size]
+    else:
+        page_info = {"hasNextPage": bool(state.get("partial_threads")), "endCursor": None}
+    return {"repository": {"pullRequest": {"reviewThreads": {"pageInfo": page_info, "nodes": nodes}}}}
 
 
 def gql_set_resolved(resolved):
@@ -480,6 +486,7 @@ def gql_set_draft(draft):
 GRAPHQL = {
     "Viewer": gql_viewer,
     "ReviewThreads": gql_review_threads,
+    "ThreadPage": gql_review_threads,
     "ResolveReviewThread": gql_set_resolved(True),
     "UnresolveReviewThread": gql_set_resolved(False),
     "ConvertPullRequestToDraft": gql_set_draft(True),
