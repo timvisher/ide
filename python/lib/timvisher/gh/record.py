@@ -93,7 +93,7 @@ def record(db, object_id, children=True):
     row = _row(db, object_id)
     raw, remote = _raw(db, object_id), _values(db, object_id, "remote")
     kind = row["kind"]
-    comment = raw["root"] if kind == "thread" else raw
+    comment = raw.get("root", {}) if kind == "thread" else raw
     stored = store.store_file(db, object_id)
     authored = [path for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ? ORDER BY path",
                                                (object_id,))]

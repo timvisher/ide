@@ -231,6 +231,50 @@ class CommentTest(GhTestCase):
             self.assertEqual((0, ""), self.comment(verb, str(source)), verb)
         self.assertEqual([], self.posts())
 
+    def test_a_new_comment_is_recorded_from_the_post_itself(self):
+        source = self.write("note.md", "Recorded\n")
+        self.comment(PR, str(source))
+        post = max(i for i, c in enumerate(self.github.calls) if c.get("method") == "POST")
+        self.assertEqual([], [c for c in self.github.calls[post + 1:] if c.get("path", "").endswith("/comments")])
+        self.assertTrue(source.is_symlink())
+
+    def test_plan_neither_deletes_nor_reacts(self):
+        top = self.github.add_issue_comment(REPO, 7, "top")
+        url = f"{PR}#issuecomment-{top}"
+        for args in (("delete", "--plan", "--force", url), ("react", "--plan", url, "eyes")):
+            rc, out = self.comment(*args)
+            self.assertEqual(0, rc, self.err)
+            self.assertIn(url, out)
+        self.assertEqual([], self.posts())
+        self.assertIn(top, self.issue_comments())
+
+    def test_open_opens_the_comment(self):
+        log = self.tmp / "browser.log"
+        fake = self.github.bin / "timvisher_browser"
+        fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_BROWSER_LOG\"\n")
+        fake.chmod(0o755)
+        rc, out, err = self.run_gh("comment", PR, str(self.write("o.md", "x\n")), "--open", TIMVISHER_AGENT="1",
+                                   FAKE_BROWSER_LOG=str(log))
+        self.assertEqual(0, rc, err)
+        self.assertEqual(f"tab {out.strip()}\n", log.read_text())
+
+    def test_fetch_and_pull_take_a_comment_url_alone_but_not_a_pr_url(self):
+        top = self.github.add_issue_comment(REPO, 7, "top", user="bob")
+        url = f"{PR}#issuecomment-{top}"
+        self.assertEqual((0, f"{url}\n"), self.comment("fetch", url), self.err)
+        self.assertEqual(0, self.comment("pull", url)[0], self.err)
+        self.assertEqual(["top\n"], [p.read_text() for p in state.root().rglob("comment.md")])
+        self.assertEqual(2, self.comment("fetch", PR)[0])
+
+    def test_adopting_a_legacy_review_comment_root(self):
+        root = self.github.add_review_comment(REPO, 7, "nit")
+        source = self.write("nit.md", "nit\n")
+        self.write("nit.md.url", f"{PR}#discussion_r{root}\n")
+        rc, out = self.comment(str(source))
+        self.assertEqual((0, f"{PR}#discussion_r{root}\n"), (rc, out), self.err)
+        rc, out, _ = self.run_gh("thread", "info", f"{PR}#discussion_r{root}", ".root")
+        self.assertEqual(f"{PR}#discussion_r{root}\n", out)
+
     def test_help_documents_every_verb(self):
         rc, out = self.comment("--help")
         self.assertEqual(0, rc)

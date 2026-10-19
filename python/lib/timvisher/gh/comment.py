@@ -2,7 +2,7 @@ import json
 import pathlib
 import sys
 
-from timvisher import aictl
+from timvisher import aictl, browser
 from timvisher.gh import adopt, fetch, nouns, pr, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, USAGE, Exit, fail, usage
 
@@ -36,7 +36,7 @@ Reactions: +1 -1 laugh confused heart hooray rocket eyes, the emoji
 👍 👎 😄 😕 ❤️ 🎉 🚀 👀 (no skin tones), or a GraphQL ReactionContent name
 (THUMBS_UP, THUMBS_DOWN, LAUGH, ...).
 
-Options for the syncing forms: --plan, --ours, --theirs, --merge.
+Options for the syncing forms: --plan, --ours, --theirs, --merge, --open.
 """
 
 REACTIONS = {
@@ -81,9 +81,11 @@ class CommentAdapter:
     def fetch(self, item):
         spec, endpoint = _endpoint(_comment_target(self.state.db, item.object_id))
         found = fetch.api(spec, endpoint)
-        raw = self.state.db.execute("SELECT payload FROM raw WHERE object_id = ?", (item.object_id,)).fetchone()
+        db = self.state.db
+        raw = db.execute("SELECT payload FROM raw WHERE object_id = ?", (item.object_id,)).fetchone()
         stored = json.loads(raw[0]) if raw else {}
-        payload = {**stored, "root": found} if "root" in stored else found
+        kind = db.execute("SELECT kind FROM objects WHERE id = ?", (item.object_id,)).fetchone()[0]
+        payload = {**stored, "root": found} if kind == "thread" else found
         self.state.db.execute("INSERT INTO raw VALUES (?, ?, ?) ON CONFLICT (object_id) DO UPDATE SET "
                               "payload = excluded.payload, fetched_at = excluded.fetched_at",
                               (item.object_id, json.dumps(payload), self.now))
@@ -182,20 +184,29 @@ def _root(target):
 
 
 def _create(opened, where, source, now):
-    values = {"body": pathlib.Path(source).read_text(encoding="utf-8").rstrip("\n")}
+    values = {"body": sync.normalize(pathlib.Path(source).read_text(encoding="utf-8"))}
     spec = f"{where.owner}/{where.repo}"
+    pr_id = _object(opened, targets.Target("pr", owner=where.owner, repo=where.repo, number=where.number), now)
     if where.kind == "pr":
+        parent, group = pr_id, "comments"
         created = fetch.api(spec, f"repos/{spec}/issues/{where.number}/comments", "-f", f"body={values['body']}")
     else:
+        parent, group = _thread_of(opened.db, _object(opened, where, now)), "replies"
         created = fetch.api(spec, f"repos/{spec}/pulls/{where.number}/comments/{_root(where)}/replies",
                             "-f", f"body={values['body']}")
+    parent_key = opened.db.execute("SELECT store_path FROM objects WHERE id = ?", (parent,)).fetchone()[0]
+    owner, repo = created["html_url"].split("/")[3:5]
+    name = store.comment_name(created["created_at"], created["user"]["login"], created["body"])
     with opened.write() as db:
-        fetch.Fetcher(opened, now).pr(where.owner, where.repo, where.number, only_new=True)
-        object_id = db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE",
-                               (created["html_url"],)).fetchone()[0]
-        store.set_base(db, object_id, "body", values["body"], now)
-        store.promote(db, object_id, source)
-        opened.touch(object_id)
+        key = store.unique(store.root(), store.child_key(parent_key, group, name))
+        store.register(db, id=created["node_id"], kind="comment", url=created["html_url"], owner=owner, repo=repo,
+                       database_id=created["id"], parent_id=parent, store_path=key)
+        db.execute("INSERT INTO raw VALUES (?, ?, ?) ON CONFLICT (object_id) DO UPDATE SET payload = excluded.payload",
+                   (created["node_id"], json.dumps(created), now))
+        store.set_base(db, created["node_id"], "body", values["body"], now)
+        store.set_remote(db, created["node_id"], "body", created["body"], now)
+        store.promote(db, created["node_id"], source)
+        opened.touch(created["node_id"])
     return created["html_url"]
 
 
@@ -223,6 +234,10 @@ def _split(args, flags):
                 flags["delete"] = True
             case "--force" | "-f":
                 flags["force"] = True
+            case "--open":
+                flags["open"] = True
+            case "--no-open":
+                flags["open"] = False
             case "--":
                 positionals.extend(rest)
                 break
@@ -282,7 +297,7 @@ def run(context, args):
     rest = list(args)
     if rest and rest[0] in ("fetch", "pull", "push", "reply", "edit", "react", "delete"):
         verb = rest.pop(0)
-    flags = {"reactions": [], "plan": False, "resolution": None, "delete": False, "force": False}
+    flags = {"reactions": [], "plan": False, "resolution": None, "delete": False, "force": False, "open": False}
     positionals = _split(rest, flags)
     if positionals is None:
         return 0
@@ -298,6 +313,9 @@ def run(context, args):
             if found.kind not in ("comment", "review_comment", "thread"):
                 usage(f"'{found.url}' names a {found.kind}, so comment react can't use it.")
             names = [reaction(name) for name in positionals[1:]]
+            if flags["plan"]:
+                print(f"~ comment {found.url}  {'remove' if flags['delete'] else 'add'} reactions {', '.join(names)}")
+                return 0
             return _react(opened, found, names, flags["delete"], fetch.api(f"{found.owner}/{found.repo}", "user")["login"], now)
         if verb == "delete":
             if len(positionals) != 1:
@@ -305,6 +323,9 @@ def run(context, args):
             found = targets.resolve("comment", positionals[0], context=context, db=opened.db)
             if found.kind not in ("comment", "review_comment", "thread"):
                 usage(f"'{found.url}' names a {found.kind}, so comment delete can't use it.")
+            if flags["plan"]:
+                print(f"- comment {found.url}  delete")
+                return 0
             return _delete(opened, found, flags["force"], fetch.api(f"{found.owner}/{found.repo}", "user")["login"],
                            now)
 
@@ -318,6 +339,13 @@ def run(context, args):
             target_arg, file_arg = positionals
         elif len(positionals) == 2:
             target_arg, file_arg = positionals
+        elif len(positionals) == 1 and verb in ("fetch", "pull", "push") and (
+                positionals[0] == targets.BROWSER_TAB or positionals[0].startswith("https://")):
+            only = targets.resolve("comment", positionals[0], context=context, db=opened.db)
+            if only.kind not in ("comment", "review_comment"):
+                usage(f"'{only.url}' names a {only.kind}; comment {verb} needs a comment URL or a comment file.",
+                      "Use 'timvisher_gh pr pull' for a PR's whole conversation")
+            target_arg, file_arg = None, positionals[0]
         elif len(positionals) == 1:
             target_arg, file_arg = None, positionals[0]
         else:
@@ -361,6 +389,8 @@ def run(context, args):
             url = _create(opened, where, file_arg, now)
             print(url)
             rc = 0
+            if flags["open"]:
+                browser.open_tab(url)
         else:
             object_id = tracked.object_id or _object(opened, tracked, now)
             if opened.db.execute("SELECT 1 FROM raw WHERE object_id = ?", (object_id,)).fetchone() is None:
@@ -378,6 +408,8 @@ def run(context, args):
             rc, url = _sync(opened, engine_verb, object_id, flags, viewer, now, rerun)
             if rc == 0 and not flags["plan"]:
                 print(url)
+                if flags["open"] and verb != "fetch":
+                    browser.open_tab(url)
         if rc == 0 and flags["reactions"] and not flags["plan"]:
             rc = _react(opened, where, flags["reactions"], False, viewer, now)
         return rc
