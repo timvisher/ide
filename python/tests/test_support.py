@@ -166,6 +166,29 @@ class FakeGhTest(GhTestCase):
         self.assertEqual(0, self.api("graphql", "--input", "-", stdin=body)[0])
         self.assertFalse(self.github.state["pulls"][REPO]["7"]["draft"])
 
+    def test_reviews_are_listed_and_fetched(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        review_id = self.github.add_review(REPO, 7, user="carol", state="APPROVED", body="LGTM")
+        _, listed, _ = self.api(f"repos/{REPO}/pulls/7/reviews")
+        self.assertEqual([("carol", "APPROVED", "LGTM")], [(r["user"]["login"], r["state"], r["body"]) for r in listed])
+        _, one, _ = self.api(f"repos/{REPO}/pulls/7/reviews/{review_id}")
+        self.assertEqual((f"PRR_{review_id}", "2026-10-10T10:00:00Z"), (one["node_id"], one["submitted_at"]))
+
+    def test_records_carry_authors_times_and_merge_fields(self):
+        self.github.set_now("2026-10-11T09:00:00Z")
+        self.github.add_pull(REPO, 7, head="feature", author="alice", head_sha="a" * 40, state="closed", merged=True,
+                             merged_at="2026-10-11T10:00:00Z", merge_commit_sha="b" * 40)
+        pr = self.api(f"repos/{REPO}/pulls/7")[1]
+        self.assertEqual(("alice", "2026-10-11T09:00:00Z", "a" * 40, "2026-10-11T10:00:00Z", "b" * 40),
+                         (pr["user"]["login"], pr["created_at"], pr["head"]["sha"], pr["merged_at"],
+                          pr["merge_commit_sha"]))
+        root = self.github.add_review_comment(REPO, 7, "nit", path="a.go", line=4)
+        self.github.set_outdated(self.github.thread_of(root))
+        _, threads, _ = self.graphql("query ReviewThreads($owner: String!) { ... }", owner="testuser",
+                                     repo="testrepo", number=7)
+        node = threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]
+        self.assertEqual((True, "a.go", 4, "RIGHT"), (node["isOutdated"], node["path"], node["line"], node["diffSide"]))
+
     def test_graphql_without_a_handler_fails_loudly(self):
         rc, _, err = self.graphql("query SomethingNew { x }")
         self.assertEqual(1, rc)

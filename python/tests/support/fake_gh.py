@@ -227,6 +227,8 @@ def rest(state, request):
             require(fields, "head", "base")
             number = next_number(state, repo)
             created = {"number": number, "title": fields.get("title", ""), "body": fields.get("body", ""),
+                       "author": state["viewer"], "created_at": state["now"], "updated_at": state["now"],
+                       "head_sha": "0" * 40, "merged_at": None, "merge_commit_sha": None,
                        "head": fields["head"].split(":")[-1],
                        "head_owner": fields["head"].split(":")[0] if ":" in fields["head"] else repo.split("/")[0],
                        "base": fields["base"],
@@ -240,13 +242,15 @@ def rest(state, request):
             for key in ("title", "body", "base", "state"):
                 if key in fields:
                     found[key] = fields[key]
+            found["updated_at"] = state["now"]
             return 200, pull_view(repo, found)
 
         case "POST", ["issues"]:
             require(fields, "title")
             number = next_number(state, repo)
             created = {"number": number, "title": fields.get("title", ""), "body": fields.get("body", ""),
-                       "state": "open"}
+                       "state": "open", "author": state["viewer"], "created_at": state["now"],
+                       "updated_at": state["now"], "closed_at": None}
             state["issues"].setdefault(repo, {})[str(number)] = created
             return 201, issue_view(repo, created)
         case "GET", ["issues", number] if number.isdigit():
@@ -271,7 +275,8 @@ def rest(state, request):
             require(fields, "body")
             comment_id = new_id(state)
             created = {"id": comment_id, "node_id": f"IC_{comment_id}", "repo": repo, "issue_number": int(number),
-                       "body": fields["body"], "user": state["viewer"],
+                       "body": fields["body"], "user": state["viewer"], "created_at": state["now"],
+                       "updated_at": state["now"],
                        "html_url": f"https://github.com/{repo}/{kind}/{number}#issuecomment-{comment_id}"}
             state["issue_comments"][str(comment_id)] = created
             return 201, comment_view(state, "issue_comment", created)
@@ -298,6 +303,16 @@ def rest(state, request):
             pull(state, repo, number)
             find_comment(state, "review_comment", repo, comment_id)
             return 201, add_review_comment(state, repo, int(number), fields, int(comment_id))
+        case "GET", ["pulls", number, "reviews"]:
+            pull(state, repo, number)
+            return 200, page(request, [review_view(r) for r in state["reviews"].values()
+                                       if r["repo"] == repo and r["pull_number"] == int(number)])
+        case "GET", ["pulls", number, "reviews", review_id]:
+            found = state["reviews"].get(review_id)
+            if found is None or found["repo"] != repo or found["pull_number"] != int(number):
+                raise not_found()
+            return 200, review_view(found)
+
         case "GET", ["pulls", "comments", comment_id]:
             return 200, comment_view(state, "review_comment", find_comment(state, "review_comment", repo, comment_id))
         case "PATCH", ["pulls", "comments", comment_id]:
@@ -346,7 +361,8 @@ def add_review_comment(state, repo, number, fields, reply_to):
             require(fields, "line")
     comment_id = new_id(state)
     created = {"id": comment_id, "node_id": f"PRRC_{comment_id}", "repo": repo, "pull_number": number,
-               "body": fields.get("body", ""), "user": state["viewer"],
+               "body": fields.get("body", ""), "user": state["viewer"], "created_at": state["now"],
+               "updated_at": state["now"], "pull_request_review_id": None,
                "html_url": f"https://github.com/{repo}/pull/{number}#discussion_r{comment_id}"}
     if reply_to is None:
         created.update(path=fields.get("path"), line=fields.get("line"), start_line=fields.get("start_line"),
@@ -364,11 +380,21 @@ def add_review_comment(state, repo, number, fields, reply_to):
     return comment_view(state, "review_comment", created)
 
 
+def review_view(found):
+    view = {key: value for key, value in found.items() if key not in ("repo", "pull_number")}
+    view["user"] = user(found["user"])
+    view["pull_request_url"] = f"https://api.github.com/repos/{found['repo']}/pulls/{found['pull_number']}"
+    return view
+
+
 def pull_view(repo, found, listed=False):
     owner = repo.split("/")[0]
-    view = {"number": found["number"], "node_id": f"PR_{repo}#{found['number']}", "title": found["title"],
-            "body": found["body"], "state": found["state"], "draft": found["draft"],
-            "head": {"ref": found["head"], "label": f"{found['head_owner']}:{found['head']}",
+    view = {"id": 900000 + found["number"], "number": found["number"], "node_id": f"PR_{repo}#{found['number']}",
+            "title": found["title"], "body": found["body"], "state": found["state"], "draft": found["draft"],
+            "user": user(found["author"]), "created_at": found["created_at"], "updated_at": found["updated_at"],
+            "closed_at": found["merged_at"] if found["state"] == "closed" else None,
+            "merged_at": found["merged_at"], "merge_commit_sha": found["merge_commit_sha"],
+            "head": {"ref": found["head"], "sha": found["head_sha"], "label": f"{found['head_owner']}:{found['head']}",
                      "repo": {"owner": {"login": found["head_owner"]}}},
             "base": {"ref": found["base"], "repo": {"owner": {"login": owner}, "full_name": repo}},
             "html_url": f"https://github.com/{repo}/pull/{found['number']}"}
@@ -378,8 +404,10 @@ def pull_view(repo, found, listed=False):
 
 
 def issue_view(repo, found):
-    return {"number": found["number"], "node_id": f"I_{repo}#{found['number']}", "title": found["title"],
-            "body": found["body"], "state": found["state"],
+    return {"id": 800000 + found["number"], "number": found["number"], "node_id": f"I_{repo}#{found['number']}",
+            "title": found["title"], "body": found["body"], "state": found["state"],
+            "user": user(found["author"]), "created_at": found["created_at"], "updated_at": found["updated_at"],
+            "closed_at": found["closed_at"],
             "html_url": f"https://github.com/{repo}/issues/{found['number']}"}
 
 
@@ -397,8 +425,13 @@ def graphql(state, request):
 
 
 def thread_node(state, node_id, thread):
-    return {"id": node_id, "isResolved": thread["resolved"],
-            "comments": {"nodes": [{"databaseId": c, "id": f"PRRC_{c}"} for c in thread["comments"]]}}
+    root = state["review_comments"].get(str(thread["comments"][0])) if thread["comments"] else None
+    return {"id": node_id, "isResolved": thread["resolved"], "isOutdated": thread.get("outdated", False),
+            "path": root and root["path"], "line": root and root["line"],
+            "startLine": root and root["start_line"], "diffSide": root and root["side"],
+            "comments": {"nodes": [{"databaseId": c, "id": f"PRRC_{c}",
+                                    "url": state["review_comments"][str(c)]["html_url"]}
+                                   for c in thread["comments"] if str(c) in state["review_comments"]]}}
 
 
 def gql_viewer(state, fields):

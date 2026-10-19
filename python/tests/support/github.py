@@ -18,8 +18,8 @@ class FakeGitHub:
         shim.chmod(0o755)
         self._write({
             "viewer": viewer, "next_id": 1000, "repos": {}, "pulls": {}, "issues": {},
-            "issue_comments": {}, "review_comments": {}, "reactions": {}, "threads": {},
-            "deleted": [], "responses": [],
+            "issue_comments": {}, "review_comments": {}, "reactions": {}, "threads": {}, "reviews": {},
+            "deleted": [], "responses": [], "now": "2026-10-10T10:00:00Z",
         })
 
     def env(self):
@@ -48,19 +48,26 @@ class FakeGitHub:
                                     "source": source and {"full_name": source}, "archived": archived}
         self._update(change)
 
+    def set_now(self, when):
+        self._update(lambda s: s.update(now=when))
+
     def add_pull(self, repo, number, *, head, title="", body="", base="main", draft=False,
-                 state="open", merged=False, head_owner=None):
+                 state="open", merged=False, head_owner=None, author=None, head_sha="0" * 40,
+                 created_at=None, merged_at=None, merge_commit_sha=None):
         def change(s):
             s["pulls"].setdefault(repo, {})[str(number)] = {
                 "number": number, "title": title, "body": body, "head": head,
                 "head_owner": head_owner or repo.split("/")[0], "base": base, "draft": draft,
-                "state": state, "merged": merged}
+                "state": state, "merged": merged, "author": author or s["viewer"],
+                "created_at": created_at or s["now"], "updated_at": created_at or s["now"],
+                "head_sha": head_sha, "merged_at": merged_at, "merge_commit_sha": merge_commit_sha}
         self._update(change)
 
-    def add_issue(self, repo, number, *, title="", body="", state="open"):
+    def add_issue(self, repo, number, *, title="", body="", state="open", author=None, closed_at=None):
         def change(s):
             s["issues"].setdefault(repo, {})[str(number)] = {
-                "number": number, "title": title, "body": body, "state": state}
+                "number": number, "title": title, "body": body, "state": state, "author": author or s["viewer"],
+                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at}
         self._update(change)
 
     def add_issue_comment(self, repo, number, body, *, user=None):
@@ -69,7 +76,7 @@ class FakeGitHub:
             comment_id = s["next_id"]
             s["issue_comments"][str(comment_id)] = {
                 "id": comment_id, "node_id": f"IC_{comment_id}", "repo": repo, "issue_number": number,
-                "body": body, "user": user or s["viewer"],
+                "body": body, "user": user or s["viewer"], "created_at": s["now"], "updated_at": s["now"],
                 "html_url": f"https://github.com/{repo}/{'pull' if str(number) in s['pulls'].get(repo, {}) else 'issues'}/{number}#issuecomment-{comment_id}"}
             return comment_id
         return self._update(change)
@@ -80,7 +87,8 @@ class FakeGitHub:
             s["next_id"] += 1
             comment_id = s["next_id"]
             comment = {"id": comment_id, "node_id": f"PRRC_{comment_id}", "repo": repo, "pull_number": number,
-                       "body": body, "user": user or s["viewer"],
+                       "body": body, "user": user or s["viewer"], "created_at": s["now"], "updated_at": s["now"],
+                       "pull_request_review_id": None,
                        "html_url": f"https://github.com/{repo}/pull/{number}#discussion_r{comment_id}"}
             if reply_to is None:
                 comment.update(path=path, line=line, start_line=None, side=side, commit_id="0" * 40)
@@ -94,6 +102,20 @@ class FakeGitHub:
             s["review_comments"][str(comment_id)] = comment
             return comment_id
         return self._update(change)
+
+    def add_review(self, repo, number, *, user, state="COMMENTED", body=""):
+        def change(s):
+            s["next_id"] += 1
+            review_id = s["next_id"]
+            s["reviews"][str(review_id)] = {
+                "id": review_id, "node_id": f"PRR_{review_id}", "repo": repo, "pull_number": number,
+                "user": user, "state": state, "body": body, "submitted_at": s["now"],
+                "html_url": f"https://github.com/{repo}/pull/{number}#pullrequestreview-{review_id}"}
+            return review_id
+        return self._update(change)
+
+    def set_outdated(self, thread_id, outdated=True):
+        self._update(lambda s: s["threads"][thread_id].update(outdated=outdated))
 
     def add_reaction(self, kind, comment_id, content, *, user):
         def change(s):
