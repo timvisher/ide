@@ -122,14 +122,27 @@ class ReadyTest(GhTestCase):
         self.assertIn("no checks reported", self.err)
         self.assertFalse(self.draft())
 
-    def test_stops_when_gh_refuses_instead_of_retrying_forever(self):
+    def test_stops_when_gh_refuses_instead_of_retrying_forever_with_or_without_an_agent(self):
         refusal = json.dumps({"type": "instruction", "level": "error", "code": "gh_account_token_unavailable",
                               "message": "no token"})
-        self.github.respond(["pr", "checks"], stderr=refusal + "\n", status=1)
-        rc, _ = self.ready(PR)
-        self.assertEqual(1, rc)
-        self.assertIn("timvisher_gh_checks_refused", self.codes())
-        self.assertEqual(1, sum(c["argv"][2:4] == ["pr", "checks"] for c in self.github.calls))
+        self.github.respond(["pr", "checks"], stderr="ERROR gh_account_token_unavailable: no token\n", status=1,
+                            aictl=refusal + "\n")
+        outer = self.tmp / "outer.jsonl"
+        outer.touch()
+        for agent in ("1", ""):
+            mark = len(self.github.calls)
+            rc, _, err = self.run_gh("pr", "ready", PR, TIMVISHER_AGENT=agent, TIMVISHER_GH_PR_READY_POLL_INTERVAL="0",
+                                     TIMVISHER_AICTL_LOG=str(outer))
+            self.assertEqual(1, rc, agent)
+            self.assertIn("timvisher_gh_checks_refused", err)
+            self.assertEqual(1, sum(c["argv"][2:4] == ["pr", "checks"] for c in self.github.calls[mark:]))
+        self.assertIn("gh_account_token_unavailable", outer.read_text())
+
+    def test_already_ready_records_it_so_a_later_push_doesnt_refuse(self):
+        self.github._update(lambda s: s["pulls"][REPO]["7"].update(draft=False))
+        self.assertEqual(0, self.ready(PR)[0], self.err)
+        rc, out, err = self.run_gh("pr", "info", PR, '.posted["source.draft"]')
+        self.assertEqual((0, "false\n"), (rc, out), err)
 
     def test_no_pr_is_an_error(self):
         self.github._update(lambda s: s["responses"].clear())

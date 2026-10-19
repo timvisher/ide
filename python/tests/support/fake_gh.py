@@ -520,6 +520,10 @@ def canned(state, argv):
             if response.get("once"):
                 state["responses"].remove(response)
                 save(state)
+            log = os.environ.get("TIMVISHER_AICTL_LOG")
+            if response.get("aictl") and log and os.path.isfile(log):
+                with open(log, "a", encoding="utf-8") as stream:
+                    stream.write(response["aictl"])
             sys.stdout.write(response.get("stdout", ""))
             sys.stderr.write(response.get("stderr", ""))
             return response.get("status", 0)

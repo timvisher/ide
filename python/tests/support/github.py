@@ -128,8 +128,8 @@ class FakeGitHub:
     def thread_of(self, comment_id):
         return next(node_id for node_id, t in self.state["threads"].items() if comment_id in t["comments"])
 
-    def respond(self, argv, stdout="", stderr="", status=0, once=False):
+    def respond(self, argv, stdout="", stderr="", status=0, once=False, aictl=""):
         def change(s):
             s["responses"].append({"argv": list(argv), "stdout": stdout, "stderr": stderr, "status": status,
-                                   "once": once})
+                                   "once": once, "aictl": aictl})
         self._update(change)

@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 from timvisher import aictl, logging
@@ -42,8 +43,8 @@ def exclude_patterns(spec):
     return patterns
 
 
-def _refused(stderr):
-    for line in stderr.splitlines():
+def _refused(lines):
+    for line in lines:
         try:
             instruction = json.loads(line)
         except ValueError:
@@ -53,11 +54,26 @@ def _refused(stderr):
     return False
 
 
+# gh reports a refusal on stderr in JSON only under TIMVISHER_AGENT, so each
+# call gets its own TIMVISHER_AICTL_LOG to read it from, as #6 does; what it
+# records is passed on to the caller's log.
+def _checks(spec, url):
+    with tempfile.NamedTemporaryFile("r", prefix="timvisher_gh_pr_ready.", suffix=".jsonl") as log:
+        done = subprocess.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"],
+                              env={**os.environ, "TIMVISHER_AICTL_LOG": log.name},
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        instructions = log.read().splitlines()
+    outer = os.environ.get("TIMVISHER_AICTL_LOG")
+    if instructions and outer and os.path.isfile(outer):
+        with open(outer, "a", encoding="utf-8") as stream:
+            stream.write("".join(f"{line}\n" for line in instructions))
+    return done, instructions
+
+
 def wait_for_checks(spec, url, patterns, interval):
     while True:
-        done = subprocess.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if _refused(done.stderr):
+        done, instructions = _checks(spec, url)
+        if _refused(instructions):
             sys.stderr.write(done.stderr)
             fail("timvisher_gh_checks_refused", f"gh refused to check {url}; not retrying.",
                  suggestions=["Fix what gh reported above, then rerun"])
@@ -124,6 +140,8 @@ def run(context, args):
                 fetch.Fetcher(opened, now).pr(found.owner, found.repo, found.number, conversation=False)
             aictl.info(code="timvisher_gh_pr_ready", message=f"Marked {url} ready for review.")
         else:
+            with opened.write() as db:
+                pr.set_source_state(db, pr_id, {"draft": False}, now)
             aictl.info(code="timvisher_gh_pr_already_ready", message=f"{url} is already ready for review.")
         post_ok = ready_hooks.post("ready")
         print(url)
