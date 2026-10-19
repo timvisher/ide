@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, nouns, record, state, store, sync, targets
+from timvisher.gh import adopt, fetch, hooks, nouns, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 VERBS = ("fetch", "pull", "push", "edit")
@@ -196,6 +196,16 @@ def _push_branch(context, flags):
     return subprocess.run(args, cwd=context.toplevel).returncode
 
 
+# Pre-push hooks gate a push, so they run only when the branch is about to
+# move, as #6's do: not when it's already pushed, or behind without --ours.
+def _branch_moves(context, flags):
+    args = ["timvisher_git", "push", "--plan"] + (["--ours"] if flags["resolution"] == "ours" else [])
+    done = subprocess.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    kind = (done.stdout.split() or [""])[0]
+    return kind in ("new", "fast-forward", "own-rewrite") or (
+        flags["resolution"] == "ours" and kind in ("behind", "decision"))
+
+
 def _head(context):
     branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=context.toplevel)
     if not branch or branch == "HEAD":
@@ -216,6 +226,9 @@ def _create(opened, context, source, flags):
         print(f"+ pr      (new on {spec} from {head})  create {'a draft ' if flags['draft'] is not False else ''}"
               f"PR from {source}")
         return 0, None
+    gate = hooks.Hooks(repo=spec, worktree=context.toplevel, title=values["title"], open_=flags["open"])
+    if not gate.pre("push"):
+        return ERROR, None
     rc = _push_branch(context, flags)
     if rc != 0:
         return rc, None
@@ -235,7 +248,10 @@ def _create(opened, context, source, flags):
         store.promote(db, pr_id, source)
         adopt.link_context(db, context.toplevel, pr_id)
         opened.touch(pr_id)
-    return 0, created["html_url"]
+    after = hooks.Hooks(repo=f"{owner}/{repo}", worktree=context.toplevel, pr_url=created["html_url"],
+                        title=values["title"], state_dir=store.store_file(opened.db, pr_id).parent,
+                        open_=flags["open"])
+    return (0 if after.post("push") else ERROR), created["html_url"]
 
 
 def _conversation_items(opened, pr_id, viewer):
@@ -310,11 +326,17 @@ def run(context, args):
                                  plan_only=flags["plan"], ask=sync.prompt if sync.interactive() else None).run(items)
                 if rc not in (0,):
                     return rc
+        raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
+        pushing = verb in ("push", "sync", "edit") and worktree_pr and not flags["plan"]
+        pr_hooks = hooks.Hooks(repo=f"{found.owner}/{found.repo}", worktree=context.toplevel if context else None,
+                               pr_url=url, title=raw["title"],
+                               state_dir=store.store_file(opened.db, object_id).parent, open_=flags["open"])
+        if pushing and _branch_moves(context, flags) and not pr_hooks.pre("push"):
+            return ERROR
         if verb in ("push", "sync", "edit") and worktree_pr:
             rc = _push_branch(context, flags)
             if rc != 0:
                 return rc
-        raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
         item = sync.Item(object_id, "pr", url, PrAdapter(opened, fetcher, flags),
                          mine=raw["user"]["login"].lower() == viewer.lower())
         rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"], plan_only=flags["plan"],
@@ -324,9 +346,11 @@ def run(context, args):
             with opened.write() as db:
                 set_source_state(db, object_id, given, now)
         if rc == 0 and not flags["plan"]:
+            post_ok = pr_hooks.post("push") if pushing else True
             print(url)
             if flags["open"]:
                 browser.open_tab(url)
+            rc = rc if post_ok else ERROR
         return rc
     except fetch.NotFound as missing:
         fail("timvisher_gh_not_found", f"GitHub has no such PR ({missing}).",
