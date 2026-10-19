@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from timvisher import aictl, logging
+from timvisher.gh.errors import fail
 
 CORE = pathlib.Path(__file__).resolve().parents[3] / "bin" / "timvisher_gh.config"
 
@@ -44,12 +45,20 @@ class Hooks:
             else:
                 base = subprocess.run(["gh", "-R", self.repo, "repo", "view", self.repo, "--json",
                                        "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
-                                      stdout=subprocess.PIPE, text=True).stdout.strip() or "main"
+                                      stdout=subprocess.PIPE, text=True).stdout.strip()
+                if not base:
+                    fail("timvisher_gh_hooks_no_default_branch",
+                         f"Could not determine the default branch of {self.repo} for path-scoped hooks.",
+                         suggestions=["Check gh's error above, then rerun"])
                 merge_base = subprocess.run(["git", "merge-base", f"refs/remotes/origin/{base}", "HEAD"],
                                             cwd=self.worktree, stdout=subprocess.PIPE, text=True).stdout.strip()
+                if not merge_base:
+                    fail("timvisher_gh_hooks_no_merge_base",
+                         f"Couldn't find the merge base of HEAD and origin/{base} for path-scoped hooks.",
+                         suggestions=[f"Fetch it: 'git fetch origin {base}', then rerun"])
                 done = subprocess.run(["git", "diff", "--name-only", merge_base, "HEAD"], cwd=self.worktree,
-                                      stdout=subprocess.PIPE, text=True) if merge_base else None
-                self._changed = done.stdout.splitlines() if done and done.returncode == 0 else []
+                                      stdout=subprocess.PIPE, text=True)
+                self._changed = done.stdout.splitlines() if done.returncode == 0 else []
         return self._changed
 
     def _touches(self, scope):
@@ -74,7 +83,8 @@ class Hooks:
         number = self.pr_url.rsplit("/", 1)[-1] if self.pr_url and "/pull/" in self.pr_url else ""
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.worktree, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, text=True).stdout.strip()
-        title = self.repo + (f"#{number}" if number else "") + (f": {self.title}" if self.title else "")
+        current = self.title() if callable(self.title) else self.title
+        title = self.repo + (f"#{number}" if number else "") + (f": {current}" if current else "")
         return {**os.environ, "TIMVISHER_GH_PHASE": phase, "TIMVISHER_GH_HOOK": when,
                 "TIMVISHER_GH_REPO": self.repo, "TIMVISHER_GH_PR_URL": self.pr_url or "",
                 "TIMVISHER_GH_PR_NUMBER": number, "TIMVISHER_GH_HEAD_SHA": head,

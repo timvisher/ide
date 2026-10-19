@@ -328,8 +328,10 @@ def run(context, args):
                     return rc
         raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
         pushing = verb in ("push", "sync", "edit") and worktree_pr and not flags["plan"]
+        source_file = store.store_file(opened.db, object_id)
         pr_hooks = hooks.Hooks(repo=f"{found.owner}/{found.repo}", worktree=context.toplevel if context else None,
-                               pr_url=url, title=raw["title"],
+                               pr_url=url, title=lambda: parse_source(source_file.read_text(encoding="utf-8"))["title"]
+                               if source_file.exists() else raw["title"],
                                state_dir=store.store_file(opened.db, object_id).parent, open_=flags["open"])
         if pushing and _branch_moves(context, flags) and not pr_hooks.pre("push"):
             return ERROR

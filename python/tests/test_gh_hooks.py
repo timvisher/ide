@@ -139,6 +139,27 @@ class HooksTest(GhTestCase):
         self.assertIn("url= ", lines[0])
         self.assertIn(f"url={PR1} ", lines[1])
 
+    def test_hooks_see_the_local_title_a_push_sends(self):
+        self.create()
+        self.new_commit()
+        self.hook(self.core, "orgs/testuser/pr/push/pre.d/10-gate")
+        self.hook(self.core, "orgs/testuser/pr/push/post.d/10-after")
+        (self.work / "pr.md").write_text("Renamed\n\nHook body\n")
+        self.assertEqual(0, self.pr("push")[0], self.err)
+        titles = [line.split("title=")[1].split(" state=")[0] for line in self.log.read_text().splitlines()]
+        self.assertEqual([f"{REPO}#1: Renamed", f"{REPO}#1: Renamed"], titles)
+
+    def test_path_scopes_before_a_pr_need_a_merge_base(self):
+        self.github._update(lambda s: s["responses"].clear())
+        self.github.respond(["pr", "list"], stdout="[]")
+        self.github.respond(["repo", "view"], stdout="nowhere\n")
+        self.hook(self.core, "repos/testuser/testrepo/paths/apps/pr/push/pre.d/10-scoped")
+        (self.work / "pr.md").write_text("New\n")
+        rc, _ = self.pr("push")
+        self.assertNotEqual(0, rc)
+        self.assertIn("timvisher_gh_hooks_no_merge_base", self.err)
+        self.assertEqual({}, self.github.state["pulls"])
+
     def test_a_failing_pre_hook_on_creation_creates_nothing(self):
         self.hook(self.core, "orgs/testuser/pr/push/pre.d/10-gate", rc=1)
         (self.work / "pr.md").write_text("New\n")
