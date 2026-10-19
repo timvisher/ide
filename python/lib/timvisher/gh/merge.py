@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import subprocess
@@ -95,9 +96,17 @@ def request_by_comment(target):
 
 def request_by_gh(target, extra):
     spec = f"{target.owner}/{target.repo}"
-    settings = fetch.api(spec, f"repos/{spec}")
-    strategies = [name for name, key in (("merge", "allow_merge_commit"), ("squash", "allow_squash_merge"),
-                                         ("rebase", "allow_rebase_merge")) if settings.get(key)]
+    # gh repo view (GraphQL), not REST repos/O/R: REST reports the allow_*
+    # settings as null to anyone below admin on the repo.
+    done = subprocess.run(["gh", "-R", spec, "repo", "view", spec, "--json",
+                           "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"],
+                          stdout=subprocess.PIPE, text=True)
+    if done.returncode != 0:
+        fail("timvisher_gh_gh_failed", f"Couldn't read {spec}'s merge settings.",
+             suggestions=["Check gh's error above, then retry"])
+    settings = json.loads(done.stdout)
+    strategies = [name for name, key in (("merge", "mergeCommitAllowed"), ("squash", "squashMergeAllowed"),
+                                         ("rebase", "rebaseMergeAllowed")) if settings.get(key)]
     if not strategies:
         fail("timvisher_gh_no_merge_strategy", f"{spec} allows no merge strategy: merge, squash and rebase are all off.",
              suggestions=[f"Enable one in {spec}'s settings, or merge it on GitHub"])
