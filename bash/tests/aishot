@@ -218,6 +218,33 @@ fi
 rm -rf "$repo"
 
 # ---------------------------------------------------------------------------
+# Case 8c: a tracked PR's draft comes from timvisher_gh pr info .source.path
+# ---------------------------------------------------------------------------
+run_test
+repo=$(make_repo)
+store="$repo.store"
+mkdir -p "$store/comments/c1" "$repo/.timvisher_gh" "$repo.bin"
+printf 'STORE DRAFT TITLE\n\nSTORE DRAFT BODY\n' > "$store/pr.md"
+printf 'A MIRRORED COMMENT\n' > "$store/comments/c1/comment.md"
+ln -s "$store" "$repo/.timvisher_gh/pr"
+ln -s "$store/pr.md" "$repo/pr.md"
+cat > "$repo.bin/timvisher_gh" <<FAKE
+#!/usr/bin/env bash
+[[ \$* == 'pr info --schema-version 1 .source.path' ]] || exit 2
+echo '$store/pr.md'
+FAKE
+chmod +x "$repo.bin/timvisher_gh"
+out=$(cd "$repo" && PATH="$repo.bin:$PATH" AISHOT_MAX_PROMPT_CHARS=10000000 "$script" git diff review make-prompt 2>/dev/null)
+drafts=$(grep -c 'PR DESCRIPTION DRAFT' <<<"$out")
+if [[ $out == *'STORE DRAFT BODY'* ]] && (( drafts == 1 )) && [[ $out == *'A MIRRORED COMMENT'* ]]
+then
+  pass "review reads a tracked PR's draft through timvisher_gh pr info, once"
+else
+  fail "review should inline the tracked draft once and the mirrored conversation (got ${drafts})"
+fi
+rm -rf "$repo" "$store" "$repo.bin"
+
+# ---------------------------------------------------------------------------
 # Case 8b: review inlines the timvisher_gh PR draft at .timvisher_gh/pr/pr.md
 # once, even with a root pr.md compatibility symlink pointing at it.
 # ---------------------------------------------------------------------------
