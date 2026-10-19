@@ -3569,6 +3569,22 @@ worktree_gc__gh_repo() {
   esac
 }
 
+# The PR state timvisher_gh records for a worktree, as "<state> <merged_at>".
+# Only for a worktree whose PR is known (the .timvisher_gh/pr link, or a
+# recorded URL): with no target, pr info falls back to the browser's tab.
+worktree_gc__pr_state() {
+  local wt_path=$1 url_file
+  local -a target=()
+  if [[ ! -L ${wt_path}/.timvisher_gh/pr ]]
+  then
+    url_file=$(pr_url_file "$wt_path") ||
+      return 1
+    target=("$(tr -d '[:space:]' < "$url_file")")
+  fi
+  timvisher_gh -C "$wt_path" pr info --schema-version 1 ${target[@]+"${target[@]}"} \
+    '.state + " " + (.merged_at // "")' 2>/dev/null
+}
+
 # Decide whether a worktree's branch has landed and may be reaped.
 # Echoes a short human reason on success (exit 0); echoes nothing, returns 1
 # otherwise. Checks are ordered cheap-and-authoritative first:
@@ -3634,7 +3650,7 @@ worktree_gc__reap_reason() {
 worktree_gc() {
   local dry_run=0
   # Three age tiers, cheapest/most-certain first (all overridable):
-  #   merged cookie (.timvisher_gh/pr/merged) -> eager reap (4 days)
+  #   merged PR (timvisher_gh pr info .state) -> eager reap (4 days)
   #   merge detection (PR-state / ancestor)                 (2 weeks)
   #   stale sweep (no merge evidence, branch kept)          (30 days)
   local merged_cutoff_spec="4 days ago"
@@ -3830,21 +3846,19 @@ worktree_gc() {
         continue
       fi
 
-      # Decide whether and why to reap. The merged cookie is
-      # authoritative (written only on a confirmed merge), so it short-
-      # circuits the slow detection: reap once it is older than the eager
-      # cutoff, keep it during the grace window, and never fall through to
+      # Decide whether and why to reap. A merged state recorded by
+      # timvisher_gh is authoritative, so it short-circuits the slow
+      # detection: reap once the merge is older than the eager cutoff,
+      # keep it during the grace window, and never fall through to
       # detection/stale either way.
-      local remove_kind="" detail=""
-      local cookie="${wt_path}/.timvisher_gh/pr/merged"
-      [[ -f $cookie ]] ||
-        cookie="${wt_path}/x.merged"
-      if [[ -f $cookie ]]; then
-        local cookie_epoch
-        cookie_epoch=$(gdate -r "$cookie" +%s 2>/dev/null) || cookie_epoch=0
-        if (( cookie_epoch < merged_cutoff )); then
+      local remove_kind="" detail="" pr_state="" merged_at=""
+      read -r pr_state merged_at < <(worktree_gc__pr_state "$wt_path")
+      if [[ $pr_state == merged ]]; then
+        local merged_epoch
+        merged_epoch=$(gdate -d "$merged_at" +%s 2>/dev/null) || merged_epoch=0
+        if (( merged_epoch < merged_cutoff )); then
           remove_kind="MERGED"
-          detail="merged cookie"
+          detail="PR merged"
         fi
       else
         local last_epoch
