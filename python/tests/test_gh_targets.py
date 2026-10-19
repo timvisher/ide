@@ -57,9 +57,12 @@ class TargetsTest(GhTestCase):
             target = self.resolve("pr", url)
             self.assertEqual(("pr", "O", "R", 7, PR), (target.kind, target.owner, target.repo, target.number, target.url), url)
 
-    def test_issue_urls(self):
-        target = self.resolve("issue", "https://github.com/O/R/issues/3")
-        self.assertEqual(("issue", 3, "https://github.com/O/R/issues/3"), (target.kind, target.number, target.url))
+    def test_issue_urls_with_their_suffixes(self):
+        for url in ("https://github.com/O/R/issues/3", "https://github.com/O/R/issues/3?notification_referrer_id=x",
+                    "https://github.com/O/R/issues/3#issuecomment-9", "https://github.com/O/R/issues/3?q=1#top"):
+            target = self.resolve("issue", url)
+            self.assertEqual(("issue", 3, "https://github.com/O/R/issues/3"), (target.kind, target.number, target.url),
+                             url)
 
     def test_comment_urls(self):
         top = self.resolve("comment", f"{PR}/files?x=1#issuecomment-55")
@@ -77,7 +80,7 @@ class TargetsTest(GhTestCase):
 
     def test_other_urls_are_errors_that_show_the_accepted_shapes(self):
         for url in ("https://gitlab.com/O/R/pull/7", "http://github.com/O/R/pull/7", "https://github.com/O/R",
-                    "https://github.com/O/R/pull/7/checks", "https://github.com/O/R/issues/3#issuecomment-1"):
+                    "https://github.com/O/R/pull/7/checks", "https://github.com/O/R/issues/3/timeline"):
             status, instruction = self.refused("pr", url)
             self.assertEqual((2, "timvisher_gh_target_invalid_url"), (status, instruction["code"]), url)
             self.assertEqual(len(targets.SHAPES), len(instruction["suggestions"]))

@@ -13,13 +13,13 @@ BROWSER_TAB = "current-browser-tab"
 
 SHAPES = (
     "https://github.com/O/R/pull/N, optionally with /files, /changes or /commits, a ?query or a #fragment",
-    "https://github.com/O/R/issues/N",
+    "https://github.com/O/R/issues/N, optionally with a ?query or a #fragment",
     "https://github.com/O/R/pull/N#issuecomment-<ID> (a top-level comment)",
     "https://github.com/O/R/pull/N#discussion_r<ID> (a review comment, or its thread with 'thread')",
 )
 
 _PULL = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/pull/(\d+)(?:/(?:files|changes|commits))?(?:\?[^#]*)?(?:#(.*))?")
-_ISSUE = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/issues/(\d+)")
+_ISSUE = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/issues/(\d+)(?:\?[^#]*)?(?:#.*)?")
 _ANCHOR = re.compile(r"(issuecomment-|discussion_r)(\d+)")
 
 
