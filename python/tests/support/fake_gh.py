@@ -448,7 +448,8 @@ def gql_review_threads(state, fields):
     pull(state, repo, fields["number"])
     nodes = [thread_node(state, node_id, t) for node_id, t in state["threads"].items()
              if t["repo"] == repo and t["pull_number"] == int(fields["number"])]
-    return {"repository": {"pullRequest": {"reviewThreads": {"nodes": nodes}}}}
+    return {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": bool(state.get("partial_threads"))}, "nodes": nodes}}}}
 
 
 def gql_set_resolved(resolved):

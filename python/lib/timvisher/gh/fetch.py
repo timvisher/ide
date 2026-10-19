@@ -8,9 +8,10 @@ REVIEW_THREADS = """query ReviewThreads($owner: String!, $repo: String!, $number
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage }
         nodes {
           id isResolved isOutdated path line startLine diffSide
-          comments(first: 100) { nodes { databaseId id url } }
+          comments(first: 100) { pageInfo { hasNextPage } nodes { databaseId id url } }
         }
       }
     }
@@ -40,6 +41,7 @@ class Fetcher:
         self._viewer = None
         self.taken = set()
         self.seen = set()
+        self.partial = False
 
     def viewer(self, repo):
         if self._viewer is None:
@@ -102,7 +104,10 @@ class Fetcher:
         review_comments = {c["id"]: c for c in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/comments")}
         threads = api(spec, "graphql", "-f", f"query={REVIEW_THREADS}", "-f", f"owner={owner}", "-f", f"repo={repo}",
                       "-F", f"number={number}")
-        nodes = threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        connection = threads["data"]["repository"]["pullRequest"]["reviewThreads"]
+        nodes = connection["nodes"]
+        self.partial = (connection.get("pageInfo") or {}).get("hasNextPage", False) or any(
+            (node["comments"].get("pageInfo") or {}).get("hasNextPage", False) for node in nodes)
         for node in nodes:
             ids = [c["databaseId"] for c in node["comments"]["nodes"] if c["databaseId"] in review_comments]
             if not ids:
@@ -140,7 +145,11 @@ class Fetcher:
             self._archive_missing(pr_id)
         return pr_id
 
+    # Past GraphQL's first 100 threads or replies an object wasn't seen, not
+    # deleted, so an incomplete page archives nothing.
     def _archive_missing(self, pr_id):
+        if self.partial:
+            return
         db = self.state.db
         query = ("SELECT id FROM objects WHERE deleted_at IS NULL AND store_path NOT LIKE 'archive/%' AND "
                  "(parent_id = ? OR parent_id IN (SELECT id FROM objects WHERE parent_id = ? AND kind = 'thread'))")
