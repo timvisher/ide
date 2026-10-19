@@ -166,6 +166,11 @@ class FakeGhTest(GhTestCase):
         self.assertEqual(0, self.api("graphql", "--input", "-", stdin=body)[0])
         self.assertFalse(self.github.state["pulls"][REPO]["7"]["draft"])
 
+    def test_repos_match_case_insensitively_and_answer_in_canonical_case(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        self.assertEqual("https://github.com/testuser/testrepo/pull/7",
+                         self.api("repos/TestUser/TESTREPO/pulls/7")[1]["html_url"])
+
     def test_reviews_are_listed_and_fetched(self):
         self.github.add_pull(REPO, 7, head="feature")
         review_id = self.github.add_review(REPO, 7, user="carol", state="APPROVED", body="LGTM")

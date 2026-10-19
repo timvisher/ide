@@ -196,6 +196,11 @@ def thread_of(state, comment_id):
     return None
 
 
+def canonical(state, repo):
+    known = set(state["repos"]) | set(state["pulls"]) | set(state["issues"])
+    return next((name for name in known if name.lower() == repo.lower()), repo)
+
+
 def rest(state, request):
     method, path, fields = request["method"], request["path"], request["fields"]
     parts = path.split("/")
@@ -205,7 +210,7 @@ def rest(state, request):
 
     if len(parts) < 3 or parts[0] != "repos":
         raise not_found()
-    repo = f"{parts[1]}/{parts[2]}"
+    repo = canonical(state, f"{parts[1]}/{parts[2]}")
     rest_parts = parts[3:]
 
     match method, rest_parts:
@@ -439,7 +444,7 @@ def gql_viewer(state, fields):
 
 
 def gql_review_threads(state, fields):
-    repo = f"{fields['owner']}/{fields['repo']}"
+    repo = canonical(state, f"{fields['owner']}/{fields['repo']}")
     pull(state, repo, fields["number"])
     nodes = [thread_node(state, node_id, t) for node_id, t in state["threads"].items()
              if t["repo"] == repo and t["pull_number"] == int(fields["number"])]
