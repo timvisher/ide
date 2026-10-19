@@ -3,7 +3,7 @@ import pathlib
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, nouns, pr, record, state, store, sync, targets
+from timvisher.gh import adopt, fetch, hooks, nouns, pr, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, USAGE, Exit, fail, usage
 
 USAGE_TEXT = """\
@@ -15,6 +15,9 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
        timvisher_gh [-C <path>] comment info <target> [<component>]
        timvisher_gh [-C <path>] comment delete [--force] <target>
 
+  comment [<target>] <name>  with no file <name>, post the canned comment
+                             timvisher_gh.config/comments/<name>.md (core root, then
+                             overlay) on the PR
   comment [<target>] <file>  sync <file>, creating the comment on its first push.
                              A PR target (or none: the worktree's PR) makes a
                              top-level comment; a review comment or thread target
@@ -210,6 +213,29 @@ def _create(opened, where, source, now):
     return created["html_url"]
 
 
+# The core root before the overlay, as #6's comment__canned searched them.
+def canned(name):
+    if not name or "/" in name:
+        return None
+    for root in hooks.roots():
+        path = root / "comments" / f"{name}.md"
+        if path.is_file():
+            return path
+    return None
+
+
+def _post_canned(opened, context, target_arg, name, path, now):
+    where = targets.resolve("comment", target_arg, context=context, db=opened.db)
+    if where.kind != "pr":
+        usage(f"A canned comment is posted on a PR, and '{where.url}' names a {where.kind}.")
+    spec = f"{where.owner}/{where.repo}"
+    aictl.info(code="timvisher_gh_canned_comment", message=f"Posting canned comment '{name}' from {path}.")
+    created = fetch.api(spec, f"repos/{spec}/issues/{where.number}/comments", "-f",
+                        f"body={sync.normalize(path.read_text(encoding='utf-8'))}")
+    print(created["html_url"])
+    return 0
+
+
 def _split(args, flags):
     positionals, rest = [], list(args)
     while rest:
@@ -306,6 +332,9 @@ def run(context, args):
     now = nouns.now()
     try:
         store.exporting(opened, lambda object_id: record.record(opened.db, object_id), nouns.now)
+        name = positionals[-1] if verb == "sync" and positionals and len(positionals) <= 2 else None
+        if name is not None and not pathlib.Path(name).exists() and (found := canned(name)) is not None:
+            return _post_canned(opened, context, positionals[0] if len(positionals) == 2 else None, name, found, now)
         if verb == "react":
             if len(positionals) < 2:
                 usage("comment react needs a <target> and at least one <reaction>")
