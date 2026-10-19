@@ -39,6 +39,7 @@ class Fetcher:
         self.now = now
         self._viewer = None
         self.taken = set()
+        self.seen = set()
 
     def viewer(self, repo):
         if self._viewer is None:
@@ -51,6 +52,7 @@ class Fetcher:
     def _put(self, *, id, kind, url, owner, repo, key, raw, remote, only_new, number=None, database_id=None,
              parent_id=None):
         db = self.state.db
+        self.seen.add(id)
         known = self._known(id)
         if known and only_new:
             return False
@@ -89,6 +91,7 @@ class Fetcher:
         if not conversation:
             return pr_id
         for comment in api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments"):
+            self.seen.add(comment["node_id"])
             if only_new and self._known(comment["node_id"]):
                 continue
             name = store.comment_name(comment["created_at"], comment["user"]["login"], comment["body"])
@@ -105,6 +108,7 @@ class Fetcher:
             if not ids:
                 continue
             root = review_comments[ids[0]]
+            self.seen.add(node["id"])
             if not (only_new and self._known(node["id"])):
                 name = store.thread_name(root["created_at"], root["user"]["login"], root.get("path"), root.get("line"))
                 reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{root['id']}/reactions")
@@ -115,6 +119,7 @@ class Fetcher:
             thread_key = self._known(node["id"])[0]
             for reply_id in ids[1:]:
                 reply = review_comments[reply_id]
+                self.seen.add(reply["node_id"])
                 if only_new and self._known(reply["node_id"]):
                     continue
                 name = store.comment_name(reply["created_at"], reply["user"]["login"], reply["body"])
@@ -126,11 +131,24 @@ class Fetcher:
         for review in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews"):
             if review["state"] == "PENDING":
                 continue
+            self.seen.add(review["node_id"])
             name = store.review_name(review["submitted_at"], review["user"]["login"])
             self._put(id=review["node_id"], kind="review", url=review["html_url"], owner=owner, repo=repo,
                       database_id=review["id"], parent_id=pr_id, key=store.child_key(pr_key, "reviews", name),
                       raw=review, only_new=only_new, remote={"body": review.get("body") or "", "state": review["state"]})
+        if not only_new:
+            self._archive_missing(pr_id)
         return pr_id
+
+    def _archive_missing(self, pr_id):
+        db = self.state.db
+        query = ("SELECT id FROM objects WHERE deleted_at IS NULL AND store_path NOT LIKE 'archive/%' AND "
+                 "(parent_id = ? OR parent_id IN (SELECT id FROM objects WHERE parent_id = ? AND kind = 'thread'))")
+        for (child,) in db.execute(query, (pr_id, pr_id)).fetchall():
+            row = db.execute("SELECT store_path FROM objects WHERE id = ?", (child,)).fetchone()
+            if child not in self.seen and not row[0].startswith("archive/"):
+                store.archive(db, child, self.now)
+                self.state.touch(child)
 
     def issue(self, owner, repo, number, *, only_new=False):
         spec = f"{owner}/{repo}"
