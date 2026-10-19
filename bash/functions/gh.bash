@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared gh helpers for timvisher_gh and timvisher_git.
+# Shared gh helpers for timvisher_git.
 
 # Echo OWNER/REPO from a git remote URL — https, scp-style (git@host:o/r), and
 # ssh:// forms. Host-agnostic, so GitHub Enterprise host aliases (a host other
