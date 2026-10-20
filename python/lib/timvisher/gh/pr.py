@@ -305,7 +305,7 @@ def run(context, args):
             rc = _push_branch(context, flags)
             if rc == 0:
                 aictl.info(code="timvisher_gh_pr_none",
-                           message=f"Pushed the branch; there's no PR for {context.toplevel} to update.",
+                           message=f"There's no PR for {context.toplevel} to update.",
                            suggestions=[f"Write {context.toplevel}/pr.md and rerun '{rerun}' to create one"])
             return rc
         if found.kind == "source":
