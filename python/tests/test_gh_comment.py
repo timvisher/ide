@@ -198,6 +198,7 @@ class CommentTest(GhTestCase):
         [comment_id] = self.issue_comments()
         url = f"{PR}#issuecomment-{comment_id}"
         self.assertEqual((0, ""), self.comment("delete", url, stdin="n\n"))
+        self.assertIn("[y/N] \n{", self.err)
         self.assertIn(comment_id, self.issue_comments())
         self.assertEqual((0, ""), self.comment("delete", url, stdin="y\n"))
         self.assertNotIn(comment_id, self.issue_comments())
