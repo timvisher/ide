@@ -97,6 +97,46 @@ class IssueTest(GhTestCase):
         self.assertIn("/archive/", self.info(f"{ISSUE1}#issuecomment-{theirs}", ".source.path"))
         self.assertNotIn("/archive/", self.info(f"{ISSUE1}#issuecomment-{mine}", ".source.path"))
 
+    def test_issue_commands_on_a_prs_number_refuse_and_archive_nothing(self):
+        self.github.add_pull(REPO, 7, head="feature", title="A PR")
+        root = self.github.add_review_comment(REPO, 7, "nit")
+        pr_url = f"https://github.com/{REPO}/pull/7"
+        self.assertEqual(0, self.run_gh("pr", "pull", pr_url)[0])
+        thread = f"{pr_url}#discussion_r{root}"
+        for args in (["pull", f"https://github.com/{REPO}/issues/7"], ["fetch", f"https://github.com/{REPO}/issues/7"]):
+            rc, _ = self.issue(*args)
+            self.assertEqual((2, ["timvisher_gh_issue_is_a_pr"]), (rc, self.codes()), args)
+        self.assertNotIn("/archive/", self.run_gh("thread", "info", thread, ".source.path")[1])
+        note = self.work / "x.note.md"
+        note.write_text("Aimed at the PR's issue URL\n")
+        rc, _ = self.comment(f"https://github.com/{REPO}/issues/7", str(note))
+        self.assertEqual((2, []), (rc, self.comment_bodies(7)), self.err)
+        self.assertFalse(note.is_symlink())
+
+    def test_pr_commands_refuse_a_comment_on_an_issue(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        comment_id = self.github.add_issue_comment(REPO, 1, "hi")
+        rc, out, _ = self.run_gh("pr", "info", f"{ISSUE1}#issuecomment-{comment_id}")
+        self.assertEqual((2, ""), (rc, out))
+
+    def test_a_transferred_issue_mirrors_the_comments_where_it_lives_now(self):
+        moved = "testuser/other"
+        self.github.add_issue(moved, 50, title="Moved")
+        self.github.add_issue(moved, 1, title="Unrelated")
+        self.github.add_issue_comment(moved, 50, "on the moved issue")
+        self.github.add_issue_comment(moved, 1, "on an unrelated issue")
+        self.github.add_issue(REPO, 1, title="Moved", moved_to=[moved, 50])
+        self.assertEqual(0, self.issue("fetch", ISSUE1)[0], self.err)
+        urls = json.loads(self.run_gh("issue", "info", f"https://github.com/{moved}/issues/50", ".comments | tojson")[1])
+        bodies = [self.info(url, ".body") for url in urls]
+        self.assertEqual(["on the moved issue"], bodies)
+
+    def test_the_first_issue_info_lists_its_comments(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        comment_id = self.github.add_issue_comment(REPO, 1, "hi")
+        rc, out, _ = self.run_gh("issue", "info", ISSUE1, ".comments | tojson")
+        self.assertEqual((0, [f"{ISSUE1}#issuecomment-{comment_id}"]), (rc, json.loads(out)))
+
     def test_the_first_sync_creates_the_issue_and_promotes_issue_md(self):
         rc, out = self.create()
         self.assertEqual((0, f"{ISSUE1}\n"), (rc, out), self.err)

@@ -94,7 +94,7 @@ def _match(url, noun):
         owner, repo, number, fragment = match.groups()
         base = {"owner": owner, "repo": repo, "number": int(number)}
         anchor = _ISSUE_COMMENT.fullmatch(fragment or "")
-        if anchor is None or noun == "issue":
+        if anchor is None or noun not in ("comment", "thread"):
             return Target("issue", **base)
         if noun == "thread":
             fail("timvisher_gh_target_not_a_thread", f"'{url}' is a comment on an issue, which has no thread.",

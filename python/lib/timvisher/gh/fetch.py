@@ -2,7 +2,7 @@ import json
 import subprocess
 
 from timvisher.gh import store
-from timvisher.gh.errors import fail
+from timvisher.gh.errors import USAGE, fail
 
 REVIEW_THREADS = """query ReviewThreads($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -194,10 +194,17 @@ class Fetcher:
                 store.archive(db, child, self.now)
                 self.state.touch(child)
 
+    # GitHub's issues endpoint answers for PRs too; treating one as an issue
+    # would archive its threads, replies and reviews as missing.
     def issue(self, owner, repo, number, *, conversation=False, only_new=False):
         spec = f"{owner}/{repo}"
         found = api(spec, f"repos/{spec}/issues/{number}")
+        if found.get("pull_request") or "/pull/" in found["html_url"]:
+            fail("timvisher_gh_issue_is_a_pr", f"{spec}#{number} is a PR, not an issue.",
+                 status=USAGE, suggestions=[f"Use its PR URL, {found['html_url'].split('#')[0]}, "
+                                            "with 'timvisher_gh pr' or 'timvisher_gh comment'"])
         owner, repo = found["html_url"].split("/")[3:5]
+        number = found["number"]
         spec = f"{owner}/{repo}"
         self._put(id=found["node_id"], kind="issue", url=found["html_url"], owner=owner, repo=repo, number=number,
                   database_id=found.get("id"), key=store.issue_key(owner, repo, number), raw=found, only_new=only_new,
