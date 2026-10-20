@@ -11,8 +11,9 @@ Usage: timvisher_gh [-C <path>] issue [fetch|pull|push|edit] [<target>] [options
        timvisher_gh [-C <path>] issue info [<target>] [<component>]
 
   issue [<target>]   sync the title and body: pull, then push
-  issue fetch        update the state; writes no files
-  issue pull         fetch, then write GitHub's changes into the source
+  issue fetch        update the state for the issue and its comments; writes no files
+  issue pull         fetch, then write GitHub's changes into the store, for objects
+                     whose source is unchanged
   issue push         fetch, then push the title and body, creating the issue
                      from the source if there is none
   issue edit         as push, but an error if the issue doesn't exist
@@ -143,13 +144,21 @@ def run(context, args):
         now = nouns.now()
         fetcher = fetch.Fetcher(opened, now)
         with opened.write():
-            issue_id = fetcher.issue(found.owner, found.repo, found.number)
+            issue_id = fetcher.issue(found.owner, found.repo, found.number,
+                                     conversation=verb in ("fetch", "pull", "sync"))
         url = opened.db.execute("SELECT url FROM objects WHERE id = ?", (issue_id,)).fetchone()[0]
         if verb == "fetch":
             print(url)
             return 0
         raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (issue_id,)).fetchone()[0])
         viewer = fetcher.viewer(f"{found.owner}/{found.repo}")
+        if verb in ("pull", "sync"):
+            items = pr._conversation_items(opened, issue_id, viewer)
+            if items:
+                rc = sync.Engine(opened, "pull", now=now, rerun=rerun, resolution=flags["resolution"],
+                                 plan_only=flags["plan"], ask=sync.prompt if sync.interactive() else None).run(items)
+                if rc != 0:
+                    return rc
         item = sync.Item(issue_id, "issue", url, IssueAdapter(opened, fetcher),
                          mine=raw["user"]["login"].lower() == viewer.lower())
         rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"], plan_only=flags["plan"],

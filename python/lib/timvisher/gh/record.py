@@ -32,10 +32,12 @@ FIELDS = {
     ),
     "issue": (
         ("number", "issue number"), ("title", "title"), ("body", "body"), ("state", "open or closed"),
-        ("closed_at", "close time or null"),
+        ("closed_at", "close time or null"), ("comments", "top-level comment URLs"),
     ),
     "comment": (
-        ("comment_kind", "issue_comment or review_comment"), ("pr", "the PR's record, without its children"),
+        ("comment_kind", "issue_comment or review_comment"),
+        ("pr", "the PR's record, without its children, or null for a comment on an issue"),
+        ("issue", "the issue's record, without its children, for a comment on an issue, or null"),
         ("thread", "the thread's record for a review comment, without its children, or null"),
         ("in_reply_to", "the thread root's URL for a reply, or null"), ("body", "body"),
         ("reactions", "your reactions, REST names, sorted"), ("reaction_counts", "count per reaction"),
@@ -120,11 +122,18 @@ def record(db, object_id, children=True):
         case "issue":
             result.update(number=row["number"], title=remote.get("title"), body=remote.get("body"),
                           state=remote.get("state"), closed_at=raw.get("closed_at"))
+            if children:
+                result.update(comments=_children(db, object_id, "comment"))
+        # pr is null only on comments on issues, which had no records before,
+        # so no existing record changes and schema_version stays 1 rather than
+        # breaking every caller pinned to it.
         case "comment":
             thread_id = parent if _row(db, parent)["kind"] == "thread" else None
             pr_id = _row(db, thread_id)["parent_id"] if thread_id else parent
+            on_issue = _row(db, pr_id)["kind"] == "issue"
             result.update(comment_kind="review_comment" if thread_id else "issue_comment",
-                          pr=record(db, pr_id, children=False),
+                          pr=None if on_issue else record(db, pr_id, children=False),
+                          issue=record(db, pr_id, children=False) if on_issue else None,
                           thread=record(db, thread_id, children=False) if thread_id else None,
                           in_reply_to=_row(db, thread_id)["url"] if thread_id else None,
                           body=remote.get("body"), reactions=remote.get("reactions", []),

@@ -19,8 +19,8 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
                              timvisher_gh.config/comments/<name>.md (overlay root, then
                              core) on the PR
   comment [<target>] <file>  sync <file>, creating the comment on its first push.
-                             A PR target (or none: the worktree's PR) makes a
-                             top-level comment; a review comment or thread target
+                             A PR or issue target (or none: the worktree's PR)
+                             makes a top-level comment; a review comment or thread target
                              makes a reply in that thread. A top-level comment
                              target is an error. --reaction R reacts to the target.
   reply <target> <file>      as the bare form, but the target must be a review
@@ -149,7 +149,11 @@ def _object(opened, target, now):
     row = db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (target.url,)).fetchone()
     if row is None:
         with opened.write():
-            fetch.Fetcher(opened, now).pr(target.owner, target.repo, target.number, only_new=True)
+            if target.kind == "issue" or target.on == "issue":
+                fetch.Fetcher(opened, now).issue(target.owner, target.repo, target.number, conversation=True,
+                                                 only_new=True)
+            else:
+                fetch.Fetcher(opened, now).pr(target.owner, target.repo, target.number, only_new=True)
         row = db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (target.url,)).fetchone()
     return row and row[0]
 
@@ -189,9 +193,10 @@ def _root(target):
 def _create(opened, where, source, now):
     values = {"body": sync.normalize(pathlib.Path(source).read_text(encoding="utf-8"))}
     spec = f"{where.owner}/{where.repo}"
-    pr_id = _object(opened, targets.Target("pr", owner=where.owner, repo=where.repo, number=where.number), now)
-    if where.kind == "pr":
-        parent, group = pr_id, "comments"
+    if where.kind in ("pr", "issue"):
+        parent = _object(opened, targets.Target(where.kind, owner=where.owner, repo=where.repo, number=where.number),
+                         now)
+        group = "comments"
         created = fetch.api(spec, f"repos/{spec}/issues/{where.number}/comments", "-f", f"body={values['body']}")
     else:
         parent, group = _thread_of(opened.db, _object(opened, where, now)), "replies"
@@ -227,8 +232,8 @@ def canned(name):
 
 def _post_canned(opened, context, target_arg, name, path, now):
     where = targets.resolve("comment", target_arg, context=context, db=opened.db)
-    if where.kind != "pr":
-        usage(f"A canned comment is posted on a PR, and '{where.url}' names a {where.kind}.")
+    if where.kind not in ("pr", "issue"):
+        usage(f"A canned comment is posted on a PR or an issue, and '{where.url}' names a {where.kind}.")
     spec = f"{where.owner}/{where.repo}"
     aictl.info(code="timvisher_gh_canned_comment", message=f"Posting canned comment '{name}' from {path}.")
     created = fetch.api(spec, f"repos/{spec}/issues/{where.number}/comments", "-f",
@@ -386,7 +391,7 @@ def run(context, args):
             only = targets.resolve("comment", positionals[0], context=context, db=opened.db)
             if only.kind not in ("comment", "review_comment"):
                 usage(f"'{only.url}' names a {only.kind}; comment {verb} needs a comment URL or a comment file.",
-                      "Use 'timvisher_gh pr pull' for a PR's whole conversation")
+                      "Use 'timvisher_gh pr pull' or 'timvisher_gh issue pull' for the whole conversation")
             target_arg, file_arg = None, positionals[0]
         elif len(positionals) == 1:
             target_arg, file_arg = None, positionals[0]
@@ -412,8 +417,8 @@ def run(context, args):
                   "Use 'timvisher_gh comment <pr> <file>' for a top-level comment")
         if where is not None and where.kind == "comment":
             usage(f"'{where.url}' is a top-level comment, which has no thread to reply in.",
-                  "Target the PR for a new top-level comment, or a review comment to reply in its thread")
-        if flags["reactions"] and (where is None or where.kind == "pr"):
+                  "Target the PR or issue for a new top-level comment, or a review comment to reply in its thread")
+        if flags["reactions"] and (where is None or where.kind in ("pr", "issue")):
             usage("--reaction reacts to the target comment, so it needs a comment target")
 
         viewer = fetch.api(f"{(where or tracked).owner}/{(where or tracked).repo}", "user")["login"]
@@ -442,7 +447,7 @@ def run(context, args):
                     (tracked.owner or "").lower(), (tracked.repo or "").lower(), tracked.number) != (
                     where.owner.lower(), where.repo.lower(), where.number):
                 usage(f"{file_arg} is already posted as {tracked.url}, not on {where.url}.",
-                      "Use a new file for a comment on another PR")
+                      "Use a new file for a comment on another PR or issue")
             if where is not None and where.kind in ("review_comment", "thread"):
                 wanted = _object(opened, where, now)
                 if _thread_of(opened.db, object_id) != _thread_of(opened.db, wanted):
@@ -461,7 +466,7 @@ def run(context, args):
             rc = _react(opened, where, flags["reactions"], False, viewer, now)
         return rc
     except fetch.NotFound as missing:
-        fail("timvisher_gh_not_found", f"GitHub has no such comment or PR ({missing}).",
+        fail("timvisher_gh_not_found", f"GitHub has no such comment, PR or issue ({missing}).",
              suggestions=["Check the URL, and that your gh account can see the repository"])
     finally:
         opened.close()

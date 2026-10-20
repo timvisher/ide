@@ -260,8 +260,17 @@ def rest(state, request):
                        "updated_at": state["now"], "closed_at": None}
             state["issues"].setdefault(repo, {})[str(number)] = created
             return 201, issue_view(repo, created)
+        case "GET", ["issues", number] if number.isdigit() and number in state["pulls"].get(repo, {}):
+            found = pull(state, repo, number)
+            return 200, {**issue_view(repo, {**found, "closed_at": None}), "node_id": f"PR_{repo}#{found['number']}",
+                         "html_url": f"https://github.com/{repo}/pull/{found['number']}",
+                         "pull_request": {"url": f"https://api.github.com/repos/{repo}/pulls/{found['number']}"}}
         case "GET", ["issues", number] if number.isdigit():
-            return 200, issue_view(repo, issue(state, repo, number))
+            found = issue(state, repo, number)
+            if found.get("moved_to"):
+                repo, number = found["moved_to"]
+                found = issue(state, repo, number)
+            return 200, issue_view(repo, found)
         case "PATCH", ["issues", number] if number.isdigit():
             found = issue(state, repo, number)
             for key in ("title", "body", "state"):

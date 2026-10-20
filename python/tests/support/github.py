@@ -71,11 +71,12 @@ class FakeGitHub:
                 "head_sha": head_sha, "merged_at": merged_at, "merge_commit_sha": merge_commit_sha}
         self._update(change)
 
-    def add_issue(self, repo, number, *, title="", body="", state="open", author=None, closed_at=None):
+    def add_issue(self, repo, number, *, title="", body="", state="open", author=None, closed_at=None,
+                  moved_to=None):
         def change(s):
             s["issues"].setdefault(repo, {})[str(number)] = {
                 "number": number, "title": title, "body": body, "state": state, "author": author or s["viewer"],
-                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at}
+                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at, "moved_to": moved_to}
         self._update(change)
 
     def add_issue_comment(self, repo, number, body, *, user=None):

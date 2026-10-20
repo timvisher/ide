@@ -2,7 +2,7 @@ import json
 import subprocess
 
 from timvisher.gh import store
-from timvisher.gh.errors import fail
+from timvisher.gh.errors import USAGE, fail
 
 REVIEW_THREADS = """query ReviewThreads($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -122,15 +122,7 @@ class Fetcher:
         pr_key = self._known(pr_id)[0]
         if not conversation:
             return pr_id
-        for comment in api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments"):
-            self.seen.add(comment["node_id"])
-            if only_new and self._known(comment["node_id"]):
-                continue
-            name = store.comment_name(comment["created_at"], comment["user"]["login"], comment["body"])
-            reactions = self._reactions(spec, f"repos/{spec}/issues/comments/{comment['id']}/reactions")
-            self._put(id=comment["node_id"], kind="comment", url=comment["html_url"], owner=owner, repo=repo,
-                      database_id=comment["id"], parent_id=pr_id, key=store.child_key(pr_key, "comments", name),
-                      raw=comment, only_new=only_new, remote={"body": comment["body"], "reactions": reactions})
+        self._comments(spec, owner, repo, number, pr_id, pr_key, only_new)
         review_comments = {c["id"]: c for c in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/comments")}
         threads = api(spec, "graphql", "-f", f"query={REVIEW_THREADS}", "-f", f"owner={owner}", "-f", f"repo={repo}",
                       "-F", f"number={number}")
@@ -175,6 +167,19 @@ class Fetcher:
             self._archive_missing(pr_id)
         return pr_id
 
+    # PRs and issues share the issue-comments endpoint for their top-level
+    # comments.
+    def _comments(self, spec, owner, repo, number, parent_id, parent_key, only_new):
+        for comment in api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments"):
+            self.seen.add(comment["node_id"])
+            if only_new and self._known(comment["node_id"]):
+                continue
+            name = store.comment_name(comment["created_at"], comment["user"]["login"], comment["body"])
+            reactions = self._reactions(spec, f"repos/{spec}/issues/comments/{comment['id']}/reactions")
+            self._put(id=comment["node_id"], kind="comment", url=comment["html_url"], owner=owner, repo=repo,
+                      database_id=comment["id"], parent_id=parent_id, key=store.child_key(parent_key, "comments", name),
+                      raw=comment, only_new=only_new, remote={"body": comment["body"], "reactions": reactions})
+
     # Past GraphQL's first 100 threads or replies an object wasn't seen, not
     # deleted, so an incomplete page archives nothing.
     def _archive_missing(self, pr_id):
@@ -189,11 +194,25 @@ class Fetcher:
                 store.archive(db, child, self.now)
                 self.state.touch(child)
 
-    def issue(self, owner, repo, number, *, only_new=False):
+    # GitHub's issues endpoint answers for PRs too; treating one as an issue
+    # would archive its threads, replies and reviews as missing.
+    def issue(self, owner, repo, number, *, conversation=False, only_new=False):
         spec = f"{owner}/{repo}"
         found = api(spec, f"repos/{spec}/issues/{number}")
+        if found.get("pull_request") or "/pull/" in found["html_url"]:
+            fail("timvisher_gh_issue_is_a_pr", f"{spec}#{number} is a PR, not an issue.",
+                 status=USAGE, suggestions=[f"Use its PR URL, {found['html_url'].split('#')[0]}, "
+                                            "with 'timvisher_gh pr' or 'timvisher_gh comment'"])
         owner, repo = found["html_url"].split("/")[3:5]
+        number = found["number"]
+        spec = f"{owner}/{repo}"
         self._put(id=found["node_id"], kind="issue", url=found["html_url"], owner=owner, repo=repo, number=number,
                   database_id=found.get("id"), key=store.issue_key(owner, repo, number), raw=found, only_new=only_new,
                   remote={"title": found["title"], "body": found.get("body") or "", "state": found["state"]})
-        return found["node_id"]
+        issue_id = found["node_id"]
+        if not conversation:
+            return issue_id
+        self._comments(spec, owner, repo, number, issue_id, self._known(issue_id)[0], only_new)
+        if not only_new:
+            self._archive_missing(issue_id)
+        return issue_id
