@@ -4404,6 +4404,16 @@ check_push 'a rewrite that would drop a commit only origin has needs a decision 
 check_push 'the non-interactive decision suggests --ours and --theirs' \
   eval '[[ $push_err == *"timvisher_git push --ours"* && $push_err == *"timvisher_git push --theirs"* ]]'
 
+pf=$(push_fixture rewrite_drops_wrapped)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 && push_commit "$pf/work" a3 || die 'drop a2'
+push_out=$(cd "$pf/work" &&
+  PATH="$(dirname "$script"):$(dirname "$test_git"):$PATH" TIMVISHER_AGENT=1 CLAUDECODE=1 \
+    "$script" push --plan </dev/null 2>"$push_root/err") && push_rc=0 || push_rc=$?
+push_err=$(< "$push_root/err")
+check_push "through the agent git wrapper, --plan still sees the dropped commit" \
+  eval '(( push_rc == 3 )) && [[ $push_out == decision* && $push_err != *git_range_no_upstream_ref* ]]'
+
 pf=$(push_fixture base_commit)
 push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&
   pg -C "$pf/work" fetch -q origin && pg -C "$pf/work" rebase -q origin/main ||
