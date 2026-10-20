@@ -3925,7 +3925,7 @@ worktree_gc() {
   for (( i = 0; i < ${#to_remove[@]}; i++ )); do
     (( total_archive_files += archive_counts[i] )) || true
     if (( 0 < archive_counts[i] )); then
-      archive_summary+=$(printf '%d\t%s\n' "${archive_counts[i]}" "${archive_labels[i]}")
+      archive_summary+=$(printf '%d\t%s' "${archive_counts[i]}" "${archive_labels[i]}")$'\n'
     fi
     case ${remove_kinds[i]} in
       MERGED) (( merged_count++ )) || true ;;
