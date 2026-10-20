@@ -22,9 +22,10 @@ Commands:
   info [--json]          the whole block as JSON: 'timvisher_git info --json' in a
                          worktree, plus a timvisher_gh object with the fields below.
                          What needs a worktree or a repository is left out without one
-  info [--json] <field>  one field; --json prints it as JSON ("x", not x):
-                           .me                     the authenticated GitHub login
-                           .archived               true or false (needs a repository)
+  info [--json] <field>  one field; --json prints it as JSON ("x", not x). Each
+                         needs a repository (a worktree's, or -R):
+                           .me                     the GitHub login gh uses for it
+                           .archived               true or false
                            .forkNetwork.mainRepo   the fork network's root OWNER/REPO
                            .forkNetwork.mainOwner  its owner
   pr info [<target>] [<component>]       a PR's record (see 'pr info --help')
