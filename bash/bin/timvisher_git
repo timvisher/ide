@@ -4278,8 +4278,12 @@ push__base_ref() {
   printf 'refs/remotes/%s/%s\n' "$remote" "$head"
 }
 
+# Comparing two pinned SHAs is exactly what the agent range guard in
+# ~/bin/git refuses, and under an agent a refused rev-list reads as "no
+# dropped commits"; these go to the real git, as status__all_published does.
 push__dropped_commits() {
-  local remote_sha=$1 local_sha=$2 base_ref=$3 sign commit
+  local remote_sha=$1 local_sha=$2 base_ref=$3 sign commit real_git
+  real_git="$(brew --prefix)"/bin/git
   while read -r commit
   do
     if [[ -n $base_ref ]] && command git merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null
@@ -4287,7 +4291,7 @@ push__dropped_commits() {
       continue
     fi
     printf '%s\n' "$commit"
-  done < <(command git rev-list --merges "$local_sha..$remote_sha")
+  done < <("$real_git" rev-list --merges "$local_sha..$remote_sha")
   while read -r sign commit
   do
     [[ $sign == + ]] || continue
@@ -4329,11 +4333,12 @@ push__send() {
 }
 
 push__decision_logs() {
-  local remote=$1 branch=$2 remote_sha=$3 local_sha=$4
+  local remote=$1 branch=$2 remote_sha=$3 local_sha=$4 real_git
+  real_git="$(brew --prefix)"/bin/git
   printf 'Only here (%s):\n' "$branch" >&2
-  command git log --oneline "$remote_sha..$local_sha" >&2
+  "$real_git" log --oneline "$remote_sha..$local_sha" >&2
   printf 'Only on %s/%s:\n' "$remote" "$branch" >&2
-  command git log --oneline "$local_sha..$remote_sha" >&2
+  "$real_git" log --oneline "$local_sha..$remote_sha" >&2
 }
 
 push__theirs() {
