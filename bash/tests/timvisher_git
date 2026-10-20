@@ -255,7 +255,19 @@ case $pr_url in
 esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
-ln -s "${script_dir}/bin/timvisher_gh" "$tmpdir/mockbin/timvisher_gh"
+# The real timvisher_gh is a Python tool with no venv in the test HOME, so
+# its 'info .archived' contract (covered by python/tests/test_gh_info.py) is
+# faked here from the mock gh's repo table.
+cat > "$tmpdir/mockbin/timvisher_gh" <<'MOCK'
+#!/usr/bin/env bash
+[[ $1 == -R && $3 == info && $4 == .archived ]] || exit 2
+case $2 in
+  oldorg/testrepo)  echo true ;;
+  liveorg/testrepo) echo false ;;
+  *) exit 1 ;;
+esac
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_gh"
 
 # Declare the associative array at global scope BEFORE sourcing the script.
 # typeset -A inside a function creates a local, so the eval'd script body's
@@ -4179,19 +4191,38 @@ gc_protect="$gc_base/protect"
 gc_cache="$gc_trunks/gcorg/gcrepo"
 mkdir -p "$gc_trunks/gcorg" "$gc_live/gcorg/gcrepo" "$gc_protect/gcorg/gcrepo"
 "$test_git" init "$gc_origin" >/dev/null 2>&1
-"$test_git" -C "$gc_origin" -c user.email=t@t -c user.name=t \
+GIT_AUTHOR_DATE=2019-01-01T00:00:00Z GIT_COMMITTER_DATE=2019-01-01T00:00:00Z \
+  "$test_git" -C "$gc_origin" -c user.email=t@t -c user.name=t \
   -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
 gc_trunk=$("$test_git" -C "$gc_origin" rev-parse --abbrev-ref HEAD)
 "$test_git" init --bare "$gc_cache" >/dev/null 2>&1
 "$test_git" -C "$gc_cache" remote add origin "$gc_origin"
 "$test_git" -C "$gc_cache" fetch origin >/dev/null 2>&1
 "$test_git" -C "$gc_cache" remote set-head origin -a >/dev/null 2>&1
-for gc_name in unpinned pinned frozen legacy
+gc_bin="$gc_base/bin"
+mkdir -p "$gc_bin" "$gc_base/store"
+cat > "$gc_bin/timvisher_gh" <<'FAKE'
+#!/usr/bin/env bash
+[[ $1 == -C && $3 == pr && $4 == info && $5 == --schema-version && $6 == 1 && $7 == "$2/.timvisher_gh/pr" ]] ||
+  exit 2
+case ${2##*/} in
+  open) echo 'open ' ;;
+  recent) printf 'merged %s\n' "$(gdate -u -d '1 day ago' '+%FT%TZ')" ;;
+  *) echo 'merged 2020-01-01T00:00:00Z' ;;
+esac
+FAKE
+chmod +x "$gc_bin/timvisher_gh"
+for gc_name in unpinned pinned frozen legacy recent open reused
 do
   gc_wt="$gc_live/gcorg/gcrepo/$gc_name"
   "$test_git" -C "$gc_cache" worktree add -b "$gc_name" "$gc_wt" "origin/$gc_trunk" >/dev/null 2>&1
-  mkdir -p "$gc_wt/.timvisher_gh/pr"
-  touch -t 202001010000 "$gc_wt/.timvisher_gh/pr/merged"
+  mkdir -p "$gc_wt/.timvisher_gh"
+  ln -s "$gc_base/store" "$gc_wt/.timvisher_gh/pr"
+done
+for gc_name in reused open
+do
+  "$test_git" -C "$gc_live/gcorg/gcrepo/$gc_name" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null \
+    commit --allow-empty -m 'recent work' >/dev/null 2>&1
 done
 mkdir -p "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci"
 : > "$gc_live/gcorg/gcrepo/pinned/.timvisher_dev_ci/protected"
@@ -4206,7 +4237,7 @@ gc_out=$(
   worktree_gc__protect_dir=$gc_protect
   timvisher_logging_log_level=INFO
   export TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry"
-  worktree_gc --dry-run 2>&1
+  PATH="$gc_bin:$PATH" worktree_gc --dry-run 2>&1
 )
 
 run_test
@@ -4217,7 +4248,15 @@ else
   fail "worktree gc dry run did not reap the unpinned control: ${gc_out}"
 fi
 
-for gc_name in pinned frozen legacy
+run_test
+if [[ $gc_out =~ MERGED[^$'\n']*' unpinned '[^$'\n']*'(PR merged)' ]]
+then
+  pass "worktree gc reaps a worktree whose recorded PR merged before the eager cutoff"
+else
+  fail "worktree gc should reap by timvisher_gh's merged state: ${gc_out}"
+fi
+
+for gc_name in pinned frozen legacy recent open reused
 do
   run_test
   if [[ $gc_out =~ MERGED[^$'\n']*" ${gc_name} " ]]

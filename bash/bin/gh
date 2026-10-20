@@ -401,7 +401,7 @@ gh_account__select() {
 
   gh_account__note_mismatches
 
-  config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/bash/bin/timvisher_gh.config}"
+  config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/python/bin/timvisher_gh.config}"
   account=''
   if [[ -r ${config_dir}/orgs/${gh_account__owner}/account ]]
   then

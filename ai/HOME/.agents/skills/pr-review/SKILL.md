@@ -18,7 +18,7 @@ description: Review a GitHub pull request by checking CI status, analyzing failu
 Resolve the PR in this order:
 
 1. **Explicit URL or PR number** — if the user provided one, use it directly.
-2. **`pr.md.url` file** — check for `$(git rev-parse --show-toplevel)/pr.md.url`. If it exists, read the PR URL from it (created by `timvisher_gh pr`; see the `github` skill).
+2. **The worktree's recorded PR** — if `$(git rev-parse --show-toplevel)/.timvisher_gh/pr` exists, `timvisher_gh pr info --schema-version 1 "$(git rev-parse --show-toplevel)/.timvisher_gh/pr" .url` prints its URL (see the `github` skill). Name that path as the target: with no target, `pr info` falls back to the browser's active tab.
 3. **Current branch** — try `gh pr checks --json link,state,name` which auto-detects the PR for the current branch.
 4. **Commit SHA fallback** — if no PR is found:
    ```bash
@@ -84,4 +84,4 @@ For other CI systems, check platform-specific skills for retry capabilities.
 ## Notes
 - Always use `gh` CLI for GitHub interactions.
 - Platform-specific CI systems (GitLab, DDCI, etc.) are handled by extension skills — this skill covers the generic GitHub-based workflow.
-- Related skills: git-branch-review, github (PR creation via `timvisher_gh`, `pr.md.url` management).
+- Related skills: git-branch-review, github (PR creation and its state via `timvisher_gh`).

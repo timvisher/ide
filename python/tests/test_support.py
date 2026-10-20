@@ -1,0 +1,253 @@
+import json
+import os
+import unittest
+
+from support.case import GhTestCase
+from support.remotes import commit_on_remote, git
+
+REPO = "testuser/testrepo"
+
+
+class FakeGhTest(GhTestCase):
+    def api(self, *args, stdin=None):
+        rc, out, err = self.gh("api", *args, stdin=stdin)
+        return rc, (json.loads(out) if out.strip() and out.lstrip()[:1] in "[{" else out), err
+
+    def graphql(self, query, **variables):
+        fields = [arg for name, value in variables.items() for arg in ("-F", f"{name}={value}")]
+        return self.api("graphql", "-f", f"query={query}", *fields)
+
+    def test_calls_are_recorded_with_repo_and_hostname(self):
+        self.gh("-R", REPO, "api", "--hostname", "github.com", "user")
+        call = self.github.calls[-1]
+        self.assertEqual((REPO, "github.com", "GET", "user"),
+                         (call["repo"], call["hostname"], call["method"], call["path"]))
+        self.assertEqual(["-R", REPO, "api", "--hostname", "github.com", "user"], call["argv"])
+
+    def test_repo_and_viewer(self):
+        self.assertEqual("testuser", self.api("user", "--jq", ".login")[1].strip())
+        self.assertEqual(("main", REPO), (lambda r: (r["default_branch"], r["full_name"]))(self.api(f"repos/{REPO}")[1]))
+        rc, _, err = self.api("repos/nobody/nothing")
+        self.assertEqual(1, rc)
+        self.assertIn("Not Found (HTTP 404)", err)
+
+    def test_pull_requests_are_created_listed_and_edited(self):
+        _, created, _ = self.api(f"repos/{REPO}/pulls", "-f", "title=T", "-f", "body=B",
+                                 "-f", "head=testuser:feature", "-f", "base=main", "-F", "draft=true")
+        self.assertEqual((1, "main", True, "https://github.com/testuser/testrepo/pull/1"),
+                         (created["number"], created["base"]["ref"], created["draft"], created["html_url"]))
+        _, listed, _ = self.api(f"repos/{REPO}/pulls?head=testuser:feature&state=all")
+        self.assertEqual([1], [p["number"] for p in listed])
+        _, listed, _ = self.api("-X", "GET", f"repos/{REPO}/pulls", "-f", "head=testuser:feature")
+        self.assertEqual([1], [p["number"] for p in listed])
+        self.assertNotIn("merged", listed[0])
+        self.api(f"repos/{REPO}/pulls/1", "-X", "PATCH", "-f", "title=T2", "-f", "base=dev")
+        self.assertEqual(("T2", "dev"), (lambda p: (p["title"], p["base"]))(self.github.state["pulls"][REPO]["1"]))
+
+    def test_pull_lists_default_to_open(self):
+        self.github.add_pull(REPO, 1, head="a")
+        self.github.add_pull(REPO, 2, head="b", state="closed", merged=True)
+        self.assertEqual([1], [p["number"] for p in self.api(f"repos/{REPO}/pulls")[1]])
+        self.assertEqual([2], [p["number"] for p in self.api(f"repos/{REPO}/pulls?state=closed")[1]])
+        self.assertEqual([1, 2], [p["number"] for p in self.api(f"repos/{REPO}/pulls?state=all")[1]])
+
+    def test_creating_a_pull_without_base_or_head_is_a_validation_error(self):
+        for fields in (["-f", "head=testuser:feature"], ["-f", "base=main"]):
+            rc, _, err = self.api(f"repos/{REPO}/pulls", "-f", "title=T", *fields)
+            self.assertEqual(1, rc)
+            self.assertIn("Validation Failed", err)
+            self.assertIn("(HTTP 422)", err)
+
+    def test_lists_are_paged_unless_paginated(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        for n in range(31):
+            self.github.add_issue_comment(REPO, 7, f"c{n}")
+        endpoint = f"repos/{REPO}/issues/7/comments"
+        self.assertEqual(30, len(self.api(endpoint)[1]))
+        self.assertEqual(["c30"], [c["body"] for c in self.api(f"{endpoint}?page=2")[1]])
+        self.assertEqual(31, len(self.api("--paginate", endpoint)[1]))
+
+    def test_issues_are_created_and_edited(self):
+        _, created, _ = self.api(f"repos/{REPO}/issues", "-f", "title=T", "-f", "body=B")
+        self.api(f"repos/{REPO}/issues/{created['number']}", "-X", "PATCH", "-f", "body=B2")
+        self.assertEqual("B2", self.api(f"repos/{REPO}/issues/{created['number']}")[1]["body"])
+
+    def test_issue_comments_are_created_edited_and_deleted(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        _, comment, _ = self.api(f"repos/{REPO}/issues/7/comments", "-f", "body=hello")
+        self.assertEqual("https://github.com/testuser/testrepo/pull/7#issuecomment-1001", comment["html_url"])
+        self.assertEqual("https://api.github.com/repos/testuser/testrepo/issues/7", comment["issue_url"])
+        self.assertNotIn("issue_number", comment)
+        self.github.add_issue(REPO, 8, title="I")
+        _, on_issue, _ = self.api(f"repos/{REPO}/issues/8/comments", "-f", "body=hi")
+        self.assertEqual(f"https://github.com/testuser/testrepo/issues/8#issuecomment-{on_issue['id']}",
+                         on_issue["html_url"])
+        self.api(f"repos/{REPO}/issues/comments/{comment['id']}", "-X", "PATCH", "-f", "body=edited")
+        _, listed, _ = self.api(f"repos/{REPO}/issues/7/comments")
+        self.assertEqual(["edited"], [c["body"] for c in listed])
+        rc, out, _ = self.gh("api", "-i", "-X", "DELETE", f"repos/{REPO}/issues/comments/{comment['id']}")
+        self.assertEqual((0, "HTTP/2.0 204 No Content"), (rc, out.splitlines()[0]))
+        self.assertEqual([f"issue_comment:{comment['id']}"], self.github.state["deleted"])
+        self.assertEqual(1, self.api(f"repos/{REPO}/issues/comments/{comment['id']}")[0])
+
+    def test_review_comments_form_threads_and_replies_go_to_the_root(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        _, root, _ = self.api(f"repos/{REPO}/pulls/7/comments", "-f", "body=nit", "-f", "path=a.go",
+                              "-F", "line=4", "-f", "side=RIGHT", "-f", "commit_id=abc")
+        _, reply, _ = self.api(f"repos/{REPO}/pulls/7/comments/{root['id']}/replies", "-f", "body=ok")
+        _, nested, _ = self.api(f"repos/{REPO}/pulls/7/comments", "-f", "body=again", "-F", f"in_reply_to={reply['id']}")
+        self.assertEqual((root["id"], root["id"]), (reply["in_reply_to_id"], nested["in_reply_to_id"]))
+        thread = self.github.state["threads"][self.github.thread_of(root["id"])]
+        self.assertEqual([root["id"], reply["id"], nested["id"]], thread["comments"])
+        self.assertEqual(("a.go", 4), (root["path"], root["line"]))
+        self.assertEqual(("a.go", 4, "abc"), (nested["path"], nested["line"], nested["commit_id"]))
+
+    def test_a_new_review_comment_needs_its_location(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        endpoint = f"repos/{REPO}/pulls/7/comments"
+        for fields in (["-f", "path=a.go", "-F", "line=4"], ["-f", "commit_id=abc", "-F", "line=4"],
+                       ["-f", "commit_id=abc", "-f", "path=a.go"]):
+            self.assertEqual(1, self.api(endpoint, "-f", "body=nit", *fields)[0], fields)
+        rc, _, _ = self.api(endpoint, "-f", "body=nit", "-f", "commit_id=abc", "-f", "path=a.go",
+                            "-f", "subject_type=file")
+        self.assertEqual(0, rc)
+
+    def test_reactions_are_added_once_listed_summarized_and_deleted(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        comment_id = self.github.add_issue_comment(REPO, 7, "hi", user="alice")
+        self.github.add_reaction("issue_comment", comment_id, "heart", user="alice")
+        endpoint = f"repos/{REPO}/issues/comments/{comment_id}/reactions"
+        _, mine, _ = self.api(endpoint, "-f", "content=+1")
+        _, again, _ = self.api(endpoint, "-f", "content=+1")
+        self.assertEqual(mine["id"], again["id"])
+        _, listed, _ = self.api(endpoint)
+        self.assertEqual({("heart", "alice"), ("+1", "testuser")}, {(r["content"], r["user"]["login"]) for r in listed})
+        summary = self.api(f"repos/{REPO}/issues/comments/{comment_id}")[1]["reactions"]
+        self.assertEqual((2, 1, 1, 0), (summary["total_count"], summary["heart"], summary["+1"], summary["rocket"]))
+        rc, _, err = self.api(endpoint, "-f", "content=thumbsup")
+        self.assertEqual(1, rc)
+        self.assertIn("(HTTP 422)", err)
+        self.assertEqual(0, self.api("-X", "DELETE", f"{endpoint}/{mine['id']}")[0])
+        self.assertEqual(["heart"], [r["content"] for r in self.api(endpoint)[1]])
+
+    def test_review_comment_reactions(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        root = self.github.add_review_comment(REPO, 7, "nit")
+        self.api(f"repos/{REPO}/pulls/comments/{root}/reactions", "-f", "content=eyes")
+        self.assertEqual(1, self.api(f"repos/{REPO}/pulls/comments/{root}")[1]["reactions"]["eyes"])
+
+    def test_graphql_threads_resolution_and_viewer(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        root = self.github.add_review_comment(REPO, 7, "nit", user="alice")
+        self.github.add_review_comment(REPO, 7, "reply", reply_to=root)
+        _, threads, _ = self.graphql("query ReviewThreads($owner: String!) { ... }", owner="testuser",
+                                     repo="testrepo", number=7)
+        node = threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]
+        self.assertEqual((False, 2), (node["isResolved"], len(node["comments"]["nodes"])))
+        self.graphql("mutation ResolveReviewThread($threadId: ID!) { ... }", threadId=node["id"])
+        self.assertTrue(self.github.state["threads"][node["id"]]["resolved"])
+        self.graphql("mutation UnresolveReviewThread($threadId: ID!) { ... }", threadId=node["id"])
+        self.assertFalse(self.github.state["threads"][node["id"]]["resolved"])
+        self.assertEqual("testuser", self.graphql("query Viewer { viewer { login } }")[1]["data"]["viewer"]["login"])
+
+    def test_graphql_draft_toggles(self):
+        self.github.add_pull(REPO, 7, head="feature", draft=True)
+        node_id = self.api(f"repos/{REPO}/pulls/7")[1]["node_id"]
+        self.graphql("mutation MarkPullRequestReadyForReview($id: ID!) { ... }", id=node_id)
+        self.assertFalse(self.github.state["pulls"][REPO]["7"]["draft"])
+        self.graphql("mutation ConvertPullRequestToDraft($id: ID!) { ... }", id=node_id)
+        self.assertTrue(self.github.state["pulls"][REPO]["7"]["draft"])
+
+    def test_graphql_input_takes_the_variables_envelope(self):
+        self.github.add_pull(REPO, 7, head="feature", draft=True)
+        node_id = self.api(f"repos/{REPO}/pulls/7")[1]["node_id"]
+        body = json.dumps({"query": "mutation MarkPullRequestReadyForReview($id: ID!) { x }",
+                           "variables": {"id": node_id}})
+        self.assertEqual(0, self.api("graphql", "--input", "-", stdin=body)[0])
+        self.assertFalse(self.github.state["pulls"][REPO]["7"]["draft"])
+
+    def test_repos_match_case_insensitively_and_answer_in_canonical_case(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        self.assertEqual("https://github.com/testuser/testrepo/pull/7",
+                         self.api("repos/TestUser/TESTREPO/pulls/7")[1]["html_url"])
+
+    def test_reviews_are_listed_and_fetched(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        review_id = self.github.add_review(REPO, 7, user="carol", state="APPROVED", body="LGTM")
+        _, listed, _ = self.api(f"repos/{REPO}/pulls/7/reviews")
+        self.assertEqual([("carol", "APPROVED", "LGTM")], [(r["user"]["login"], r["state"], r["body"]) for r in listed])
+        _, one, _ = self.api(f"repos/{REPO}/pulls/7/reviews/{review_id}")
+        self.assertEqual((f"PRR_{review_id}", "2026-10-10T10:00:00Z"), (one["node_id"], one["submitted_at"]))
+
+    def test_records_carry_authors_times_and_merge_fields(self):
+        self.github.set_now("2026-10-11T09:00:00Z")
+        self.github.add_pull(REPO, 7, head="feature", author="alice", head_sha="a" * 40, state="closed", merged=True,
+                             merged_at="2026-10-11T10:00:00Z", merge_commit_sha="b" * 40)
+        pr = self.api(f"repos/{REPO}/pulls/7")[1]
+        self.assertEqual(("alice", "2026-10-11T09:00:00Z", "a" * 40, "2026-10-11T10:00:00Z", "b" * 40),
+                         (pr["user"]["login"], pr["created_at"], pr["head"]["sha"], pr["merged_at"],
+                          pr["merge_commit_sha"]))
+        root = self.github.add_review_comment(REPO, 7, "nit", path="a.go", line=4)
+        self.github.set_outdated(self.github.thread_of(root))
+        _, threads, _ = self.graphql("query ReviewThreads($owner: String!) { ... }", owner="testuser",
+                                     repo="testrepo", number=7)
+        node = threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]
+        self.assertEqual((True, "a.go", 4, "RIGHT"), (node["isOutdated"], node["path"], node["line"], node["diffSide"]))
+
+    def test_graphql_without_a_handler_fails_loudly(self):
+        rc, _, err = self.graphql("query SomethingNew { x }")
+        self.assertEqual(1, rc)
+        self.assertIn("no GraphQL handler for SomethingNew", err)
+
+    def test_input_and_typed_fields(self):
+        self.github.add_pull(REPO, 7, head="feature")
+        rc, comment, _ = self.api(f"repos/{REPO}/issues/7/comments", "--input", "-", stdin='{"body": "from stdin"}')
+        self.assertEqual((0, "from stdin"), (rc, comment["body"]))
+        self.graphql("query Viewer { viewer { login } }", n=3, flag="false")
+        self.gh("api", "graphql", "-f", "query=query Viewer { viewer { login } }", "-f", "s=3")
+        typed, raw = self.github.calls[-2]["fields"], self.github.calls[-1]["fields"]
+        self.assertEqual((3, False, "3"), (typed["n"], typed["flag"], raw["s"]))
+
+    def test_a_failed_request_leaves_state_unchanged(self):
+        before = self.github.state
+        self.api(f"repos/{REPO}/issues/99/comments", "-f", "body=nowhere")
+        self.assertEqual(before, self.github.state)
+
+    def test_one_shot_canned_responses_are_served_once_in_order(self):
+        self.github.respond(["pr", "checks"], stdout="first\n", once=True)
+        self.github.respond(["pr", "checks"], stdout="then\n")
+        self.assertEqual(["first\n", "then\n", "then\n"], [self.gh("pr", "checks")[1] for _ in range(3)])
+
+    def test_canned_responses_serve_other_commands(self):
+        self.github.respond(["pr", "checks"], stdout="[]\n")
+        self.assertEqual((0, "[]\n"), self.gh("pr", "checks", "7", "--json", "state")[:2])
+        rc, _, err = self.gh("pr", "merge", "7")
+        self.assertEqual(1, rc)
+        self.assertIn("unhandled command: gh pr merge 7", err)
+
+
+class FixtureTest(GhTestCase):
+    def test_the_worktree_resolves_to_its_github_repo(self):
+        rc, out, _ = self.run_gh("info", ".me")
+        self.assertEqual((0, "testuser\n"), (rc, out))
+        self.assertEqual(REPO, self.github.calls[-1]["repo"])
+
+    def test_pushes_and_fetches_go_to_the_bare_remote(self):
+        git("commit", "-q", "--allow-empty", "-m", "mine", cwd=self.work)
+        git("push", "-q", "origin", "HEAD", cwd=self.work)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), git("rev-parse", "main", cwd=self.remote))
+        theirs = commit_on_remote(self.tmp, self.remote, "main", "theirs")
+        git("fetch", "-q", "origin", cwd=self.work)
+        self.assertEqual(theirs, git("rev-parse", "origin/main", cwd=self.work))
+
+    def test_each_test_gets_a_fresh_xdg_data_home_under_its_own_home(self):
+        self.assertTrue(os.environ["XDG_DATA_HOME"].startswith(f"{self.home}/"))
+        other = GhTestCase("setUp")
+        other.setUp()
+        try:
+            self.assertNotEqual(self.home, other.home)
+        finally:
+            other.doCleanups()
+
+if __name__ == "__main__":
+    unittest.main()

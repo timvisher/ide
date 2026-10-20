@@ -422,19 +422,25 @@ $(cat -- "$f")
     # (and pr.md is a deliverable). A changelog inventory describes the
     # committed/staged/unstaged diff, not gitignored scratch files.
     local root_files=()
-    local candidate
+    local candidate draft=""
     local -a pr_state_files=()
     if [[ $mode == review ]]
     then
+        if [[ -L .timvisher_gh/pr ]]
+        then
+            draft=$(timvisher_gh pr info --schema-version 1 .timvisher_gh/pr .source.path 2>/dev/null) || draft=""
+            [[ $draft == null ]] && draft=""
+        fi
         if [[ -d .timvisher_gh/pr ]]
         then
-            mapfile -t pr_state_files < <(find .timvisher_gh/pr -type f | LC_ALL=C sort)
+            mapfile -t pr_state_files < <(find .timvisher_gh/pr/ -type f | LC_ALL=C sort)
         fi
-        for candidate in x x.* y y.* z z.* pr.md ${pr_state_files[@]+"${pr_state_files[@]}"}
+        for candidate in x x.* y y.* z z.* pr.md ${draft:+"$draft"} ${pr_state_files[@]+"${pr_state_files[@]}"}
         do
             # Don't re-inline our own spilled diff file from a previous run.
             [[ $candidate == "$spill_diff_basename" ]] && continue
             [[ $candidate == pr.md && -L $candidate ]] && continue
+            [[ -n $draft && $candidate != "$draft" && $candidate -ef $draft ]] && continue
             [[ -f $candidate ]] && root_files+=("$candidate")
         done
     fi
@@ -448,7 +454,7 @@ them with the same rigor as tracked code.
 "
         for f in "${root_files[@]}"
         do
-            if [[ $f == pr.md || $f == .timvisher_gh/pr/pr.md ]]
+            if [[ $f == pr.md || $f == .timvisher_gh/pr/pr.md || ( -n $draft && $f == "$draft" ) ]]
             then
                 root_section+="
 ### pr.md — PR DESCRIPTION DRAFT (review as deliverable, not just documentation)
