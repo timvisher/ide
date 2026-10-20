@@ -119,6 +119,7 @@ timvisher_gh pr ready
 - Org and repo exclude patterns at `timvisher_gh.config/{orgs/OWNER,repos/OWNER/REPO}/pr/ready/exclude-checks.txt` (either config root) ignore meta-checks (like mergegate) that never complete until all other checks pass
 - One regex pattern per line; `#` comments and blank lines are skipped
 - Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
+- A PR that still reports no checks at all after 60 seconds (`TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE`) is treated as having none and marked ready, so a repo without CI doesn't wait forever
 
 ## Workflow — reading PR feedback
 
