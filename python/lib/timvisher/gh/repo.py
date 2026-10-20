@@ -50,7 +50,8 @@ def from_worktree(path, required=True):
     if path is not None and not os.path.isdir(path):
         fail("timvisher_gh_no_such_path", f"Option -C: unable to enter '{path}'",
              suggestions=["Pass -C a worktree directory that exists"])
-    shown = _git("rev-parse", "--show-toplevel", cwd=path or ".")
+    shown = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path or ".",
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     if shown.returncode != 0 and not required:
         return None
     if shown.returncode != 0:

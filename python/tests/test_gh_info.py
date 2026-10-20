@@ -19,7 +19,7 @@ then
   target_repo=$2
   shift 2
 fi
-if [[ $1 == api && $2 == user && -n $target_repo ]]
+if [[ $1 == api && $2 == user ]]
 then
   echo testuser
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
@@ -154,10 +154,15 @@ class InfoTest(unittest.TestCase):
         self.assertEqual((1, ""), (rc, out))
         self.assertIn("Unable to query timvisher_git context", err)
 
-    def test_info_json_with_no_git_context_errors(self):
-        rc, _, err = self.run_gh("info", "--json", cwd=self.elsewhere)
-        self.assertEqual(1, rc)
-        self.assertIn("Not in a git repository", err)
+    def test_outside_a_worktree_info_leaves_out_what_needs_one(self):
+        for args in (["info"], ["info", "--json"]):
+            rc, out, err = self.run_gh(*args, cwd=self.elsewhere)
+            self.assertEqual(0, rc, err)
+            self.assertEqual({"timvisher_gh": {"me": "testuser"}}, json.loads(out))
+        self.assertEqual((0, "testuser\n"), self.run_gh("info", ".me", cwd=self.elsewhere)[:2])
+        rc, out, err = self.run_gh("info", ".archived", cwd=self.elsewhere)
+        self.assertEqual((1, ""), (rc, out))
+        self.assertIn("needs a repository", err)
 
     def test_c_resolves_context_from_the_path_not_the_cwd(self):
         rc, out, _ = self.run_gh("-C", str(self.repo), "info", ".me", cwd=self.tmp)
@@ -166,8 +171,9 @@ class InfoTest(unittest.TestCase):
 
     def test_c_after_the_command_is_not_a_context_flag(self):
         rc, _, err = self.run_gh("info", "-C", str(self.repo), cwd=self.tmp)
-        self.assertNotEqual(0, rc)
-        self.assertIn("Not in a git repository", err)
+        self.assertEqual(2, rc)
+        self.assertIn("unexpected argument '-C'", err)
+        self.assertNotIn("fatal:", err)
 
     def test_c_without_a_path_is_a_usage_error(self):
         rc, _, err = self.run_gh("-C")
@@ -195,10 +201,16 @@ class InfoTest(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("unexpected argument", err)
 
-    def test_info_without_a_field_is_a_usage_error(self):
-        rc, _, err = self.run_gh("info")
-        self.assertEqual(2, rc)
-        self.assertIn("info requires a <field> argument", err)
+    def test_bare_info_is_the_json_block(self):
+        rc, out, err = self.run_gh("info")
+        self.assertEqual(0, rc, err)
+        self.assertEqual(json.loads(self.run_gh("info", "--json")[1]), json.loads(out))
+
+    def test_json_encodes_a_field(self):
+        self.assertEqual((0, '"testuser"\n'), self.run_gh("info", "--json", ".me")[:2])
+        self.assertEqual((0, '"testuser"\n'), self.run_gh("info", ".me", "--json")[:2])
+        self.assertEqual((0, "false\n"), self.run_gh("info", "--json", ".archived")[:2])
+        self.assertEqual((0, '"upstreamorg"\n'), self.run_gh("info", "--json", ".forkNetwork.mainOwner")[:2])
 
     def test_an_unknown_info_field_is_a_usage_error(self):
         rc, _, err = self.run_gh("info", ".bogus")
@@ -240,10 +252,13 @@ class InfoTest(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("is not OWNER/REPO", err)
 
-    def test_r_with_info_json_explains_that_json_needs_a_worktree(self):
-        rc, _, err = self.run_gh("-R", "someorg/somerepo", "info", "--json", cwd=self.tmp)
-        self.assertEqual(2, rc)
-        self.assertIn("info --json needs a worktree", err)
+    def test_r_info_is_the_block_without_the_worktree_fields(self):
+        for args in (["info"], ["info", "--json"]):
+            rc, out, err = self.run_gh("-R", "archivedorg/oldrepo", *args, cwd=self.tmp)
+            self.assertEqual(0, rc, err)
+            self.assertEqual({"timvisher_gh": {"me": "testuser", "archived": True,
+                                               "forkNetwork": {"mainRepo": "archivedorg/oldrepo",
+                                                               "mainOwner": "archivedorg"}}}, json.loads(out))
 
     def test_r_without_an_argument_is_a_usage_error(self):
         rc, _, err = self.run_gh("-R", cwd=self.tmp)

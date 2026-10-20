@@ -10,7 +10,7 @@ timvisher_gh - GitHub workflow commands
 
 Usage:
   timvisher_gh [-C <path>] <command> [<args>...]
-  timvisher_gh -R OWNER/REPO info <field>
+  timvisher_gh -R OWNER/REPO info [--json] [<field>]
   timvisher_gh -h | --help | help
 
 Global options (before the command):
@@ -19,13 +19,14 @@ Global options (before the command):
                          github.com/OWNER/REPO is accepted too.
 
 Commands:
-  info <field>  print one repository field:
-                  .me                     the authenticated GitHub login
-                  .archived               true or false
-                  .forkNetwork.mainRepo   the fork network's root OWNER/REPO
-                  .forkNetwork.mainOwner  its owner
-  info --json   'timvisher_git info --json' plus a timvisher_gh object with
-                those fields; needs a worktree
+  info [--json]          the whole block as JSON: 'timvisher_git info --json' in a
+                         worktree, plus a timvisher_gh object with the fields below.
+                         What needs a worktree or a repository is left out without one
+  info [--json] <field>  one field; --json prints it as JSON ("x", not x):
+                           .me                     the authenticated GitHub login
+                           .archived               true or false (needs a repository)
+                           .forkNetwork.mainRepo   the fork network's root OWNER/REPO
+                           .forkNetwork.mainOwner  its owner
   pr info [<target>] [<component>]       a PR's record (see 'pr info --help')
   issue info [<target>] [<component>]    an issue's record
   comment info [<target>] [<component>]  a comment's record
@@ -80,7 +81,7 @@ def _run(argv):
     if repo_option is not None:
         context = repo.from_option(repo_option)
     else:
-        context = repo.from_worktree(chdir, required=command == "info" or chdir is not None)
+        context = repo.from_worktree(chdir, required=chdir is not None)
     return COMMANDS[command](context, args)
 
 
