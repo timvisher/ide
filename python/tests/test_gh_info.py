@@ -19,7 +19,7 @@ then
   target_repo=$2
   shift 2
 fi
-if [[ $1 == api && $2 == user ]]
+if [[ $1 == api && $2 == user && -n $target_repo ]]
 then
   echo testuser
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
@@ -158,11 +158,12 @@ class InfoTest(unittest.TestCase):
         for args in (["info"], ["info", "--json"]):
             rc, out, err = self.run_gh(*args, cwd=self.elsewhere)
             self.assertEqual(0, rc, err)
-            self.assertEqual({"timvisher_gh": {"me": "testuser"}}, json.loads(out))
-        self.assertEqual((0, "testuser\n"), self.run_gh("info", ".me", cwd=self.elsewhere)[:2])
-        rc, out, err = self.run_gh("info", ".archived", cwd=self.elsewhere)
-        self.assertEqual((1, ""), (rc, out))
-        self.assertIn("needs a repository", err)
+            self.assertEqual({"timvisher_gh": {}}, json.loads(out))
+        for name in (".me", ".archived"):
+            rc, out, err = self.run_gh("info", name, cwd=self.elsewhere)
+            self.assertEqual((1, ""), (rc, out), name)
+            self.assertIn("needs a repository", err)
+        self.assertEqual([], self.gh_calls())
 
     def test_c_resolves_context_from_the_path_not_the_cwd(self):
         rc, out, _ = self.run_gh("-C", str(self.repo), "info", ".me", cwd=self.tmp)

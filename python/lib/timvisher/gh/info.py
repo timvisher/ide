@@ -25,9 +25,10 @@ def _main_repo(context, repo):
     return context.spec
 
 
+# The gh shim picks the account from the repository, so with none there's no
+# login to report rather than whichever account happens to be active.
 def _me(context):
-    repo_args = ["-R", context.spec] if context is not None else []
-    return _gh(*repo_args, "api", "user", "--jq", ".login", failure="Unable to query authenticated user")
+    return _gh("-R", context.spec, "api", "user", "--jq", ".login", failure="Unable to query authenticated user")
 
 
 def _need_repo(context, name):
@@ -51,10 +52,11 @@ def _timvisher_git(context):
 # than refusing the whole block.
 def _block(context):
     blob = _timvisher_git(context) if context is not None and context.toplevel is not None else {}
-    gh = {"me": _me(context)}
+    gh = {}
     if context is not None:
         repo = _repo(context)
         main_repo = _main_repo(context, repo)
+        gh["me"] = _me(context)
         gh["archived"] = repo.get("archived") is True
         gh["forkNetwork"] = {"mainRepo": main_repo, "mainOwner": main_repo.split("/")[0]}
     blob["timvisher_gh"] = gh
@@ -62,11 +64,11 @@ def _block(context):
 
 
 def value(context, name):
-    if name == ".me":
-        return _me(context)
     if name not in FIELDS:
         usage(f"Unknown info field: '{name}'", f"Fields: {', '.join(FIELDS)}")
     _need_repo(context, name)
+    if name == ".me":
+        return _me(context)
     repo = _repo(context)
     match name:
         case ".archived":
