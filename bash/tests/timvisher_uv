@@ -139,7 +139,7 @@ run_uv() {
   FAKE_REAL_PYTHON="$real_python" \
   TIMVISHER_AGENT=true \
   timvisher_logging_log_level=INFO \
-    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+    "$script" "$@" > "${run_uv_out:-$tmpdir/stdout}" 2> "${run_uv_err:-$tmpdir/stderr}"
 }
 
 check() {
@@ -190,6 +190,8 @@ check 'create: logs that it created the venv' stderr_has 'created'
 check 'create: skips python install when uv finds a match' not_logged 'uv python install'
 check 'create: finds Python outside any project venv' logged 'uv python find --system >=3.15'
 check 'create: never asks uv for a venv-relative Python' eval "! grep -E 'uv python find [^-]' '$tmpdir/uv.log'"
+check 'create: stamps the venv with the entry and its script block' \
+      eval "grep -qxF 'entry=$core_demo' '$venv/timvisher_uv.stamp' && grep -qxF '# requires-python = \">=3.15\"' '$venv/timvisher_uv.stamp'"
 
 : > "$tmpdir/uv.log"
 run_uv demo
@@ -401,7 +403,10 @@ run_tool() {
   FAKE_UV_DIR="$tmpdir/fakeuv" \
   FAKE_PY_VERSION="${FAKE_PY_VERSION:-3.15.0}" \
   FAKE_REAL_PYTHON="$real_python" \
+  FAKE_UV_SYNC_RC="${FAKE_UV_SYNC_RC-}" \
+  TIMVISHER_UV_LOCK_WAIT="${TIMVISHER_UV_LOCK_WAIT-}" \
   TIMVISHER_AGENT=true \
+  timvisher_logging_log_level=INFO \
     "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
 }
 
@@ -419,27 +424,137 @@ rc=$?
 check 'exec: runs the tool with the given arguments' \
       eval "(( rc == 0 )) && grep -qxF 'argv=a|b' '$tmpdir/stdout'"
 
+echoer="$tmpdir/core/python/bin/echoer"
+echoer_venv="$tmpdir/data/timvisher_uv/virtualenvs/echoer"
+
 reset_uv
-run_tool "$tmpdir/core/python/bin/echoer" </dev/null
+run_tool "$echoer" a </dev/null
 rc=$?
-check 'exec: a missing venv exits 1' test "$rc" -eq 1
-check 'exec: a missing venv reports timvisher_uv_venv_missing' \
-      stderr_has '"code":"timvisher_uv_venv_missing"'
-check 'exec: a missing venv suggests timvisher_uv <name>' stderr_has "timvisher_uv echoer"
-check 'exec: a missing venv runs nothing' stdout_empty
+check 'exec: a missing venv is built, then the tool runs' \
+      eval "(( rc == 0 )) && grep -qxF 'argv=a' '$tmpdir/stdout'"
+check 'exec: building logs why' stderr_has "Building 'echoer's venv"
+check 'exec: the build makes the venv' logged "uv venv --python 3.15.0 --allow-existing $echoer_venv"
+check "exec: the build's output stays off the tool's stdout" \
+      test "$(cat "$tmpdir/stdout")" = "$(printf 'argv=a\nstdin=')"
+check 'exec: the build leaves no lock behind' test ! -e "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a current venv runs with no uv call at all' \
+      eval "(( rc == 0 )) && test ! -s '$tmpdir/uv.log'"
+
+: > "$tmpdir/uv.log"
+FAKE_PY_VERSION=3.15.1 FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a newer Python or upstream drift alone never stops a run to ask uv' \
+      eval "(( rc == 0 )) && test ! -s '$tmpdir/uv.log'"
+
+sed -i '' 's/^# dependencies = \[\]$/# dependencies = ["six"]/' "$echoer"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+rc=$?
+check "exec: a changed script block rebuilds before running" \
+      eval "(( rc == 0 )) && grep -qF 'uv sync --script $echoer --active' '$tmpdir/uv.log'"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+check 'exec: after the rebuild the venv is current again' test ! -s "$tmpdir/uv.log"
+sed -i '' 's/^# dependencies = \["six"\]$/# dependencies = []/' "$echoer"
+run_tool "$echoer" </dev/null
+
+rm "$echoer_venv/bin/python"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a missing interpreter rebuilds before running' \
+      eval "(( rc == 0 )) && grep -qF 'uv venv' '$tmpdir/uv.log'"
+
+rm "$echoer_venv/timvisher_uv.stamp"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+check 'exec: a venv from before stamps is rebuilt once' grep -qF 'uv sync' "$tmpdir/uv.log"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+check 'exec: and then runs with no uv call' test ! -s "$tmpdir/uv.log"
+
+reset_uv
+FAKE_UV_SYNC_RC=1 run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a failed build exits 1' test "$rc" -eq 1
+check "exec: a failed build reports uv's failure" stderr_has '"code":"timvisher_uv_uv_failed"'
+check 'exec: a failed build runs nothing' stdout_empty
+check 'exec: a failed build leaves no lock behind' test ! -e "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+
+lock="$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+
+reset_uv
+mkdir -p "$lock"
+printf '%s\n' "$$" > "$lock/pid"
+TIMVISHER_UV_LOCK_WAIT=0 run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a lock held by another build times out with exit 1' test "$rc" -eq 1
+check 'exec: the timeout reports timvisher_uv_venv_locked' stderr_has '"code":"timvisher_uv_venv_locked"'
+check "exec: the timeout leaves the other build's lock alone" test -d "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+check 'exec: the timeout builds nothing' not_logged 'uv venv'
+
+reset_uv
+mkdir -p "$lock"
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+printf '%s\n' "$dead" > "$lock/pid"
+TIMVISHER_UV_LOCK_WAIT=30 run_tool "$echoer" c </dev/null
+rc=$?
+check "exec: a dead holder's lock is taken over and the tool runs" \
+      eval "(( rc == 0 )) && grep -qxF 'argv=c' '$tmpdir/stdout'"
+check 'exec: the takeover is logged' stderr_has "its holder $dead is gone"
+check 'exec: the taken-over lock is released' test ! -e "$lock"
+
+reset_uv
+mkdir -p "$lock"
+TIMVISHER_UV_LOCK_WAIT=30 run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a lock that never got a pid is taken over after a few seconds' test "$rc" -eq 0
+
+reset_uv
+TIMVISHER_UV_LOCK_WAIT=5s run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a malformed lock wait falls back to the default' test "$rc" -eq 0
 
 reset_uv
 run_uv echoer
-FAKE_PY_VERSION=3.15.1 run_tool "$tmpdir/core/python/bin/echoer" </dev/null
-rc=$?
-check 'exec: a venv on another Python is stale' \
-      eval "(( rc == 1 )) && grep -qF '\"code\":\"timvisher_uv_venv_missing\"' '$tmpdir/stderr'"
+FAKE_UV_SYNC_RC=1 run_uv echoer
+check "upsert: an interrupted build drops the old stamp" test ! -e "$echoer_venv/timvisher_uv.stamp"
 : > "$tmpdir/uv.log"
-FAKE_UV_SYNC_CHANGES='+ six==1.17.0' run_tool "$tmpdir/core/python/bin/echoer" </dev/null
+run_tool "$echoer" </dev/null
+check 'exec: so the next run rebuilds instead of trusting it' grep -qF 'uv sync' "$tmpdir/uv.log"
+
+printf '#!/usr/bin/env -S timvisher_uv exec tail\n# /// script\n# requires-python = ">=3.15"\n# ///' \
+  > "$tmpdir/core/python/bin/tail"
+chmod +x "$tmpdir/core/python/bin/tail"
+reset_uv
+run_tool "$tmpdir/core/python/bin/tail" </dev/null
 rc=$?
-check 'exec: dependency drift alone does not block a run' test "$rc" -eq 0
-check 'exec: never syncs, creates a venv or installs a Python' \
-      eval "! grep -qE 'uv (sync|venv|python install)' '$tmpdir/uv.log'"
+check 'exec: a script block at EOF with no newline builds and runs' test "$rc" -eq 0
+: > "$tmpdir/uv.log"
+run_tool "$tmpdir/core/python/bin/tail" </dev/null
+check 'exec: and is current on the next run' test ! -s "$tmpdir/uv.log"
+rm "$tmpdir/core/python/bin/tail"
+
+reset_uv
+mkdir -p "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+(
+  sleep 0.5
+  run_uv_out="$tmpdir/builder.stdout" run_uv_err="$tmpdir/builder.stderr" run_uv echoer
+  rmdir "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+) &
+builder=$!
+TIMVISHER_UV_LOCK_WAIT=30 run_tool "$echoer" b </dev/null
+rc=$?
+wait "$builder"
+check "exec: a run waiting on another build uses that venv" \
+      eval "(( rc == 0 )) && grep -qxF 'argv=b' '$tmpdir/stdout'"
+check 'exec: and does not build it again' test 1 -eq "$(grep -c 'uv venv' "$tmpdir/uv.log")"
 rm "$tmpdir/core/python/bin/echoer"
 
 run_uv --help
