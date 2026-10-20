@@ -16,6 +16,7 @@ source ~/.functions/aictl.bash ||
 
 timvisher_uv__venvs_dir=${XDG_DATA_HOME:-${HOME}/.local/share}/timvisher_uv/virtualenvs
 timvisher_uv__schema_version=1
+timvisher_uv__lock_wait=${TIMVISHER_UV_LOCK_WAIT:-300}
 
 show_help() {
   cat <<'EOF'
@@ -41,8 +42,10 @@ wins over core. Each tool's venv lives at
   timvisher_uv <name> --plan           print what an upsert would change
   timvisher_uv --plan                  the same for every tool
   timvisher_uv exec <name> [<arg>...]  run the tool in its venv (what the
-                                       shebang does); fails if the venv is
-                                       missing or on another Python
+                                       shebang does), first building the venv
+                                       if it's missing, its interpreter is
+                                       gone, or the tool's '# /// script'
+                                       block changed since it was built
 EOF
 }
 
@@ -148,6 +151,31 @@ timvisher_uv__requires_python() {
     fi
   done < "$entry"
   return 1
+}
+
+# What a venv was built from: the entry and its '# /// script' block.
+# exec compares it with the venv's copy instead of asking uv, which
+# takes most of a second.
+timvisher_uv__stamp() {
+  local entry=$1
+  local line in_block=false
+  printf 'entry=%s\n' "$entry"
+  while IFS= read -r line
+  do
+    if [[ $in_block == false ]]
+    then
+      [[ $line == '# /// script' ]] || continue
+      in_block=true
+    fi
+    printf '%s\n' "$line"
+    [[ $line == '# ///' ]] && break
+  done < "$entry"
+}
+
+timvisher_uv__current() {
+  local entry=$1 venv=$2
+  [[ -x $venv/bin/python && -r $venv/timvisher_uv.stamp ]] &&
+    [[ $(< "$venv/timvisher_uv.stamp") == "$(timvisher_uv__stamp "$entry")" ]]
 }
 
 timvisher_uv__run() {
@@ -369,6 +397,54 @@ timvisher_uv__info() {
   fi
 }
 
+# Builds a missing or stale venv for exec. Concurrent first runs share
+# one build: whoever holds the lock upserts, the rest wait for the venv
+# to become current.
+timvisher_uv__bootstrap() {
+  local name=$1 entry=$2 venv=$3
+  local waited=0 rc=0
+  timvisher_uv__lock=${timvisher_uv__venvs_dir}/.${name}.lock
+  timvisher_uv__lock_owned=''
+
+  trap 'if [[ -n $timvisher_uv__lock_owned ]]; then rmdir -- "$timvisher_uv__lock"; fi' EXIT
+  if ! mkdir -p -- "$timvisher_uv__venvs_dir"
+  then
+    error "Unable to create '%s'" "$timvisher_uv__venvs_dir"
+    return 1
+  fi
+  until mkdir -- "$timvisher_uv__lock" 2>/dev/null
+  do
+    if timvisher_uv__current "$entry" "$venv"
+    then
+      trap - EXIT
+      return 0
+    fi
+    if (( timvisher_uv__lock_wait * 10 <= waited ))
+    then
+      aictl_error \
+        --code timvisher_uv_venv_locked \
+        --message "Gave up after ${timvisher_uv__lock_wait}s waiting for another build of '${name}'s venv." \
+        --reason "'${timvisher_uv__lock}' exists: another run is building the venv, or one died while building it." \
+        --suggestion "If no timvisher_uv is running, remove '${timvisher_uv__lock}' and run the tool again"
+      trap - EXIT
+      return 1
+    fi
+    sleep 0.1
+    (( waited += 1 ))
+  done
+  timvisher_uv__lock_owned=1
+
+  if ! timvisher_uv__current "$entry" "$venv"
+  then
+    info "Building '%s's venv before running it" "$name"
+    timvisher_uv__upsert "$name" >&2 || rc=1
+  fi
+  rmdir -- "$timvisher_uv__lock"
+  timvisher_uv__lock_owned=''
+  trap - EXIT
+  return "$rc"
+}
+
 # A shebang hands exec the script's own path ahead of the user's
 # arguments, so a leading tool file of that name is dropped; the entry
 # is always the discovered one (overlay wins), matching the venv built
@@ -383,28 +459,13 @@ timvisher_uv__exec() {
     shift
   fi
   timvisher_uv__resolve "$name" || return 1
-  local entry=$timvisher_uv__entry
+  local entry=$timvisher_uv__entry venv=${timvisher_uv__venvs_dir}/${name}
 
-  local requires venv=${timvisher_uv__venvs_dir}/${name} python version current=
-  requires=$timvisher_uv__requires
-  if [[ -r $venv/pyvenv.cfg && -x $venv/bin/python ]]
+  if ! timvisher_uv__current "$entry" "$venv"
   then
-    current=$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")
+    timvisher_uv__bootstrap "$name" "$entry" "$venv" || return 1
   fi
-  if [[ -n $current ]] &&
-     python=$(uv python find --system "$requires" 2>/dev/null) &&
-     version=$("$python" -c 'import platform; print(platform.python_version())' 2>/dev/null) &&
-     [[ $version == "$current" ]]
-  then
-    exec "$venv/bin/python" "$entry" "$@"
-  fi
-
-  aictl_error \
-    --code timvisher_uv_venv_missing \
-    --message "'${name}' has no up-to-date venv at '${venv}'." \
-    --reason "The venv is missing, or its Python isn't the one '${entry}' requires (${requires})." \
-    --suggestion "Run 'timvisher_uv ${name}' to build it, then run the tool again"
-  return 1
+  exec "$venv/bin/python" "$entry" "$@"
 }
 
 timvisher_uv__upsert() {
@@ -457,6 +518,12 @@ timvisher_uv__upsert() {
       info 'synced "%s":%s' "$name" "$line"
     fi
   done <<< "$synced"
+
+  if ! timvisher_uv__stamp "$entry" > "$venv/timvisher_uv.stamp"
+  then
+    error "Unable to write '%s'" "$venv/timvisher_uv.stamp"
+    return 1
+  fi
 }
 
 timvisher_uv__upsert_all() {

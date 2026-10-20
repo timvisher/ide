@@ -51,9 +51,8 @@ stderr_has() {
 
 hello
 rc=$?
-check 'before timvisher_uv builds the venv: exits 1' test "$rc" -eq 1
-check 'before timvisher_uv builds the venv: reports timvisher_uv_venv_missing' \
-      stderr_has timvisher_uv_venv_missing
+check 'first run: builds the venv, then runs' test "$rc" -eq 0
+check 'first run: says it built the venv' stderr_has "Building 'timvisher_hello's venv"
 
 timvisher_uv timvisher_hello > "$tmpdir/stdout" 2> "$tmpdir/stderr"
 rc=$?
