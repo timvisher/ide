@@ -17,6 +17,7 @@ source ~/.functions/aictl.bash ||
 timvisher_uv__venvs_dir=${XDG_DATA_HOME:-${HOME}/.local/share}/timvisher_uv/virtualenvs
 timvisher_uv__schema_version=1
 timvisher_uv__lock_wait=${TIMVISHER_UV_LOCK_WAIT:-300}
+[[ $timvisher_uv__lock_wait =~ ^[0-9]+$ ]] || timvisher_uv__lock_wait=300
 
 show_help() {
   cat <<'EOF'
@@ -160,7 +161,7 @@ timvisher_uv__stamp() {
   local entry=$1
   local line in_block=false
   printf 'entry=%s\n' "$entry"
-  while IFS= read -r line
+  while IFS= read -r line || [[ -n $line ]]
   do
     if [[ $in_block == false ]]
     then
@@ -170,6 +171,7 @@ timvisher_uv__stamp() {
     printf '%s\n' "$line"
     [[ $line == '# ///' ]] && break
   done < "$entry"
+  return 0
 }
 
 timvisher_uv__current() {
@@ -397,6 +399,27 @@ timvisher_uv__info() {
   fi
 }
 
+# A lock whose holder is gone (killed, crashed) would make every later
+# run wait out the timeout, so a waiter removes it: its pid isn't
+# running, or it still has no pid after a few seconds (the holder died
+# between mkdir and writing it).
+timvisher_uv__break_stale_lock() {
+  local waited=$1 holder=
+  if [[ -r $timvisher_uv__lock/pid ]]
+  then
+    holder=$(< "$timvisher_uv__lock/pid")
+  fi
+  if [[ -n $holder ]]
+  then
+    kill -0 "$holder" 2>/dev/null && return 0
+  elif (( waited < 30 ))
+  then
+    return 0
+  fi
+  warn "Removing '%s': its holder %s is gone" "$timvisher_uv__lock" "${holder:-(unknown)}"
+  rm -rf -- "$timvisher_uv__lock"
+}
+
 # Builds a missing or stale venv for exec. Concurrent first runs share
 # one build: whoever holds the lock upserts, the rest wait for the venv
 # to become current.
@@ -406,7 +429,7 @@ timvisher_uv__bootstrap() {
   timvisher_uv__lock=${timvisher_uv__venvs_dir}/.${name}.lock
   timvisher_uv__lock_owned=''
 
-  trap 'if [[ -n $timvisher_uv__lock_owned ]]; then rmdir -- "$timvisher_uv__lock"; fi' EXIT
+  trap 'if [[ -n $timvisher_uv__lock_owned ]]; then rm -rf -- "$timvisher_uv__lock"; fi' EXIT
   if ! mkdir -p -- "$timvisher_uv__venvs_dir"
   then
     error "Unable to create '%s'" "$timvisher_uv__venvs_dir"
@@ -419,6 +442,7 @@ timvisher_uv__bootstrap() {
       trap - EXIT
       return 0
     fi
+    timvisher_uv__break_stale_lock "$waited"
     if (( timvisher_uv__lock_wait * 10 <= waited ))
     then
       aictl_error \
@@ -433,14 +457,15 @@ timvisher_uv__bootstrap() {
     (( waited += 1 ))
   done
   timvisher_uv__lock_owned=1
+  printf '%s\n' "$$" > "$timvisher_uv__lock/pid"
 
   if ! timvisher_uv__current "$entry" "$venv"
   then
     info "Building '%s's venv before running it" "$name"
     timvisher_uv__upsert "$name" >&2 || rc=1
   fi
-  rmdir -- "$timvisher_uv__lock"
   timvisher_uv__lock_owned=''
+  rm -rf -- "$timvisher_uv__lock"
   trap - EXIT
   return "$rc"
 }
@@ -493,6 +518,14 @@ timvisher_uv__upsert() {
     current=$(sed -n 's/^version_info *= *//p' "$venv/pyvenv.cfg")
   fi
 
+  local stamp
+  stamp=$(timvisher_uv__stamp "$entry") || return 1
+  if ! rm -f -- "$venv/timvisher_uv.stamp"
+  then
+    error "Unable to remove '%s'" "$venv/timvisher_uv.stamp"
+    return 1
+  fi
+
   if [[ -n ${current-} && $current != "$version" ]]
   then
     clear=(--clear)
@@ -519,7 +552,7 @@ timvisher_uv__upsert() {
     fi
   done <<< "$synced"
 
-  if ! timvisher_uv__stamp "$entry" > "$venv/timvisher_uv.stamp"
+  if ! printf '%s\n' "$stamp" > "$venv/timvisher_uv.stamp"
   then
     error "Unable to write '%s'" "$venv/timvisher_uv.stamp"
     return 1

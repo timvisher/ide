@@ -485,14 +485,61 @@ check "exec: a failed build reports uv's failure" stderr_has '"code":"timvisher_
 check 'exec: a failed build runs nothing' stdout_empty
 check 'exec: a failed build leaves no lock behind' test ! -e "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
 
+lock="$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+
 reset_uv
-mkdir -p "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
+mkdir -p "$lock"
+printf '%s\n' "$$" > "$lock/pid"
 TIMVISHER_UV_LOCK_WAIT=0 run_tool "$echoer" </dev/null
 rc=$?
 check 'exec: a lock held by another build times out with exit 1' test "$rc" -eq 1
 check 'exec: the timeout reports timvisher_uv_venv_locked' stderr_has '"code":"timvisher_uv_venv_locked"'
 check "exec: the timeout leaves the other build's lock alone" test -d "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
 check 'exec: the timeout builds nothing' not_logged 'uv venv'
+
+reset_uv
+mkdir -p "$lock"
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+printf '%s\n' "$dead" > "$lock/pid"
+TIMVISHER_UV_LOCK_WAIT=30 run_tool "$echoer" c </dev/null
+rc=$?
+check "exec: a dead holder's lock is taken over and the tool runs" \
+      eval "(( rc == 0 )) && grep -qxF 'argv=c' '$tmpdir/stdout'"
+check 'exec: the takeover is logged' stderr_has "its holder $dead is gone"
+check 'exec: the taken-over lock is released' test ! -e "$lock"
+
+reset_uv
+mkdir -p "$lock"
+TIMVISHER_UV_LOCK_WAIT=30 run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a lock that never got a pid is taken over after a few seconds' test "$rc" -eq 0
+
+reset_uv
+TIMVISHER_UV_LOCK_WAIT=5s run_tool "$echoer" </dev/null
+rc=$?
+check 'exec: a malformed lock wait falls back to the default' test "$rc" -eq 0
+
+reset_uv
+run_uv echoer
+FAKE_UV_SYNC_RC=1 run_uv echoer
+check "upsert: an interrupted build drops the old stamp" test ! -e "$echoer_venv/timvisher_uv.stamp"
+: > "$tmpdir/uv.log"
+run_tool "$echoer" </dev/null
+check 'exec: so the next run rebuilds instead of trusting it' grep -qF 'uv sync' "$tmpdir/uv.log"
+
+printf '#!/usr/bin/env -S timvisher_uv exec tail\n# /// script\n# requires-python = ">=3.15"\n# ///' \
+  > "$tmpdir/core/python/bin/tail"
+chmod +x "$tmpdir/core/python/bin/tail"
+reset_uv
+run_tool "$tmpdir/core/python/bin/tail" </dev/null
+rc=$?
+check 'exec: a script block at EOF with no newline builds and runs' test "$rc" -eq 0
+: > "$tmpdir/uv.log"
+run_tool "$tmpdir/core/python/bin/tail" </dev/null
+check 'exec: and is current on the next run' test ! -s "$tmpdir/uv.log"
+rm "$tmpdir/core/python/bin/tail"
 
 reset_uv
 mkdir -p "$tmpdir/data/timvisher_uv/virtualenvs/.echoer.lock"
