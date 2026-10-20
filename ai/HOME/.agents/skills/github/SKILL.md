@@ -103,7 +103,7 @@ Draft `issue.md` using the same format (title on line 1, blank line 2, body from
 timvisher_gh issue
 ```
 
-It works like `pr`: created on the first sync, `issue.md` moved into the store, later edits synced, `timvisher_gh issue info .url` for the URL.
+It works like `pr`: created on the first sync, `issue.md` moved into the store, later edits synced, `timvisher_gh issue info .url` for the URL. `timvisher_gh issue pull` also mirrors the issue's comments into its store directory under `comments/`, and `timvisher_gh comment` posts, edits, reacts to and deletes them as it does a PR's.
 
 ## Workflow — marking a PR ready for review
 
@@ -137,6 +137,7 @@ Hand the human the command; each is safe to rerun and never posts twice:
 timvisher_gh comment reply '<thread or review comment URL>' reply.md   # reply in that thread
 timvisher_gh comment note.md                     # a top-level comment on the worktree's PR
 timvisher_gh comment '<PR URL>' note.md          # ... on another PR
+timvisher_gh comment '<issue URL>' note.md       # ... on an issue (its comments work the same as a PR's)
 timvisher_gh comment push .timvisher_gh/pr/comments/<name>/comment.md   # after editing your own posted comment
 timvisher_gh comment react '<comment URL>' +1 rocket                    # add reactions (--delete removes)
 timvisher_gh thread resolve '<thread URL>'                              # --unresolve reopens
