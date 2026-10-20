@@ -35,6 +35,68 @@ class IssueTest(GhTestCase):
         (self.work / "issue.md").write_text("Bug\n\nIt breaks\n")
         return self.issue(*flags)
 
+    def comment(self, *args, stdin=None):
+        rc, out, err = self.run_gh("comment", *args, TIMVISHER_AGENT="1", stdin=stdin)
+        self.err = err
+        return rc, out
+
+    def comment_bodies(self, number=1):
+        return [c["body"] for c in self.github.state["issue_comments"].values() if c["issue_number"] == number]
+
+    def info(self, url, component):
+        return self.run_gh("comment", "info", url, component)[1].strip()
+
+    def test_a_comment_on_an_issue_posts_syncs_and_reports_the_issue(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        note = self.work / "x.note.md"
+        note.write_text("First\n")
+        rc, out = self.comment(ISSUE1, str(note))
+        self.assertEqual(0, rc, self.err)
+        [comment_id] = self.github.state["issue_comments"]
+        url = f"{ISSUE1}#issuecomment-{comment_id}"
+        self.assertEqual(f"{url}\n", out)
+        self.assertTrue(note.is_symlink())
+        self.assertIn("/issues/1/comments/", str(note.resolve()))
+        note.write_text("Second\n")
+        self.assertEqual((0, f"{url}\n"), self.comment(str(note)), self.err)
+        self.assertEqual(["Second"], self.comment_bodies())
+        self.assertEqual(("1", "null", "issue_comment"),
+                         (self.info(url, ".issue.number"), self.info(url, ".pr"), self.info(url, ".comment_kind")))
+
+    def test_a_tracked_issue_md_names_the_issue_to_comment_on(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        note = self.work / "x.note.md"
+        note.write_text("Via issue.md\n")
+        rc, out = self.comment(str(self.work / "issue.md"), str(note))
+        self.assertEqual(0, rc, self.err)
+        self.assertIn(f"{ISSUE1}#issuecomment-", out)
+        self.assertEqual(["Via issue.md"], self.comment_bodies())
+
+    def test_an_issue_comment_url_targets_it_for_react_pull_and_delete(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        comment_id = self.github.add_issue_comment(REPO, 1, "hi")
+        url = f"{ISSUE1}#issuecomment-{comment_id}"
+        self.assertEqual(0, self.comment("react", url, "rocket")[0], self.err)
+        self.assertEqual('["rocket"]', self.info(url, ".reactions | tojson"))
+        self.assertEqual(0, self.comment("pull", url)[0], self.err)
+        self.assertEqual("hi", self.info(url, ".body"))
+        self.assertEqual(0, self.comment("delete", "--force", url)[0], self.err)
+        self.assertEqual([], self.comment_bodies())
+        self.assertIn("/archive/", self.info(url, ".source.path"))
+
+    def test_issue_pull_mirrors_its_comments_and_archives_deleted_ones(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        theirs = self.github.add_issue_comment(REPO, 1, "from alice", user="alice")
+        mine = self.github.add_issue_comment(REPO, 1, "from me")
+        self.assertEqual(0, self.issue("pull", ISSUE1)[0], self.err)
+        urls = json.loads(self.run_gh("issue", "info", ISSUE1, ".comments | tojson")[1])
+        self.assertEqual({f"{ISSUE1}#issuecomment-{theirs}", f"{ISSUE1}#issuecomment-{mine}"}, set(urls))
+        self.assertIn("/issues/1/comments/", self.info(urls[0], ".source.path"))
+        self.github._update(lambda s: s["issue_comments"].pop(str(theirs)))
+        self.assertEqual(0, self.issue("pull", ISSUE1)[0], self.err)
+        self.assertIn("/archive/", self.info(f"{ISSUE1}#issuecomment-{theirs}", ".source.path"))
+        self.assertNotIn("/archive/", self.info(f"{ISSUE1}#issuecomment-{mine}", ".source.path"))
+
     def test_the_first_sync_creates_the_issue_and_promotes_issue_md(self):
         rc, out = self.create()
         self.assertEqual((0, f"{ISSUE1}\n"), (rc, out), self.err)

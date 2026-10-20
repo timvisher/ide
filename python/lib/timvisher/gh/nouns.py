@@ -92,8 +92,9 @@ def _fetch(opened, found, noun):
     fetcher = fetch.Fetcher(opened, now())
     try:
         with opened.write():
-            if found.kind == "issue":
-                fetcher.issue(found.owner, found.repo, found.number, only_new=True)
+            if found.kind == "issue" or found.on == "issue":
+                fetcher.issue(found.owner, found.repo, found.number, conversation=found.kind != "issue",
+                              only_new=True)
             else:
                 fetcher.pr(found.owner, found.repo, found.number, only_new=True)
     except fetch.NotFound:
@@ -126,7 +127,8 @@ def info(noun, context, args):
             object_id = _object_id(opened.db, found, noun)
         if object_id is None:
             fail("timvisher_gh_not_found", f"GitHub has no {noun} at {found.url}.",
-                 suggestions=[f"Check the URL; 'timvisher_gh pr fetch {found.pr_url}' lists the PR's conversation"])
+                 suggestions=[f"Check the URL; 'timvisher_gh {'issue' if found.on == 'issue' else 'pr'} fetch "
+                              f"{found.parent_url}' lists its conversation"])
         _remember_context(opened, context, found, object_id)
         kind = opened.db.execute("SELECT kind FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
         if noun == "comment" and kind == "thread":

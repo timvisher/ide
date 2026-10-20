@@ -14,8 +14,8 @@ def _object_for(db, url):
 
 
 def ensure_parent(db, target, lookup):
-    kind = "issue" if target.kind == "issue" else "pr"
-    url = target.url if kind == "issue" else target.pr_url
+    kind = "issue" if target.kind == "issue" or target.on == "issue" else "pr"
+    url = target.parent_url
     found = _object_for(db, url)
     if found:
         return found
@@ -87,7 +87,8 @@ def _comment_object(db, pr_id, pr_target, item, now, threads, taken):
     kind = item.get("kind")
     posted = item.get("posted") or {}
     body = item.get("body", posted.get("body", ""))
-    pr_key = store.pr_key(pr_target.owner, pr_target.repo, pr_target.number)
+    pr_key = (store.issue_key if pr_target.on == "issue" else store.pr_key)(pr_target.owner, pr_target.repo,
+                                                                             pr_target.number)
     common = {"owner": pr_target.owner, "repo": pr_target.repo, "database_id": item.get("database_id")}
     if kind == "issue_comment":
         key = store.child_key(pr_key, "comments", store.comment_name(item["created_at"], item["author"],

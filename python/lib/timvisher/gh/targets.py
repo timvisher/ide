@@ -14,12 +14,13 @@ BROWSER_TAB = "current-browser-tab"
 SHAPES = (
     "https://github.com/O/R/pull/N, optionally with /files, /changes or /commits, a ?query or a #fragment",
     "https://github.com/O/R/issues/N, optionally with a ?query or a #fragment",
-    "https://github.com/O/R/pull/N#issuecomment-<ID> (a top-level comment)",
+    "https://github.com/O/R/pull/N#issuecomment-<ID> or /issues/N#issuecomment-<ID> (a top-level comment)",
     "https://github.com/O/R/pull/N#discussion_r<ID> (a review comment, or its thread with 'thread')",
 )
 
 _PULL = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/pull/(\d+)(?:/(?:files|changes|commits))?(?:\?[^#]*)?(?:#(.*))?")
-_ISSUE = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/issues/(\d+)(?:\?[^#]*)?(?:#.*)?")
+_ISSUE = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/issues/(\d+)(?:\?[^#]*)?(?:#(.*))?")
+_ISSUE_COMMENT = re.compile(r"issuecomment-(\d+)")
 _ANCHOR = re.compile(r"(issuecomment-|discussion_r)(\d+)")
 
 
@@ -33,10 +34,19 @@ class Target:
     source: pathlib.Path | None = None
     object_id: str | None = None
     via: str = "url"
+    on: str = "pr"
 
     @property
     def pr_url(self):
         return f"https://github.com/{self.owner}/{self.repo}/pull/{self.number}"
+
+    @property
+    def issue_url(self):
+        return f"https://github.com/{self.owner}/{self.repo}/issues/{self.number}"
+
+    @property
+    def parent_url(self):
+        return self.issue_url if self.kind == "issue" or self.on == "issue" else self.pr_url
 
     @property
     def url(self):
@@ -44,9 +54,9 @@ class Target:
             case "pr":
                 return self.pr_url
             case "issue":
-                return f"https://github.com/{self.owner}/{self.repo}/issues/{self.number}"
+                return self.issue_url
             case "comment":
-                return f"{self.pr_url}#issuecomment-{self.comment_id}"
+                return f"{self.parent_url}#issuecomment-{self.comment_id}"
             case "review_comment" | "thread":
                 return f"{self.pr_url}#discussion_r{self.comment_id}"
         return None
@@ -81,8 +91,15 @@ def _match(url, noun):
             return Target("comment", comment_id=int(comment_id), **base)
         return Target("thread" if noun == "thread" else "review_comment", comment_id=int(comment_id), **base)
     if match := _ISSUE.fullmatch(url):
-        owner, repo, number = match.groups()
-        return Target("issue", owner=owner, repo=repo, number=int(number))
+        owner, repo, number, fragment = match.groups()
+        base = {"owner": owner, "repo": repo, "number": int(number)}
+        anchor = _ISSUE_COMMENT.fullmatch(fragment or "")
+        if anchor is None or noun == "issue":
+            return Target("issue", **base)
+        if noun == "thread":
+            fail("timvisher_gh_target_not_a_thread", f"'{url}' is a comment on an issue, which has no thread.",
+                 status=USAGE, suggestions=["Use 'timvisher_gh comment' for a comment on an issue"])
+        return Target("comment", comment_id=int(anchor.group(1)), on="issue", **base)
     return None
 
 

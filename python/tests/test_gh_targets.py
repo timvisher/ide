@@ -70,6 +70,14 @@ class TargetsTest(GhTestCase):
         review = self.resolve("comment", f"{PR}/changes#discussion_r66")
         self.assertEqual(("review_comment", 66, f"{PR}#discussion_r66"), (review.kind, review.comment_id, review.url))
 
+    def test_issue_comment_urls(self):
+        issue = "https://github.com/O/R/issues/3"
+        top = self.resolve("comment", f"{issue}?q=1#issuecomment-9")
+        self.assertEqual(("comment", "issue", 9, 3, f"{issue}#issuecomment-9", issue),
+                         (top.kind, top.on, top.comment_id, top.number, top.url, top.parent_url))
+        status, instruction = self.refused("thread", f"{issue}#issuecomment-9")
+        self.assertEqual((2, "timvisher_gh_target_not_a_thread"), (status, instruction["code"]))
+
     def test_thread_urls_are_their_root_comments_discussion_url(self):
         thread = self.resolve("thread", f"{PR}#discussion_r66")
         self.assertEqual(("thread", 66, f"{PR}#discussion_r66"), (thread.kind, thread.comment_id, thread.url))

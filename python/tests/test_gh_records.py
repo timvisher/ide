@@ -86,15 +86,16 @@ class RecordsTest(GhTestCase):
 
     def test_issue_info_has_every_issue_field(self):
         issue = self.info("issue", "info", f"https://github.com/{REPO}/issues/3")
-        self.assertEqual(COMMON | {"number", "title", "body", "state", "closed_at"}, set(issue))
+        self.assertEqual(COMMON | {"number", "title", "body", "state", "closed_at", "comments"}, set(issue))
         self.assertEqual(("issue", 3, "Bug", "It breaks", "open", None, "erin"),
                          (issue["kind"], issue["number"], issue["title"], issue["body"], issue["state"],
                           issue["closed_at"], issue["author"]))
 
     def test_a_top_level_comment_embeds_its_pr_without_children(self):
         comment = self.info("comment", "info", f"{PR}#issuecomment-{self.top}")
-        self.assertEqual(COMMON | {"comment_kind", "pr", "thread", "in_reply_to", "body", "reactions",
+        self.assertEqual(COMMON | {"comment_kind", "pr", "issue", "thread", "in_reply_to", "body", "reactions",
                                    "reaction_counts"}, set(comment))
+        self.assertIsNone(comment["issue"])
         self.assertEqual(("comment", "issue_comment", None, None, "top level", ["+1", "heart"], "bob"),
                          (comment["kind"], comment["comment_kind"], comment["thread"], comment["in_reply_to"],
                           comment["body"], comment["reactions"], comment["author"]))
