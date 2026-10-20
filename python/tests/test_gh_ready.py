@@ -30,10 +30,10 @@ class ReadyTest(GhTestCase):
                 [{"name": name, "bucket": bucket} for name, bucket in checks])
             self.github.respond(["pr", "checks"], stdout=body, once=True)
 
-    def ready(self, *args):
+    def ready(self, *args, **env):
         rc, out, err = self.run_gh("pr", "ready", *args, TIMVISHER_AGENT="1", TIMVISHER_GH_PR_READY_POLL_INTERVAL="0",
                                    HOOK_LOG=str(self.log), TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
-                                   TIMVISHER_GH_CONFIG_DIR=str(self.ext))
+                                   TIMVISHER_GH_CONFIG_DIR=str(self.ext), **env)
         self.err = err
         return rc, out
 
@@ -114,6 +114,31 @@ class ReadyTest(GhTestCase):
         rc, _ = self.ready(PR)
         self.assertEqual((1, ["timvisher_gh_bad_exclude_pattern"]), (rc, self.codes()))
         self.assertTrue(self.draft())
+
+    def checks_calls(self):
+        return sum(c["argv"][2:4] == ["pr", "checks"] for c in self.github.calls)
+
+    def test_a_pr_with_no_checks_past_the_grace_period_is_marked_ready(self):
+        self.github.respond(["pr", "checks"], stdout="", stderr="no checks reported on the 'feature' branch\n", status=1)
+        rc, _ = self.ready(PR, TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE="0")
+        self.assertEqual(0, rc, self.err)
+        self.assertIn("timvisher_gh_checks_none", self.codes())
+        self.assertFalse(self.draft())
+        self.assertEqual(1, self.checks_calls())
+
+    def test_no_checks_within_the_grace_period_keeps_waiting(self):
+        self.github.respond(["pr", "checks"], stdout="", stderr="no checks reported\n", status=1, once=True)
+        self.checks([("build", "pass")])
+        self.assertEqual(0, self.ready(PR)[0], self.err)
+        self.assertNotIn("timvisher_gh_checks_none", self.codes())
+        self.assertEqual(2, self.checks_calls())
+
+    def test_other_gh_errors_never_count_as_no_checks(self):
+        self.github.respond(["pr", "checks"], stdout="", stderr="HTTP 502\n", status=1, once=True)
+        self.checks([("build", "pass")])
+        self.assertEqual(0, self.ready(PR, TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE="0")[0], self.err)
+        self.assertNotIn("timvisher_gh_checks_none", self.codes())
+        self.assertEqual(2, self.checks_calls())
 
     def test_recovers_from_non_json_and_ordinary_gh_errors(self):
         self.github.respond(["pr", "checks"], stdout="", stderr="no checks reported\n", status=1, once=True)

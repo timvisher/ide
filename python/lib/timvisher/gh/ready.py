@@ -18,7 +18,9 @@ matching a pattern in <root>/{orgs/O,repos/O/R}/pr/ready/exclude-checks.txt
 (either config root; one regex per line, '#' comments and blank lines
 skipped) are ignored. A PR that's already ready skips the checks and the
 pre-hooks. TIMVISHER_GH_PR_READY_POLL_INTERVAL sets the poll interval in
-seconds (default 10).
+seconds (default 10). A PR that still reports no checks at all after
+TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE seconds (default 60) is treated as
+having none, so a repository without CI doesn't wait forever.
 """
 
 
@@ -70,7 +72,8 @@ def _checks(spec, url):
     return done, instructions
 
 
-def wait_for_checks(spec, url, patterns, interval):
+def wait_for_checks(spec, url, patterns, interval, grace):
+    started = time.monotonic()
     while True:
         done, instructions = _checks(spec, url)
         if _refused(instructions):
@@ -81,6 +84,14 @@ def wait_for_checks(spec, url, patterns, interval):
             checks = json.loads(done.stdout)
         except ValueError:
             checks = None
+        # Checks can take a moment to register after a push, so "none" only
+        # counts once it has lasted the grace period; any other failure keeps
+        # retrying.
+        if not isinstance(checks, list) and "no checks reported" in done.stderr and (
+                grace <= time.monotonic() - started):
+            aictl.notice(code="timvisher_gh_checks_none",
+                         message=f"{url} still reports no checks after {grace}s; treating it as having none.")
+            return
         if not isinstance(checks, list):
             aictl.notice(code="timvisher_gh_checks_retry", message=f"No checks found yet on {url}; retrying in {interval}s.",
                          reason=done.stderr.strip() or None)
@@ -131,7 +142,8 @@ def run(context, args):
                                   if source_file.exists() else raw["title"], state_dir=source_file.parent)
         if raw["draft"]:
             wait_for_checks(spec, url, exclude_patterns(spec),
-                            int(os.environ.get("TIMVISHER_GH_PR_READY_POLL_INTERVAL") or 10))
+                            int(os.environ.get("TIMVISHER_GH_PR_READY_POLL_INTERVAL") or 10),
+                            int(os.environ.get("TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE") or 60))
             if not ready_hooks.pre("ready"):
                 return ERROR
             fetch.api(spec, "graphql", "-f", f"query={pr.MARK_READY}", "-f", f"id={pr_id}")
