@@ -169,9 +169,11 @@ timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```bash
 timvisher_gh pr close            # the worktree's PR, or pass a PR URL
 timvisher_gh pr reopen '<PR URL>'
+timvisher_gh issue close '<issue URL>' --reason not_planned   # or completed; no target: the worktree's issue.md
+timvisher_gh issue reopen '<issue URL>'
 ```
 
-Each changes GitHub only when it doesn't already match, reporting "already closed" or "already open" otherwise, and refreshes the stored record (`timvisher_gh pr info .state`). A merged PR is already closed and can't be reopened. `--plan` shows what it would do. GitHub can't delete a PR; close it instead.
+Each changes GitHub only when it doesn't already match, reporting "already closed" or "already open" otherwise, and refreshes the stored record (`timvisher_gh pr info .state`, `timvisher_gh issue info .state_reason`). Closing a closed issue with a different `--reason` changes only the reason. A merged PR is already closed and can't be reopened. `--plan` shows what it would do. GitHub can't delete a PR; close it instead.
 
 ## Workflow — merging and releasing
 
