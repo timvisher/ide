@@ -225,6 +225,16 @@ class CommentTest(GhTestCase):
         self.assertIn("timvisher_gh_already_deleted", self.codes())
         self.assertIn("/archive/", str(source.resolve()))
 
+    def test_delete_keeps_our_copy_when_the_repo_is_hidden_from_the_account_too(self):
+        source = self.write("note.md", "Bye\n")
+        self.comment(PR, str(source))
+        [comment_id] = self.issue_comments()
+        self.github._update(lambda s: (s["issue_comments"].pop(str(comment_id)), s["repos"].pop(REPO)))
+        rc, _ = self.comment("delete", "--force", str(source))
+        self.assertEqual((1, ["timvisher_gh_delete_repo_unreadable"]), (rc, self.codes()))
+        self.assertNotIn("/archive/", str(source.resolve()))
+        self.assertEqual([], [c for c in self.posts() if c.get("method") == "DELETE"])
+
     def test_delete_force_deletes_yours_and_refuses_someone_elses(self):
         mine = self.github.add_issue_comment(REPO, 7, "mine")
         theirs = self.github.add_issue_comment(REPO, 7, "theirs", user="alice")
