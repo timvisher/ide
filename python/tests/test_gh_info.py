@@ -359,6 +359,12 @@ class InfoTest(unittest.TestCase):
                       "--jq .[0].number // empty", self.gh_calls())
         self.assertEqual((0, "\n"), self.run_gh("info", "--branch", "other", ".branch.mergedPr")[:2])
 
+    def test_branch_does_not_take_a_flag_as_its_value(self):
+        rc, _, err = self.run_gh("info", "--branch", "--json", ".branch.exists")
+        self.assertEqual(2, rc)
+        self.assertIn("--branch requires a value", err)
+        self.assertEqual([], self.gh_calls())
+
     def test_branch_fields_need_a_branch(self):
         rc, _, err = self.run_gh("info", ".branch.exists")
         self.assertEqual(2, rc)

@@ -155,7 +155,7 @@ def _raw(found):
 
 
 def _option(args, flag):
-    if not args or not args[0]:
+    if not args or not args[0] or args[0].startswith("-"):
         usage(f"info: {flag} requires a value")
     return args.pop(0)
 
