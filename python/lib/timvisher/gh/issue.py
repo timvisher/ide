@@ -142,11 +142,11 @@ def _parse_delete(args):
 
 
 def _archive(opened, url, now):
-    row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (url,)).fetchone()
-    if row:
+    found = store.live(opened.db, url)
+    if found is not None:
         with opened.write() as db:
-            store.archive(db, row[0], now)
-            opened.touch(row[0])
+            store.archive(db, found["id"], now)
+            opened.touch(found["id"])
 
 
 def _delete(opened, found, force, now):

@@ -302,17 +302,6 @@ def _thread_of(db, object_id):
     return object_id if kind == "thread" else (parent if parent_kind == "thread" else None)
 
 
-def live(db, url):
-    row = db.execute("SELECT id, kind, database_id, raw.payload FROM objects LEFT JOIN raw ON raw.object_id = id "
-                     "WHERE url = ? COLLATE NOCASE AND deleted_at IS NULL AND store_path NOT LIKE 'archive/%'",
-                     (url,)).fetchone()
-    if row is None:
-        return None
-    object_id, kind, database_id, payload = row
-    raw = json.loads(payload) if payload else {}
-    return {"id": object_id, "kind": kind, "database_id": database_id, "raw": raw.get("root") or raw}
-
-
 def _archive(opened, object_id, now):
     with opened.write() as db:
         store.archive(db, object_id, now)
@@ -320,13 +309,13 @@ def _archive(opened, object_id, now):
 
 
 def _archive_deleted(opened, target, now):
-    found = live(opened.db, target.url)
+    found = store.live(opened.db, target.url)
     if found:
         _archive(opened, found["id"], now)
 
 
 def archive_reply(opened, url, now):
-    found = live(opened.db, url)
+    found = store.live(opened.db, url)
     if found and found["kind"] == "comment":
         _archive(opened, found["id"], now)
     return found
@@ -338,17 +327,17 @@ def archive_reply(opened, url, now):
 # than archiving what we guess vanished.
 def settle(opened, where, gone, now):
     db = opened.db
-    known = {comment_id: live(db, f"{where.pr_url}#discussion_r{comment_id}") for comment_id in gone}
+    known = {comment_id: store.live(db, f"{where.pr_url}#discussion_r{comment_id}") for comment_id in gone}
     reviews = {found["raw"].get("pull_request_review_id") for found in known.values() if found}
     reviews |= {payload.get("pull_request_review_id") for payload in gone.values() if payload}
     for comment_id in gone:
         archive_reply(opened, f"{where.pr_url}#discussion_r{comment_id}", now)
-    if live(db, where.pr_url):
+    if store.live(db, where.pr_url):
         with opened.write():
             fetch.Fetcher(opened, now).pr(where.owner, where.repo, where.number)
     for comment_id in gone:
         url = f"{where.pr_url}#discussion_r{comment_id}"
-        found = live(db, url)
+        found = store.live(db, url)
         if not found or found["kind"] != "thread" or found["database_id"] != comment_id:
             continue
         if db.execute("SELECT 1 FROM objects WHERE parent_id = ? AND deleted_at IS NULL AND store_path NOT LIKE "
@@ -360,7 +349,7 @@ def settle(opened, where, gone, now):
             _archive(opened, found["id"], now)
     spec = f"{where.owner}/{where.repo}"
     for review_id in sorted(r for r in reviews if r):
-        found = live(db, f"{where.pr_url}#pullrequestreview-{review_id}")
+        found = store.live(db, f"{where.pr_url}#pullrequestreview-{review_id}")
         if found is None:
             continue
         try:

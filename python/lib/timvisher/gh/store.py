@@ -95,6 +95,17 @@ def _row(db, object_id):
                      "deleted_at"), row))
 
 
+def live(db, url):
+    row = db.execute("SELECT id, kind, database_id, raw.payload FROM objects LEFT JOIN raw ON raw.object_id = id "
+                     "WHERE url = ? COLLATE NOCASE AND deleted_at IS NULL AND store_path NOT LIKE 'archive/%'",
+                     (url,)).fetchone()
+    if row is None:
+        return None
+    object_id, kind, database_id, payload = row
+    raw = json.loads(payload) if payload else {}
+    return {"id": object_id, "kind": kind, "database_id": database_id, "raw": raw.get("root") or raw}
+
+
 def register(db, *, id, kind, url, owner, repo, store_path, number=None, database_id=None, parent_id=None):
     db.execute("INSERT INTO objects (id, kind, url, owner, repo, number, database_id, parent_id, store_path) "
                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET url = excluded.url",

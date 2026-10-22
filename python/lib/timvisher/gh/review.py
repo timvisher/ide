@@ -63,17 +63,12 @@ def _endpoint(found, review_id):
     return spec, f"repos/{spec}/pulls/{found.number}/reviews/{review_id}"
 
 
-def _row(db, url):
-    row = db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (url,)).fetchone()
-    return row and row[0]
-
-
 def _archive(opened, url, now):
-    object_id = _row(opened.db, url)
-    if object_id is not None:
+    found = store.live(opened.db, url)
+    if found is not None:
         with opened.write() as db:
-            store.archive(db, object_id, now)
-            opened.touch(object_id)
+            store.archive(db, found["id"], now)
+            opened.touch(found["id"])
 
 
 def _write_access(spec):

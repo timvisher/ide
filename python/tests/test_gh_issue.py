@@ -2,6 +2,7 @@ import json
 import unittest
 
 from support.case import GhTestCase
+from timvisher.gh import state
 
 REPO = "testuser/testrepo"
 ISSUE1 = f"https://github.com/{REPO}/issues/1"
@@ -272,6 +273,15 @@ class IssueTest(GhTestCase):
         self.assertIn("/archive/", self.run_gh("issue", "info", ISSUE1, ".source.path")[1])
         self.assertEqual(0, self.issue("delete", "--force", f"https://github.com/{REPO}/issues/99")[0], self.err)
         self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+
+    def test_rerunning_delete_leaves_the_archived_copy_where_it_is(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.assertEqual(0, self.issue("delete", "--force")[0], self.err)
+        before = (self.work / "issue.md").resolve()
+        self.assertEqual((0, ""), self.issue("delete", "--force"), self.err)
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+        self.assertEqual(before, (self.work / "issue.md").resolve())
+        self.assertEqual([], [p for p in state.root().rglob("*") if "archive/archive" in str(p)])
 
     def test_delete_plan_deletes_nothing(self):
         self.github.add_issue(REPO, 1, title="Bug")

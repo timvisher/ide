@@ -3,6 +3,7 @@ import unittest
 
 from support.case import GhTestCase
 from support.remotes import git
+from timvisher.gh import state
 
 REPO = "testuser/testrepo"
 PR = f"https://github.com/{REPO}/pull/7"
@@ -194,6 +195,16 @@ class ReviewTest(GhTestCase):
         self.assertEqual("null\n", self.run_gh("review", "info", url, ".deleted_at")[1])
         self.assertEqual(0, self.review("delete", "--force", url)[0], self.err)
         self.assertNotEqual("null\n", self.run_gh("review", "info", url, ".deleted_at")[1])
+
+    def test_rerunning_delete_leaves_the_archived_copy_where_it_is(self):
+        pending = self.github.add_review(REPO, 7, user="testuser", state="PENDING")
+        url = self.url(pending)
+        self.assertEqual(0, self.run_gh("review", "info", url)[0])
+        self.assertEqual(0, self.review("delete", "--force", url)[0], self.err)
+        self.assertEqual((0, ""), self.review("delete", "--force", url), self.err)
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+        self.assertEqual([], [p for p in state.root().rglob("*") if "archive/archive" in str(p)])
+        self.assertTrue(list(state.root().rglob("archive/**/review.json")))
 
     def test_help_documents_every_verb(self):
         rc, out = self.review("--help")
