@@ -168,7 +168,14 @@ def merge_move(source, target):
 
 def promote(db, object_id, source):
     source = pathlib.Path(source).absolute()
-    target = store_file(db, object_id)
+    target = place(source, store_file(db, object_id))
+    db.execute("DELETE FROM authored WHERE path = ? AND object_id != ?", (str(source), object_id))
+    db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
+    return target
+
+
+def place(source, target):
+    source = pathlib.Path(source).absolute()
     if not (source.is_symlink() and source.resolve() == target.resolve()):
         if target.exists() and target.read_bytes() != source.read_bytes():
             fail("timvisher_gh_store_conflict",
@@ -182,8 +189,6 @@ def promote(db, object_id, source):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(source, target)
         _link(source, target)
-    db.execute("DELETE FROM authored WHERE path = ? AND object_id != ?", (str(source), object_id))
-    db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
     return target
 
 
