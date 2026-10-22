@@ -186,6 +186,15 @@ class ReviewTest(GhTestCase):
         self.assertEqual("7\n", self.run_gh("pr", "info", self.url(approved), ".number")[1])
         self.assertEqual("alice\n", self.run_gh("review", "info", self.url(approved), ".author")[1])
 
+    def test_info_finds_your_pending_review_and_a_pr_pull_keeps_it(self):
+        pending = self.github.add_review(REPO, 7, user="testuser", state="PENDING")
+        url = self.url(pending)
+        self.assertEqual("PENDING\n", self.run_gh("review", "info", url, ".state")[1])
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual("null\n", self.run_gh("review", "info", url, ".deleted_at")[1])
+        self.assertEqual(0, self.review("delete", "--force", url)[0], self.err)
+        self.assertNotEqual("null\n", self.run_gh("review", "info", url, ".deleted_at")[1])
+
     def test_help_documents_every_verb(self):
         rc, out = self.review("--help")
         self.assertEqual(0, rc)

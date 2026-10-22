@@ -183,8 +183,8 @@ class Fetcher:
                 review_comments = {c["id"]: c for c in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/comments")}
                 threads = api(spec, "graphql", "-f", f"query={REVIEW_THREADS}", "-f", f"owner={owner}", "-f",
                               f"repo={repo}", "-F", f"number={number}")
-                reviews = [review for review in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews")
-                           if review["state"] != "PENDING"]
+                listed = api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews")
+            reviews = [review for review in listed if review["state"] != "PENDING"]
             connection = threads["data"]["repository"]["pullRequest"]["reviewThreads"]
             nodes = connection["nodes"]
             self.partial = (connection.get("pageInfo") or {}).get("hasNextPage", False) or any(
@@ -229,8 +229,8 @@ class Fetcher:
                                   database_id=reply["id"], parent_id=node["id"],
                                   key=store.child_key(thread_key, "replies", name), raw=reply, only_new=only_new,
                                   remote={"body": reply["body"], "reactions": reactions})
+                self.seen.update(review["node_id"] for review in listed)
                 for review in reviews:
-                    self.seen.add(review["node_id"])
                     name = store.review_name(review["submitted_at"], review["user"]["login"])
                     self._put(id=review["node_id"], kind="review", url=review["html_url"], owner=owner, repo=repo,
                               database_id=review["id"], parent_id=pr_id, key=store.child_key(pr_key, "reviews", name),
@@ -239,6 +239,20 @@ class Fetcher:
                 with perf.phase("archive"):
                     self._archive_missing(pr_id)
             return pr_id
+
+    # A PR fetch leaves pending reviews out (GitHub shows only the viewer's),
+    # so asking for one review by ID is how the viewer's pending one is found.
+    def review(self, owner, repo, number, review_id):
+        pr_id = self.pr(owner, repo, number, conversation=False)
+        owner, repo, pr_key = self.state.db.execute("SELECT owner, repo, store_path FROM objects WHERE id = ?",
+                                                    (pr_id,)).fetchone()
+        spec = f"{owner}/{repo}"
+        found = api(spec, f"repos/{spec}/pulls/{number}/reviews/{review_id}")
+        name = store.review_name(found["submitted_at"] or self.now, found["user"]["login"])
+        self._put(id=found["node_id"], kind="review", url=found["html_url"], owner=owner, repo=repo,
+                  database_id=found["id"], parent_id=pr_id, key=store.child_key(pr_key, "reviews", name), raw=found,
+                  only_new=True, remote={"body": found.get("body") or "", "state": found["state"]})
+        return found["node_id"]
 
     def _rehead(self, thread_id, root):
         db = self.state.db

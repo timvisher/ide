@@ -103,7 +103,9 @@ def _fetch(opened, found, noun):
     fetcher = fetch.Fetcher(opened, now())
     try:
         with opened.write():
-            if found.kind == "issue" or found.on == "issue":
+            if found.kind == "review":
+                fetcher.review(found.owner, found.repo, found.number, found.review_id)
+            elif found.kind == "issue" or found.on == "issue":
                 fetcher.issue(found.owner, found.repo, found.number, conversation=True, only_new=True)
             else:
                 fetcher.pr(found.owner, found.repo, found.number, only_new=True)
