@@ -196,6 +196,9 @@ class FakeGhTest(GhTestCase):
         self.assertEqual(1, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{second}")[0])
         self.assertEqual(0, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{first}")[0])
         self.assertEqual(({}, [second]), (gh.state["reviews"], gh.state["threads"][thread]["comments"]))
+        gh._update(lambda s: s.update(fail_deletes=[]))
+        self.assertEqual(0, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{second}")[0])
+        self.assertEqual({}, gh.state["threads"])
 
     def test_records_carry_authors_times_and_merge_fields(self):
         self.github.set_now("2026-10-11T09:00:00Z")

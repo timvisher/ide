@@ -4,13 +4,14 @@ import sys
 
 from timvisher import aictl, browser
 from timvisher.gh import adopt, comment, fetch, nouns, pr, record, state, store, sync, targets
-from timvisher.gh.errors import ERROR, fail, usage
+from timvisher.gh.errors import ERROR, USAGE, Exit, fail, usage
 
 USAGE_TEXT = """\
 Usage: timvisher_gh [-C <path>] thread [<target>] <file> [--path P --line N [--start-line M] [--side LEFT|RIGHT]]
        timvisher_gh [-C <path>] thread fetch|pull|push [<target>] [<file>]
        timvisher_gh [-C <path>] thread edit <file-or-target>
        timvisher_gh [-C <path>] thread resolve [--unresolve] <target>
+       timvisher_gh [-C <path>] thread delete [--force] [--plan] <target>
        timvisher_gh [-C <path>] thread info <target> [<component>]
 
   thread [<target>] <file>  sync <file>, creating it on its first push. A PR target
@@ -21,6 +22,16 @@ Usage: timvisher_gh [-C <path>] thread [<target>] <file> [--path P --line N [--s
   edit <file-or-target>     update only: an error if the thread doesn't exist
   resolve [--unresolve] <target>
                             resolve or reopen; a no-op when GitHub already matches
+  delete [--force] <target> delete the thread: GitHub has no thread delete, and a
+                            thread goes when its last comment does, so this deletes
+                            every comment in it, replies newest first and the root
+                            last, archiving each copy once GitHub confirms it gone,
+                            then the thread's and any review GitHub removed with
+                            them. Prompts unless --force; --force refuses a thread
+                            with anyone else's comment. Stops at the first comment
+                            GitHub doesn't confirm deleted and reports what's left;
+                            rerunning picks up from there, and a thread already
+                            gone is reported. --plan lists what it would delete.
   info <target> [<component>]  the record (see 'thread info --help')
 
 Replies go through 'timvisher_gh comment' with the thread as the target.
@@ -34,8 +45,8 @@ UNRESOLVE = ("mutation UnresolveReviewThread($threadId: ID!) { unresolveReviewTh
 
 
 def _parse(args):
-    flags = {"plan": False, "resolution": None, "open": False, "unresolve": False, "path": None, "line": None,
-             "start_line": None, "side": None}
+    flags = {"plan": False, "resolution": None, "open": False, "unresolve": False, "force": False, "path": None,
+             "line": None, "start_line": None, "side": None}
     positionals, rest = [], list(args)
     while rest:
         arg = rest.pop(0)
@@ -55,6 +66,8 @@ def _parse(args):
                 flags["open"] = False
             case "--unresolve":
                 flags["unresolve"] = True
+            case "--force" | "-f":
+                flags["force"] = True
             case "--path" | "--line" | "--start-line" | "--side":
                 if not rest:
                     usage(f"{arg} requires a value")
@@ -151,10 +164,94 @@ def _resolve(opened, found, unresolve, plan, now):
     return 0
 
 
+def _comment_endpoint(spec, comment_id):
+    return f"repos/{spec}/pulls/comments/{comment_id}"
+
+
+# Replies go first and the root last: deleting a root makes GitHub promote the
+# first reply to root, so an interrupted run would leave the thread headed by
+# a reply; this way the original root heads it until the very end, and a
+# rerun with its URL picks up where the run stopped.
+def _in_order(spec, found, given):
+    root_id = given.get("in_reply_to_id") or given["id"]
+    root = given if given["id"] == root_id else fetch.api(spec, _comment_endpoint(spec, root_id))
+    listed = fetch.api(spec, "--paginate", f"repos/{spec}/pulls/{found.number}/comments")
+    replies = sorted((c for c in listed if c.get("in_reply_to_id") == root_id), key=lambda c: c["id"], reverse=True)
+    return [*replies, root]
+
+
+def _delete(opened, found, flags, now):
+    spec = f"{found.owner}/{found.repo}"
+    viewer = fetch.api(spec, "user")["login"]
+    try:
+        given = fetch.api(spec, _comment_endpoint(spec, found.comment_id))
+    except fetch.NotFound:
+        if not flags["plan"]:
+            comment.settle(opened, found, {found.comment_id: None}, now)
+        aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url}'s thread is already gone from GitHub.")
+        return 0
+    order = _in_order(spec, found, given)
+    url = order[-1]["html_url"]
+    others = sorted({c["user"]["login"] for c in order if c["user"]["login"].lower() != viewer.lower()})
+    if flags["force"] and others:
+        fail("timvisher_gh_delete_not_yours",
+             f"The thread {url} has comments by {', '.join(others)}, so --force won't delete it.",
+             status=USAGE, suggestions=["Rerun without --force to confirm deleting other people's comments"])
+    if flags["plan"]:
+        for item in order:
+            print(f"- comment {item['html_url']}  delete")
+        print(f"- thread  {url}  delete")
+        return 0
+    count = f"{len(order)} comment{'' if len(order) == 1 else 's'}"
+    by = f", including comments by {', '.join(others)}" if others else ""
+    if not flags["force"] and not nouns.confirm(f"Delete the thread {url} and its {count}{by}?"):
+        aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {url}.")
+        return 0
+    thread = comment.live(opened.db, url)
+    deleted = {}
+    for item in order:
+        endpoint = _comment_endpoint(spec, item["id"])
+        try:
+            try:
+                fetch.api(spec, "-X", "DELETE", endpoint)
+            except fetch.NotFound:
+                pass
+            fetch.api(spec, endpoint)
+        except fetch.NotFound:
+            deleted[item["id"]] = item
+            comment.archive_reply(opened, item["html_url"], now)
+            continue
+        except Exit:
+            break
+        aictl.error(code="timvisher_gh_delete_unconfirmed", message=f"GitHub still shows {item['html_url']} after "
+                    "deleting it; our copy is kept.")
+        break
+    comment.settle(opened, found, deleted, now)
+    remaining = [item["html_url"] for item in order if item["id"] not in deleted]
+    if remaining:
+        aictl.error(code="timvisher_gh_thread_delete_incomplete",
+                    message=f"Deleted {len(deleted)} of the {count} in the thread {url}; "
+                            f"still on GitHub: {', '.join(remaining)}.",
+                    reason="The delete stopped at the first comment GitHub didn't confirm deleted; our copy of "
+                           "the thread was refetched.",
+                    suggestions=[f"Rerun 'timvisher_gh thread delete {url}' to delete the rest"])
+        return ERROR
+    survivor = thread and opened.db.execute("SELECT url FROM objects WHERE id = ? AND deleted_at IS NULL AND "
+                                            "store_path NOT LIKE 'archive/%'", (thread["id"],)).fetchone()
+    if survivor:
+        aictl.error(code="timvisher_gh_thread_survived",
+                    message=f"Deleted the {count} in the thread {url}, but GitHub still has the thread, now headed "
+                            f"by {survivor[0]}: someone replied while it was being deleted.",
+                    suggestions=[f"Rerun with its new root: 'timvisher_gh thread delete {survivor[0]}'"])
+        return ERROR
+    aictl.info(code="timvisher_gh_deleted", message=f"Deleted the thread {url} and its {count}.")
+    return 0
+
+
 def run(context, args):
     verb = "sync"
     rest = list(args)
-    if rest and rest[0] in ("fetch", "pull", "push", "edit", "resolve"):
+    if rest and rest[0] in ("fetch", "pull", "push", "edit", "resolve", "delete"):
         verb = rest.pop(0)
     parsed = _parse(rest)
     if parsed is None:
@@ -172,6 +269,13 @@ def run(context, args):
             if found.kind != "thread":
                 usage(f"'{found.url}' names a {found.kind}, so thread resolve can't use it.")
             return _resolve(opened, found, flags["unresolve"], flags["plan"], now)
+        if verb == "delete":
+            if len(positionals) != 1:
+                usage("thread delete needs one <target>")
+            found = targets.resolve("thread", positionals[0], context=context, db=opened.db)
+            if found.kind != "thread":
+                usage(f"'{found.url}' names a {found.kind}, so thread delete can't use it.")
+            return _delete(opened, found, flags, now)
 
         if verb == "edit" and len(positionals) == 1:
             target_arg, file_arg = None, positionals[0]

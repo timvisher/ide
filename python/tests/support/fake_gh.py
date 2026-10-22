@@ -433,10 +433,12 @@ def add_review_comment(state, repo, number, fields, reply_to):
 def delete_review_comment(state, found):
     comment_id = found["id"]
     del state["review_comments"][str(comment_id)]
-    for thread in state["threads"].values():
+    for node_id, thread in list(state["threads"].items()):
         if comment_id in thread["comments"]:
             thread["comments"].remove(comment_id)
-            if found.get("in_reply_to_id") is None and thread["comments"]:
+            if not thread["comments"]:
+                del state["threads"][node_id]
+            elif found.get("in_reply_to_id") is None:
                 promoted = state["review_comments"][str(thread["comments"][0])]
                 promoted.pop("in_reply_to_id", None)
                 for reply_id in thread["comments"][1:]:

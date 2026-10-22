@@ -37,7 +37,8 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
                              Deleting a thread's root makes GitHub promote its
                              first reply to root; the PR's copy is refetched to
                              follow, and a review GitHub removed with the comment
-                             (an empty one) is archived too
+                             (an empty one) is archived too. 'thread delete'
+                             deletes a whole thread
   info <target> [<component>]  the record (see 'comment info --help')
 
 Reactions: +1 -1 laugh confused heart hooray rocket eyes, the emoji
