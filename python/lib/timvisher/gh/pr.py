@@ -26,6 +26,8 @@ Usage: timvisher_gh [-C <path>] pr [fetch|pull|push|edit] [<target>] [options]
   pr ready            wait for the checks, then mark the PR ready (see 'pr ready --help')
   pr merge            merge the PR and wait for it (see 'pr merge --help')
   pr release          merge, then run the merge post-hooks (see 'pr release --help')
+  pr close            close the PR; 'already closed' when it is (see 'pr close --help')
+  pr reopen           reopen a closed PR; 'already open' when it is
 
 Options: --plan, --ours, --theirs, --merge, --open, --draft, --ready-for-review,
          --base <branch>
@@ -337,6 +339,9 @@ def run(context, args):
     if args[:1] == ["release"]:
         from timvisher.gh import merge
         return merge.release(context, args[1:])
+    if args[:1] in (["close"], ["reopen"]):
+        from timvisher.gh import close
+        return close.run("pr", args[0], context, args[1:])
     parsed = parse(args)
     if parsed is None:
         return 0
