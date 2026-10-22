@@ -149,13 +149,14 @@ def _archive(opened, url, now):
             opened.touch(found["id"])
 
 
-def _delete(opened, found, force, now):
+def _delete(opened, found, force, plan, now):
     fetcher = fetch.Fetcher(opened, now)
     try:
         with opened.write():
             issue_id = fetcher.issue(found.owner, found.repo, found.number)
     except fetch.NotFound:
-        _archive(opened, found.url, now)
+        if not plan:
+            _archive(opened, found.url, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url} is already gone from GitHub.")
         return 0
     url, number, owner, repo = opened.db.execute("SELECT url, number, owner, repo FROM objects WHERE id = ?",
@@ -172,6 +173,9 @@ def _delete(opened, found, force, now):
              reason="GitHub lets only repository admins delete issues; nothing was deleted.",
              suggestions=[f"Close it instead: 'timvisher_gh issue close {url} --reason not_planned'",
                           f"Or ask an admin of {spec} to delete it"])
+    if plan:
+        print(f"- issue   {url}  delete")
+        return 0
     by = f" by {author}" if theirs else ""
     if not force and not nouns.confirm(f"Permanently delete {url} ('{raw['title']}'{by})? It can't be undone."):
         aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {url}.")
@@ -202,10 +206,7 @@ def delete(context, args):
             fail("timvisher_gh_issue_missing", f"There's no issue for {found.source} to delete.")
         if found.kind != "issue":
             usage(f"'{found.url}' names a {found.kind}, so issue delete can't use it.")
-        if flags["plan"]:
-            print(f"- issue   {found.url}  delete")
-            return 0
-        return _delete(opened, found, flags["force"], nouns.now())
+        return _delete(opened, found, flags["force"], flags["plan"], nouns.now())
     finally:
         opened.close()
 

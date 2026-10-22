@@ -206,6 +206,16 @@ class ReviewTest(GhTestCase):
         self.assertEqual([], [p for p in state.root().rglob("*") if "archive/archive" in str(p)])
         self.assertTrue(list(state.root().rglob("archive/**/review.json")))
 
+    def test_delete_plan_refuses_what_delete_would_refuse(self):
+        approved = self.github.add_review(REPO, 7, user="testuser", state="APPROVED")
+        theirs = self.github.add_review(REPO, 7, user="alice", state="PENDING")
+        self.assertEqual((1, ""), self.review("delete", "--plan", self.url(approved)))
+        self.assertEqual(["timvisher_gh_review_submitted"], self.codes())
+        self.assertEqual((2, ""), self.review("delete", "--plan", "--force", self.url(theirs)))
+        self.assertEqual(["timvisher_gh_delete_not_yours"], self.codes())
+        self.assertEqual((0, ""), self.review("delete", "--plan", self.url(4242)))
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+
     def test_help_documents_every_verb(self):
         rc, out = self.review("--help")
         self.assertEqual(0, rc)

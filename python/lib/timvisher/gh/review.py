@@ -97,14 +97,12 @@ def delete(opened, context, positionals, flags, now):
             return 0
         found = targets.Target("review", owner=found.owner, repo=found.repo, number=found.number,
                                review_id=pending["id"])
-    if flags["plan"]:
-        print(f"- review  {found.url}  delete")
-        return 0
     spec, endpoint = _endpoint(found, found.review_id)
     try:
         review = fetch.api(spec, endpoint)
     except fetch.NotFound:
-        _archive(opened, found.url, now)
+        if not flags["plan"]:
+            _archive(opened, found.url, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url} is already gone from GitHub.")
         return 0
     if review["state"] != "PENDING":
@@ -117,6 +115,9 @@ def delete(opened, context, positionals, flags, now):
     if flags["force"] and theirs:
         fail("timvisher_gh_delete_not_yours", f"{found.url} is {author}'s review, so --force won't delete it.",
              status=USAGE, suggestions=["Rerun without --force to confirm deleting someone else's review"])
+    if flags["plan"]:
+        print(f"- review  {found.url}  delete")
+        return 0
     by = f" by {author}" if theirs else ""
     if not flags["force"] and not nouns.confirm(f"Delete the pending review {found.url}{by} and its draft comments?"):
         aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {found.url}.")

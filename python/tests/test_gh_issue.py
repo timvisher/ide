@@ -288,6 +288,21 @@ class IssueTest(GhTestCase):
         self.assertEqual((0, f"- issue   {ISSUE1}  delete\n"), self.issue("delete", "--plan", "--force", ISSUE1))
         self.assertEqual((False, []), (self.deleted(), self.delete_mutations()))
 
+    def test_delete_plan_refuses_what_delete_would_refuse(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.github.add_issue(REPO, 2, title="Theirs", author="alice")
+        theirs = f"https://github.com/{REPO}/issues/2"
+        self.assertEqual((2, ""), self.issue("delete", "--plan", "--force", theirs))
+        self.assertEqual(["timvisher_gh_delete_not_yours"], self.codes())
+        self.github._update(lambda s: s["issues"][REPO]["1"].update(deleted=True))
+        self.assertEqual((0, ""), self.issue("delete", "--plan"))
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+        self.assertNotIn("/archive/", str((self.work / "issue.md").resolve()))
+        self.github.add_repo(REPO, admin=False)
+        self.assertEqual((1, ""), self.issue("delete", "--plan", theirs))
+        self.assertEqual(["timvisher_gh_issue_delete_not_admin"], self.codes())
+        self.assertEqual([], self.delete_mutations())
+
     def test_delete_refuses_a_pr(self):
         self.github.add_pull(REPO, 7, head="feature", title="A PR")
         self.assertEqual(2, self.issue("delete", "--force", f"https://github.com/{REPO}/pull/7")[0])
