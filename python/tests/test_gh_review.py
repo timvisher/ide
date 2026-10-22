@@ -164,6 +164,18 @@ class ReviewTest(GhTestCase):
         self.assertEqual((False, "Stale\n", "Stale"), (stored.is_symlink(), stored.read_text(),
                                                        self.reviews()[str(approved)]["dismissal_message"]))
 
+    def test_dismiss_with_a_relative_symlink_message_keeps_its_text(self):
+        approved = self.github.add_review(REPO, 7, user="alice", state="APPROVED")
+        (self.work / "notes").mkdir()
+        real = self.write("notes/why.md", "Superseded\n")
+        message = self.work / "why.md"
+        message.symlink_to("notes/why.md")
+        url = self.url(approved)
+        self.assertEqual((0, f"{url}\n"), self.review("dismiss", url, str(message), stdin="y\n"), self.err)
+        self.assertEqual(("Superseded", "dismissal.md", "Superseded\n", "Superseded\n"),
+                         (self.reviews()[str(approved)]["dismissal_message"], message.resolve().name,
+                          message.read_text(), real.read_text()))
+
     def test_push_without_a_wanted_state_does_nothing(self):
         approved = self.github.add_review(REPO, 7, user="alice", state="APPROVED")
         self.assertEqual((0, ""), self.review("push", self.url(approved)), self.err)

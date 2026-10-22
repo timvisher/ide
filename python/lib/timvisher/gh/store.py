@@ -137,6 +137,13 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
+def _write_bytes_atomic(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def _link(link, target):
     link.parent.mkdir(parents=True, exist_ok=True)
     tmp = link.with_name(f".{link.name}.tmp-link")
@@ -188,9 +195,9 @@ def place(source, target):
                  reason="The store already holds this object's source, from another worktree or an earlier run.",
                  suggestions=[f"Fold what you want from '{source}' into '{target}', then remove '{source}' and rerun",
                               f"Or replace it: 'ln -sf {target} {source}' after copying your text there"])
-        if target.exists():
-            source.unlink()
-        else:
+        if source.is_symlink() and not target.exists():
+            _write_bytes_atomic(target, source.read_bytes())
+        elif not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(source, target)
         _link(source, target)
