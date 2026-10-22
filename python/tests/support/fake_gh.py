@@ -372,12 +372,10 @@ def rest(state, request):
             found["body"] = fields.get("body", found["body"])
             return 200, comment_view(state, "review_comment", found)
         case "DELETE", ["pulls", "comments", comment_id]:
-            find_comment(state, "review_comment", repo, comment_id)
-            del state["review_comments"][str(comment_id)]
-            for thread in state["threads"].values():
-                if int(comment_id) in thread["comments"]:
-                    thread["comments"].remove(int(comment_id))
-            state["deleted"].append(f"review_comment:{comment_id}")
+            found = find_comment(state, "review_comment", repo, comment_id)
+            if int(comment_id) in state.get("fail_deletes", []):
+                raise Reply(502, {"message": "Server Error"})
+            delete_review_comment(state, found)
             return 204, None
 
         case _, [("issues" | "pulls") as table, "comments", comment_id, "reactions", *rid]:
@@ -430,6 +428,25 @@ def add_review_comment(state, repo, number, fields, reply_to):
         state["threads"][thread_of(state, root_id)]["comments"].append(comment_id)
     state["review_comments"][str(comment_id)] = created
     return comment_view(state, "review_comment", created)
+
+
+def delete_review_comment(state, found):
+    comment_id = found["id"]
+    del state["review_comments"][str(comment_id)]
+    for thread in state["threads"].values():
+        if comment_id in thread["comments"]:
+            thread["comments"].remove(comment_id)
+            if found.get("in_reply_to_id") is None and thread["comments"]:
+                promoted = state["review_comments"][str(thread["comments"][0])]
+                promoted.pop("in_reply_to_id", None)
+                for reply_id in thread["comments"][1:]:
+                    state["review_comments"][str(reply_id)]["in_reply_to_id"] = promoted["id"]
+    review_id = found.get("pull_request_review_id")
+    review = state["reviews"].get(str(review_id)) if review_id else None
+    if review and review["state"] == "COMMENTED" and not review["body"] and not any(
+            c.get("pull_request_review_id") == review_id for c in state["review_comments"].values()):
+        del state["reviews"][str(review_id)]
+    state["deleted"].append(f"review_comment:{comment_id}")
 
 
 def review_view(found):

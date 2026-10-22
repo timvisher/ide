@@ -179,6 +179,24 @@ class FakeGhTest(GhTestCase):
         _, one, _ = self.api(f"repos/{REPO}/pulls/7/reviews/{review_id}")
         self.assertEqual((f"PRR_{review_id}", "2026-10-10T10:00:00Z"), (one["node_id"], one["submitted_at"]))
 
+    def test_deleting_a_root_promotes_its_first_reply_and_drops_emptied_reviews(self):
+        gh = self.github
+        gh.add_pull(REPO, 7, head="feature")
+        root = gh.add_review_comment(REPO, 7, "root", review=True)
+        first = gh.add_review_comment(REPO, 7, "first", reply_to=root, review=True)
+        second = gh.add_review_comment(REPO, 7, "second", reply_to=root)
+        thread = gh.thread_of(root)
+        reviews = {c["id"]: c["pull_request_review_id"] for c in gh.state["review_comments"].values()}
+        self.assertEqual(0, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{root}")[0])
+        _, listed, _ = self.api(f"repos/{REPO}/pulls/7/comments")
+        self.assertEqual([(first, None), (second, first)], [(c["id"], c.get("in_reply_to_id")) for c in listed])
+        self.assertEqual([first, second], gh.state["threads"][thread]["comments"])
+        self.assertEqual([str(reviews[first])], list(gh.state["reviews"]))
+        gh._update(lambda s: s.update(fail_deletes=[second]))
+        self.assertEqual(1, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{second}")[0])
+        self.assertEqual(0, self.api("-X", "DELETE", f"repos/{REPO}/pulls/comments/{first}")[0])
+        self.assertEqual(({}, [second]), (gh.state["reviews"], gh.state["threads"][thread]["comments"]))
+
     def test_records_carry_authors_times_and_merge_fields(self):
         self.github.set_now("2026-10-11T09:00:00Z")
         self.github.add_pull(REPO, 7, head="feature", author="alice", head_sha="a" * 40, state="closed", merged=True,

@@ -221,10 +221,50 @@ def archive(db, object_id, now):
                f"WHERE id IN ({', '.join('?' * len(moved))})", moved)
     db.execute("UPDATE objects SET deleted_at = ? WHERE id = ?", (now, object_id))
     for moved_id in moved:
-        for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (moved_id,)).fetchall():
-            if pathlib.Path(path).is_symlink():
-                _link(pathlib.Path(path), store_file(db, moved_id))
+        _relink(db, moved_id, store_file(db, moved_id))
     return new
+
+
+def _relink(db, object_id, target):
+    for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (object_id,)).fetchall():
+        if pathlib.Path(path).is_symlink():
+            _link(pathlib.Path(path), target)
+
+
+# A thread keeps its node ID when GitHub promotes its first reply to root, so
+# the thread object stays and takes over the reply's copy, rather than being
+# archived and refetched under a new store path.
+def rehead(db, thread_id, reply_id, database_id):
+    thread = _row(db, thread_id)
+    head = store_file(db, thread_id)
+    if head.exists():
+        kept = free(root() / "archive" / thread["store_path"] / head.name)
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(head, kept)
+        _relink(db, thread_id, kept)
+    db.execute("DELETE FROM authored WHERE object_id = ?", (thread_id,))
+    db.execute("DELETE FROM fields WHERE object_id = ? AND name IN ('body', 'reactions')", (thread_id,))
+    if reply_id is not None:
+        reply = store_file(db, reply_id)
+        if reply.exists():
+            head.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(reply, head)
+        db.execute("UPDATE fields SET object_id = ? WHERE object_id = ?", (thread_id, reply_id))
+        db.execute("UPDATE authored SET object_id = ? WHERE object_id = ?", (thread_id, reply_id))
+        _relink(db, thread_id, head)
+        directory = reply.parent
+        for name in ("comment.json", "comment.url"):
+            if (directory / name).exists():
+                (directory / name).unlink()
+        if directory.is_dir():
+            if any(directory.iterdir()):
+                merge_move(directory, root() / "archive" / _row(db, reply_id)["store_path"])
+            else:
+                directory.rmdir()
+        db.execute("DELETE FROM fields WHERE object_id = ?", (reply_id,))
+        db.execute("DELETE FROM raw WHERE object_id = ?", (reply_id,))
+        db.execute("DELETE FROM objects WHERE id = ?", (reply_id,))
+    db.execute("UPDATE objects SET database_id = ? WHERE id = ?", (database_id, thread_id))
 
 
 def export(db, object_ids, record_for, now):

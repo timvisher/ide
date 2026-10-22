@@ -197,6 +197,8 @@ class Fetcher:
                 for node, ids in threaded:
                     root = review_comments[ids[0]]
                     self.seen.add(node["id"])
+                    if not only_new and self._known(node["id"]):
+                        self._rehead(node["id"], root)
                     if self._fresh(node["id"], only_new):
                         name = store.thread_name(root["created_at"], root["user"]["login"], root.get("path"), root.get("line"))
                         reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{root['id']}/reactions", root,
@@ -228,6 +230,16 @@ class Fetcher:
                 with perf.phase("archive"):
                     self._archive_missing(pr_id)
             return pr_id
+
+    def _rehead(self, thread_id, root):
+        db = self.state.db
+        if db.execute("SELECT database_id FROM objects WHERE id = ?", (thread_id,)).fetchone()[0] == root["id"]:
+            return
+        row = db.execute("SELECT id FROM objects WHERE id = ? AND parent_id = ?", (root["node_id"], thread_id)).fetchone()
+        reply_id = row and row[0]
+        store.rehead(db, thread_id, reply_id, root["id"])
+        self.state.touched.discard(reply_id)
+        self.state.touch(thread_id)
 
     # PRs and issues share the issue-comments endpoint for their top-level
     # comments.

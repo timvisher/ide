@@ -94,13 +94,21 @@ class FakeGitHub:
         return self._update(change)
 
     def add_review_comment(self, repo, number, body, *, path="README.md", line=1, side="RIGHT",
-                           reply_to=None, user=None):
+                           reply_to=None, user=None, review=False):
         def change(s):
+            review_id = None
+            if review:
+                s["next_id"] += 1
+                review_id = s["next_id"]
+                s["reviews"][str(review_id)] = {
+                    "id": review_id, "node_id": f"PRR_{review_id}", "repo": repo, "pull_number": number,
+                    "user": user or s["viewer"], "state": "COMMENTED", "body": "", "submitted_at": s["now"],
+                    "html_url": f"https://github.com/{repo}/pull/{number}#pullrequestreview-{review_id}"}
             s["next_id"] += 1
             comment_id = s["next_id"]
             comment = {"id": comment_id, "node_id": f"PRRC_{comment_id}", "repo": repo, "pull_number": number,
                        "body": body, "user": user or s["viewer"], "created_at": s["now"], "updated_at": s["now"],
-                       "pull_request_review_id": None,
+                       "pull_request_review_id": review_id,
                        "html_url": f"https://github.com/{repo}/pull/{number}#discussion_r{comment_id}"}
             if reply_to is None:
                 comment.update(path=path, line=line, start_line=None, side=side, commit_id="0" * 40)

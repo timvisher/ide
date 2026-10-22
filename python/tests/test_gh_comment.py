@@ -1,4 +1,5 @@
 import json
+import pathlib
 import unittest
 
 from support.case import GhTestCase
@@ -249,6 +250,58 @@ class CommentTest(GhTestCase):
         root = self.github.add_review_comment(REPO, 7, "nit")
         self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{root}")[0], self.err)
         self.assertEqual({}, self.github.state["review_comments"])
+
+    def info(self, noun, *args):
+        rc, out, err = self.run_gh(noun, "info", *args)
+        self.assertEqual(0, rc, err)
+        return json.loads(out) if out.startswith(("{", "[")) else out.strip()
+
+    def test_deleting_a_root_leaves_its_thread_headed_by_the_promoted_reply(self):
+        root_file = self.write("root.md", "nit\n")
+        self.assertEqual(0, self.run_gh("thread", PR, str(root_file), "--path", "a.go", "--line", "1")[0])
+        [root] = [int(k) for k in self.github.state["review_comments"]]
+        first_file = self.write("first.md", "fixed\n")
+        self.assertEqual(0, self.comment("reply", f"{PR}#discussion_r{root}", str(first_file))[0], self.err)
+        first = max(int(k) for k in self.github.state["review_comments"])
+        second = self.github.add_review_comment(REPO, 7, "thanks", reply_to=root, user="bob")
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        thread_id = self.github.thread_of(root)
+        self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{root}")[0], self.err)
+        thread = self.info("thread", f"{PR}#discussion_r{first}")
+        self.assertEqual((thread_id, f"{PR}#discussion_r{first}", first, [f"{PR}#discussion_r{second}"], None),
+                         (thread["id"], thread["root"], thread["database_id"], thread["replies"],
+                          thread["deleted_at"]))
+        self.assertEqual(f"{PR}#discussion_r{first}", self.info("comment", f"{PR}#discussion_r{second}", ".in_reply_to"))
+        self.assertEqual("null", self.info("comment", f"{PR}#discussion_r{first}", ".in_reply_to"))
+        self.assertEqual(("nit\n", "fixed\n"), (root_file.read_text(), first_file.read_text()))
+        self.assertIn("/archive/", str(root_file.resolve()))
+        self.assertEqual(pathlib.Path(thread["source"]["path"]), first_file.resolve())
+        self.assertEqual([str(first_file)], thread["source"]["authored_paths"])
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual("fixed\n", first_file.read_text())
+
+    def test_deleting_a_reply_archives_the_review_github_removed_with_it(self):
+        root = self.github.add_review_comment(REPO, 7, "nit", user="bob", review=True)
+        reply = self.github.add_review_comment(REPO, 7, "fixed", reply_to=root, review=True)
+        kept = self.github.add_review(REPO, 7, user="testuser", body="See above")
+        on = {c["id"]: c["pull_request_review_id"] for c in self.github.state["review_comments"].values()}
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{reply}")[0], self.err)
+        self.assertEqual({str(on[root]), str(kept)}, set(self.github.state["reviews"]))
+        deleted = {r: self.info("review", f"{PR}#pullrequestreview-{r}", ".deleted_at") != "null"
+                   for r in (on[root], on[reply], kept)}
+        self.assertEqual({on[root]: False, on[reply]: True, kept: False}, deleted)
+        self.assertNotEqual("null", self.info("comment", f"{PR}#discussion_r{reply}", ".deleted_at"))
+        self.assertEqual("null", self.info("thread", f"{PR}#discussion_r{root}", ".deleted_at"))
+
+    def test_deleting_a_threads_only_comment_archives_the_thread_and_its_review(self):
+        root = self.github.add_review_comment(REPO, 7, "nit", review=True)
+        [review] = self.github.state["reviews"]
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{root}")[0], self.err)
+        self.assertEqual({}, self.github.state["reviews"])
+        self.assertNotEqual("null", self.info("thread", f"{PR}#discussion_r{root}", ".deleted_at"))
+        self.assertNotEqual("null", self.info("review", f"{PR}#pullrequestreview-{review}", ".deleted_at"))
 
     def test_every_comment_call_names_the_repo_with_r(self):
         root = self.github.add_review_comment(REPO, 7, "nit", user="bob")

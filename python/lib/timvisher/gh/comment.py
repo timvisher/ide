@@ -33,7 +33,11 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
   delete [--force] <target>  delete the comment on GitHub, then archive our copy;
                              prompts unless --force, and --force refuses someone
                              else's comment; one GitHub already reports missing
-                             is archived only if the account can see the repo
+                             is archived only if the account can see the repo.
+                             Deleting a thread's root makes GitHub promote its
+                             first reply to root; the PR's copy is refetched to
+                             follow, and a review GitHub removed with the comment
+                             (an empty one) is archived too
   info <target> [<component>]  the record (see 'comment info --help')
 
 Reactions: +1 -1 laugh confused heart hooray rocket eyes, the emoji
@@ -297,12 +301,78 @@ def _thread_of(db, object_id):
     return object_id if kind == "thread" else (parent if parent_kind == "thread" else None)
 
 
+def live(db, url):
+    row = db.execute("SELECT id, kind, database_id, raw.payload FROM objects LEFT JOIN raw ON raw.object_id = id "
+                     "WHERE url = ? COLLATE NOCASE AND deleted_at IS NULL AND store_path NOT LIKE 'archive/%'",
+                     (url,)).fetchone()
+    if row is None:
+        return None
+    object_id, kind, database_id, payload = row
+    raw = json.loads(payload) if payload else {}
+    return {"id": object_id, "kind": kind, "database_id": database_id, "raw": raw.get("root") or raw}
+
+
+def _archive(opened, object_id, now):
+    with opened.write() as db:
+        store.archive(db, object_id, now)
+        opened.touch(object_id)
+
+
 def _archive_deleted(opened, target, now):
-    row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (target.url,)).fetchone()
-    if row:
-        with opened.write() as db:
-            store.archive(db, row[0], now)
-            opened.touch(row[0])
+    found = live(opened.db, target.url)
+    if found:
+        _archive(opened, found["id"], now)
+
+
+def archive_reply(opened, url, now):
+    found = live(opened.db, url)
+    if found and found["kind"] == "comment":
+        _archive(opened, found["id"], now)
+    return found
+
+
+# GitHub silently promotes a deleted root's first reply and removes an
+# empty-body review whose only comment was deleted, so after a review comment
+# is confirmed gone the PR is refetched and each review is asked for, rather
+# than archiving what we guess vanished.
+def settle(opened, where, gone, now):
+    db = opened.db
+    known = {comment_id: live(db, f"{where.pr_url}#discussion_r{comment_id}") for comment_id in gone}
+    reviews = {found["raw"].get("pull_request_review_id") for found in known.values() if found}
+    reviews |= {payload.get("pull_request_review_id") for payload in gone.values() if payload}
+    for comment_id in gone:
+        archive_reply(opened, f"{where.pr_url}#discussion_r{comment_id}", now)
+    if live(db, where.pr_url):
+        with opened.write():
+            fetch.Fetcher(opened, now).pr(where.owner, where.repo, where.number)
+    for comment_id in gone:
+        url = f"{where.pr_url}#discussion_r{comment_id}"
+        found = live(db, url)
+        if not found or found["kind"] != "thread" or found["database_id"] != comment_id:
+            continue
+        if db.execute("SELECT 1 FROM objects WHERE parent_id = ? AND deleted_at IS NULL AND store_path NOT LIKE "
+                      "'archive/%'", (found["id"],)).fetchone():
+            aictl.notice(code="timvisher_gh_thread_unsettled",
+                         message=f"{url} is gone, but its thread is past the first 100 GitHub lists, so our "
+                                 "copy of the thread and its replies is unchanged.")
+        else:
+            _archive(opened, found["id"], now)
+    spec = f"{where.owner}/{where.repo}"
+    for review_id in sorted(r for r in reviews if r):
+        found = live(db, f"{where.pr_url}#pullrequestreview-{review_id}")
+        if found is None:
+            continue
+        try:
+            fetch.api(spec, f"repos/{spec}/pulls/{where.number}/reviews/{review_id}")
+        except fetch.NotFound:
+            _archive(opened, found["id"], now)
+
+
+def _gone(opened, target, payload, now):
+    if target.kind == "comment":
+        _archive_deleted(opened, target, now)
+    else:
+        settle(opened, target, {target.comment_id: payload}, now)
 
 
 def _require_readable(spec, target):
@@ -322,7 +392,7 @@ def _delete(opened, target, force, viewer, now):
         found = fetch.api(spec, endpoint)
     except fetch.NotFound:
         _require_readable(spec, target)
-        _archive_deleted(opened, target, now)
+        _gone(opened, target, None, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{target.url} is already gone from GitHub.")
         return 0
     theirs = found["user"]["login"].lower() != viewer.lower()
@@ -338,7 +408,7 @@ def _delete(opened, target, force, viewer, now):
     try:
         fetch.api(spec, endpoint)
     except fetch.NotFound:
-        _archive_deleted(opened, target, now)
+        _gone(opened, target, found, now)
         return 0
     fail("timvisher_gh_delete_unconfirmed", f"GitHub still shows {target.url} after deleting it; our copy is kept.",
          suggestions=["Rerun the delete"])
