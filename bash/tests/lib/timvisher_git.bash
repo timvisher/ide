@@ -67,7 +67,8 @@ live_dir="$tmpdir/git"
 mkdir -p "$cache_dir" "$live_dir" ||
   die "cannot create cache/live dirs"
 
-# Create mock gh that handles pr view, api /repos/, repo set-default, repo view
+# Create a mock gh answering the calls timvisher_gh info makes, plus the
+# actions timvisher_git still runs directly (repo set-default, repo fork)
 mkdir -p "$tmpdir/mockbin" ||
   die "cannot create mockbin dir"
 cat > "$tmpdir/mockbin/gh" <<'MOCK'
@@ -79,206 +80,103 @@ then
   shift 2
 fi
 
-# --- gh repo set-default: no-op ---
-if [[ $1 == repo && $2 == set-default ]]; then
-  exit 0
-fi
+not_found() {
+  echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+  echo 'gh: Not Found (HTTP 404)' >&2
+  exit 1
+}
 
-if [[ $1 == api && $2 == repos/* ]]; then
-  repo_path=${2#repos/}
-  jq_expr=
-  while (( $# )); do
-    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
-    shift
-  done
-  case $repo_path in
-    oldorg/testrepo)  json='{"fork":false,"source":null,"archived":true}' ;;
-    liveorg/testrepo) json='{"fork":false,"source":null,"archived":false}' ;;
-    *) echo '{"message":"Not Found","status":"404"}'; exit 1 ;;
-  esac
-  if [[ -n $jq_expr ]]; then
-    echo "$json" | jq -c "$jq_expr"
-  else
-    echo "$json"
-  fi
-  exit 0
-fi
-
-# --- gh repo view --json ... --jq ... ---
-if [[ $1 == repo && $2 == view ]]; then
-  shift 2
-  repo_arg=$target_repo
-  jq_expr=
-  for arg in "$@"; do
-    case $arg in
-      --json*|--jq*) ;;
-      -*) ;;
-      *) [[ -z $repo_arg ]] && repo_arg=$arg ;;
-    esac
-  done
-  # Extract --jq value
-  jq_expr=
-  while (( $# )); do
-    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
-    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
-    shift
-  done
-  case $repo_arg in
-    parentorg/parentrepo)
-      echo '{"defaultBranchRef":{"name":"main"},"isFork":false,"parent":null,"repositoryTopics":[]}' | jq -r "$jq_expr"
-      ;;
-    myuser/parentrepo)
-      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[]}' | jq -r "$jq_expr"
-      ;;
-    altuser/parentrepo)
-      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[]}' | jq -r "$jq_expr"
-      ;;
-    softforkuser/parentrepo)
-      echo '{"defaultBranchRef":{"name":"main"},"isFork":true,"parent":{"owner":{"login":"parentorg"},"name":"parentrepo"},"repositoryTopics":[{"name":"soft-fork"}]}' | jq -r "$jq_expr"
-      ;;
-    *)
-      echo "not found" >&2; exit 1 ;;
-  esac
-  exit 0
-fi
-
-# --- gh api user (for current_gh_user) ---
-if [[ $1 == api && $2 == user && -n $target_repo ]]
-then
-  jq_expr=
-  while (( $# )); do
-    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
-    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
-    shift
-  done
-  json='{"login":"myuser"}'
-  if [[ -n $jq_expr ]]; then
-    echo "$json" | jq -r "$jq_expr"
-  else
-    echo "$json"
-  fi
-  exit 0
-fi
-
-# --- gh repo fork (for the fork command) ---
-if [[ $1 == repo && $2 == fork ]]; then
-  exit 0
-fi
-
-# --- gh api /repos/<owner>/<repo>/branches/<branch> ---
-# Mock branch existence: known branches return 200, everything else 404.
-# Honor --silent (suppress stdout) the way real `gh api` does.
-if [[ $1 == api && $2 == /repos/*/branches/* ]]; then
-  br_path=${2#/repos/}
-  silent=
-  for arg in "$@"; do
-    [[ $arg == --silent ]] && silent=1
-  done
-  case $br_path in
-    parentorg/parentrepo/branches/main|\
-    myuser/parentrepo/branches/main|\
-    nopush/parentrepo/branches/main)
-      [[ -n $silent ]] || echo '{"name":"main"}'
-      exit 0 ;;
-    *) [[ -n $silent ]] || echo '{"message":"Branch not found"}' >&2; exit 1 ;;
-  esac
-fi
-
-# --- gh api /repos/<owner>/<repo> ---
-if [[ $1 == api && $2 == /repos/* ]]; then
-  repo_path=${2#/repos/}
-  jq_expr=
-  while (( $# )); do
-    if [[ $1 == --jq ]]; then jq_expr=$2; shift 2; continue; fi
-    if [[ $1 == --jq=* ]]; then jq_expr=${1#--jq=}; shift; continue; fi
-    shift
-  done
-  case $repo_path in
-    parentorg/parentrepo)
-      json='{"fork":false,"parent":null,"permissions":{"push":false},"topics":[],"default_branch":"main"}'
-      ;;
-    myuser/parentrepo)
-      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":[],"default_branch":"main"}'
-      ;;
-    altuser/parentrepo)
-      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":[],"default_branch":"main"}'
-      ;;
-    nopush/parentrepo)
-      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":false},"topics":[],"default_branch":"main"}'
-      ;;
-    softforkuser/parentrepo)
-      json='{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":["soft-fork"],"default_branch":"main"}'
-      ;;
-    pushable/ownedrepo)
-      json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
-      ;;
-    parentorg/collisionrepo)
-      json='{"fork":false,"parent":null,"permissions":{"push":false},"topics":[],"default_branch":"main"}'
-      ;;
-    myuser/collisionrepo)
-      # Same name as parentorg's repo but NOT a fork of it. The fork
-      # command must die loudly here instead of silently cloning this
-      # unrelated repo.
-      json='{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}'
-      ;;
-    *)
-      # Match real gh behavior: error body goes to STDOUT (not stderr),
-      # then exit non-zero.  This is what real `gh api` does for HTTP 4xx
-      # responses.  Catching this correctly is what the probe_fork_parent
-      # 404-leak fix relies on.
-      echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
-      exit 1
-      ;;
-  esac
-  if [[ -n $jq_expr ]]; then
-    echo "$json" | jq -r "$jq_expr"
-  else
-    echo "$json"
-  fi
-  exit 0
-fi
-
-# --- gh pr view (legacy, for pr_head_repo_spec tests) ---
-pr_url=
-for arg in "$@"; do
-  case $arg in
-    https://github.com/*)
-      pr_url=$arg
-      ;;
-  esac
+jq_expr=
+silent=
+for arg in "$@"
+do
+  [[ $arg == --silent ]] && silent=1
+done
+args=("$@")
+for (( i = 0; i < ${#args[@]}; i += 1 ))
+do
+  [[ ${args[i]} == --jq ]] && jq_expr=${args[i + 1]}
 done
 
-case $pr_url in
-  https://github.com/upstream/repo/pull/1)
-    echo "fork-owner/repo"
+emit() {
+  [[ -n $silent ]] && exit 0
+  if [[ -n $jq_expr ]]
+  then
+    jq -r "$jq_expr" <<<"$1"
+  else
+    printf '%s\n' "$1"
+  fi
+  exit 0
+}
+
+case "$1 $2" in
+  'repo set-default'|'repo fork') exit 0 ;;
+  'pr list')
+    [[ $target_repo == upstream/repo && $4 == merged-branch ]] && echo 9
+    exit 0
     ;;
-  https://github.com/upstream/repo/pull/2)
-    echo "fork-owner/"
+esac
+
+[[ $1 == api ]] || exit 1
+
+if [[ $2 == user && -n $target_repo ]]
+then
+  emit '{"login":"myuser"}'
+fi
+
+path=${2#/}
+path=${path#repos/}
+
+case $path in
+  */*/branches/*)
+    case $path in
+      parentorg/parentrepo/branches/main|\
+      myuser/parentrepo/branches/main|\
+      nopush/parentrepo/branches/main)
+        emit '{"name":"main"}' ;;
+      *) not_found ;;
+    esac
     ;;
-  https://github.com/upstream/repo/pull/3)
-    echo "fork-owner/"
-    ;;
-  https://github.com/upstream/repo/pull/4)
-    echo "fork-owner/repo"
-    ;;
+  upstream/repo/pulls/1|upstream/repo/pulls/4)
+    emit '{"state":"open","merged":false,"head":{"ref":"feature","repo":{"full_name":"fork-owner/repo"}},"base":{"ref":"main"}}' ;;
+  upstream/repo/pulls/5)
+    emit '{"state":"closed","merged":true,"head":{"ref":"done","repo":{"full_name":"upstream/repo"}},"base":{"ref":"dev"}}' ;;
+  upstream/repo/pulls/2)
+    emit '{"state":"open","merged":false,"head":{"ref":"feature","repo":null},"base":{"ref":"main"}}' ;;
+  upstream/repo/pulls/3)
+    emit '{"state":"open","merged":false,"head":{"ref":"feature","repo":{"full_name":null}},"base":{"ref":"main"}}' ;;
+  */*/pulls/*) not_found ;;
+  oldorg/testrepo)
+    emit '{"fork":false,"parent":null,"source":null,"archived":true,"permissions":{"push":false},"topics":[],"default_branch":"main"}' ;;
+  liveorg/testrepo)
+    emit '{"fork":false,"parent":null,"source":null,"archived":false,"permissions":{"push":false},"topics":[],"default_branch":"main"}' ;;
+  parentorg/parentrepo|parentorg/collisionrepo)
+    emit '{"fork":false,"parent":null,"permissions":{"push":false},"topics":[],"default_branch":"main"}' ;;
+  myuser/parentrepo|altuser/parentrepo)
+    emit '{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"source":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":[],"default_branch":"main"}' ;;
+  nopush/parentrepo)
+    emit '{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"source":{"full_name":"parentorg/parentrepo"},"permissions":{"push":false},"topics":[],"default_branch":"main"}' ;;
+  softforkuser/parentrepo)
+    emit '{"fork":true,"parent":{"full_name":"parentorg/parentrepo"},"source":{"full_name":"parentorg/parentrepo"},"permissions":{"push":true},"topics":["soft-fork"],"default_branch":"main"}' ;;
+  pushable/ownedrepo)
+    emit '{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}' ;;
+  myuser/collisionrepo)
+    # Same name as parentorg's repo but NOT a fork of it. The fork
+    # command must die loudly here instead of silently cloning this
+    # unrelated repo.
+    emit '{"fork":false,"parent":null,"permissions":{"push":true},"topics":[],"default_branch":"main"}' ;;
   *)
-    echo "not found" >&2
-    exit 1
-    ;;
+    # Real gh writes a 4xx error body to STDOUT and exits non-zero; the
+    # 404 tests rely on that body not leaking.
+    not_found ;;
 esac
 MOCK
 chmod +x "$tmpdir/mockbin/gh"
-# The real timvisher_gh is a Python tool with no venv in the test HOME, so
-# its 'info .archived' contract (covered by python/tests/test_gh_info.py) is
-# faked here from the mock gh's repo table.
-cat > "$tmpdir/mockbin/timvisher_gh" <<'MOCK'
+# timvisher_git reads GitHub through timvisher_gh info, so run the real one
+# against the mock gh.
+cat > "$tmpdir/mockbin/timvisher_gh" <<MOCK
 #!/usr/bin/env bash
-[[ $1 == -R && $3 == info && $4 == .archived ]] || exit 2
-case $2 in
-  oldorg/testrepo)  echo true ;;
-  liveorg/testrepo) echo false ;;
-  *) exit 1 ;;
-esac
+exec python3 "${script_dir%/bash}/python/bin/timvisher_gh" "\$@"
 MOCK
 chmod +x "$tmpdir/mockbin/timvisher_gh"
 

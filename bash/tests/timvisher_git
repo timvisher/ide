@@ -330,12 +330,12 @@ else
   fail "pr_head_repo_spec should fail for null headRepository, got rc=${rc} result='${result}'"
 fi
 
-# Test: pr_head_repo_spec fails when headRepository.name is empty string
+# Test: pr_head_repo_spec fails when the head repository has no name
 run_test
 result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/3" 2>/dev/null) && rc=0 || rc=$?
 if (( 0 < rc ))
 then
-  pass "pr_head_repo_spec fails when headRepository.name is empty"
+  pass "pr_head_repo_spec fails when the head repository has no name"
 else
   fail "pr_head_repo_spec should fail for empty repo name, got rc=${rc} result='${result}'"
 fi
@@ -348,6 +348,26 @@ then
   pass "pr_head_repo_spec normalizes PR URL with trailing path"
 else
   fail "pr_head_repo_spec trailing path: expected 'fork-owner/repo', got '${result}'"
+fi
+
+# Test: pr_head_ref_name and pr_base_ref_name read the PR's branches
+run_test
+result="$(pr_head_ref_name "https://github.com/upstream/repo/pull/5") $(pr_base_ref_name "https://github.com/upstream/repo/pull/5/files")"
+if [[ $result == "done dev" ]]
+then
+  pass "pr_head_ref_name and pr_base_ref_name read the PR's head and base"
+else
+  fail "pr_head_ref_name/pr_base_ref_name: expected 'done dev', got '${result}'"
+fi
+
+# Test: pr_head_ref_name fails for a PR GitHub doesn't have
+run_test
+result=$(pr_head_ref_name "https://github.com/upstream/repo/pull/99" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "pr_head_ref_name fails for a missing PR"
+else
+  fail "pr_head_ref_name missing PR: expected failure, got rc=${rc} result='${result}'"
 fi
 
 # Test: pr_head_repo_spec fails when gh is not found
@@ -1356,7 +1376,7 @@ fi
 
 # Test: current_gh_user returns the mocked login
 run_test
-result=$(current_gh_user parentorg)
+result=$(current_gh_user parentorg/parentrepo)
 if [[ $result == "myuser" ]]
 then
   pass "current_gh_user returns the configured gh login"
@@ -1577,6 +1597,56 @@ then
   pass "reap_reason: without one it falls back to the resolved trunk"
 else
   fail "default target: expected non-zero, got rc=${rr_rc} out='${rr_out}'"
+fi
+
+# ---------------------------------------------------------------------------
+# worktree_gc__reap_reason remote tiers: live PR state, then a merged PR
+# from a branch of the same name
+# ---------------------------------------------------------------------------
+
+rr_dir="$tmpdir/reap_reason"
+rr_remote_cache="$rr_dir/cache"
+mkdir -p "$rr_dir/merged" "$rr_dir/open" "$rr_dir/nourl" "$rr_remote_cache" || exit 1
+echo 'https://github.com/upstream/repo/pull/5' > "$rr_dir/merged/pr.md.url"
+echo 'https://github.com/upstream/repo/pull/1' > "$rr_dir/open/pr.md.url"
+
+mock_respond git --exit 1 -- -C "$rr_remote_cache" show-ref --verify --quiet refs/remotes/upstream/main
+mock_respond git --exit 1 -- -C "$rr_remote_cache" merge-base --is-ancestor '*' origin/main
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/merged" "$rr_remote_cache" refs/heads/done main "" 2>/dev/null)
+if [[ $result == "PR #5 merged" ]]
+then
+  pass "worktree_gc__reap_reason reaps a worktree whose recorded PR merged"
+else
+  fail "worktree_gc__reap_reason merged PR: expected 'PR #5 merged', got '${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/open" "$rr_remote_cache" refs/heads/feature main "" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "worktree_gc__reap_reason keeps a worktree whose recorded PR is open"
+else
+  fail "worktree_gc__reap_reason open PR: expected rc>0 and no reason, got rc=${rc} result='${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/nourl" "$rr_remote_cache" refs/heads/merged-branch main upstream/repo 2>/dev/null)
+if [[ $result == "PR #9 merged" ]]
+then
+  pass "worktree_gc__reap_reason finds a merged PR from the branch without a recorded URL"
+else
+  fail "worktree_gc__reap_reason branch fallback: expected 'PR #9 merged', got '${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/nourl" "$rr_remote_cache" refs/heads/unmerged main upstream/repo 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "worktree_gc__reap_reason keeps a branch with no merged PR"
+else
+  fail "worktree_gc__reap_reason no merged PR: expected rc>0 and no reason, got rc=${rc} result='${result}'"
 fi
 
 # ---------------------------------------------------------------------------
