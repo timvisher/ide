@@ -7,13 +7,14 @@ import sys
 from timvisher.gh import fetch, perf, record, state, store, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
-NOUNS = ("pr", "issue", "comment", "thread")
+NOUNS = ("pr", "issue", "comment", "thread", "review")
 
 ACCEPTS = {
     "pr": ("pr", "comment", "review_comment", "thread"),
     "issue": ("issue",),
     "comment": ("comment", "review_comment"),
     "thread": ("thread",),
+    "review": ("review",),
 }
 
 
@@ -31,7 +32,8 @@ def confirm(question):
 
 
 def info_help(noun):
-    kinds = {"pr": ("pr",), "issue": ("issue",), "comment": ("comment",), "thread": ("thread",)}[noun]
+    kinds = {"pr": ("pr",), "issue": ("issue",), "comment": ("comment",), "thread": ("thread",),
+             "review": ("review",)}[noun]
     lines = [f"Usage: timvisher_gh [-C <path>] {noun} info [--schema-version <N>] [<target>] [<component>]", "",
              f"Print the {noun}'s record as JSON, or one <component> of it: a jq path, with",
              "jq -r semantics (scalars print bare, anything else as JSON). It reads the",
@@ -68,7 +70,7 @@ def _parse_info(noun, args):
     return target, component, pin
 
 
-OWN_KIND = {"pr": "pr", "issue": "issue", "thread": "thread"}
+OWN_KIND = {"pr": "pr", "issue": "issue", "thread": "thread", "review": "review"}
 
 
 def _object_id(db, found, noun):
@@ -170,4 +172,7 @@ def run(noun, context, args):
     if noun == "thread":
         from timvisher.gh import thread
         return thread.run(context, args)
+    if noun == "review":
+        from timvisher.gh import review
+        return review.run(context, args)
     usage(f"Unknown {noun} command: '{args[0] if args else ''}'", f"Commands: {noun} info")

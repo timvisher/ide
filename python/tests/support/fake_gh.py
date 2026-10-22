@@ -4,7 +4,8 @@ import re
 import subprocess
 import sys
 
-STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 404: "Not Found", 410: "Gone", 422: "Unprocessable Entity"}
+STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 403: "Forbidden", 404: "Not Found", 410: "Gone",
+               422: "Unprocessable Entity", 502: "Bad Gateway"}
 REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 PER_PAGE = 30
 
@@ -168,6 +169,13 @@ def find_comment(state, kind, repo, comment_id):
     if comment is None or comment["repo"] != repo:
         raise not_found()
     return comment
+
+
+def find_review(state, repo, number, review_id):
+    found = state["reviews"].get(str(review_id))
+    if found is None or found["repo"] != repo or found["pull_number"] != int(number):
+        raise not_found()
+    return found
 
 
 def pull(state, repo, number):
@@ -336,9 +344,25 @@ def rest(state, request):
             return 200, page(request, [review_view(r) for r in state["reviews"].values()
                                        if r["repo"] == repo and r["pull_number"] == int(number)])
         case "GET", ["pulls", number, "reviews", review_id]:
-            found = state["reviews"].get(review_id)
-            if found is None or found["repo"] != repo or found["pull_number"] != int(number):
-                raise not_found()
+            return 200, review_view(find_review(state, repo, number, review_id))
+        case "DELETE", ["pulls", number, "reviews", review_id]:
+            found = find_review(state, repo, number, review_id)
+            if found["state"] != "PENDING":
+                raise invalid("Can not delete a non-pending pull request review")
+            del state["reviews"][review_id]
+            state["deleted"].append(f"review:{review_id}")
+            return 200, review_view(found)
+        case "PUT", ["pulls", number, "reviews", review_id, "dismissals"]:
+            found = find_review(state, repo, number, review_id)
+            require(fields, "message")
+            if state.get("fail_dismissals"):
+                raise Reply(502, {"message": "Server Error"})
+            if not state["repos"][repo].get("permissions", {}).get("push"):
+                raise Reply(403, {"message": "Resource not accessible by integration"})
+            if found["state"] not in ("APPROVED", "CHANGES_REQUESTED"):
+                raise invalid("Can not dismiss a " + found["state"].lower() + " pull request review")
+            found["state"] = "DISMISSED"
+            found["dismissal_message"] = fields["message"]
             return 200, review_view(found)
 
         case "GET", ["pulls", "comments", comment_id]:

@@ -43,13 +43,13 @@ class FakeGitHub:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def add_repo(self, repo, default_branch="main", fork=False, source=None, archived=False,
-                 merge=True, squash=False, rebase=False, admin=True):
+                 merge=True, squash=False, rebase=False, admin=True, push=True):
         def change(state):
             state["repos"][repo] = {"default_branch": default_branch, "fork": fork,
                                     "source": source and {"full_name": source}, "archived": archived,
                                     "allow_merge_commit": merge, "allow_squash_merge": squash,
                                     "allow_rebase_merge": rebase,
-                                    "permissions": {"admin": admin, "maintain": admin, "push": True, "triage": True,
+                                    "permissions": {"admin": admin, "maintain": admin, "push": push, "triage": True,
                                                     "pull": True}}
         # GitHub's REST repos/O/R reports the allow_* settings as null below
         # admin, so the fake serves them only through 'gh repo view'.
@@ -121,7 +121,8 @@ class FakeGitHub:
             review_id = s["next_id"]
             s["reviews"][str(review_id)] = {
                 "id": review_id, "node_id": f"PRR_{review_id}", "repo": repo, "pull_number": number,
-                "user": user, "state": state, "body": body, "submitted_at": s["now"],
+                "user": user, "state": state, "body": body,
+                "submitted_at": None if state == "PENDING" else s["now"],
                 "html_url": f"https://github.com/{repo}/pull/{number}#pullrequestreview-{review_id}"}
             return review_id
         return self._update(change)
