@@ -99,7 +99,7 @@ timvisher_gh pr info --schema-version 1 .url   # in scripts: pin the record's co
 timvisher_gh pr info --help             # every field
 ```
 
-`issue info`, `comment info` and `thread info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue or comment URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR.
+`issue info`, `comment info`, `thread info` and `review info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue, comment or review (`#pullrequestreview-<ID>`, for `review` only) URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR.
 
 ## Workflow — creating an issue
 
@@ -136,7 +136,7 @@ timvisher_gh pr ready
 timvisher_gh pr pull
 ```
 
-Mirrors the whole conversation into the PR's store directory (`.timvisher_gh/pr/`): top-level comments under `comments/<ts>-<author>-<slug>/comment.md`, each review thread under `threads/<ts>-<author>-<path>-L<line>/` with its `root-comment.md` and `replies/<ts>-<author>-<slug>/comment.md`, and reviews under `reviews/` (read-only). Each object's `<kind>.json` beside it is its record. Safe to rerun: GitHub's edits flow into files you haven't changed, your unpushed edits to your own comments are kept and reported, and other people's comments are read-only. Filter ARP threads by the root comment's author starting with `dd-agentic-review-platform`.
+Mirrors the whole conversation into the PR's store directory (`.timvisher_gh/pr/`): top-level comments under `comments/<ts>-<author>-<slug>/comment.md`, each review thread under `threads/<ts>-<author>-<path>-L<line>/` with its `root-comment.md` and `replies/<ts>-<author>-<slug>/comment.md`, and reviews under `reviews/` (their bodies are read-only; see below for deleting and dismissing them). Each object's `<kind>.json` beside it is its record. Safe to rerun: GitHub's edits flow into files you haven't changed, your unpushed edits to your own comments are kept and reported, and other people's comments are read-only. Filter ARP threads by the root comment's author starting with `dd-agentic-review-platform`.
 
 ## Workflow — answering PR feedback
 
@@ -163,6 +163,17 @@ timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```
 
 `--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy.
+
+### Delete or dismiss a review
+
+```bash
+timvisher_gh review delete                            # your pending review on the worktree's PR; prompts first
+timvisher_gh review delete --force '<review URL>'     # your own pending reviews only
+timvisher_gh review dismiss '<review URL>' why.md     # a submitted approval or change request; prompts first
+timvisher_gh review push '<review URL>'               # apply a dismissal that didn't land
+```
+
+`review delete` is only for pending (unsubmitted) reviews, and takes their draft comments with it. `review dismiss` is permanent and only for submitted `APPROVED` or `CHANGES_REQUESTED` reviews; it needs write access and a non-empty message file. The message file moves into the review's store directory as `dismissal.md` (leaving a symlink) and DISMISSED becomes the review's wanted state, which push applies; rerunning reports "already dismissed". `--force` refuses reviews someone else wrote, `--plan` shows what would happen, and a review's URL is `<PR URL>#pullrequestreview-<ID>`.
 
 ## Workflow — closing and reopening
 
