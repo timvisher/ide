@@ -72,11 +72,12 @@ class FakeGitHub:
         self._update(change)
 
     def add_issue(self, repo, number, *, title="", body="", state="open", author=None, closed_at=None,
-                  moved_to=None):
+                  moved_to=None, state_reason=None):
         def change(s):
             s["issues"].setdefault(repo, {})[str(number)] = {
                 "number": number, "title": title, "body": body, "state": state, "author": author or s["viewer"],
-                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at, "moved_to": moved_to}
+                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at, "moved_to": moved_to,
+                "state_reason": state_reason}
         self._update(change)
 
     def add_issue_comment(self, repo, number, body, *, user=None):

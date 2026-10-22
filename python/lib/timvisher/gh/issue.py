@@ -3,7 +3,7 @@ import pathlib
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, nouns, pr, record, state, store, sync, targets
+from timvisher.gh import adopt, close, fetch, nouns, pr, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 USAGE = """\
@@ -17,6 +17,9 @@ Usage: timvisher_gh [-C <path>] issue [fetch|pull|push|edit] [<target>] [options
   issue push         fetch, then push the title and body, creating the issue
                      from the source if there is none
   issue edit         as push, but an error if the issue doesn't exist
+  issue close        close the issue, optionally --reason completed|not_planned
+                     (see 'issue close --help')
+  issue reopen       reopen a closed issue
 
 Options: --plan, --ours, --theirs, --merge, --open
 
@@ -111,6 +114,8 @@ def _finish(url, flags):
 
 
 def run(context, args):
+    if args[:1] in (["close"], ["reopen"]):
+        return close.run("issue", args[0], context, args[1:])
     parsed = parse(args)
     if parsed is None:
         return 0

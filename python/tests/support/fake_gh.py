@@ -278,7 +278,12 @@ def rest(state, request):
             return 200, issue_view(repo, found)
         case "PATCH", ["issues", number] if number.isdigit():
             found = issue(state, repo, number)
-            for key in ("title", "body", "state"):
+            if fields.get("state_reason") not in (None, "completed", "not_planned", "reopened"):
+                raise invalid(f"state_reason {fields['state_reason']} is not a valid reason")
+            if fields.get("state") in ("open", "closed") and fields["state"] != found["state"]:
+                found["closed_at"] = state["now"] if fields["state"] == "closed" else None
+                found["state_reason"] = "completed" if fields["state"] == "closed" else "reopened"
+            for key in ("title", "body", "state", "state_reason"):
                 if key in fields:
                     found[key] = fields[key]
             return 200, issue_view(repo, found)
@@ -439,7 +444,7 @@ def issue_view(repo, found):
     return {"id": 800000 + found["number"], "number": found["number"], "node_id": f"I_{repo}#{found['number']}",
             "title": found["title"], "body": found["body"], "state": found["state"],
             "user": user(found["author"]), "created_at": found["created_at"], "updated_at": found["updated_at"],
-            "closed_at": found["closed_at"],
+            "closed_at": found["closed_at"], "state_reason": found.get("state_reason"),
             "html_url": f"https://github.com/{repo}/issues/{found['number']}"}
 
 

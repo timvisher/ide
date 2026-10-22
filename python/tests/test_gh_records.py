@@ -86,7 +86,7 @@ class RecordsTest(GhTestCase):
 
     def test_issue_info_has_every_issue_field(self):
         issue = self.info("issue", "info", f"https://github.com/{REPO}/issues/3")
-        self.assertEqual(COMMON | {"number", "title", "body", "state", "closed_at", "comments"}, set(issue))
+        self.assertEqual(COMMON | {"number", "title", "body", "state", "closed_at", "state_reason", "comments"}, set(issue))
         self.assertEqual(("issue", 3, "Bug", "It breaks", "open", None, "erin"),
                          (issue["kind"], issue["number"], issue["title"], issue["body"], issue["state"],
                           issue["closed_at"], issue["author"]))

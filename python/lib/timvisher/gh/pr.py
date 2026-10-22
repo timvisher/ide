@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, hooks, nouns, perf, record, state, store, sync, targets
+from timvisher.gh import adopt, close, fetch, hooks, nouns, perf, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 VERBS = ("fetch", "pull", "push", "edit")
@@ -340,7 +340,6 @@ def run(context, args):
         from timvisher.gh import merge
         return merge.release(context, args[1:])
     if args[:1] in (["close"], ["reopen"]):
-        from timvisher.gh import close
         return close.run("pr", args[0], context, args[1:])
     parsed = parse(args)
     if parsed is None:
