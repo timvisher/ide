@@ -21,6 +21,15 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def confirm(question):
+    sys.stderr.write(f"{question} [y/N] ")
+    sys.stderr.flush()
+    answer = sys.stdin.readline().strip().lower()
+    if not sys.stdin.isatty():
+        sys.stderr.write("\n")
+    return answer in ("y", "yes")
+
+
 def info_help(noun):
     kinds = {"pr": ("pr",), "issue": ("issue",), "comment": ("comment",), "thread": ("thread",)}[noun]
     lines = [f"Usage: timvisher_gh [-C <path>] {noun} info [--schema-version <N>] [<target>] [<component>]", "",

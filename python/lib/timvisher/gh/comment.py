@@ -330,15 +330,10 @@ def _delete(opened, target, force, viewer, now):
         fail("timvisher_gh_delete_not_yours",
              f"{target.url} is {found['user']['login']}'s comment, so --force won't delete it.",
              status=USAGE, suggestions=["Rerun without --force to confirm deleting someone else's comment"])
-    if not force:
-        sys.stderr.write(f"Delete {target.url}{' (by ' + found['user']['login'] + ')' if theirs else ''}? [y/N] ")
-        sys.stderr.flush()
-        answer = sys.stdin.readline().strip().lower()
-        if not sys.stdin.isatty():
-            sys.stderr.write("\n")
-        if answer not in ("y", "yes"):
-            aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {target.url}.")
-            return 0
+    by = f" (by {found['user']['login']})" if theirs else ""
+    if not force and not nouns.confirm(f"Delete {target.url}{by}?"):
+        aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {target.url}.")
+        return 0
     fetch.api(spec, "-X", "DELETE", endpoint)
     try:
         fetch.api(spec, endpoint)
