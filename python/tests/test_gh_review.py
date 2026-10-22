@@ -152,6 +152,18 @@ class ReviewTest(GhTestCase):
         self.assertEqual(("DISMISSED", "Stale"),
                          (self.reviews()[str(approved)]["state"], self.reviews()[str(approved)]["dismissal_message"]))
 
+    def test_dismiss_retried_with_the_stored_message_keeps_it(self):
+        approved = self.github.add_review(REPO, 7, user="alice", state="APPROVED")
+        message = self.write("m.md", "Stale\n")
+        url = self.url(approved)
+        self.github._update(lambda s: s.update(fail_dismissals=True))
+        self.assertEqual(1, self.review("dismiss", url, str(message), stdin="y\n")[0])
+        stored = message.resolve()
+        self.github._update(lambda s: s.update(fail_dismissals=False))
+        self.assertEqual((0, f"{url}\n"), self.review("dismiss", url, str(stored), stdin="y\n"), self.err)
+        self.assertEqual((False, "Stale\n", "Stale"), (stored.is_symlink(), stored.read_text(),
+                                                       self.reviews()[str(approved)]["dismissal_message"]))
+
     def test_push_without_a_wanted_state_does_nothing(self):
         approved = self.github.add_review(REPO, 7, user="alice", state="APPROVED")
         self.assertEqual((0, ""), self.review("push", self.url(approved)), self.err)

@@ -174,9 +174,14 @@ def promote(db, object_id, source):
     return target
 
 
+def _same(source, target):
+    return source.resolve() == target.resolve() or (
+        source.exists() and target.exists() and os.path.samefile(source, target))
+
+
 def place(source, target):
     source = pathlib.Path(source).absolute()
-    if not (source.is_symlink() and source.resolve() == target.resolve()):
+    if not _same(source, target):
         if target.exists() and target.read_bytes() != source.read_bytes():
             fail("timvisher_gh_store_conflict",
                  f"'{source}' and its store file '{target}' differ, so neither replaces the other.",
