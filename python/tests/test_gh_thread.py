@@ -260,6 +260,34 @@ class ThreadTest(GhTestCase):
         rc, _ = self.thread("delete", "--force", f"https://github.com/{REPO}/pull/8#discussion_r{root}")
         self.assertEqual((2, ["timvisher_gh_thread_pr_mismatch"], []), (rc, self.codes(), self.deletes()))
 
+    def test_a_rerun_through_a_reply_already_deleted_finishes_the_thread(self):
+        root, first, second = self.build()
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.github._update(lambda s: s.update(fail_deletes=[first]))
+        self.assertEqual(1, self.thread("delete", "--force", f"{PR}#discussion_r{second}")[0])
+        self.github._update(lambda s: s.update(fail_deletes=[]))
+        self.assertEqual(0, self.thread("delete", "--force", f"{PR}#discussion_r{second}")[0], self.err)
+        self.assertEqual(([second, first, first, root], {}, {}),
+                         (self.deletes(), self.github.state["threads"], self.github.state["review_comments"]))
+        self.assertIn("timvisher_gh_deleted", self.codes())
+
+    def test_a_former_roots_url_deletes_the_thread_its_reply_now_heads(self):
+        root, first, second = self.build()
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual(0, self.gh("api", "-X", "DELETE", f"repos/{REPO}/pulls/comments/{root}")[0])
+        url = f"{PR}#discussion_r{root}"
+        self.assertEqual(0, self.thread("delete", "--force", url)[0], self.err)
+        self.assertEqual(({}, {}), (self.github.state["threads"], self.github.state["review_comments"]))
+        self.assertIn("timvisher_gh_deleted", self.codes())
+        self.assertTrue(self.deleted_at("thread", f"{PR}#discussion_r{first}"))
+
+    def test_a_gone_comment_the_store_doesnt_know_deletes_nothing(self):
+        root, _, _ = self.build()
+        self.assertEqual(0, self.gh("api", "-X", "DELETE", f"repos/{REPO}/pulls/comments/{root}")[0])
+        rc, _ = self.thread("delete", "--force", f"{PR}#discussion_r{root}")
+        self.assertEqual((1, ["timvisher_gh_thread_unknown"]), (rc, self.codes()))
+        self.assertEqual([root], self.deletes())
+
     def test_help_documents_delete(self):
         rc, out = self.thread("--help")
         self.assertIn("thread delete [--force] [--plan] <target>", out)

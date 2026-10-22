@@ -180,12 +180,35 @@ def _in_order(spec, found, given):
     return [*replies, root]
 
 
+# A deleted comment's thread can outlive it (a reply an earlier run deleted, a
+# root whose reply GitHub promoted), and GitHub can't say which thread a
+# deleted comment was in, so the store's record of it names the thread.
+def _given(opened, spec, found):
+    try:
+        return fetch.api(spec, _comment_endpoint(spec, found.comment_id)), True
+    except fetch.NotFound:
+        pass
+    row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (found.url,)).fetchone()
+    thread_id = row and comment._thread_of(opened.db, row[0])
+    if thread_id is None:
+        return None, False
+    node = fetch.thread_by_id(spec, found.owner, found.repo, found.number, thread_id)
+    if node is None or not node["comments"]["nodes"]:
+        return None, True
+    return fetch.api(spec, _comment_endpoint(spec, node["comments"]["nodes"][0]["databaseId"])), True
+
+
 def _delete(opened, found, flags, now):
     spec = f"{found.owner}/{found.repo}"
     viewer = fetch.api(spec, "user")["login"]
-    try:
-        given = fetch.api(spec, _comment_endpoint(spec, found.comment_id))
-    except fetch.NotFound:
+    given, known = _given(opened, spec, found)
+    if given is None and not known:
+        aictl.error(code="timvisher_gh_thread_unknown",
+                    message=f"{found.url} is gone from GitHub, and the store doesn't know which thread it was in, "
+                            "so nothing was deleted.",
+                    suggestions=["Rerun with the URL of a comment still in the thread"])
+        return ERROR
+    if given is None:
         if not flags["plan"]:
             comment.settle(opened, found, {found.comment_id: None}, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url}'s thread is already gone from GitHub.")

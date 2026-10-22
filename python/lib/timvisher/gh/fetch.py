@@ -36,19 +36,28 @@ THREAD_PAGE = """query ThreadPage($owner: String!, $repo: String!, $number: Int!
 }"""
 
 
-def thread_of_root(spec, owner, repo, number, database_id):
+def _find_thread(spec, owner, repo, number, matches):
     after = []
     while True:
         found = api(spec, "graphql", "-f", f"query={THREAD_PAGE}", "-f", f"owner={owner}", "-f", f"repo={repo}",
                     "-F", f"number={number}", *after)
         connection = found["data"]["repository"]["pullRequest"]["reviewThreads"]
         for node in connection["nodes"]:
-            if node["comments"]["nodes"] and node["comments"]["nodes"][0]["databaseId"] == database_id:
+            if matches(node):
                 return node
         page = connection.get("pageInfo") or {}
         if not page.get("hasNextPage"):
             return None
         after = ["-f", f"after={page['endCursor']}"]
+
+
+def thread_of_root(spec, owner, repo, number, database_id):
+    return _find_thread(spec, owner, repo, number, lambda node: bool(node["comments"]["nodes"]) and
+                        node["comments"]["nodes"][0]["databaseId"] == database_id)
+
+
+def thread_by_id(spec, owner, repo, number, node_id):
+    return _find_thread(spec, owner, repo, number, lambda node: node["id"] == node_id)
 
 
 class NotFound(Exception):
