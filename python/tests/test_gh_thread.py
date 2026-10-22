@@ -254,6 +254,12 @@ class ThreadTest(GhTestCase):
         self.assertEqual(({}, {}), (self.github.state["threads"], self.github.state["reviews"]))
         self.assertTrue(self.deleted_at("thread", url))
 
+    def test_delete_refuses_a_url_whose_pr_isnt_the_comments(self):
+        self.github.add_pull(REPO, 8, head="other", title="O")
+        root, _, _ = self.build()
+        rc, _ = self.thread("delete", "--force", f"https://github.com/{REPO}/pull/8#discussion_r{root}")
+        self.assertEqual((2, ["timvisher_gh_thread_pr_mismatch"], []), (rc, self.codes(), self.deletes()))
+
     def test_help_documents_delete(self):
         rc, out = self.thread("--help")
         self.assertIn("thread delete [--force] [--plan] <target>", out)

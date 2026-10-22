@@ -190,6 +190,10 @@ def _delete(opened, found, flags, now):
             comment.settle(opened, found, {found.comment_id: None}, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url}'s thread is already gone from GitHub.")
         return 0
+    if given["pull_request_url"].rsplit("/", 1)[-1] != str(found.number):
+        fail("timvisher_gh_thread_pr_mismatch",
+             f"{found.url} names PR #{found.number}, but that comment is on {given['html_url'].split('#')[0]}.",
+             status=USAGE, suggestions=[f"Use the comment's own URL, {given['html_url']}"])
     order = _in_order(spec, found, given)
     url = order[-1]["html_url"]
     others = sorted({c["user"]["login"] for c in order if c["user"]["login"].lower() != viewer.lower()})
