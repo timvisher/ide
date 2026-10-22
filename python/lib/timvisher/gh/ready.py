@@ -29,9 +29,9 @@ Options:
   --exclude <regex>  Also ignore checks whose name matches <regex>, for
                      this run only. Repeatable.
   --force            Read the checks once and mark the PR ready even if
-                     some failed or are still pending, reporting each one
-                     it bypassed. The pre-hooks still run and can still
-                     refuse.
+                     some failed, were cancelled or are still pending, or
+                     gh lists none, reporting each one it bypassed. The
+                     pre-hooks still run and can still refuse.
 """
 
 
@@ -100,14 +100,14 @@ def wait_for_checks(spec, url, patterns, interval, grace, required=False, force=
             checks = json.loads(done.stdout)
         except ValueError:
             checks = None
+        if not isinstance(checks, list) and force:
+            aictl.notice(code="timvisher_gh_checks_bypassed",
+                         message=f"gh listed no checks on {url}; --force marks it ready without them.",
+                         reason=done.stderr.strip() or None)
+            return
         # Checks can take a moment to register after a push, so "none" only
         # counts once it has lasted the grace period; any other failure keeps
         # retrying.
-        if not isinstance(checks, list) and force:
-            aictl.notice(code="timvisher_gh_checks_bypassed",
-                         message=f"Couldn't read the checks on {url}; --force marks it ready without them.",
-                         reason=done.stderr.strip() or None)
-            return
         if not isinstance(checks, list) and _none_reported(done.stderr) and (
                 grace <= time.monotonic() - started):
             aictl.notice(code="timvisher_gh_checks_none",
@@ -119,7 +119,7 @@ def wait_for_checks(spec, url, patterns, interval, grace, required=False, force=
             time.sleep(interval)
             continue
         kept = [c for c in checks if not any(p.search(c["name"]) for p in patterns)]
-        failed = [c["name"] for c in kept if c["bucket"] == "fail"]
+        failed = [c["name"] for c in kept if c["bucket"] in ("fail", "cancel")]
         pending = [c for c in kept if c["bucket"] == "pending"]
         logging.info("Checks: %d total, %d pass, %d pending, %d fail", len(kept),
                      sum(c["bucket"] == "pass" for c in kept), len(pending), len(failed))
@@ -127,8 +127,8 @@ def wait_for_checks(spec, url, patterns, interval, grace, required=False, force=
             aictl.notice(code="timvisher_gh_checks_bypassed",
                          message=f"--force marks {url} ready despite {len(failed)} failed and "
                                  f"{len(pending)} pending check(s).",
-                         reason=", ".join([f"{name} (fail)" for name in failed]
-                                          + [f"{c['name']} (pending)" for c in pending]))
+                         reason=", ".join(f"{c['name']} ({c['bucket']})" for c in kept
+                                          if c["bucket"] in ("fail", "cancel", "pending")))
             return
         if failed:
             fail("timvisher_gh_checks_failed", f"CI checks failed on {url}; not marking it ready.",

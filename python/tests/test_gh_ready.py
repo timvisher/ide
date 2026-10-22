@@ -178,6 +178,17 @@ class ReadyTest(GhTestCase):
         self.assertEqual("build (fail), lint (pending)", bypassed["reason"])
         self.assertNotIn("timvisher_gh_checks_failed", self.codes())
 
+    def test_a_cancelled_check_stops_without_force_and_is_reported_as_bypassed_with_it(self):
+        self.checks([("build", "cancel"), ("lint", "skipping")])
+        rc, _ = self.ready(PR)
+        self.assertEqual((1, ["timvisher_gh_checks_failed"]), (rc, self.codes()))
+        self.assertTrue(self.draft())
+        self.checks([("build", "cancel"), ("lint", "skipping")])
+        self.assertEqual(0, self.ready("--force", PR)[0], self.err)
+        [bypassed] = self.notices("timvisher_gh_checks_bypassed")
+        self.assertEqual("build (cancel)", bypassed["reason"])
+        self.assertFalse(self.draft())
+
     def test_force_with_passing_checks_reports_nothing_bypassed(self):
         self.checks([("build", "pass")])
         self.assertEqual(0, self.ready(PR, "--force")[0], self.err)
