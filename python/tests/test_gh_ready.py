@@ -161,6 +161,100 @@ class ReadyTest(GhTestCase):
         self.assertEqual(1, sum(c["argv"][2:4] == ["pr", "checks"] for c in self.github.calls))
         self.assertIn("gh_account_token_unavailable", outer.read_text())
 
+    def checks_argv(self):
+        return [c["argv"] for c in self.github.calls if c["argv"][2:4] == ["pr", "checks"]]
+
+    def notices(self, code):
+        return [record for record in map(json.loads, (line for line in self.err.splitlines()
+                                                       if line.startswith('{"type":"instruction"')))
+                if record["code"] == code]
+
+    def test_force_marks_the_pr_ready_despite_failed_and_pending_checks_and_names_them(self):
+        self.checks([("build", "fail"), ("lint", "pending"), ("unit", "pass")])
+        self.assertEqual((0, f"{PR}\n"), self.ready("--force", PR), self.err)
+        self.assertFalse(self.draft())
+        self.assertEqual(1, self.checks_calls())
+        [bypassed] = self.notices("timvisher_gh_checks_bypassed")
+        self.assertEqual("build (fail), lint (pending)", bypassed["reason"])
+        self.assertNotIn("timvisher_gh_checks_failed", self.codes())
+
+    def test_force_with_passing_checks_reports_nothing_bypassed(self):
+        self.checks([("build", "pass")])
+        self.assertEqual(0, self.ready(PR, "--force")[0], self.err)
+        self.assertFalse(self.draft())
+        self.assertEqual([], self.notices("timvisher_gh_checks_bypassed"))
+
+    def test_force_marks_ready_when_the_checks_cant_be_read(self):
+        self.github.respond(["pr", "checks"], stdout="", stderr="HTTP 502\n", status=1)
+        self.assertEqual(0, self.ready("--force", PR)[0], self.err)
+        self.assertFalse(self.draft())
+        [bypassed] = self.notices("timvisher_gh_checks_bypassed")
+        self.assertEqual("HTTP 502", bypassed["reason"])
+        self.assertEqual(1, self.checks_calls())
+
+    def test_force_still_stops_when_gh_refuses(self):
+        refusal = json.dumps({"type": "instruction", "level": "error", "code": "gh_account_token_unavailable",
+                              "message": "no token"})
+        self.github.respond(["pr", "checks"], stderr="ERROR gh_account_token_unavailable: no token\n", status=1,
+                            aictl=refusal + "\n")
+        rc, _ = self.ready("--force", PR)
+        self.assertEqual(1, rc)
+        self.assertIn("timvisher_gh_checks_refused", self.codes())
+        self.assertTrue(self.draft())
+
+    def test_force_still_runs_the_pre_hooks_and_a_refusing_one_keeps_the_pr_a_draft(self):
+        self.checks([("build", "fail")])
+        self.hook(self.core, "orgs/testuser/pr/ready/pre.d/10-gate", rc=1)
+        rc, _ = self.ready("--force", PR)
+        self.assertNotEqual(0, rc)
+        self.assertEqual(["10-gate ready pre"], self.log.read_text().splitlines())
+        self.assertTrue(self.draft())
+
+    def test_required_only_asks_gh_for_just_the_required_checks(self):
+        self.checks([("build", "pass")])
+        self.assertEqual(0, self.ready("--required-only", PR)[0], self.err)
+        self.assertFalse(self.draft())
+        self.assertEqual([["--required"]], [argv[-1:] for argv in self.checks_argv()])
+
+    def test_without_required_only_all_checks_are_asked_for(self):
+        self.checks([("build", "pass")])
+        self.assertEqual(0, self.ready(PR)[0], self.err)
+        self.assertNotIn("--required", self.checks_argv()[0])
+
+    def test_required_only_with_no_required_checks_past_the_grace_period_is_marked_ready(self):
+        self.github.respond(["pr", "checks"], stdout="",
+                            stderr="no required checks reported on the 'feature' branch\n", status=1)
+        rc, _ = self.ready("--required-only", PR, TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE="0")
+        self.assertEqual(0, rc, self.err)
+        self.assertIn("timvisher_gh_checks_none", self.codes())
+        self.assertFalse(self.draft())
+
+    def test_exclude_adds_to_the_loaded_patterns_for_this_run(self):
+        self.exclude(self.core, "orgs/testuser/pr/ready/exclude-checks.txt", "mergegate\n")
+        self.checks([("build", "pass"), ("mergegate", "pending"), ("accessanalyzer", "fail"), ("ddci-status", "fail")])
+        rc, _ = self.ready("--exclude", "^accessanalyzer$", "--exclude", "ddci", PR)
+        self.assertEqual(0, rc, self.err)
+        self.assertFalse(self.draft())
+
+    def test_an_excluded_check_isnt_reported_as_bypassed_by_force(self):
+        self.checks([("build", "fail"), ("lint", "fail")])
+        self.assertEqual(0, self.ready("--force", "--exclude", "lint", PR)[0], self.err)
+        [bypassed] = self.notices("timvisher_gh_checks_bypassed")
+        self.assertEqual("build (fail)", bypassed["reason"])
+
+    def test_exclude_doesnt_hide_other_failures(self):
+        self.checks([("build", "fail"), ("lint", "fail")])
+        rc, _ = self.ready("--exclude", "lint", PR)
+        self.assertEqual((1, ["timvisher_gh_checks_failed"]), (rc, self.codes()))
+        self.assertTrue(self.draft())
+
+    def test_an_invalid_or_missing_exclude_regex_is_a_usage_error_before_anything_runs(self):
+        for args in (["--exclude", "(", PR], [PR, "--exclude"]):
+            rc, _ = self.ready(*args)
+            self.assertEqual((2, ["timvisher_gh_usage"]), (rc, self.codes()), args)
+        self.assertEqual(0, self.checks_calls())
+        self.assertTrue(self.draft())
+
     def test_already_ready_records_it_so_a_later_push_doesnt_refuse(self):
         self.github._update(lambda s: s["pulls"][REPO]["7"].update(draft=False))
         self.assertEqual(0, self.ready(PR)[0], self.err)
