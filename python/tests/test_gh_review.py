@@ -216,6 +216,12 @@ class ReviewTest(GhTestCase):
         self.assertEqual((0, ""), self.review("delete", "--plan", self.url(4242)))
         self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
 
+    def test_review_info_needs_a_target_as_the_help_says(self):
+        self.assertEqual(2, self.run_gh("review", "info")[0])
+        rc, out, _ = self.run_gh("--help")
+        self.assertIn("(#pullrequestreview-<ID>) URL", out)
+        self.assertIn("except for review info, which needs\none", out)
+
     def test_help_documents_every_verb(self):
         rc, out = self.review("--help")
         self.assertEqual(0, rc)
