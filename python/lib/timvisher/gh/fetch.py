@@ -237,9 +237,12 @@ class Fetcher:
             return
         row = db.execute("SELECT id FROM objects WHERE id = ? AND parent_id = ?", (root["node_id"], thread_id)).fetchone()
         reply_id = row and row[0]
-        store.rehead(db, thread_id, reply_id, root["id"])
+        apply, old_root = store.rehead(db, thread_id, reply_id, root["id"], root["html_url"], self.now)
+        apply()
         self.state.touched.discard(reply_id)
         self.state.touch(thread_id)
+        if old_root:
+            self.state.touch(old_root)
 
     # PRs and issues share the issue-comments endpoint for their top-level
     # comments.

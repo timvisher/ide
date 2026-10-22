@@ -268,7 +268,8 @@ class CommentTest(GhTestCase):
         thread_id = self.github.thread_of(root)
         self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{root}")[0], self.err)
         thread = self.info("thread", f"{PR}#discussion_r{first}")
-        self.assertEqual((thread_id, f"{PR}#discussion_r{first}", first, [f"{PR}#discussion_r{second}"], None),
+        self.assertEqual((thread_id, f"{PR}#discussion_r{first}", first,
+                          [f"{PR}#discussion_r{root}", f"{PR}#discussion_r{second}"], None),
                          (thread["id"], thread["root"], thread["database_id"], thread["replies"],
                           thread["deleted_at"]))
         self.assertEqual(f"{PR}#discussion_r{first}", self.info("comment", f"{PR}#discussion_r{second}", ".in_reply_to"))
@@ -279,6 +280,36 @@ class CommentTest(GhTestCase):
         self.assertEqual([str(first_file)], thread["source"]["authored_paths"])
         self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
         self.assertEqual("fixed\n", first_file.read_text())
+
+    def deleted_root(self):
+        root_file = self.write("root.md", "nit\n")
+        self.assertEqual(0, self.run_gh("thread", PR, str(root_file), "--path", "a.go", "--line", "1")[0])
+        [root] = [int(k) for k in self.github.state["review_comments"]]
+        first_file = self.write("first.md", "fixed\n")
+        self.assertEqual(0, self.comment("reply", f"{PR}#discussion_r{root}", str(first_file))[0], self.err)
+        first = max(int(k) for k in self.github.state["review_comments"])
+        self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{root}")[0], self.err)
+        return root_file, root, first_file, first
+
+    def test_a_deleted_roots_file_stays_tracked_as_a_deleted_comment(self):
+        root_file, root, _, _ = self.deleted_root()
+        found = self.info("comment", str(root_file))
+        self.assertEqual((f"{PR}#discussion_r{root}", root, "nit"), (found["url"], found["database_id"], found["body"]))
+        self.assertNotEqual(None, found["deleted_at"])
+        mark = len(self.posts())
+        rc, _ = self.comment("push", str(root_file))
+        self.assertNotEqual(0, rc)
+        self.assertEqual([], self.posts()[mark:])
+
+    def test_archiving_a_promoted_thread_keeps_each_file_on_its_own_text(self):
+        root_file, root, first_file, first = self.deleted_root()
+        self.assertEqual(0, self.comment("delete", "--force", f"{PR}#discussion_r{first}")[0], self.err)
+        thread = self.info("thread", f"{PR}#discussion_r{first}")
+        self.assertNotEqual(None, thread["deleted_at"])
+        self.assertEqual(("nit\n", "fixed\n"), (root_file.read_text(), first_file.read_text()))
+        self.assertEqual(pathlib.Path(thread["source"]["path"]), first_file.resolve())
+        self.assertEqual(self.info("comment", str(root_file), ".source.path"), str(root_file.resolve()))
+        self.assertEqual([], [p for p in state.root().rglob("*") if ".adopted" in p.name])
 
     def test_deleting_a_reply_archives_the_review_github_removed_with_it(self):
         root = self.github.add_review_comment(REPO, 7, "nit", user="bob", review=True)
