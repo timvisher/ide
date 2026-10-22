@@ -175,6 +175,15 @@ timvisher_gh issue reopen '<issue URL>'
 
 Each changes GitHub only when it doesn't already match, reporting "already closed" or "already open" otherwise, and refreshes the stored record (`timvisher_gh pr info .state`, `timvisher_gh issue info .state_reason`). Closing a closed issue with a different `--reason` changes only the reason. A merged PR is already closed and can't be reopened. `--plan` shows what it would do. GitHub can't delete a PR; close it instead.
 
+### Delete an issue
+
+```bash
+timvisher_gh issue delete '<issue URL>'          # prompts first; permanent
+timvisher_gh issue delete --force '<issue URL>'  # your own issues only
+```
+
+Only repository admins can delete issues; anyone else gets an error before any prompt, so close it with `--reason not_planned` instead. `--force` refuses issues someone else opened. Our copy is archived once GitHub confirms the issue is gone.
+
 ## Workflow — merging and releasing
 
 Agents do not merge. Hand the human one of:
