@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 
-STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 404: "Not Found", 422: "Unprocessable Entity"}
+STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 404: "Not Found", 410: "Gone", 422: "Unprocessable Entity"}
 REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 PER_PAGE = 30
 
@@ -272,6 +272,8 @@ def rest(state, request):
                          "pull_request": {"url": f"https://api.github.com/repos/{repo}/pulls/{found['number']}"}}
         case "GET", ["issues", number] if number.isdigit():
             found = issue(state, repo, number)
+            if found.get("deleted"):
+                raise Reply(410, {"message": "This issue was deleted"})
             if found.get("moved_to"):
                 repo, number = found["moved_to"]
                 found = issue(state, repo, number)
@@ -506,6 +508,17 @@ def pull_by_node(state, node_id):
     return pull(state, repo, number)
 
 
+def gql_delete_issue(state, fields):
+    repo, _, number = fields["id"].removeprefix("I_").partition("#")
+    found = issue(state, repo, number)
+    if not state["repos"][repo].get("permissions", {}).get("admin"):
+        raise Reply(200, {"errors": [{"type": "FORBIDDEN", "message": f"{state['viewer']} does not have the "
+                                      "correct permissions to execute `DeleteIssue`"}]})
+    found["deleted"] = True
+    state["deleted"].append(f"issue:{repo}#{number}")
+    return {"deleteIssue": {"repository": {"nameWithOwner": repo}}}
+
+
 def gql_set_draft(draft):
     def handler(state, fields):
         found = pull_by_node(state, fields["id"])
@@ -578,6 +591,7 @@ GRAPHQL = {
     "ThreadPage": gql_review_threads,
     "ResolveReviewThread": gql_set_resolved(True),
     "UnresolveReviewThread": gql_set_resolved(False),
+    "DeleteIssue": gql_delete_issue,
     "ConvertPullRequestToDraft": gql_set_draft(True),
     "MarkPullRequestReadyForReview": gql_set_draft(False),
 }

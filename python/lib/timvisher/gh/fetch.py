@@ -55,6 +55,10 @@ class NotFound(Exception):
     pass
 
 
+class Gone(NotFound):
+    pass
+
+
 class Progress:
     def __init__(self, label, total, interval=3.0):
         self.label = label
@@ -86,6 +90,8 @@ def api(repo, *args):
     if done.returncode != 0:
         if "(HTTP 404)" in done.stderr:
             raise NotFound(args[-1])
+        if "(HTTP 410)" in done.stderr:
+            raise Gone(args[-1])
         fail("timvisher_gh_gh_failed", f"'gh api {' '.join(args)}' failed for {repo}.", reason=done.stderr.strip(),
              suggestions=["Check gh's error, then retry"])
     return json.loads(done.stdout) if done.stdout.strip() else None

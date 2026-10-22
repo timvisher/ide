@@ -43,12 +43,14 @@ class FakeGitHub:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def add_repo(self, repo, default_branch="main", fork=False, source=None, archived=False,
-                 merge=True, squash=False, rebase=False):
+                 merge=True, squash=False, rebase=False, admin=True):
         def change(state):
             state["repos"][repo] = {"default_branch": default_branch, "fork": fork,
                                     "source": source and {"full_name": source}, "archived": archived,
                                     "allow_merge_commit": merge, "allow_squash_merge": squash,
-                                    "allow_rebase_merge": rebase}
+                                    "allow_rebase_merge": rebase,
+                                    "permissions": {"admin": admin, "maintain": admin, "push": True, "triage": True,
+                                                    "pull": True}}
         # GitHub's REST repos/O/R reports the allow_* settings as null below
         # admin, so the fake serves them only through 'gh repo view'.
         self._update(change)
