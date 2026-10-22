@@ -162,7 +162,7 @@ timvisher_gh comment delete '<comment URL>'          # prompts first
 timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```
 
-`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone.
+`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy.
 
 ## Workflow — merging and releasing
 
