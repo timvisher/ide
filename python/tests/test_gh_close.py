@@ -93,6 +93,16 @@ class CloseTest(GhTestCase):
         self.assertEqual((0, f"{ISSUE}\n"), self.run_noun("issue", "close", ISSUE), self.err)
         self.assertEqual((["timvisher_gh_already_closed"], mark), (self.codes(), len(self.writes())))
 
+    def test_issue_close_on_a_transferred_issue_closes_it_where_it_went(self):
+        self.github.add_repo("testuser/elsewhere")
+        self.github.add_issue("testuser/elsewhere", 50, title="Moved")
+        self.github.add_issue(REPO, 50, title="Unrelated")
+        self.github.add_issue(REPO, 1, title="Bug", moved_to=["testuser/elsewhere", 50])
+        self.assertEqual((0, "https://github.com/testuser/elsewhere/issues/50\n"),
+                         self.run_noun("issue", "close", ISSUE), self.err)
+        self.assertEqual(("closed", "open"), (self.github.state["issues"]["testuser/elsewhere"]["50"]["state"],
+                                              self.github.state["issues"][REPO]["50"]["state"]))
+
     def test_issue_close_with_a_reason_converges_on_it(self):
         self.github.add_issue(REPO, 1, title="Bug")
         self.assertEqual(0, self.run_noun("issue", "close", ISSUE, "--reason", "not_planned")[0], self.err)

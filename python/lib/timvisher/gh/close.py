@@ -108,8 +108,9 @@ def change(opened, context, noun, verb, target, plan, reason=None):
                    message=f"{url} is already {_describe(current, current_reason)}.")
         print(url)
         return 0
-    spec = f"{found.owner}/{found.repo}"
-    number = opened.db.execute("SELECT number FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
+    owner, repo, number = opened.db.execute("SELECT owner, repo, number FROM objects WHERE id = ?",
+                                            (object_id,)).fetchone()
+    spec = f"{owner}/{repo}"
     fields = ["-f", f"state={wanted}"] + (["-f", f"state_reason={reason}"] if reason is not None else [])
     fetch.api(spec, "-X", "PATCH", f"repos/{spec}/{'pulls' if noun == 'pr' else 'issues'}/{number}", *fields)
     _, current, current_reason, _ = _refresh(opened, noun, found, now)
