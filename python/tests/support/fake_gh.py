@@ -375,6 +375,10 @@ def rest(state, request):
             found = find_comment(state, "review_comment", repo, comment_id)
             if int(comment_id) in state.get("fail_deletes", []):
                 raise Reply(502, {"message": "Server Error"})
+            late = state.get("reply_before_delete", {}).pop(str(comment_id), None)
+            if late:
+                created = add_review_comment(state, repo, found["pull_number"], {"body": late["body"]}, found["id"])
+                state["review_comments"][str(created["id"])]["user"] = late["user"]
             delete_review_comment(state, found)
             return 204, None
 

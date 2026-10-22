@@ -288,6 +288,14 @@ class ThreadTest(GhTestCase):
         self.assertEqual((1, ["timvisher_gh_thread_unknown"]), (rc, self.codes()))
         self.assertEqual([root], self.deletes())
 
+    def test_a_reply_made_mid_delete_to_an_uncached_thread_is_reported_with_its_new_root(self):
+        root, _, _ = self.build()
+        self.github._update(lambda s: s.update(reply_before_delete={str(root): {"user": "carol", "body": "wait"}}))
+        rc, _ = self.thread("delete", "--force", f"{PR}#discussion_r{root}")
+        [late] = [int(k) for k in self.github.state["review_comments"]]
+        self.assertEqual((1, "timvisher_gh_thread_survived"), (rc, self.codes()[-1]), self.err)
+        self.assertIn(f"now headed by {PR}#discussion_r{late}", self.err)
+
     def test_help_documents_delete(self):
         rc, out = self.thread("--help")
         self.assertIn("thread delete [--force] [--plan] <target>", out)

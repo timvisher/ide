@@ -234,7 +234,7 @@ def _delete(opened, found, flags, now):
     if not flags["force"] and not nouns.confirm(f"Delete the thread {url} and its {count}{by}?"):
         aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {url}.")
         return 0
-    thread = comment.live(opened.db, url)
+    node = fetch.thread_of_root(spec, found.owner, found.repo, found.number, order[-1]["id"])
     deleted = {}
     for item in order:
         endpoint = _comment_endpoint(spec, item["id"])
@@ -263,13 +263,13 @@ def _delete(opened, found, flags, now):
                            "the thread was refetched.",
                     suggestions=[f"Rerun 'timvisher_gh thread delete {url}' to delete the rest"])
         return ERROR
-    survivor = thread and opened.db.execute("SELECT url FROM objects WHERE id = ? AND deleted_at IS NULL AND "
-                                            "store_path NOT LIKE 'archive/%'", (thread["id"],)).fetchone()
-    if survivor:
+    survivor = node and fetch.thread_by_id(spec, found.owner, found.repo, found.number, node["id"])
+    if survivor and survivor["comments"]["nodes"]:
+        head = survivor["comments"]["nodes"][0]["url"]
         aictl.error(code="timvisher_gh_thread_survived",
                     message=f"Deleted the {count} in the thread {url}, but GitHub still has the thread, now headed "
-                            f"by {survivor[0]}: someone replied while it was being deleted.",
-                    suggestions=[f"Rerun with its new root: 'timvisher_gh thread delete {survivor[0]}'"])
+                            f"by {head}: someone replied while it was being deleted.",
+                    suggestions=[f"Rerun with its new root: 'timvisher_gh thread delete {head}'"])
         return ERROR
     aictl.info(code="timvisher_gh_deleted", message=f"Deleted the thread {url} and its {count}.")
     return 0
