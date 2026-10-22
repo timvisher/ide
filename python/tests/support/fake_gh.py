@@ -382,6 +382,8 @@ def rest(state, request):
             kind = "issue_comment" if table == "issues" else "review_comment"
             find_comment(state, kind, repo, comment_id)
             reactions = state["reactions"].setdefault(f"{kind}:{comment_id}", [])
+            if method == "GET" and int(comment_id) in state.get("fail_reactions", []):
+                raise Reply(502, {"message": "Server Error"})
             if method == "GET" and not rid:
                 return 200, page(request, [{"id": r["id"], "content": r["content"], "user": user(r["user"])}
                                            for r in reactions])

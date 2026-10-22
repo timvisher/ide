@@ -252,7 +252,9 @@ def _relink_paths(paths, target):
 # the thread object stays and takes over the reply's copy, rather than being
 # archived and refetched under a new store path. The deleted root becomes an
 # archived comment of the thread under its own roots/ directory, where a later
-# archive of the thread can't land on it.
+# archive of the thread can't land on it. The file changes are returned as an
+# action to run once the SQL commits, so a fetch that fails later leaves the
+# files as they were.
 def rehead(db, thread_id, reply_id, database_id, url, now):
     thread = _row(db, thread_id)
     head = root() / thread["store_path"] / FILES["thread"]

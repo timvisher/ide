@@ -311,6 +311,26 @@ class CommentTest(GhTestCase):
         self.assertEqual(self.info("comment", str(root_file), ".source.path"), str(root_file.resolve()))
         self.assertEqual([], [p for p in state.root().rglob("*") if ".adopted" in p.name])
 
+    def test_a_fetch_failing_after_a_promotion_leaves_the_files_alone(self):
+        root_file = self.write("root.md", "nit\n")
+        self.assertEqual(0, self.run_gh("thread", PR, str(root_file), "--path", "a.go", "--line", "1")[0])
+        [root] = [int(k) for k in self.github.state["review_comments"]]
+        first_file = self.write("first.md", "fixed\n")
+        self.assertEqual(0, self.comment("reply", f"{PR}#discussion_r{root}", str(first_file))[0], self.err)
+        first = max(int(k) for k in self.github.state["review_comments"])
+        before = (root_file.resolve(), first_file.resolve())
+        self.assertEqual(0, self.gh("api", "-X", "DELETE", f"repos/{REPO}/pulls/comments/{root}")[0])
+        self.github._update(lambda s: s.update(fail_reactions=[first]))
+        self.assertEqual(1, self.run_gh("pr", "pull", PR)[0])
+        self.assertEqual((before, "nit\n", "fixed\n"),
+                         ((root_file.resolve(), first_file.resolve()), root_file.read_text(), first_file.read_text()))
+        self.github._update(lambda s: s.update(fail_reactions=[]))
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        thread = self.info("thread", f"{PR}#discussion_r{first}")
+        self.assertEqual(("nit\n", "fixed\n"), (root_file.read_text(), first_file.read_text()))
+        self.assertEqual(pathlib.Path(thread["source"]["path"]), first_file.resolve())
+        self.assertIn("/archive/", str(root_file.resolve()))
+
     def test_deleting_a_reply_archives_the_review_github_removed_with_it(self):
         root = self.github.add_review_comment(REPO, 7, "nit", user="bob", review=True)
         reply = self.github.add_review_comment(REPO, 7, "fixed", reply_to=root, review=True)
