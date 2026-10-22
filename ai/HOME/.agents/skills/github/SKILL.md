@@ -162,7 +162,17 @@ timvisher_gh comment delete '<comment URL>'          # prompts first
 timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```
 
-`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy.
+`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy. Deleting a thread's root doesn't delete the thread: GitHub promotes its first reply to root and keeps the thread, and `comment delete` refetches the PR so our copy follows. A review GitHub removes along with its only comment (an empty one, as every single REST-posted review comment has) is archived too.
+
+### Delete a review thread
+
+```bash
+timvisher_gh thread delete '<thread URL>'          # prompts first
+timvisher_gh thread delete --force '<thread URL>'  # only when every comment in it is yours
+timvisher_gh thread delete --plan '<thread URL>'   # list what it would delete
+```
+
+GitHub has no thread delete, so this deletes every comment in the thread, replies newest first and the root last, archiving each copy as GitHub confirms it gone, then the thread and any review removed with it. If a delete fails it stops, reports what's left, and a rerun with the same URL finishes; a thread already gone is reported as such.
 
 ### Delete or dismiss a review
 
