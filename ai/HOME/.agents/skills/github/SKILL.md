@@ -99,7 +99,7 @@ timvisher_gh pr info --schema-version 1 .url   # in scripts: pin the record's co
 timvisher_gh pr info --help             # every field
 ```
 
-`issue info`, `comment info`, `thread info` and `review info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue, comment or review (`#pullrequestreview-<ID>`, for `review` only) URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR.
+`issue info`, `comment info`, `thread info` and `review info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue, comment or review (`#pullrequestreview-<ID>`, for `review` only) URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR, except for `review info`, which needs the review's URL or a file in its store directory.
 
 ## Workflow — creating an issue
 
