@@ -164,6 +164,15 @@ timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 
 `--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy.
 
+## Workflow — closing and reopening
+
+```bash
+timvisher_gh pr close            # the worktree's PR, or pass a PR URL
+timvisher_gh pr reopen '<PR URL>'
+```
+
+Each changes GitHub only when it doesn't already match, reporting "already closed" or "already open" otherwise, and refreshes the stored record (`timvisher_gh pr info .state`). A merged PR is already closed and can't be reopened. `--plan` shows what it would do. GitHub can't delete a PR; close it instead.
+
 ## Workflow — merging and releasing
 
 Agents do not merge. Hand the human one of:
