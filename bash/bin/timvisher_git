@@ -393,8 +393,9 @@ probe_fork_parent() {
 # OWNER/REPO $1. Prints login on stdout; returns non-zero if gh isn't
 # installed or auth fails.
 #
-# Deliberately uncached: the account is pinned per repository owner, so a
-# cached login is only right for the context it was resolved in.
+# Deliberately uncached: timvisher_gh info reads .me live, and a cache would
+# have to be keyed per repository owner, since the gh account is chosen per
+# owner, to stay right across contexts.
 current_gh_user() {
   local spec=$1
 
@@ -1182,7 +1183,12 @@ configure_remotes_and_tracking() {
   fi
 
   local repo_info
-  repo_info=$(timvisher_gh -R "$repo_spec" info --json 2>/dev/null) || true
+  if ! repo_info=$(timvisher_gh -R "$repo_spec" info --json 2>/dev/null) ||
+     [[ $(jq -r '.timvisher_gh.exists' <<<"$repo_info" 2>/dev/null) != true ]]
+  then
+    warn "Unable to read GitHub metadata for '%s'; leaving remotes and tracking unchanged." "$repo_spec"
+    return
+  fi
 
   local is_fork can_push soft_fork repo_default
   is_fork=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.fork // false' 2>/dev/null) || true
@@ -4630,7 +4636,8 @@ worktree_gc__pr_state() {
 # Echoes a short human reason on success (exit 0); echoes nothing, returns 1
 # otherwise. Checks are ordered cheap-and-authoritative first:
 #
-#   1. PR URL (.timvisher_gh/pr/pr.url, or legacy pr.md.url) -> live PR state (`timvisher_gh info .pr.state`). Authoritative and time-independent
+#   1. PR URL (.timvisher_gh/pr/pr.url, or legacy pr.md.url) -> live PR state
+#      (`timvisher_gh info .pr.state`). Authoritative and time-independent
 #      (GitHub's mergedAt is permanent), so it catches SQUASH merges that the
 #      ancestor test structurally cannot, and never degrades with branch drift.
 #   2. branch tip is an ancestor of origin/<trunk>. Pure graph reachability —
@@ -4710,7 +4717,8 @@ worktree_gc__reap_reason() {
   fi
 
   # 3. No URL recorded: ask GitHub whether a merged PR exists for this head.
-  if [[ -n $gh_repo ]]; then
+  if [[ -n $gh_repo ]]
+  then
     local branch_name="${branch_ref#refs/heads/}"
     local merged_pr
     merged_pr=$(timvisher_gh -R "$gh_repo" info --branch "$branch_name" .branch.mergedPr 2>/dev/null)
