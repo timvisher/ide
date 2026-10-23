@@ -4376,26 +4376,14 @@ push__cmd() {
   local_sha=$(command git rev-parse HEAD) ||
     die "push: couldn't resolve HEAD"
 
-  local listed
-  listed=$(command git ls-remote "$remote" "refs/heads/${branch}") ||
+  # Not ls-remote: it ignores the fetch refspecs selective fetching
+  # configures and, given a pattern, lists every ref on the remote.
+  command git fetch -q --prune "$remote" ||
     aictl_die \
       --code timvisher_git_push_remote_unreachable \
-      --message "Couldn't read '${branch}' from ${remote}." \
-      --suggestion "Check that ${remote} is reachable (git ls-remote ${remote}), then rerun"
-  remote_sha=${listed%%[[:space:]]*}
-  if [[ -n $remote_sha ]]
-  then
-    if command git cat-file -e "${remote_sha}^{commit}" 2>/dev/null
-    then
-      command git update-ref "refs/remotes/${remote}/${branch}" "$remote_sha" ||
-        die "push: couldn't update %s/%s" "$remote" "$branch"
-    else
-      command git fetch -q "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ||
-        die "push: couldn't fetch '%s' from %s" "$branch" "$remote"
-      remote_sha=$(command git rev-parse "refs/remotes/${remote}/${branch}") ||
-        die "push: couldn't resolve %s/%s" "$remote" "$branch"
-    fi
-  fi
+      --message "Couldn't fetch from ${remote}." \
+      --suggestion "Check that ${remote} is reachable (git fetch ${remote}), then rerun"
+  remote_sha=$(command git rev-parse -q --verify "refs/remotes/${remote}/${branch}") || remote_sha=
 
   local class
   if [[ -z $remote_sha ]]

@@ -4506,6 +4506,13 @@ push_run "$pf/work"
 check_push 'a rejected push fails' \
   eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_failed* ]]'
 
+pf=$(push_fixture unreachable)
+pg -C "$pf/work" remote set-url origin "$pf/nowhere.git" || die 'point origin nowhere'
+push_run "$pf/work"
+check_push 'an unreachable origin is reported, not taken for a new branch' \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_remote_unreachable* ]]'
+
+pf=$(push_fixture detached)
 pg -C "$pf/work" switch -q --detach || die 'detach'
 push_run "$pf/work"
 check_push 'a detached HEAD is refused' eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_detached* ]]'
