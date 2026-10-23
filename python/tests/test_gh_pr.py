@@ -56,6 +56,7 @@ class PrTest(GhTestCase):
         self.assertEqual("Title\n\nBody\n", (self.work / "pr.md").read_text())
         link = self.work / ".timvisher_gh" / "pr"
         self.assertEqual((self.work / "pr.md").resolve().parent, link.resolve())
+        self.assertEqual(f"{PR1}\n", (self.work / "pr.md.url").read_text())
 
     def test_creation_honors_ready_for_review_and_base(self):
         git("push", "-q", "origin", "HEAD:refs/heads/dev", cwd=self.work)

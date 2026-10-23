@@ -43,6 +43,9 @@ def link_context(db, worktree, pr_id):
     target.mkdir(parents=True, exist_ok=True)
     if not link.is_symlink() or link.resolve() != target.resolve():
         store._link(link, target)
+    url_link, url_target = pathlib.Path(worktree) / "pr.md.url", os.path.join(".timvisher_gh", "pr", "pr.url")
+    if not os.path.lexists(url_link) or url_link.is_symlink() and os.readlink(url_link) != url_target:
+        store._link(url_link, url_target)
 
 
 def _read_url(path):
