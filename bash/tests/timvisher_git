@@ -4391,6 +4391,48 @@ push_run "$pf/work"
 check_push 'a rewrite with the same changes is pushed with a lease' \
   eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
 
+pg -C "$pf/work" commit -q --amend -m 'a2, reworded again' || die 'amend again'
+push_run "$pf/work" --theirs
+check_push "--theirs keeps origin's rewrite even when the changes match (exit 4)" \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_theirs* && $(remote_feature "$pf") != $(head_of "$pf") ]]'
+
+pf=$(push_fixture binary)
+printf 'one\0\n' > "$pf/work/blob" && pg -C "$pf/work" add blob &&
+  pg -C "$pf/work" commit -q -m blob && push_run "$pf/work" &&
+  printf 'two\0\n' > "$pf/work/blob" && pg -C "$pf/work" commit -q -a --amend -m blob ||
+  die 'change a binary file while rewriting'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push 'a rewrite that changes a binary file differently needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture same_line_elsewhere)
+printf 'flag=0\na\nb\nc\nd\ne\nf\ng\nflag=0\n' > "$pf/seed/conf" &&
+  pg -C "$pf/seed" add conf && pg -C "$pf/seed" commit -q -m conf &&
+  pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&
+  pg -C "$pf/work" fetch -q origin && pg -C "$pf/work" rebase -q origin/main &&
+  sed -i.bak '1s/flag=0/flag=1/' "$pf/work/conf" && pg -C "$pf/work" commit -q -am 'flag' &&
+  push_run "$pf/work" &&
+  pg -C "$pf/work" reset -q --hard HEAD~1 &&
+  sed -i.bak '9s/flag=0/flag=1/' "$pf/work/conf" && pg -C "$pf/work" commit -q -am 'flag' ||
+  die 'change the same line in another place'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push 'a rewrite that makes the same change somewhere else needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture base_branch)
+pg -C "$pf/work" switch -q main && pg -C "$pf/work" commit -q --allow-empty -m 'nothing' &&
+  push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main ||
+  die 'diverge on main'
+# shellcheck disable=SC2034
+main_before=$(pg -C "$pf/origin.git" rev-parse refs/heads/main)
+push_run "$pf/work"
+check_push 'diverging on the base branch itself needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *"couldn'"'"'t be compared"* && $(pg -C "$pf/origin.git" rev-parse refs/heads/main) == "$main_before" ]]'
+
 pf=$(push_fixture clean_rebase)
 push_commit "$pf/work" a2 && push_run "$pf/work"
 push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&

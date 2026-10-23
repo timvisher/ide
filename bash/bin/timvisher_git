@@ -2203,8 +2203,9 @@ Subcommands
                                   diff <base>...HEAD; <base> is
                                   origin's default branch, or --base)
       diverged, changes differ    a decision: asked when interactive,
-                                  after paging git diff <base>..., else
-                                  exit 3 with the rerun commands
+      (or can't be compared)      after paging git diff <base>...HEAD;
+                                  else its --stat and exit 3 with the
+                                  rerun commands
     --ours pushes over origin with a lease on what it holds now, also
     when you're behind (to drop commits on purpose);
     --theirs keeps origin's and suggests how to catch up (exit 4).
@@ -4280,16 +4281,18 @@ push__base_ref() {
   printf 'refs/remotes/%s/%s\n' "$remote" "$head"
 }
 
-# Content, not commits: no context, line numbers or index lines, so a
-# rebase that changed nothing hashes the same.  The real git, because the
-# agent range guard in ~/bin/git refuses comparing pinned SHAs.
+# Content, not commits: no line numbers or index lines, so a rebase that
+# changed nothing hashes the same.  Context stays, so the same line
+# changed in two places doesn't.  The real git, because the agent range
+# guard in ~/bin/git refuses comparing pinned SHAs.
 push__changes() {
   local -
   set -o pipefail
   local base_ref=$1 tip=$2 real_git fork_point
   real_git="$(brew --prefix)"/bin/git
   fork_point=$("$real_git" merge-base "$base_ref" "$tip") || return 1
-  "$real_git" diff --no-color --no-ext-diff --no-textconv -U0 "$fork_point" "$tip" |
+  "$real_git" diff --no-color --no-ext-diff --no-textconv --no-relative --binary \
+    --ignore-submodules=none "$fork_point" "$tip" |
     sed -e '/^index /d' -e 's/^@@ .*/@@/' |
     "$real_git" hash-object --stdin
 }
@@ -4320,7 +4323,7 @@ push__show_changes() {
     warn "push: couldn't find the base branch to show your changes against"
     return
   fi
-  if [[ -t 0 && -t 2 ]]
+  if [[ -t 0 && -t 2 && -z ${TIMVISHER_AGENT-} ]]
   then
     "$real_git" diff --color=always "${base_ref}...HEAD" | less -FRX >&2
   else
@@ -4367,7 +4370,7 @@ push__cmd() {
     shift
   done
 
-  local branch remote=origin local_sha remote_sha base_ref=''
+  local branch remote=origin local_sha remote_sha base_ref='' compared=false
   branch=$(command git symbolic-ref -q --short HEAD) ||
     aictl_die \
       --code timvisher_git_push_detached \
@@ -4401,12 +4404,15 @@ push__cmd() {
   else
     class=decision
     local theirs ours
+    # Pushing the base branch itself, origin's side has no changes against
+    # it to compare, so it is always a decision.
     if base_ref=$(push__base_ref "$remote" "$base") &&
+       [[ $base_ref != "refs/remotes/${remote}/${branch}" ]] &&
        theirs=$(push__changes "$base_ref" "$remote_sha") &&
-       ours=$(push__changes "$base_ref" "$local_sha") &&
-       [[ $theirs == "$ours" ]]
+       ours=$(push__changes "$base_ref" "$local_sha")
     then
-      class=same-content
+      compared=true
+      [[ $theirs != "$ours" ]] || class=same-content
     fi
   fi
 
@@ -4442,6 +4448,11 @@ push__cmd() {
       return 4
       ;;
     same-content)
+      if [[ $side == theirs ]]
+      then
+        push__theirs "$remote" "$branch"
+        return
+      fi
       push__send "$remote" "$branch" "$local_sha" "$remote_sha"
       return
       ;;
@@ -4472,9 +4483,12 @@ push__cmd() {
   esac
 
   [[ $shown == true ]] || push__show_changes "$base_ref"
+  local why="their changes against ${base_ref} differ"
+  [[ $compared == true ]] ||
+    why="their changes couldn't be compared against ${base_ref:-a base branch}"
   aictl_error \
     --code timvisher_git_push_decision \
-    --message "'${branch}' and ${remote}/${branch} have diverged, and their changes against ${base_ref:-the base branch} differ." \
+    --message "'${branch}' and ${remote}/${branch} have diverged, and ${why}." \
     --suggestion "Push yours over ${remote}'s: timvisher_git push --ours" \
     --suggestion "Keep ${remote}'s: timvisher_git push --theirs"
   return 3
