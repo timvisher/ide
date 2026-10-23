@@ -162,7 +162,9 @@ class PrTest(GhTestCase):
     def test_a_failed_branch_push_fails_the_sync(self):
         self.create()
         commit_on_remote(self.tmp, self.remote, "feature", "someone else's")
-        git("commit", "-q", "--amend", "--allow-empty", "-m", "rewritten", cwd=self.work)
+        (self.work / "rewritten").write_text("rewritten\n")
+        git("add", "rewritten", cwd=self.work)
+        git("commit", "-q", "--amend", "-m", "rewritten", cwd=self.work)
         (self.work / "pr.md").write_text("Changed\n\nBody\n")
         rc, _ = self.pr("push")
         self.assertNotEqual(0, rc)

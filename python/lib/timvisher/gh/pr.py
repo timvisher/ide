@@ -206,7 +206,7 @@ def _branch_moves(context, flags):
     args = ["timvisher_git", "push", "--plan"] + (["--ours"] if flags["resolution"] == "ours" else [])
     done = subprocess.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     kind = (done.stdout.split() or [""])[0]
-    return kind in ("new", "fast-forward", "own-rewrite") or (
+    return kind in ("new", "fast-forward", "same-content") or (
         flags["resolution"] == "ours" and kind in ("behind", "decision"))
 
 

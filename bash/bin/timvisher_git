@@ -2196,18 +2196,20 @@ Subcommands
       same commit                 nothing; already pushed
       origin is behind            push
       origin is ahead             refuse (exit 4); pull --rebase first
-      diverged, origin is what    push with a lease on it, if every
-      this repo last pushed       commit only origin has is in your
-                                  history (by patch-id) or on the base
-                                  branch (origin's default, or --base)
-      anything else diverged      a decision: asked when interactive,
-                                  else exit 3 with the rerun commands
+      diverged, same changes      push with a lease on origin's: a
+                                  rebase that changed nothing, judged
+                                  by content, not commits (git diff
+                                  <base>...origin/<branch> matches git
+                                  diff <base>...HEAD; <base> is
+                                  origin's default branch, or --base)
+      diverged, changes differ    a decision: asked when interactive,
+                                  after paging git diff <base>..., else
+                                  exit 3 with the rerun commands
     --ours pushes over origin with a lease on what it holds now, also
     when you're behind (to drop commits on purpose);
     --theirs keeps origin's and suggests how to catch up (exit 4).
     --plan prints the classification and exits 0, or 3 when a decision
-    is needed.  Every successful push records the pushed SHA in
-    refs/timvisher_git/pushed/origin/<branch>.
+    is needed.
 
   is-branch-ish <source> [<context>]
     Exit 0 if <source> is a branch-ish: a name for a branch that clone can
@@ -4278,45 +4280,24 @@ push__base_ref() {
   printf 'refs/remotes/%s/%s\n' "$remote" "$head"
 }
 
-# Comparing two pinned SHAs is exactly what the agent range guard in
-# ~/bin/git refuses, and under an agent a refused rev-list reads as "no
-# dropped commits"; these go to the real git, as status__all_published does.
-push__dropped_commits() {
-  local remote_sha=$1 local_sha=$2 base_ref=$3 sign commit real_git
+# Content, not commits: no context, line numbers or index lines, so a
+# rebase that changed nothing hashes the same.  The real git, because the
+# agent range guard in ~/bin/git refuses comparing pinned SHAs.
+push__changes() {
+  local -
+  set -o pipefail
+  local base_ref=$1 tip=$2 real_git fork_point
   real_git="$(brew --prefix)"/bin/git
-  while read -r commit
-  do
-    if [[ -n $base_ref ]] && command git merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null
-    then
-      continue
-    fi
-    printf '%s\n' "$commit"
-  done < <("$real_git" rev-list --merges "$local_sha..$remote_sha")
-  while read -r sign commit
-  do
-    [[ $sign == + ]] || continue
-    if [[ -n $base_ref ]] && command git merge-base --is-ancestor "$commit" "$base_ref" 2>/dev/null
-    then
-      continue
-    fi
-    printf '%s\n' "$commit"
-  done < <(command git cherry "$local_sha" "$remote_sha")
-}
-
-push__record() {
-  local ref=$1 new=$2 old=$3
-  command git update-ref -m 'timvisher_git push' "$ref" "$new" "$old" ||
-    warn "push: pushed, but couldn't record '%s' at %s" "$ref" "${new:0:12}"
+  fork_point=$("$real_git" merge-base "$base_ref" "$tip") || return 1
+  "$real_git" diff --no-color --no-ext-diff --no-textconv -U0 "$fork_point" "$tip" |
+    sed -e '/^index /d' -e 's/^@@ .*/@@/' |
+    "$real_git" hash-object --stdin
 }
 
 push__send() {
-  local remote=$1 branch=$2 local_sha=$3 lease=$4 ref=$5 recorded=$6 includes=$7
+  local remote=$1 branch=$2 local_sha=$3 lease=$4
   local -a args=(push)
-  if [[ -n $lease ]]
-  then
-    args+=("--force-with-lease=refs/heads/${branch}:${lease}")
-    [[ $includes == false ]] || args+=(--force-if-includes)
-  fi
+  [[ -z $lease ]] || args+=("--force-with-lease=refs/heads/${branch}:${lease}")
   args+=("$remote" "${local_sha}:refs/heads/${branch}")
   if ! command git "${args[@]}"
   then
@@ -4326,19 +4307,25 @@ push__send() {
       --suggestion "Run 'timvisher_git push --plan' to see what ${remote} has now, then rerun"
     return 1
   fi
-  push__record "$ref" "$local_sha" "$recorded"
   aictl_info \
     --code timvisher_git_pushed \
     --message "Pushed '${branch}' to ${remote} at ${local_sha:0:12}."
 }
 
-push__decision_logs() {
-  local remote=$1 branch=$2 remote_sha=$3 local_sha=$4 real_git
+push__show_changes() {
+  local base_ref=$1 real_git
   real_git="$(brew --prefix)"/bin/git
-  printf 'Only here (%s):\n' "$branch" >&2
-  "$real_git" log --oneline "$remote_sha..$local_sha" >&2
-  printf 'Only on %s/%s:\n' "$remote" "$branch" >&2
-  "$real_git" log --oneline "$local_sha..$remote_sha" >&2
+  if [[ -z $base_ref ]]
+  then
+    warn "push: couldn't find the base branch to show your changes against"
+    return
+  fi
+  if [[ -t 0 && -t 2 ]]
+  then
+    "$real_git" diff --color=always "${base_ref}...HEAD" | less -FRX >&2
+  else
+    "$real_git" diff --stat "${base_ref}...HEAD" >&2
+  fi
 }
 
 push__theirs() {
@@ -4380,7 +4367,7 @@ push__cmd() {
     shift
   done
 
-  local branch remote=origin local_sha remote_sha recorded ref
+  local branch remote=origin local_sha remote_sha base_ref=''
   branch=$(command git symbolic-ref -q --short HEAD) ||
     aictl_die \
       --code timvisher_git_push_detached \
@@ -4388,8 +4375,6 @@ push__cmd() {
       --suggestion 'Check out the branch to push (git switch <branch>), then rerun'
   local_sha=$(command git rev-parse HEAD) ||
     die "push: couldn't resolve HEAD"
-  ref=refs/timvisher_git/pushed/${remote}/${branch}
-  recorded=$(command git rev-parse -q --verify "$ref") || recorded=
 
   local listed
   listed=$(command git ls-remote "$remote" "refs/heads/${branch}") ||
@@ -4425,19 +4410,16 @@ push__cmd() {
   elif command git merge-base --is-ancestor "$local_sha" "$remote_sha"
   then
     class=behind
-  elif [[ -n $recorded && $recorded == "$remote_sha" ]]
-  then
-    local base_ref dropped
-    base_ref=$(push__base_ref "$remote" "$base") || base_ref=
-    dropped=$(push__dropped_commits "$remote_sha" "$local_sha" "$base_ref")
-    if [[ -z $dropped ]]
-    then
-      class=own-rewrite
-    else
-      class=decision
-    fi
   else
     class=decision
+    local theirs ours
+    if base_ref=$(push__base_ref "$remote" "$base") &&
+       theirs=$(push__changes "$base_ref" "$remote_sha") &&
+       ours=$(push__changes "$base_ref" "$local_sha") &&
+       [[ $theirs == "$ours" ]]
+    then
+      class=same-content
+    fi
   fi
 
   if [[ $plan == true ]]
@@ -4456,13 +4438,13 @@ push__cmd() {
       return 0
       ;;
     new|fast-forward)
-      push__send "$remote" "$branch" "$local_sha" '' "$ref" "$recorded" true
+      push__send "$remote" "$branch" "$local_sha" ''
       return
       ;;
     behind)
       if [[ $side == ours ]]
       then
-        push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" false
+        push__send "$remote" "$branch" "$local_sha" "$remote_sha"
         return
       fi
       aictl_error \
@@ -4471,15 +4453,17 @@ push__cmd() {
         --suggestion "Bring in ${remote}'s commits first: git pull --rebase ${remote} ${branch}"
       return 4
       ;;
-    own-rewrite)
-      push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" true
+    same-content)
+      push__send "$remote" "$branch" "$local_sha" "$remote_sha"
       return
       ;;
   esac
 
+  local shown=false
   if [[ -z $side && -t 0 && -z ${TIMVISHER_AGENT-} ]]
   then
-    push__decision_logs "$remote" "$branch" "$remote_sha" "$local_sha"
+    push__show_changes "$base_ref"
+    shown=true
     local answer
     read -r -p "Push yours over ${remote}'s (ours), keep ${remote}'s (theirs), or skip? [ours/theirs/skip] " answer
     case $answer in
@@ -4490,7 +4474,7 @@ push__cmd() {
 
   case $side in
     ours)
-      push__send "$remote" "$branch" "$local_sha" "$remote_sha" "$ref" "$recorded" false
+      push__send "$remote" "$branch" "$local_sha" "$remote_sha"
       return
       ;;
     theirs)
@@ -4499,10 +4483,10 @@ push__cmd() {
       ;;
   esac
 
-  push__decision_logs "$remote" "$branch" "$remote_sha" "$local_sha"
+  [[ $shown == true ]] || push__show_changes "$base_ref"
   aictl_error \
     --code timvisher_git_push_decision \
-    --message "'${branch}' and ${remote}/${branch} have diverged, and ${remote} moved since this worktree last pushed it (or this would drop commits only ${remote} has)." \
+    --message "'${branch}' and ${remote}/${branch} have diverged, and their changes against ${base_ref:-the base branch} differ." \
     --suggestion "Push yours over ${remote}'s: timvisher_git push --ours" \
     --suggestion "Keep ${remote}'s: timvisher_git push --theirs"
   return 3
