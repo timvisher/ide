@@ -867,6 +867,10 @@ the secret references cannot be resolved."
         (dolist (elc (directory-files p t "\\.elc\\'"))
           (delete-file elc)))))
 
+(defun timvisher-agent-shell-claude-code-max-effort (config)
+  "Return Claude Code agent CONFIG with effort defaulting to max."
+  (map-insert config :default-config-options (lambda () '(("effort" . "max")))))
+
 (use-package agent-shell
   :ensure t
   :defer t
@@ -899,6 +903,9 @@ the secret references cannot be resolved."
   (setq agent-shell-anthropic-authentication
         (agent-shell-anthropic-make-authentication
          :api-key (getenv "ANTHROPIC_API_KEY")))
+
+  (advice-add 'agent-shell-anthropic-make-claude-code-config
+              :filter-return #'timvisher-agent-shell-claude-code-max-effort)
 
   (setq agent-shell-openai-authentication
         (agent-shell-openai-make-authentication :api-key (getenv "OPENAI_API_KEY")))
