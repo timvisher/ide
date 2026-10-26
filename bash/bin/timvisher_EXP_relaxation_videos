@@ -39,7 +39,7 @@ do
   sleep 0.5
 done
 
-printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" >&2
+printf 'Couldn'\''t establish a connection to %s:%s\n' "$host" 443 >&2
 printf 'Falling back to local Relaxation Videos\n' >&2
 open -a VLC -n ~/Movies/'Relaxation Videos'/videos \
      --args --loop --random --no-audio --video-wallpaper --macosx-control-itunes=0
