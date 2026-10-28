@@ -13,6 +13,7 @@ cursor-style-blink = false
 cursor-style = block
 shell-integration-features = no-cursor,ssh-env,ssh-terminfo
 copy-on-select = clipboard
+middle-click-action = clipboard-paste
 macos-titlebar-style = native
 
 # keys
