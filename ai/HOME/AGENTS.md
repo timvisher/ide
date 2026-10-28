@@ -239,13 +239,18 @@ The list is not the guide — read the file.
   use the `worktree` skill (`ntmux3 -d` for agent/scripted use).
 - Git repositories are managed as worktrees under `~/git/` following a
   hierarchical structure:
-  `~/git/<org or user>/<repo>/<branch-part>/<branch-part>/<branch-part-N>/`
+  `~/git/<org>/<repo>/<branch-part>/<branch-part>/<branch-part-N>/`
+- `<org>` is the org that hosts the repo, which can differ from the
+  org in import paths, docs and links. For DataDog repos, don't guess:
+  `timvisher_git clone dd/<repo>` (and `ntmux3`, which clones through
+  it) resolves whether it lives in `ddoghq`, `ddoghq-sandbox` or
+  `DataDog`. To find an existing clone, `ls -d ~/git/*/<repo>`.
 - Bare repo caches live at
   `~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>/`
 - Examples:
-  - `~/git/DataDog/appgate/timvisher/scratch/_trunk_/`
+  - `~/git/ddoghq/appgate/master/`
+  - `~/git/ddoghq/dd-source/main/`
   - `~/git/DataDog/cloud-inventory/timvisher/scratch/_trunk_/`
-  - `~/git/DataDog/dd-source/main/`
 - The branch path components reflect the git branch name structure
 - When working with multiple related repos, they often share the same
   branch path structure (e.g., `timvisher/scratch/_trunk_` across
