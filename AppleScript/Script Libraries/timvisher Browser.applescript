@@ -13,11 +13,12 @@ on activate {}
 	tell application (my currentBrowser()) to activate
 end activate
 
+-- Not `tell application (my currentBrowser())`: telling the browser
+-- skips the default URL handler (Finicky), which is what picks the
+-- browser and profile for a URL. currentBrowser() is only the target
+-- for finding and driving tabs.
 on openUrl(u)
-	tell application (my currentBrowser())
-		activate
-		open location u
-	end tell
+	open location u
 end openUrl
 
 on executeJsInActiveTab(js)
