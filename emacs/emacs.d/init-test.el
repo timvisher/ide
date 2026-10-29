@@ -325,5 +325,69 @@ The account is the part of the ghub USER key before the ^PACKAGE suffix."
   (should (ide-forge--gh-auth-parser 'gh-forge))
   (should-not (ide-forge--gh-auth-parser 'not-our-source)))
 
+;;; Tests for ide-control-server-start
+
+(defmacro test-ide-control-server--with-fresh-server (&rest body)
+  "Run BODY with no live server and a socket dir short enough for macOS.
+
+The suite's throwaway $TMPDIR pushes the default socket path past the
+104-byte limit, so sockets go under /tmp instead.  Any server BODY
+starts is deleted afterwards."
+  (declare (indent 0))
+  `(let* ((server-socket-dir (make-temp-file "/tmp/ics" t))
+          (server-process nil)
+          (server-name server-name))
+     (unwind-protect
+         (progn ,@body)
+       (server-force-delete)
+       (delete-directory server-socket-dir t))))
+
+(ert-deftest test-ide-control-server-start-serves-timvisher-pid ()
+  "Starting gives a live timvisher-<pid> server that emacsclient reaches."
+  (test-ide-control-server--with-fresh-server
+    (ide-control-server-start)
+    (should (process-live-p server-process))
+    (should (equal server-name (format "timvisher-%d" (emacs-pid))))
+    (with-temp-buffer
+      (let ((client (make-process
+                     :name "test-emacsclient"
+                     :buffer (current-buffer)
+                     :sentinel #'ignore
+                     :command (list "emacsclient"
+                                    "-s" (expand-file-name server-name
+                                                           server-socket-dir)
+                                    "--eval" "(* 6 7)")))
+            (deadline (+ (float-time) 10)))
+        (while (and (process-live-p client) (< (float-time) deadline))
+          (accept-process-output nil 0.1))
+        (should (equal "42\n" (buffer-string)))))))
+
+(ert-deftest test-ide-control-server-start-is-idempotent ()
+  "A second call keeps the running server and its name."
+  (test-ide-control-server--with-fresh-server
+    (ide-control-server-start)
+    (let ((process server-process))
+      (ide-control-server-start)
+      (should (eq process server-process))
+      (should (equal (format "timvisher-%d" (emacs-pid)) server-name)))))
+
+(ert-deftest test-ide-control-server-start-survives-overlong-socket-path ()
+  "A socket path over the OS limit leaves no server but does not signal."
+  (let ((server-socket-dir (concat "/tmp/" (make-string 120 ?x)))
+        (server-process nil)
+        (server-name server-name))
+    (ide-control-server-start)
+    (should-not (process-live-p server-process))))
+
+(ert-deftest test-ide-control-server-start-keeps-existing-server-name ()
+  "An Emacs already serving under another name is left alone."
+  (let ((server-name "some-other-server")
+        (server-process (make-pipe-process :name "fake-server" :noquery t)))
+    (unwind-protect
+        (progn
+          (ide-control-server-start)
+          (should (equal "some-other-server" server-name)))
+      (delete-process server-process))))
+
 (provide 'init-test)
 ;;; init-test.el ends here

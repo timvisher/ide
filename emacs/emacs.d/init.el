@@ -813,6 +813,29 @@ over the code-block language minibuffer prompt."
 (add-to-list 'auth-sources 'gh-forge)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Control server
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(require 'server)
+
+;;; Named per pid rather than the default "server" so bare emacsclient
+;;; never lands in an arbitrary Emacs; callers must ask for a specific
+;;; one with emacsclient -s timvisher-<pid>.
+(defun ide-control-server-start ()
+  "Start this Emacs's timvisher-<pid> control server unless one is live.
+
+An Emacs that already runs a server (a daemon, or one started by
+hand) keeps it under its existing name."
+  (unless (process-live-p server-process)
+    (setq server-name (format "timvisher-%d" (emacs-pid)))
+    ;; Demoted so a socket path over the OS limit (a long $TMPDIR)
+    ;; costs only the control server, not the rest of init.
+    (with-demoted-errors "Control server not started: %S"
+      (server-start))))
+
+(ide-control-server-start)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Load AI tooling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
