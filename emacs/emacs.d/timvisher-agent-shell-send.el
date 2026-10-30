@@ -9,9 +9,9 @@
 ;;     '(timvisher-agent-shell-send "<session-id>" "/abs/message-file")'
 ;;
 ;; The shell is picked by its session id rather than by project, so it
-;; works when several shells share a project.  A busy shell queues the
-;; prompt and an idle one submits it, as `agent-shell-prompt-queue'
-;; does.
+;; works when several shells share a project.  The prompt is queued when
+;; the shell is busy or has unsent input at its prompt, and submitted
+;; when it is idle with an empty prompt.
 
 ;;; Code:
 

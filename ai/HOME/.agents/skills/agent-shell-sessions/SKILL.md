@@ -14,9 +14,10 @@ description: Message, find, start, and recover other agent-shell sessions (Claud
 
 Every `<session>` below takes any of the forms `ListAgents` shows:
 a name (`datadog-a7`), a ref (`cc09f8`), both as printed
-(`"datadog-a7 [cc09f8]"`), or a full session id. Only live sessions
-match. An ambiguous name or short ref fails with
-`timvisher_emacs_ambiguous_session`, listing each match.
+(`"datadog-a7 [cc09f8]"`), or a full session id. Names and refs come
+from Claude Code's session files, so a Codex session has neither:
+reach it by its full session id. An ambiguous name or short ref fails
+with `timvisher_emacs_ambiguous_session`, listing each match.
 
 ## Sending a message
 
@@ -48,7 +49,8 @@ whatever Tim is typing along with your message.
     --prompt-file /tmp/x.prompt
   ```
 
-  It prints the new session's id, name and ref. For a worktree's
+  It prints the new session's id, and for Claude its name and ref
+  (Codex gets only the id; keep it). For a worktree's
   Emacs, get the pid with `ntmux3 get-editor-pid <session or path>`.
   To start one in a brand-new worktree, use the `worktree` skill's
   `TIMVISHER_NTMUX3_AI_AGENT` variables.
