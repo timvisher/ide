@@ -403,6 +403,17 @@ def review_view(found):
     return view
 
 
+def head_sha(repo, found):
+    root = os.environ.get("FAKE_GH_REMOTES")
+    if found["head_sha"] != "0" * 40 or not root:
+        return found["head_sha"]
+    name = repo.split("/")[1]
+    done = subprocess.run(["git", "--git-dir", f"{root}/github.com:{found['head_owner']}/{name}.git", "rev-parse",
+                           "-q", "--verify", f"refs/heads/{found['head']}"],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    return done.stdout.strip() or found["head_sha"]
+
+
 def pull_view(repo, found, listed=False):
     owner = repo.split("/")[0]
     view = {"id": 900000 + found["number"], "number": found["number"], "node_id": f"PR_{repo}#{found['number']}",
@@ -410,7 +421,7 @@ def pull_view(repo, found, listed=False):
             "user": user(found["author"]), "created_at": found["created_at"], "updated_at": found["updated_at"],
             "closed_at": found["merged_at"] if found["state"] == "closed" else None,
             "merged_at": found["merged_at"], "merge_commit_sha": found["merge_commit_sha"],
-            "head": {"ref": found["head"], "sha": found["head_sha"], "label": f"{found['head_owner']}:{found['head']}",
+            "head": {"ref": found["head"], "sha": head_sha(repo, found), "label": f"{found['head_owner']}:{found['head']}",
                      "repo": {"owner": {"login": found["head_owner"]}}},
             "base": {"ref": found["base"], "repo": {"owner": {"login": owner}, "full_name": repo}},
             "html_url": f"https://github.com/{repo}/pull/{found['number']}"}

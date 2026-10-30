@@ -32,7 +32,7 @@ class GhTestCase(unittest.TestCase):
         self.work = worktree(self.tmp, self.remote)
 
     def env(self, **extra):
-        return {**os.environ, **self.github.env(),
+        return {**os.environ, **self.github.env(), "FAKE_GH_REMOTES": str(self.tmp / "remotes"),
                 "PATH": f"{self.github.bin}:{os.environ['PATH']}", **extra}
 
     def run_gh(self, *args, cwd=None, stdin=None, **env):
@@ -40,6 +40,13 @@ class GhTestCase(unittest.TestCase):
                               env=self.env(**env), input=stdin,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return done.returncode, done.stdout, done.stderr
+
+    # Tim, not an agent: agents are refused what these exercise.
+    def run_gh_as_tim(self, *args, **env):
+        log = self.tmp / "aictl.jsonl"
+        log.write_text("")
+        rc, out, err = self.run_gh(*args, TIMVISHER_AGENT="", TIMVISHER_AICTL_LOG=str(log), **env)
+        return rc, out, err + log.read_text()
 
     def gh(self, *args, cwd=None, stdin=None):
         done = subprocess.run(["gh", *args], cwd=cwd or self.work, env=self.env(), input=stdin,

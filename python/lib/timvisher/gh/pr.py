@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -191,13 +192,32 @@ def _is_worktree_pr(context, opened, object_id):
     return raw["head"]["ref"] == branch and raw["base"]["repo"]["full_name"].lower() == context.spec.lower()
 
 
-def _push_branch(context, flags):
+def _agent():
+    return bool(os.environ.get("TIMVISHER_AGENT"))
+
+
+def _refuse(what):
+    fail("timvisher_gh_agent_refused", f"Agents can't {what}; that's for Tim.",
+         suggestions=["Ask Tim to run it", "Agents can push and sync draft PRs on their own worktree's branch"])
+
+
+def _local_sha(context):
+    return _git("rev-parse", "HEAD", cwd=context.toplevel)
+
+
+def _push_branch(context, flags, grant=None):
     args = ["timvisher_git", "push"]
     if flags["resolution"] == "ours":
         args.append("--ours")
     if flags["plan"]:
         args.append("--plan")
-    return subprocess.run(args, cwd=context.toplevel).returncode
+    env = {**os.environ, "TIMVISHER_GIT_PUSH_GRANT": grant} if grant else None
+    return subprocess.run(args, cwd=context.toplevel, env=env).returncode
+
+
+def _record_head(opened, object_id, sha):
+    with opened.write() as db:
+        store.set_base(db, object_id, "head", sha, nouns.now())
 
 
 # Pre-push hooks gate a push, so they run only when the branch is about to
@@ -233,7 +253,8 @@ def _create(opened, context, source, flags):
     gate = hooks.Hooks(repo=spec, worktree=context.toplevel, title=values["title"], open_=flags["open"])
     if not gate.pre("push"):
         return ERROR, None
-    rc = _push_branch(context, flags)
+    local_sha = _local_sha(context)
+    rc = _push_branch(context, flags, f"{branch} {local_sha} - new" if _agent() else None)
     if rc != 0:
         return rc, None
     base = flags["base"] or fetch.api(spec, f"repos/{spec}")["default_branch"]
@@ -249,6 +270,7 @@ def _create(opened, context, source, flags):
         for name, value in {**values, "draft": draft, "base": base}.items():
             store.set_base(db, pr_id, name, value, now)
         set_source_state(db, pr_id, {"draft": draft, "base": base}, now)
+        store.set_base(db, pr_id, "head", local_sha, now)
         store.promote(db, pr_id, source)
         adopt.link_context(db, context.toplevel, pr_id)
         opened.touch(pr_id)
@@ -276,6 +298,9 @@ def _conversation_items(opened, pr_id, viewer):
 
 
 def run(context, args):
+    os.environ.pop("TIMVISHER_GIT_PUSH_GRANT", None)
+    if _agent() and args[:1] in (["ready"], ["merge"], ["release"]):
+        _refuse(f"run 'timvisher_gh pr {args[0]}'")
     # Imported here, not at the top: these modules import this one.
     if args[:1] == ["ready"]:
         from timvisher.gh import ready
@@ -290,6 +315,8 @@ def run(context, args):
     if parsed is None:
         return 0
     verb, target, flags = parsed
+    if _agent() and flags["draft"] is False:
+        _refuse("mark a PR ready for review")
     rerun = "timvisher_gh pr" + ("" if verb == "sync" else f" {verb}")
     opened = state.open_state()
     try:
@@ -302,6 +329,8 @@ def run(context, args):
         found = targets.resolve("pr", target, context=context, db=opened.db, creating=True,
                                 browser_fallback=verb not in ("push", "sync"))
         if found is None:
+            if _agent() and not flags["plan"]:
+                _refuse("push a branch that has no draft PR")
             rc = _push_branch(context, flags)
             if rc == 0:
                 aictl.info(code="timvisher_gh_pr_none",
@@ -352,6 +381,17 @@ def run(context, args):
                     return rc
         raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
         pushing = verb in ("push", "sync", "edit") and worktree_pr and not flags["plan"]
+        grant = None
+        if _agent() and verb in ("push", "sync", "edit") and not flags["plan"]:
+            if not worktree_pr:
+                _refuse("push or edit a PR that isn't for this worktree's branch")
+            if not raw["draft"]:
+                _refuse("push a PR that isn't a draft")
+            if source_state(opened.db, object_id).get("draft") is False:
+                _refuse("sync a PR whose source says draft: false")
+            recorded = store.bases(opened.db, object_id).get("head")
+            head = raw["head"]["sha"]
+            grant = f"{raw['head']['ref']} {_local_sha(context)} {head} {'unmoved' if recorded == head else 'moved'}"
         source_file = store.store_file(opened.db, object_id)
         pr_hooks = hooks.Hooks(repo=f"{found.owner}/{found.repo}", worktree=context.toplevel if context else None,
                                pr_url=url, title=lambda: parse_source(source_file.read_text(encoding="utf-8"))["title"]
@@ -360,9 +400,11 @@ def run(context, args):
         if pushing and _branch_moves(context, flags) and not pr_hooks.pre("push"):
             return ERROR
         if verb in ("push", "sync", "edit") and worktree_pr:
-            rc = _push_branch(context, flags)
+            rc = _push_branch(context, flags, grant)
             if rc != 0:
                 return rc
+            if not flags["plan"]:
+                _record_head(opened, object_id, _local_sha(context))
         item = sync.Item(object_id, "pr", url, PrAdapter(opened, fetcher, flags),
                          mine=raw["user"]["login"].lower() == viewer.lower())
         rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"], plan_only=flags["plan"],

@@ -33,7 +33,7 @@ class ReleaseTest(GhTestCase):
         hook.chmod(0o755)
 
     def release(self, *args, stdin=""):
-        rc, out, err = self.run_gh("pr", "release", *args, stdin=stdin, TIMVISHER_AGENT="1",
+        rc, out, err = self.run_gh_as_tim("pr", "release", *args, stdin=stdin,
                                    TIMVISHER_GH_PR_MERGE_POLL_INTERVAL="0", HOOK_LOG=str(self.log),
                                    FAKE_BROWSER_LOG=str(self.browser_log),
                                    TIMVISHER_GH_CORE_CONFIG_DIR=str(self.tmp / "no-core"),

@@ -42,7 +42,7 @@ class HooksTest(GhTestCase):
         path.chmod(0o755)
 
     def pr(self, *args):
-        rc, out, err = self.run_gh("pr", *args, TIMVISHER_AGENT="1", HOOK_LOG=str(self.log),
+        rc, out, err = self.run_gh_as_tim("pr", *args, HOOK_LOG=str(self.log),
                                    TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core), TIMVISHER_GH_CONFIG_DIR=str(self.ext))
         self.err = err
         return rc, out
