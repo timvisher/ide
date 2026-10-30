@@ -4482,6 +4482,7 @@ push__cmd() {
   if [[ -n $grant ]]
   then
     [[ ${remote_sha:--} == "$grant_head" ]] ||
+      [[ $grant_moved == new && $remote_sha == "$local_sha" ]] ||
       push__grant_refused "the PR's head moved to ${remote_sha:-nothing} since timvisher_gh checked it (${grant_head})"
     base_ref=$(push__base_ref "$remote" '') ||
       push__grant_refused "couldn't find ${remote}'s default branch, so can't tell '${branch}' isn't it"

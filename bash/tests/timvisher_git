@@ -4604,6 +4604,9 @@ pf=$(push_fixture grant_new)
 grant_run "$pf/work" "feature $(head_of "$pf") - new"
 check_push 'a new grant pushes a branch origin lacks' \
   eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") - new"
+check_push 'a new grant is already pushed when origin has the branch at HEAD, so creating a PR can be retried' \
+  eval '(( push_rc == 0 )) && [[ $push_err == *timvisher_git_push_already_pushed* ]]'
 push_commit "$pf/work" a2 || die 'commit a2'
 # shellcheck disable=SC2034
 remote_before=$(remote_feature "$pf")
