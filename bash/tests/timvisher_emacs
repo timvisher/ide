@@ -281,7 +281,7 @@ busy_flag=$tmpdir/busy
 start_emacs tvshell "(progn
   (setq user-emacs-directory \"$emacs_d/\")
   (defun agent-shell-buffers () (list (get-buffer-create \"shell-sess-1\")))
-  (defun agent-shell--state () '((:session . ((:id . \"sess-1\")))))
+  (defun agent-shell--state () '((:session . ((:id . \"abcd1111-0000\")))))
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
   (defun agent-shell--prompt-queue-enqueue (&rest args)
     (append-to-file (format \"enqueue %S\n\" (plist-get args :prompt)) nil \"$send_log\"))
@@ -300,7 +300,9 @@ child_pid=$(< "$tmpdir/child-pid")
 other_pids+=("$child_pid")
 
 mkdir -p "$tmpdir/claude/sessions" "$tmpdir/claude-empty/sessions" || exit 1
-printf '{"pid": %s, "sessionId": "sess-1"}\n' "$child_pid" > "$tmpdir/claude/sessions/$child_pid.json"
+printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvshell-1a"}\n' "$child_pid" > "$tmpdir/claude/sessions/$child_pid.json"
+printf '{"pid": 99999999, "sessionId": "dead0000-0000", "name": "tvshell-1a"}\n' > "$tmpdir/claude/sessions/99999999.json"
+printf '{"pid": %s, "sessionId": "abcd2222-0000", "name": "tvother-2b"}\n' "$$" > "$tmpdir/claude/sessions/$$.json"
 
 real_lsof=$(command -v lsof)
 mkdir -p "$tmpdir/onlyours" || exit 1
@@ -310,14 +312,27 @@ cat > "$tmpdir/onlyours/lsof" <<FAKE
 FAKE
 chmod +x "$tmpdir/onlyours/lsof" || exit 1
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session server sess-1
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server abcd1111-0000
 rc=$?
-check "session server: finds the session's Emacs through its process's parents" \
+check "session get-server: finds the session's Emacs through its process's parents" \
       eval "(( rc == 0 )) && [[ \$(field '[.pid, .server_name, .found_by] | @tsv') == '$shell_pid	tvshell	process' ]]"
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session server sess-1
+for ref in tvshell-1a abcd1111
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server "$ref"
+  rc=$?
+  check "session get-server: '$ref' resolves to the session's id and name, preferring the live session" \
+        eval "(( rc == 0 )) && [[ \$(field '[.session_id, .name, .pid] | @tsv') == 'abcd1111-0000	tvshell-1a	$shell_pid' ]]"
+done
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server abcd
 rc=$?
-check 'session server, no session file: not found while no server has the helper loaded' \
+check 'session get-server, ambiguous prefix: exits 1 with timvisher_emacs_ambiguous_session naming each match' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvshell-1a is session abcd1111-0000" && stderr_has "tvother-2b is session abcd2222-0000"'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server abcd1111-0000
+rc=$?
+check 'session get-server, no session file: not found while no server has the helper loaded' \
       eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
 
 : > "$send_log"
@@ -325,35 +340,35 @@ printf 'From the test agent (session t)\n\nhello "there"\n\n' > "$tmpdir/message
 expected_insert='insert "From the test agent (session t)
 
 hello \"there\""'
-CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 "$tmpdir/message"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send abcd1111-0000 "$tmpdir/message"
 rc=$?
 check 'session send, idle shell: submits the trimmed file and prints submitted' \
       eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == submitted ]] && [[ \$(cat '$send_log') == '$expected_insert' ]]"
 
 touch "$busy_flag"
 : > "$send_log"
-(cd "$tmpdir" && CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 message)
+(cd "$tmpdir" && CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send tvshell-1a message)
 rc=$?
-check 'session send, busy shell: queues it, taking a relative path, and prints queued' \
+check 'session send, busy shell: queues it, taking a session name and a relative path, and prints queued' \
       eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log'"
 rm -f -- "$busy_flag"
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session server sess-1
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server abcd1111-0000
 rc=$?
-check 'session server, no session file: scans servers once send has loaded the helper' \
+check 'session get-server, no session file: scans servers once send has loaded the helper' \
       eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 "$tmpdir/missing"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send abcd1111-0000 "$tmpdir/missing"
 rc=$?
 check 'session send, missing file: exits 1 with timvisher_emacs_no_such_message_file' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_message_file\""'
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session send sess-9 "$tmpdir/message"
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session send nope-9999 "$tmpdir/message"
 rc=$?
 check 'session send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
 
-emacs_tool session send sess-1
+emacs_tool session send abcd1111-0000
 rc=$?
 check 'session send without a file: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'

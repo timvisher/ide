@@ -25,8 +25,8 @@ show_help() {
 Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server socket <pid>
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
-       timvisher_emacs session server <session-id>
-       timvisher_emacs session send [--timeout <seconds>] <session-id> <message-file>
+       timvisher_emacs session get-server <session>
+       timvisher_emacs session send [--timeout <seconds>] <session> <message-file>
        timvisher_emacs cleanup [--no-dry-run]
        timvisher_emacs dev [<checkout options>] [--] [<emacs args>...]
        timvisher_emacs agent-shell [<checkout options>] claude|codex [<emacs args>...]
@@ -34,18 +34,22 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
   server socket  print the absolute socket path of the Emacs with that pid
   server eval    evaluate an expression in the Emacs with that pid; prints its value
-  session server print, as JSON, the Emacs server hosting the agent-shell with that session id
-  session send   queue the file's text in that agent-shell, or submit it if the shell is
-                 idle; prints queued or submitted
+  session get-server  print, as JSON, the Emacs server hosting that session's agent-shell
+  session send        queue the file's text in that agent-shell, or submit it if the shell
+                      is idle; prints queued or submitted
   cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
                  a dry run unless --no-dry-run
   dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker
   agent-shell    start an Emacs, through op run, running a claude or codex agent-shell
 
 Servers are found by the pid of the Emacs that owns them, whatever the
-server is named and wherever its socket lives. A session's Emacs is the
-nearest Emacs ancestor of the session's process (from the Claude session
-files), else the server whose agent-shell buffers include the session.
+server is named and wherever its socket lives.
+
+A <session> is a Claude session's id, its name (datadog-7e) or a unique
+prefix of its id of at least 4 characters (caa0f99c), as found in the
+Claude session files; live sessions win over stale files. Its Emacs is the
+nearest Emacs ancestor of the session's process, else the server whose
+agent-shell buffers include the session.
 Queued text reads as though Tim typed it, so start a message to another
 agent with a "From the ... agent (session ...)" line.
 
@@ -278,21 +282,74 @@ timvisher_emacs__ancestor_emacs() {
   return 1
 }
 
-timvisher_emacs__session_server() {
-  local session_id=$1
+timvisher_emacs__resolve_session() {
+  local ref=$1
   local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
 
-  local session_pid='' emacs_pid socket
   local -a session_files=("$sessions_dir"/*.json)
-  if [[ -e ${session_files[0]} ]]
+  [[ -e ${session_files[0]} ]] || return 0
+
+  local rank sid pid name best='' live
+  local -a matches=()
+  while IFS=$'\t' read -r rank sid pid name
+  do
+    [[ -z $best || $rank == "$best" ]] || break
+    best=$rank
+    matches+=("$sid"$'\t'"$pid"$'\t'"$name")
+  done < <(jq -r --arg r "$ref" '
+      select(.sessionId == $r or .name == $r
+             or (4 <= ($r | length) and (.sessionId | startswith($r))))
+      | [(if .sessionId == $r then 0 elif .name == $r then 1 else 2 end),
+         .sessionId, .pid, .name]
+      | @tsv' "${session_files[@]}" 2>/dev/null | sort -n)
+
+  if (( 1 < ${#matches[@]} ))
   then
-    session_pid=$(jq -r --arg sid "$session_id" 'select(.sessionId == $sid) | .pid' "${session_files[@]}" 2>/dev/null | head -1)
+    local -a live_matches=()
+    for live in "${matches[@]}"
+    do
+      IFS=$'\t' read -r _ pid _ <<< "$live"
+      kill -0 "$pid" 2>/dev/null && live_matches+=("$live")
+    done
+    (( 0 < ${#live_matches[@]} )) && matches=("${live_matches[@]}")
   fi
 
+  if (( 1 < ${#matches[@]} ))
+  then
+    local -a suggestions=()
+    for live in "${matches[@]}"
+    do
+      IFS=$'\t' read -r sid _ name <<< "$live"
+      suggestions+=(--suggestion "${name} is session ${sid}")
+    done
+    aictl_error \
+      --code timvisher_emacs_ambiguous_session \
+      --message "'${ref}' matches ${#matches[@]} sessions." \
+      --reason "A session can be named by its id, its name, or a unique prefix of its id of at least 4 characters." \
+      "${suggestions[@]}"
+    return 1
+  fi
+
+  (( 1 == ${#matches[@]} )) && printf '%s\n' "${matches[0]}"
+  return 0
+}
+
+timvisher_emacs__session_server() {
+  local ref=$1
+  local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
+
+  local resolved session_id=$ref session_pid='' name=''
+  resolved=$(timvisher_emacs__resolve_session "$ref") || return 1
+  if [[ -n $resolved ]]
+  then
+    IFS=$'\t' read -r session_id session_pid name <<< "$resolved"
+  fi
+
+  local emacs_pid socket
   if [[ -n $session_pid ]] && emacs_pid=$(timvisher_emacs__ancestor_emacs "$session_pid")
   then
     socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
-    printf '%s\t%s\tprocess\n' "$emacs_pid" "$socket"
+    printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
     return 0
   fi
 
@@ -302,29 +359,30 @@ timvisher_emacs__session_server() {
   do
     if [[ $(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null) == t ]]
     then
-      printf '%s\t%s\tscan\n' "$emacs_pid" "$socket"
+      printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
       return 0
     fi
   done < <(timvisher_emacs__server_sockets)
 
   aictl_error \
     --code timvisher_emacs_no_such_session \
-    --message "No Emacs server hosts an agent-shell with session id ${session_id}." \
+    --message "No Emacs server hosts an agent-shell for session '${ref}'." \
     --reason "Neither the session's process (from ${sessions_dir}) nor any live server's agent-shell buffers matched." \
-    --suggestion "Check the session id; the agent's session file in ${sessions_dir} has it as sessionId" \
+    --suggestion "Name the session by its id, its name or a unique prefix of its id; ${sessions_dir}/*.json has sessionId and name" \
     --suggestion "An Emacs without a server cannot be reached: start one there with M-x ide-control-server-start"
   return 1
 }
 
 timvisher_emacs__session_server_json() {
-  local session_id=$1 found emacs_pid socket found_by
-  found=$(timvisher_emacs__session_server "$session_id") || return 1
-  IFS=$'\t' read -r emacs_pid socket found_by <<< "$found"
+  local ref=$1 found emacs_pid socket found_by session_id name
+  found=$(timvisher_emacs__session_server "$ref") || return 1
+  IFS=$'\t' read -r emacs_pid socket found_by session_id name <<< "$found"
   jq -n \
     --argjson schema_version "$timvisher_emacs__schema_version" \
-    --arg session_id "$session_id" --argjson pid "$emacs_pid" \
+    --arg session_id "$session_id" --arg name "$name" --argjson pid "$emacs_pid" \
     --arg socket "$socket" --arg found_by "$found_by" \
-    '{schema_version: $schema_version, session_id: $session_id, pid: $pid,
+    '{schema_version: $schema_version, session_id: $session_id,
+      name: (if $name == "" then null else $name end), pid: $pid,
       server_name: ($socket | split("/") | last), socket: $socket, found_by: $found_by}'
 }
 
@@ -359,7 +417,7 @@ timvisher_emacs__session_send() {
 
   local found emacs_pid socket
   found=$(timvisher_emacs__session_server "$session_id") || return 1
-  IFS=$'\t' read -r emacs_pid socket _ <<< "$found"
+  IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
 
   local status
   status=$(timvisher_emacs__emacsclient "$timeout" "$emacs_pid" "$socket" \
@@ -599,7 +657,7 @@ case ${1-} in
     ;;
   session)
     case ${2-} in
-      server)
+      get-server)
         (( 3 == $# )) || { usage; exit 2; }
         timvisher_emacs__session_server_json "$3" || exit 1
         ;;
