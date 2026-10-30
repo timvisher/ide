@@ -286,6 +286,10 @@ start_emacs tvshell "(progn
                                       (cons :pending-prompts (list \"queued one\" \"queued two\"))
                                       (cons :agent-config 'claude)))))
   (set-window-buffer (selected-window) \"shell-sess-1\")
+  (with-current-buffer \"shell-sess-1\"
+    (let ((process (make-pipe-process :name \"fake-shell\" :buffer (current-buffer) :noquery t)))
+      (insert \"Claude> \")
+      (set-marker (process-mark process) (point-max))))
   (defun agent-shell-buffers () (seq-filter #'buffer-live-p (mapcar #'car tv-states)))
   (defun agent-shell--state () (alist-get (current-buffer) tv-states))
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
@@ -404,6 +408,14 @@ CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool 
 rc=$?
 check 'session send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+emacsclient -s "$socket_dir/tvshell" --eval '(with-current-buffer "shell-sess-1" (goto-char (point-max)) (insert "half typed"))' > /dev/null
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send tvshell-1a "$tmpdir/message"
+rc=$?
+check 'session send, idle shell with half-typed input: queues it and leaves the input alone' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log' && ! grep -q '^insert ' '$send_log' && [[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(with-current-buffer \"shell-sess-1\" (buffer-string))') == '\"Claude> half typed\"' ]]"
+emacsclient -s "$socket_dir/tvshell" --eval '(with-current-buffer "shell-sess-1" (delete-region (process-mark (get-buffer-process (current-buffer))) (point-max)))' > /dev/null
 
 touch "$busy_flag"
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged tvshell-1a

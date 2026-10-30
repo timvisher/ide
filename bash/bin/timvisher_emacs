@@ -43,7 +43,7 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                       ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
   session get-server  print, as JSON, the Emacs server hosting that session's agent-shell
   session send        queue the file's text in that agent-shell, or submit it if the shell
-                      is idle; prints queued or submitted
+                      is idle with nothing typed at its prompt; prints queued or submitted
   session is-wedged   print a JSON report on whether that agent-shell is wedged; the
                       answer is .wedged (jq -e .wedged), with the evidence in .reasons
   session recover fork

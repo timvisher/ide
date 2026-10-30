@@ -59,6 +59,39 @@ entry point's buffer name and arguments, oldest first)."
     (should (equal "queued" (timvisher-agent-shell-send-text "s1" "hello")))
     (should (equal '(("shell-s1" enqueue :prompt "hello")) calls))))
 
+(defun test-timvisher-agent-shell-send--type-at-prompt (buffer typed)
+  "Give BUFFER a prompt ending at its process mark, then TYPED after it.
+
+Return the process, for the caller to delete."
+  (with-current-buffer buffer
+    (let ((process (make-pipe-process :name "test-shell" :buffer buffer :noquery t)))
+      (insert "Claude> ")
+      (set-marker (process-mark process) (point-max))
+      (insert typed)
+      process)))
+
+(ert-deftest test-timvisher-agent-shell-send-text-queues-behind-half-typed-input ()
+  "An idle shell with unsent input at its prompt queues the text, leaving the input alone."
+  (test-timvisher-agent-shell-send--with-shells nil
+    (let ((process (test-timvisher-agent-shell-send--type-at-prompt
+                    (cdr (assoc "s2" shells)) "i'm concerned that")))
+      (unwind-protect
+          (progn
+            (should (equal "queued" (timvisher-agent-shell-send-text "s2" "hello")))
+            (should (equal '(("shell-s2" enqueue :prompt "hello")) calls))
+            (should (string-suffix-p "Claude> i'm concerned that"
+                                     (with-current-buffer (cdr (assoc "s2" shells)) (buffer-string)))))
+        (delete-process process)))))
+
+(ert-deftest test-timvisher-agent-shell-send-text-whitespace-at-the-prompt-still-submits ()
+  "Only whitespace after the prompt is not input, so an idle shell gets the text submitted."
+  (test-timvisher-agent-shell-send--with-shells nil
+    (let ((process (test-timvisher-agent-shell-send--type-at-prompt
+                    (cdr (assoc "s2" shells)) "\n\n  ")))
+      (unwind-protect
+          (should (equal "submitted" (timvisher-agent-shell-send-text "s2" "hello")))
+        (delete-process process)))))
+
 (ert-deftest test-timvisher-agent-shell-send-text-no-buffer ()
   "An unknown session id touches no shell."
   (test-timvisher-agent-shell-send--with-shells nil

@@ -34,15 +34,25 @@
                          (map-nested-elt (agent-shell--state) '(:session :id)))))
               (agent-shell-buffers))))
 
+(defun timvisher-agent-shell--pending-input-p ()
+  "Return non-nil when the current shell's prompt has unsent input."
+  (when-let* ((process (get-buffer-process (current-buffer))))
+    (not (string-blank-p
+          (buffer-substring-no-properties (process-mark process) (point-max))))))
+
 (defun timvisher-agent-shell-send-text (session-id text)
   "Queue or submit TEXT in the agent-shell whose session id is SESSION-ID.
 
-Return \"queued\" when the shell was busy and TEXT joined its pending
-prompts, \"submitted\" when it was idle and TEXT was sent, or \"no
-buffer\" when no live agent-shell has that session id."
+Return \"queued\" when TEXT joined the shell's pending prompts, because
+the shell was busy or someone has unsent input at its prompt,
+\"submitted\" when it was idle with an empty prompt and TEXT was sent,
+or \"no buffer\" when no live agent-shell has that session id.  A
+queued prompt runs once the shell's current or next turn ends."
   (if-let* ((buffer (timvisher-agent-shell-send-buffer session-id)))
       (with-current-buffer buffer
-        (if (shell-maker-busy)
+        ;; Submitting would take the half-typed input at the prompt along
+        ;; with TEXT, so it waits in the queue until that input is sent.
+        (if (or (shell-maker-busy) (timvisher-agent-shell--pending-input-p))
             (progn
               (agent-shell--prompt-queue-enqueue :prompt text)
               "queued")
