@@ -22,7 +22,6 @@
 (declare-function agent-shell-subscribe-to "agent-shell")
 (declare-function agent-shell-unsubscribe "agent-shell")
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
-(declare-function agent-shell--prompt-queue-enqueue "agent-shell-prompt-queue")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 
 (defvar shell-maker-prompt-before-killing-buffer)
@@ -96,19 +95,29 @@ when no live agent-shell has SESSION-ID."
 (defvar timvisher-agent-shell--recoveries (make-hash-table :test #'equal)
   "Recovery forks by the old session id, each an alist of what happened.")
 
-(defun timvisher-agent-shell--recovery-note (old-session-id old-buffer-name forwarded extra)
+(defun timvisher-agent-shell--recovery-note (old-session-id old-buffer-name queued extra)
   "Return the note telling a recovery fork what it is.
 
-OLD-SESSION-ID and OLD-BUFFER-NAME name the wedged shell, FORWARDED is
-how many of its queued prompts follow the note, and EXTRA, when
-non-nil, is appended."
-  (concat
-   (format "From timvisher_emacs session recover fork: this session is a recovery fork of session %s (%s), which was wedged and has been killed. Its conversation is yours; continue its work. Anything it had running (commands, tool calls, half-made edits) may not have finished, so check that state before building on it."
-           old-session-id old-buffer-name)
-   (when (< 0 forwarded)
-     (format "\n\nIts %d queued prompt%s follow%s this note in your queue, in the order they were queued."
-             forwarded (if (= 1 forwarded) "" "s") (if (= 1 forwarded) "s" "")))
-   (when extra (concat "\n\n" extra))))
+OLD-SESSION-ID and OLD-BUFFER-NAME name the wedged shell, QUEUED is
+the list of prompts that were waiting in its queue, carried in the note
+in order, and EXTRA, when non-nil, is appended."
+  (let ((count (length queued)))
+    (concat
+     (format "From timvisher_emacs session recover fork: this session is a recovery fork of session %s (%s), which was wedged and has been killed. Its conversation is yours; continue its work. Anything it had running (commands, tool calls, half-made edits) may not have finished, so check that state before building on it."
+             old-session-id old-buffer-name)
+     (when (< 0 count)
+       (concat
+        (format "\n\nWhile it was wedged, %d prompt%s queued for it. %s, in the order %s queued. Handle them in that order unless a later one changes or replaces an earlier one; each is for you to act on, merge or skip as the whole set warrants.\n"
+                count (if (= 1 count) " was" "s were")
+                (if (= 1 count) "Here it is" "Here they are")
+                (if (= 1 count) "it was" "they were"))
+        (mapconcat (lambda (index)
+                     (format "\n--- queued prompt %d of %d ---\n%s\n"
+                             (1+ index) count (nth index queued)))
+                   (number-sequence 0 (1- count))
+                   "")
+        "\n--- end of queued prompts ---"))
+     (when extra (concat "\n\n" extra)))))
 
 (defun timvisher-agent-shell--recovery-record (old-session-id &rest fields)
   "Merge FIELDS (alternating keys and values) into OLD-SESSION-ID's recovery."
@@ -154,9 +163,8 @@ The fork starts a new agent and forks the session from the agent's own
 copy, so it does not need the old agent to answer.  When the new shell
 is ready, the old shell's queued prompts are taken, its windows switch
 to the new shell, the old shell is killed, and the new one is sent a
-note that it is a recovery fork,
-followed by MESSAGE-FILE's contents when given, with the old queue
-enqueued behind it in order.
+note that it is a recovery fork carrying the old queue's prompts in
+order, followed by MESSAGE-FILE's contents when given.
 Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
 \"no buffer\" when no live agent-shell has SESSION-ID."
   (if-let* ((old (timvisher-agent-shell-send-buffer session-id)))
@@ -202,15 +210,16 @@ Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
                                     (timvisher-agent-shell--hand-over-windows old new))
                               (let ((shell-maker-prompt-before-killing-buffer nil))
                                 (kill-buffer old)))
+                            ;; The queue goes into the note rather than back into a
+                            ;; queue: in one message the agent sees every prompt
+                            ;; before acting on any, so a later one can change or
+                            ;; replace an earlier one.
                             (agent-shell--insert-to-shell-buffer
                              :shell-buffer new
                              :text (timvisher-agent-shell--recovery-note
-                                    session-id old-name (length queued) extra)
+                                    session-id old-name queued extra)
                              :submit t
                              :no-focus t)
-                            (with-current-buffer new
-                              (dolist (prompt queued)
-                                (agent-shell--prompt-queue-enqueue :prompt prompt)))
                             (timvisher-agent-shell--recovery-record
                              session-id 'status "recovered" 'new_session_id new-session-id
                              'forwarded_prompts (length queued)

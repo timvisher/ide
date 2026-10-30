@@ -48,10 +48,10 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                       answer is .wedged (jq -e .wedged), with the evidence in .reasons
   session recover fork
                       fork that agent-shell into a new one; once it is ready, show it
-                      in the old one's windows, kill the old one, tell the new one it
-                      is a recovery fork (plus --message-file's text), and move the
-                      old one's queued prompts into its queue behind that note;
-                      prints the outcome as JSON
+                      in the old one's windows, kill the old one, and tell the new one
+                      it is a recovery fork in one note carrying the old one's queued
+                      prompts in order (plus --message-file's text); prints the
+                      outcome as JSON
   cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
                  a dry run unless --no-dry-run
   dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker

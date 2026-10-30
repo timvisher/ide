@@ -191,7 +191,9 @@ arguments)."
                      :object-type 'alist :null-object nil))
 
 (ert-deftest test-timvisher-agent-shell-recover-fork-recovers-once-ready ()
-  "On prompt-ready the old shell dies, and the new one gets the note, then its queue."
+  "On prompt-ready the old shell dies, and the new one gets one note carrying its queue.
+
+Nothing goes back into a queue."
   (let ((extra (make-temp-file "tvasr" nil nil "More context\n\n")))
     (unwind-protect
         (test-timvisher-agent-shell-recover--with-fork t
@@ -210,12 +212,11 @@ arguments)."
             (should (eq new (plist-get insert :shell-buffer)))
             (should (eq t (plist-get insert :submit)))
             (should (string-match-p "recovery fork of session old (shell-old)" (plist-get insert :text)))
-            (should (string-match-p "Its 2 queued prompts follow this note" (plist-get insert :text)))
-            (should (string-suffix-p "\n\nMore context" (plist-get insert :text))))
-          (should (equal '((insert "shell-new")
-                           (enqueue "shell-new" "queued one")
-                           (enqueue "shell-new" "queued two"))
-                         delivered))
+            (should (string-match-p
+                     "--- queued prompt 1 of 2 ---\nqueued one\n\n--- queued prompt 2 of 2 ---\nqueued two\n\n--- end of queued prompts ---"
+                     (plist-get insert :text)))
+            (should (string-suffix-p "--- end of queued prompts ---\n\nMore context" (plist-get insert :text))))
+          (should (equal '((insert "shell-new")) delivered))
           (let ((status (test-timvisher-agent-shell-recover--status "old")))
             (should (equal "recovered" (alist-get 'status status)))
             (should (equal "new" (alist-get 'new_session_id status)))
@@ -256,13 +257,14 @@ Other windows, and which window is selected, are left alone."
         (kill-buffer viewport)
         (kill-buffer other)))))
 
-(ert-deftest test-timvisher-agent-shell-recover-note-counts-the-forwarded-queue ()
-  "The note mentions forwarded prompts only when there are some, in good English."
-  (should-not (string-match-p "queued" (timvisher-agent-shell--recovery-note "o" "b" 0 nil)))
-  (should (string-match-p "Its 1 queued prompt follows this note"
-                          (timvisher-agent-shell--recovery-note "o" "b" 1 nil)))
-  (should (string-match-p "Its 3 queued prompts follow this note"
-                          (timvisher-agent-shell--recovery-note "o" "b" 3 nil))))
+(ert-deftest test-timvisher-agent-shell-recover-note-carries-the-queue ()
+  "The note carries queued prompts only when there are some, in good English."
+  (should-not (string-match-p "queued" (timvisher-agent-shell--recovery-note "o" "b" nil nil)))
+  (let ((one (timvisher-agent-shell--recovery-note "o" "b" '("only") nil)))
+    (should (string-match-p "1 prompt was queued for it\\. Here it is, in the order it was queued\\." one))
+    (should (string-match-p "--- queued prompt 1 of 1 ---\nonly\n" one)))
+  (should (string-match-p "3 prompts were queued for it\\. Here they are, in the order they were queued\\."
+                          (timvisher-agent-shell--recovery-note "o" "b" '("a" "b" "c") nil))))
 
 (ert-deftest test-timvisher-agent-shell-recover-fork-keeps-the-old-shell-on-error ()
   "A fork error leaves the old shell alone and records the failure."
