@@ -151,14 +151,18 @@ running."
   "Run BODY around a recovery fork of shell \"old\" with fork stubbed.
 
 SUPPORTS-FORK is the old shell's :supports-session-fork.  BODY sees
-`old', `new' (the shell the stubbed `agent-shell--start' made, or nil),
-`handlers' (event to handler), `inserted' (each insert's arguments) and
-`started' (each start's arguments)."
+`old' (with two queued prompts), `new' (the shell the stubbed
+`agent-shell--start' made, or nil), `handlers' (event to handler),
+`inserted' (each insert's arguments), `delivered' (inserts and enqueues
+in order, with the buffer each went to) and `started' (each start's
+arguments)."
   (declare (indent 1))
   `(test-timvisher-agent-shell-recover--with-stubs 'ready
      (let* ((old (test-timvisher-agent-shell-recover--shell
-                  "old" :supports-session-fork ,supports-fork :agent-config 'claude))
+                  "old" :supports-session-fork ,supports-fork :agent-config 'claude
+                  :pending-prompts (list "queued one" "queued two")))
             (new nil) (handlers nil) (inserted nil) (started nil) (unsubscribed 0)
+            (delivered nil)
             (timvisher-agent-shell--recoveries (make-hash-table :test #'equal)))
        (cl-letf (((symbol-function 'agent-shell--start)
                   (lambda (&rest args)
@@ -171,7 +175,12 @@ SUPPORTS-FORK is the old shell's :supports-session-fork.  BODY sees
                  ((symbol-function 'agent-shell-unsubscribe)
                   (lambda (&rest _) (cl-incf unsubscribed)))
                  ((symbol-function 'agent-shell--insert-to-shell-buffer)
-                  (lambda (&rest args) (push args inserted))))
+                  (lambda (&rest args)
+                    (push args inserted)
+                    (setq delivered (append delivered (list (list 'insert (buffer-name (plist-get args :shell-buffer))))))))
+                 ((symbol-function 'agent-shell--prompt-queue-enqueue)
+                  (lambda (&rest args)
+                    (setq delivered (append delivered (list (list 'enqueue (buffer-name) (plist-get args :prompt))))))))
          (unwind-protect (progn ,@body)
            (dolist (buffer (list old new))
              (when (buffer-live-p buffer) (kill-buffer buffer))))))))
@@ -182,7 +191,7 @@ SUPPORTS-FORK is the old shell's :supports-session-fork.  BODY sees
                      :object-type 'alist :null-object nil))
 
 (ert-deftest test-timvisher-agent-shell-recover-fork-recovers-once-ready ()
-  "On prompt-ready the old shell dies and the new one gets the note."
+  "On prompt-ready the old shell dies, and the new one gets the note, then its queue."
   (let ((extra (make-temp-file "tvasr" nil nil "More context\n\n")))
     (unwind-protect
         (test-timvisher-agent-shell-recover--with-fork t
@@ -201,11 +210,25 @@ SUPPORTS-FORK is the old shell's :supports-session-fork.  BODY sees
             (should (eq new (plist-get insert :shell-buffer)))
             (should (eq t (plist-get insert :submit)))
             (should (string-match-p "recovery fork of session old (shell-old)" (plist-get insert :text)))
+            (should (string-match-p "Its 2 queued prompts follow this note" (plist-get insert :text)))
             (should (string-suffix-p "\n\nMore context" (plist-get insert :text))))
+          (should (equal '((insert "shell-new")
+                           (enqueue "shell-new" "queued one")
+                           (enqueue "shell-new" "queued two"))
+                         delivered))
           (let ((status (test-timvisher-agent-shell-recover--status "old")))
             (should (equal "recovered" (alist-get 'status status)))
-            (should (equal "new" (alist-get 'new_session_id status)))))
+            (should (equal "new" (alist-get 'new_session_id status)))
+            (should (= 2 (alist-get 'forwarded_prompts status)))))
       (delete-file extra))))
+
+(ert-deftest test-timvisher-agent-shell-recover-note-counts-the-forwarded-queue ()
+  "The note mentions forwarded prompts only when there are some, in good English."
+  (should-not (string-match-p "queued" (timvisher-agent-shell--recovery-note "o" "b" 0 nil)))
+  (should (string-match-p "Its 1 queued prompt follows this note"
+                          (timvisher-agent-shell--recovery-note "o" "b" 1 nil)))
+  (should (string-match-p "Its 3 queued prompts follow this note"
+                          (timvisher-agent-shell--recovery-note "o" "b" 3 nil))))
 
 (ert-deftest test-timvisher-agent-shell-recover-fork-keeps-the-old-shell-on-error ()
   "A fork error leaves the old shell alone and records the failure."
@@ -213,7 +236,7 @@ SUPPORTS-FORK is the old shell's :supports-session-fork.  BODY sees
     (timvisher-agent-shell-recover-fork "old")
     (funcall (alist-get 'error handlers) '((:event . error) (:data . "boom")))
     (should (buffer-live-p old))
-    (should-not inserted)
+    (should-not delivered)
     (let ((status (test-timvisher-agent-shell-recover--status "old")))
       (should (equal "failed" (alist-get 'status status)))
       (should (string-match-p "boom" (alist-get 'error status))))))

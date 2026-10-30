@@ -22,6 +22,7 @@
 (declare-function agent-shell-subscribe-to "agent-shell")
 (declare-function agent-shell-unsubscribe "agent-shell")
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
+(declare-function agent-shell--prompt-queue-enqueue "agent-shell-prompt-queue")
 
 (defvar shell-maker-prompt-before-killing-buffer)
 
@@ -94,14 +95,18 @@ when no live agent-shell has SESSION-ID."
 (defvar timvisher-agent-shell--recoveries (make-hash-table :test #'equal)
   "Recovery forks by the old session id, each an alist of what happened.")
 
-(defun timvisher-agent-shell--recovery-note (old-session-id old-buffer-name extra)
+(defun timvisher-agent-shell--recovery-note (old-session-id old-buffer-name forwarded extra)
   "Return the note telling a recovery fork what it is.
 
-OLD-SESSION-ID and OLD-BUFFER-NAME name the wedged shell; EXTRA, when
+OLD-SESSION-ID and OLD-BUFFER-NAME name the wedged shell, FORWARDED is
+how many of its queued prompts follow the note, and EXTRA, when
 non-nil, is appended."
   (concat
    (format "From timvisher_emacs session recover fork: this session is a recovery fork of session %s (%s), which was wedged and has been killed. Its conversation is yours; continue its work. Anything it had running (commands, tool calls, half-made edits) may not have finished, so check that state before building on it."
            old-session-id old-buffer-name)
+   (when (< 0 forwarded)
+     (format "\n\nIts %d queued prompt%s follow%s this note in your queue, in the order they were queued."
+             forwarded (if (= 1 forwarded) "" "s") (if (= 1 forwarded) "s" "")))
    (when extra (concat "\n\n" extra))))
 
 (defun timvisher-agent-shell--recovery-record (old-session-id &rest fields)
@@ -129,8 +134,10 @@ non-nil, is appended."
 
 The fork starts a new agent and forks the session from the agent's own
 copy, so it does not need the old agent to answer.  When the new shell
-is ready, the old shell is killed and the new one is sent a note that it
-is a recovery fork, followed by MESSAGE-FILE's contents when given.
+is ready, the old shell's queued prompts are taken, the old shell is
+killed, and the new one is sent a note that it is a recovery fork,
+followed by MESSAGE-FILE's contents when given, with the old queue
+enqueued behind it in order.
 Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
 \"no buffer\" when no live agent-shell has SESSION-ID."
   (if-let* ((old (timvisher-agent-shell-send-buffer session-id)))
@@ -166,16 +173,25 @@ Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
                         (let ((new-session-id
                                (with-current-buffer new
                                  (map-nested-elt (agent-shell--state) '(:session :id)))))
-                          (when (buffer-live-p old)
-                            (let ((shell-maker-prompt-before-killing-buffer nil))
-                              (kill-buffer old)))
-                          (agent-shell--insert-to-shell-buffer
-                           :shell-buffer new
-                           :text (timvisher-agent-shell--recovery-note session-id old-name extra)
-                           :submit t
-                           :no-focus t)
-                          (timvisher-agent-shell--recovery-record
-                           session-id 'status "recovered" 'new_session_id new-session-id))
+                          (let ((queued (when (buffer-live-p old)
+                                          (with-current-buffer old
+                                            (copy-sequence
+                                             (map-elt (agent-shell--state) :pending-prompts))))))
+                            (when (buffer-live-p old)
+                              (let ((shell-maker-prompt-before-killing-buffer nil))
+                                (kill-buffer old)))
+                            (agent-shell--insert-to-shell-buffer
+                             :shell-buffer new
+                             :text (timvisher-agent-shell--recovery-note
+                                    session-id old-name (length queued) extra)
+                             :submit t
+                             :no-focus t)
+                            (with-current-buffer new
+                              (dolist (prompt queued)
+                                (agent-shell--prompt-queue-enqueue :prompt prompt)))
+                            (timvisher-agent-shell--recovery-record
+                             session-id 'status "recovered" 'new_session_id new-session-id
+                             'forwarded_prompts (length queued))))
                       (timvisher-agent-shell--recovery-record
                        session-id 'status "failed" 'error (or error-message "the fork failed"))))))
             (timvisher-agent-shell--recovery-record session-id 'new_buffer (buffer-name new))
