@@ -50,7 +50,8 @@ lists and captures windows on every Space.
    is saved to `~/Downloads` (`output_path` in the result).
 4. **Describe what's relevant** to what the user asked.
 
-Captures are silent: unlike the fallback, there is no shutter sound.
+Captures are silent by default, unlike the fallback. Pass
+`shutter_sound: true` only when the user asks to hear captures.
 
 Don't use the recording tools unless the user asks for a recording.
 
