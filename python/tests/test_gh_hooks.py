@@ -108,6 +108,20 @@ class HooksTest(GhTestCase):
         self.assertEqual(before, git("rev-parse", "feature", cwd=self.remote))
         self.assertIn("timvisher_gh_pre_hook_failed", self.err)
 
+    def test_an_agents_unmoved_rewrite_still_runs_the_pre_push_hooks(self):
+        self.create()
+        (self.work / "a").write_text("changed\n")
+        git("add", "a", cwd=self.work)
+        git("commit", "-q", "--amend", "-m", "work", cwd=self.work)
+        self.hook(self.core, "orgs/testuser/pr/push/pre.d/10-gate", rc=1)
+        before = git("rev-parse", "feature", cwd=self.remote)
+        rc, _, err = self.run_gh("pr", "push", TIMVISHER_AGENT="1", HOOK_LOG=str(self.log),
+                                 TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core), TIMVISHER_GH_CONFIG_DIR=str(self.ext))
+        self.assertNotEqual(0, rc)
+        self.assertEqual(["10-gate"], self.ran())
+        self.assertEqual(before, git("rev-parse", "feature", cwd=self.remote))
+        self.assertIn("timvisher_gh_pre_hook_failed", err)
+
     def test_a_failing_post_hook_runs_the_rest_and_exits_nonzero(self):
         self.create()
         self.hook(self.core, "orgs/testuser/pr/push/post.d/10-broken", rc=1)

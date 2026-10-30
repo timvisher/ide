@@ -222,12 +222,14 @@ def _record_head(opened, object_id, sha):
 
 # Pre-push hooks gate a push, so they run only when the branch is about to
 # move, as #6's do: not when it's already pushed, or behind without --ours.
-def _branch_moves(context, flags):
-    args = ["timvisher_git", "push", "--plan"] + (["--ours"] if flags["resolution"] == "ours" else [])
+def _branch_moves(context, flags, grant=None):
+    ours = flags["resolution"] == "ours"
+    args = ["timvisher_git", "push", "--plan"] + (["--ours"] if ours else [])
     done = subprocess.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     kind = (done.stdout.split() or [""])[0]
     return kind in ("new", "fast-forward", "same-content") or (
-        flags["resolution"] == "ours" and kind in ("behind", "decision"))
+        ours and kind in ("behind", "decision")) or (
+        kind == "decision" and (grant or "").endswith(" unmoved"))
 
 
 def _head(context):
@@ -397,7 +399,7 @@ def run(context, args):
                                pr_url=url, title=lambda: parse_source(source_file.read_text(encoding="utf-8"))["title"]
                                if source_file.exists() else raw["title"],
                                state_dir=store.store_file(opened.db, object_id).parent, open_=flags["open"])
-        if pushing and _branch_moves(context, flags) and not pr_hooks.pre("push"):
+        if pushing and _branch_moves(context, flags, grant) and not pr_hooks.pre("push"):
             return ERROR
         if verb in ("push", "sync", "edit") and worktree_pr:
             rc = _push_branch(context, flags, grant)
