@@ -50,10 +50,14 @@ whatever Tim is typing along with your message.
   ```
 
   It prints the new session's id, and for Claude its name and ref
-  (Codex gets only the id; keep it). For a worktree's
-  Emacs, get the pid with `ntmux3 get-editor-pid <session or path>`.
-  To start one in a brand-new worktree, use the `worktree` skill's
+  (Codex gets only the id; keep it). For a worktree's Emacs, get the
+  pid with `ntmux3 get-editor-pid <session or path>`. To start one in a
+  brand-new worktree, use the `worktree` skill's
   `TIMVISHER_NTMUX3_AI_AGENT` variables.
+
+  Do not call agent-shell's start commands through emacsclient
+  instead: they paste the current line of whatever buffer Tim has open
+  into the new prompt.
 
 ## Wedged sessions
 
