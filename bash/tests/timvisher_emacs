@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd -P)/bin/timvisher_emacs"
+
+tmpdir=
+socket_dir=
+emacs_pids=()
+other_pids=()
+cleanup() {
+  local pid
+  for pid in "${emacs_pids[@]}" "${other_pids[@]}"
+  do
+    kill -9 "$pid" 2>/dev/null
+  done
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+  [[ -z $socket_dir ]] || rm -rf -- "$socket_dir"
+}
+trap cleanup EXIT
+
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+# Under /tmp because the suite's $TMPDIR pushes socket paths past
+# macOS's 104-byte limit.
+socket_dir=$(mktemp -d /tmp/tvemacs.XXXXXX) || { echo 'FAIL: mktemp socket dir' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" || exit 1
+
+emacs_tool() {
+  TIMVISHER_AGENT=1 \
+    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+stdout_empty() {
+  [[ ! -s $tmpdir/stdout ]]
+}
+
+field() {
+  jq -r "$1" "$tmpdir/stdout"
+}
+
+start_emacs() {
+  local name=$1 form=$2
+  local start=''
+  if [[ -n $name ]]
+  then
+    start="(require 'server) (setq server-socket-dir \"$socket_dir\" server-name \"$name\") (server-start)"
+  fi
+  emacs -Q --batch --eval "(progn $start $form)" > /dev/null 2>&1 &
+  started_pid=$!
+  emacs_pids+=("$started_pid")
+  if [[ -n $name ]]
+  then
+    SECONDS=0
+    until [[ -S $socket_dir/$name ]] || (( 20 < SECONDS ))
+    do
+      sleep 0.1
+    done
+  fi
+}
+
+idle='(while t (accept-process-output nil 1))'
+
+start_emacs tvserved "$idle"
+served_pid=$started_pid
+start_emacs tvbusy '(while t)'
+busy_pid=$started_pid
+start_emacs '' "$idle"
+unserved_pid=$started_pid
+
+emacs_tool server ls
+rc=$?
+check 'server ls: exits 0' test "$rc" -eq 0
+check 'server ls: schema_version is 1' test "$(field .schema_version)" = 1
+check 'server ls: lists the served Emacs with its name and absolute socket' \
+      test "$(field ".servers[] | select(.pid == $served_pid) | [.server_name, .socket] | @tsv")" \
+           = "tvserved	$socket_dir/tvserved"
+check 'server ls: the command is the Emacs command line' \
+      eval "field '.servers[] | select(.pid == $served_pid) | .command' | grep -q -- '--batch'"
+check 'server ls: an Emacs without a server is not listed' \
+      test -z "$(field ".servers[] | select(.pid == $unserved_pid) | .pid")"
+
+emacs_tool server ls --schema-version 2
+rc=$?
+check 'server ls --schema-version: a mismatch exits 1 with nothing on stdout' \
+      eval '(( rc == 1 )) && stdout_empty'
+check 'server ls --schema-version: a mismatch reports timvisher_emacs_schema_version_mismatch' \
+      stderr_has '"code":"timvisher_emacs_schema_version_mismatch"'
+
+emacs_tool server ls --help
+rc=$?
+check 'server ls --help: on stdout, exit 0' \
+      eval "(( rc == 0 )) && grep -q 'server_name' '$tmpdir/stdout' && [[ ! -s '$tmpdir/stderr' ]]"
+
+emacs_tool server socket "$served_pid"
+rc=$?
+check 'server socket: prints the absolute socket path' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == '$socket_dir/tvserved' ]]"
+
+emacs_tool server socket "$unserved_pid"
+rc=$?
+check 'server socket, no server: exits 1 with timvisher_emacs_no_server' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_server\""'
+
+sleep 300 &
+other_pids+=("$!")
+emacs_tool server socket "$!"
+rc=$?
+check 'server socket, not an Emacs: exits 1 with timvisher_emacs_not_emacs' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_not_emacs\""'
+
+emacs_tool server socket 99999999
+rc=$?
+check 'server socket, no such process: exits 1 with timvisher_emacs_no_such_process alone on stderr' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_process\"" && (( 1 == $(wc -l < "$tmpdir/stderr") ))'
+
+emacs_tool server socket nope
+rc=$?
+check 'server socket, not a pid: exits 1 with timvisher_emacs_bad_pid' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_bad_pid\""'
+
+emacs_tool server socket
+rc=$?
+check 'server socket without a pid: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && stdout_empty && grep -q 'server socket <pid>' '$tmpdir/stderr'"
+
+emacs_tool server eval "$served_pid" '(* 6 7)'
+rc=$?
+check "server eval: prints the expression's value" \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == 42 ]]"
+
+emacs_tool server eval --timeout 1 "$busy_pid" '(* 6 7)'
+rc=$?
+check 'server eval, busy Emacs: times out with timvisher_emacs_eval_failed' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_eval_failed\""'
+
+emacs_tool server eval "$unserved_pid" '(* 6 7)'
+rc=$?
+check 'server eval, no server: exits 1 with timvisher_emacs_no_server' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_server\""'
+
+emacs_tool server eval "$served_pid"
+rc=$?
+check 'server eval without an expression: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+# cleanup, against a fake pgrep so real Emacsen are never selected
+
+sleep 300 &
+victim=$!
+other_pids+=("$victim")
+cat > "$tmpdir/bin/pgrep" <<FAKE
+#!/usr/bin/env bash
+[[ \$* == *-il* ]] && exit 1
+printf '%s\n' "$victim"
+FAKE
+chmod +x "$tmpdir/bin/pgrep" || exit 1
+
+PATH="$tmpdir/bin:$PATH" emacs_tool cleanup
+rc=$?
+check 'cleanup: a dry run by default leaves the process alive' \
+      eval "(( rc == 0 )) && kill -0 '$victim' && stderr_has 'DRY_RUN: kill $victim'"
+
+PATH="$tmpdir/bin:$PATH" emacs_tool cleanup --no-dry-run
+rc=$?
+check 'cleanup --no-dry-run: kills the process' \
+      eval "(( rc == 0 )) && ! kill -0 '$victim' 2>/dev/null"
+
+emacs_tool cleanup --bogus
+rc=$?
+check 'cleanup with an unknown option: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+# dev and agent-shell, against a fake emacs and op
+
+cat > "$tmpdir/bin/emacs" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/emacs-args"
+env > "$FAKE_DIR/emacs-env"
+FAKE
+cat > "$tmpdir/bin/op" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/op-args"
+while [[ $1 != -- ]]
+do
+  shift
+done
+shift
+exec "$@"
+FAKE
+chmod +x "$tmpdir/bin/emacs" "$tmpdir/bin/op" || exit 1
+
+checkouts=()
+for c in agent-shell acp-el shell-maker
+do
+  mkdir -p "$tmpdir/$c" && touch "$tmpdir/$c/x.elc" "$tmpdir/$c/x.el" || exit 1
+  checkouts+=("--$c" "$tmpdir/$c")
+done
+
+fake() {
+  rm -f -- "$tmpdir"/emacs-* "$tmpdir"/op-*
+  FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" emacs_tool "$@"
+}
+
+env_has() {
+  grep -qxF -- "$1" "$tmpdir/emacs-env"
+}
+
+real_tmpdir=$(cd "$tmpdir" && pwd -P)
+
+fake dev "${checkouts[@]}" -- --eval '(message "hi")'
+rc=$?
+check 'dev: runs emacs with each checkout on the load-path and the rest of the args' \
+      eval "(( rc == 0 )) && [[ \$(paste -sd ' ' '$tmpdir/emacs-args') == '-L $real_tmpdir/agent-shell -L $real_tmpdir/shell-maker -L $real_tmpdir/acp-el --eval (message \"hi\")' ]]"
+check 'dev: exports the checkouts init.el reads' \
+      eval "env_has 'timvisher_agent_shell_checkout=$real_tmpdir/agent-shell' && env_has 'timvisher_acp_el_checkout=$real_tmpdir/acp-el' && env_has 'timvisher_shell_maker_checkout=$real_tmpdir/shell-maker'"
+check 'dev: deletes the checkouts .elc files and nothing else' \
+      eval "[[ ! -e '$tmpdir/acp-el/x.elc' && -e '$tmpdir/acp-el/x.el' ]]"
+
+timvisher_acp_el_checkout=$tmpdir/acp-el fake dev --agent-shell "$tmpdir/agent-shell" --shell-maker "$tmpdir/shell-maker"
+check 'dev: a checkout without its option comes from the environment' \
+      env_has "timvisher_acp_el_checkout=$real_tmpdir/acp-el"
+
+fake dev --acp-el "$tmpdir/missing"
+rc=$?
+check 'dev, missing checkout: exits 1 with timvisher_emacs_no_such_checkout and starts no emacs' \
+      eval "(( rc == 1 )) && stderr_has '\"code\":\"timvisher_emacs_no_such_checkout\"' && [[ ! -e '$tmpdir/emacs-args' ]]"
+
+CLAUDECODE=1 fake agent-shell "${checkouts[@]}" claude --debug-init
+rc=$?
+check 'agent-shell: runs emacs through op run' \
+      eval "(( rc == 0 )) && [[ \$(paste -sd ' ' '$tmpdir/op-args') == 'run --no-masking -- emacs '* ]]"
+check 'agent-shell: loads the start file after the checkouts and passes the rest of the args' \
+      eval "[[ \$(paste -sd ' ' '$tmpdir/emacs-args') == '-L $real_tmpdir/agent-shell -L $real_tmpdir/shell-maker -L $real_tmpdir/acp-el -l '*'/bin/timvisher_emacs.agent-shell.el --debug-init' ]]"
+check 'agent-shell claude: starts claude code' \
+      env_has 'timvisher_agent_start_fn=agent-shell-anthropic-start-claude-code'
+check 'agent-shell: does not pass CLAUDECODE on' \
+      eval "! grep -q '^CLAUDECODE=' '$tmpdir/emacs-env'"
+check 'agent-shell: exports the checkouts like dev' \
+      env_has "timvisher_acp_el_checkout=$real_tmpdir/acp-el"
+
+fake agent-shell "${checkouts[@]}" codex
+check 'agent-shell codex: starts codex' \
+      env_has 'timvisher_agent_start_fn=agent-shell-openai-start-codex'
+
+fake agent-shell "${checkouts[@]}" gemini
+rc=$?
+check 'agent-shell, unknown agent: exits 2 with timvisher_emacs_unknown_agent and starts nothing' \
+      eval "(( rc == 2 )) && stderr_has '\"code\":\"timvisher_emacs_unknown_agent\"' && [[ ! -e '$tmpdir/op-args' ]]"
+
+check 'agent-shell: the start file exists' test -f "$(dirname "$script")/timvisher_emacs.agent-shell.el"
+
+emacs_tool --help
+rc=$?
+check '--help: on stdout, exit 0' \
+      eval "(( rc == 0 )) && grep -q 'server ls' '$tmpdir/stdout' && [[ ! -s '$tmpdir/stderr' ]]"
+
+emacs_tool
+rc=$?
+check 'no arguments: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && stdout_empty && grep -q 'server ls' '$tmpdir/stderr'"
+
+echo "${tests} tests, ${failures} failures"
+(( 0 == failures ))

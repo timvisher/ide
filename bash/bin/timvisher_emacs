@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
+timvisher_emacs__schema_version=1
+
+# Matches the process name of an Emacs (emacs, Emacs, emacs-31.1) and
+# not emacsclient.
+timvisher_emacs__process_re='^emacs(-[0-9.]+)?$'
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_emacs server ls [--schema-version <N>]
+       timvisher_emacs server socket <pid>
+       timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
+       timvisher_emacs cleanup [--no-dry-run]
+       timvisher_emacs dev [<checkout options>] [--] [<emacs args>...]
+       timvisher_emacs agent-shell [<checkout options>] claude|codex [<emacs args>...]
+
+  server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
+  server socket  print the absolute socket path of the Emacs with that pid
+  server eval    evaluate an expression in the Emacs with that pid; prints its value
+  cleanup        stop every Emacs (TERM, then KILL after 5s); a dry run unless --no-dry-run
+  dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker
+  agent-shell    start an Emacs, through op run, running a claude or codex agent-shell
+
+Servers are found by the pid of the Emacs that owns them, whatever the
+server is named and wherever its socket lives.
+
+Checkout options (dev and agent-shell):
+  --agent-shell <dir>  default $timvisher_agent_shell_checkout, else agent-shell-plus/main
+  --acp-el <dir>       default $timvisher_acp_el_checkout, else acp.el-plus/main
+  --shell-maker <dir>  default $timvisher_shell_maker_checkout, else shell-maker/main
+
+Each checkout is put on the load-path with -L, has its .elc files
+deleted, and is exported as the timvisher_*_checkout variable init.el
+reads.
+EOF
+}
+
+show_ls_help() {
+  cat <<'EOF'
+Usage: timvisher_emacs server ls [--schema-version <N>]
+
+Print the live Emacs servers of this user as JSON:
+
+  {"schema_version": 1, "servers": [<server>...]}
+
+Server fields:
+  pid          the Emacs's pid
+  server_name  the socket's file name (server-name in that Emacs)
+  socket       the socket's absolute path; pass it to emacsclient -s
+  command      the Emacs's command line
+
+An Emacs without a server is not listed.
+
+--schema-version <N> exits 1 unless the current schema_version is <N>.
+
+Schema versions:
+  1  the first version; no breaking changes yet.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+timvisher_emacs__server_sockets() {
+  local -a scope=(-c "/${timvisher_emacs__process_re}/i")
+  if [[ -n ${1-} ]]
+  then
+    scope+=(-p "$1")
+  fi
+
+  local line pid
+  while IFS= read -r line
+  do
+    case $line in
+      p*)
+        pid=${line#p}
+        ;;
+      n/*)
+        [[ -S ${line#n} ]] && printf '%s\t%s\n' "$pid" "${line#n}"
+        ;;
+    esac
+  done < <(lsof -a -U -u "$(id -u)" "${scope[@]}" -F pn 2>/dev/null)
+}
+
+timvisher_emacs__ls() {
+  local pin=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      -h|--help)
+        show_ls_help
+        return 0
+        ;;
+      --schema-version)
+        pin=${2-}
+        shift 2 || { show_ls_help >&2; return 2; }
+        ;;
+      *)
+        show_ls_help >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [[ -n $pin && $pin != "$timvisher_emacs__schema_version" ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_schema_version_mismatch \
+      --message "timvisher_emacs's server list is schema_version ${timvisher_emacs__schema_version}, not ${pin}." \
+      --reason "server ls --schema-version pins the record contract; this tool serves only its current version." \
+      --suggestion "Update the caller for schema_version ${timvisher_emacs__schema_version} and pass --schema-version ${timvisher_emacs__schema_version}" \
+      --suggestion "See 'timvisher_emacs server ls --help' for the fields and what changed between versions"
+    return 1
+  fi
+
+  local pid socket command
+  while IFS=$'\t' read -r pid socket
+  do
+    command=$(ps -o command= -p "$pid") || continue
+    jq -n --argjson pid "$pid" --arg socket "$socket" --arg command "$command" \
+      '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket, command: $command}' ||
+      return 1
+  done < <(timvisher_emacs__server_sockets) |
+    jq -s --argjson schema_version "$timvisher_emacs__schema_version" \
+      '{schema_version: $schema_version, servers: .}'
+}
+
+timvisher_emacs__check_pid() {
+  local pid=$1
+
+  if [[ ! $pid =~ ^[0-9]+$ ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_bad_pid \
+      --message "'${pid}' is not a pid." \
+      --suggestion "Find the pid with 'timvisher_emacs server ls'"
+    return 1
+  fi
+
+  local name
+  if ! name=$(ps -o comm= -p "$pid" 2>/dev/null)
+  then
+    aictl_error \
+      --code timvisher_emacs_no_such_process \
+      --message "No process has pid ${pid}." \
+      --suggestion "Find a live Emacs with 'timvisher_emacs server ls'"
+    return 1
+  fi
+
+  name=${name##*/}
+  shopt -s nocasematch
+  if [[ ! $name =~ $timvisher_emacs__process_re ]]
+  then
+    shopt -u nocasematch
+    aictl_error \
+      --code timvisher_emacs_not_emacs \
+      --message "Process ${pid} is ${name}, not an Emacs." \
+      --suggestion "Find a live Emacs with 'timvisher_emacs server ls'"
+    return 1
+  fi
+  shopt -u nocasematch
+}
+
+timvisher_emacs__socket() {
+  local pid=$1
+  timvisher_emacs__check_pid "$pid" || return 1
+
+  local socket
+  IFS=$'\t' read -r _ socket < <(timvisher_emacs__server_sockets "$pid")
+  if [[ -z $socket ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_no_server \
+      --message "Emacs ${pid} is not running a server." \
+      --reason "Every Emacs loading the ide init.el starts one (ide-control-server-start); a failed start is only a message in *Messages*." \
+      --suggestion "Start one in that Emacs with M-x ide-control-server-start, or M-x server-start"
+    return 1
+  fi
+  printf '%s\n' "$socket"
+}
+
+timvisher_emacs__eval() {
+  local timeout=10
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --timeout)
+        timeout=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 2 == $# )) || { usage; return 2; }
+
+  local pid=$1 expression=$2 socket
+  socket=$(timvisher_emacs__socket "$pid") || return 1
+
+  local out err
+  err=$(mktemp) || return 1
+  if ! out=$(emacsclient -s "$socket" -w "$timeout" --eval "$expression" 2> "$err")
+  then
+    aictl_error \
+      --code timvisher_emacs_eval_failed \
+      --message "emacsclient could not evaluate the expression in Emacs ${pid}." \
+      --reason "$(< "$err")" \
+      --suggestion "A busy Emacs (a minibuffer prompt, a long command) answers late: retry with a longer --timeout" \
+      --suggestion "Check that the expression reads and evaluates in that Emacs"
+    rm -f -- "$err"
+    return 1
+  fi
+  rm -f -- "$err"
+  printf '%s\n' "$out"
+}
+
+timvisher_emacs__cleanup() {
+  local dry_run=true
+
+  case ${1-} in
+    --no-dry-run)
+      dry_run=false
+      ;;
+    '')
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+
+  local -a emacs_pids=()
+  local emacs_pid
+  while read -r emacs_pid
+  do
+    emacs_pids+=("$emacs_pid")
+  done < <(pgrep -u "$(id -u)" -i "$timvisher_emacs__process_re")
+
+  local i
+  for i in "${!emacs_pids[@]}"
+  do
+    emacs_pid=${emacs_pids[$i]}
+    printf "%s Killing emacsen %d/%d '%s'\n" "$(date -u '+%FT%T%z')" "$(( i + 1 ))" "${#emacs_pids[@]}" "$emacs_pid" >&2
+    if [[ $dry_run == true ]]
+    then
+      printf 'DRY_RUN: kill %s\n' "$emacs_pid" >&2
+      continue
+    fi
+
+    kill "$emacs_pid"
+
+    SECONDS=0
+    while kill -0 "$emacs_pid" 2>/dev/null && (( SECONDS < 5 ))
+    do
+      sleep 0.1
+    done
+
+    if kill -0 "$emacs_pid" 2>/dev/null
+    then
+      kill -9 "$emacs_pid"
+    fi
+  done
+
+  if [[ $dry_run == false ]]
+  then
+    pgrep -u "$(id -u)" -il "$timvisher_emacs__process_re" >&2
+  fi
+
+  echo 'Done' >&2
+}
+
+timvisher_emacs__checkout() {
+  local flag=$1 dir=$2
+  if [[ ! -d $dir ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_no_such_checkout \
+      --message "The ${flag#--} checkout '${dir}' is not a directory." \
+      --suggestion "Pass an existing checkout with ${flag} <dir>" \
+      --suggestion "Or create the worktree first (ntmux3 -d)"
+    return 1
+  fi
+  (cd -- "$dir" && pwd -P)
+}
+
+timvisher_emacs__checkouts() {
+  local git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+  local agent_shell=${timvisher_agent_shell_checkout:-${git_home}/timvisher-dd/agent-shell-plus/main}
+  local acp_el=${timvisher_acp_el_checkout:-${git_home}/timvisher-dd/acp.el-plus/main}
+  local shell_maker=${timvisher_shell_maker_checkout:-${git_home}/xenodium/shell-maker/main}
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --agent-shell)
+        agent_shell=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --acp-el)
+        acp_el=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --shell-maker)
+        shell_maker=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  timvisher_emacs__rest=("$@")
+
+  agent_shell=$(timvisher_emacs__checkout --agent-shell "$agent_shell") || return 1
+  acp_el=$(timvisher_emacs__checkout --acp-el "$acp_el") || return 1
+  shell_maker=$(timvisher_emacs__checkout --shell-maker "$shell_maker") || return 1
+
+  export timvisher_agent_shell_checkout=$agent_shell
+  export timvisher_acp_el_checkout=$acp_el
+  export timvisher_shell_maker_checkout=$shell_maker
+
+  local -a elcs=()
+  local elc
+  for elc in "$agent_shell"/*.elc "$shell_maker"/*.elc "$acp_el"/*.elc
+  do
+    [[ -e $elc ]] && elcs+=("$elc")
+  done
+  if (( 0 < ${#elcs[@]} ))
+  then
+    rm -v -- "${elcs[@]}" >&2
+  fi
+
+  timvisher_emacs__emacs_args=(-L "$agent_shell" -L "$shell_maker" -L "$acp_el")
+}
+
+timvisher_emacs__dev() {
+  timvisher_emacs__checkouts "$@" || return
+  exec emacs "${timvisher_emacs__emacs_args[@]}" "${timvisher_emacs__rest[@]}"
+}
+
+timvisher_emacs__agent_shell() {
+  timvisher_emacs__checkouts "$@" || return
+  set -- "${timvisher_emacs__rest[@]}"
+
+  local agent=${1-}
+  shift
+
+  case $agent in
+    claude)
+      timvisher_agent_start_fn=${timvisher_agent_shell_start_fn:-agent-shell-anthropic-start-claude-code}
+      ;;
+    codex)
+      timvisher_agent_start_fn=${timvisher_agent_shell_start_fn:-agent-shell-openai-start-codex}
+      ;;
+    *)
+      aictl_error \
+        --code timvisher_emacs_unknown_agent \
+        --message "Unknown agent '${agent}'." \
+        --suggestion "Pass claude or codex: timvisher_emacs agent-shell claude"
+      return 2
+      ;;
+  esac
+  export timvisher_agent_start_fn
+
+  # Sourced here and not at the top: it exports TIMVISHER_AGENT, which
+  # the agents this Emacs starts need and the other subcommands must not
+  # inherit.
+  local agents_bash=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/ai/agents.bash
+  if [[ -r $agents_bash ]]
+  then
+    # shellcheck disable=SC1090
+    . "$agents_bash"
+  else
+    info '%s not found' "$agents_bash"
+  fi
+
+  # Unset CLAUDECODE to avoid the child Emacs connecting to the
+  # parent agent's Claude Code MCP server.
+  if [[ -n ${CLAUDECODE:-} ]]
+  then
+    warn 'Unsetting CLAUDECODE=%s to avoid MCP conflict with parent agent' "$CLAUDECODE"
+    unset CLAUDECODE
+  fi
+
+  exec op run --no-masking -- \
+    emacs \
+    "${timvisher_emacs__emacs_args[@]}" \
+    -l ~/bin/timvisher_emacs.agent-shell.el \
+    "$@"
+}
+
+case ${1-} in
+  -h|--help|help)
+    show_help
+    exit 0
+    ;;
+  server)
+    case ${2-} in
+      ls)
+        shift 2
+        timvisher_emacs__ls "$@"
+        exit
+        ;;
+      socket)
+        (( 3 == $# )) || { usage; exit 2; }
+        timvisher_emacs__socket "$3" || exit 1
+        ;;
+      eval)
+        shift 2
+        timvisher_emacs__eval "$@"
+        exit
+        ;;
+      *)
+        usage
+        exit 2
+        ;;
+    esac
+    ;;
+  cleanup)
+    shift
+    timvisher_emacs__cleanup "$@"
+    exit
+    ;;
+  dev)
+    shift
+    timvisher_emacs__dev "$@"
+    exit
+    ;;
+  agent-shell)
+    shift
+    timvisher_emacs__agent_shell "$@"
+    exit
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
