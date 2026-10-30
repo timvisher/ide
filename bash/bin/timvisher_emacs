@@ -25,6 +25,7 @@ show_help() {
 Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server socket <pid>
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
+       timvisher_emacs session ls [--format json|table]
        timvisher_emacs session start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
        timvisher_emacs session get-server <session>
        timvisher_emacs session send [--timeout <seconds>] <session> <message-file>
@@ -37,6 +38,9 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
   server socket  print the absolute socket path of the Emacs with that pid
   server eval    evaluate an expression in the Emacs with that pid; prints its value
+  session ls          list every agent-shell in every live Emacs: name, ref, status, queued
+                      prompts, agent, Emacs pid, buffer and directory; JSON when stdout
+                      is not a terminal, a table when it is
   session start       start a new agent-shell (claude by default) in the Emacs with that pid,
                       submit the prompt file once it is ready, wait for its session, and
                       print it as JSON with the name and ref to message it by; for an
@@ -440,6 +444,91 @@ timvisher_emacs__session_server() {
     --suggestion "Name the session by its id, its name or its ListAgents ref; ${sessions_dir}/*.json has sessionId and name" \
     --suggestion "An Emacs without a server cannot be reached: start one there with M-x ide-control-server-start"
   return 1
+}
+
+timvisher_emacs__session_ls() {
+  local format=table
+  [[ -t 1 ]] || format=json
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --format)
+        format=${2-}
+        [[ $format == json || $format == table ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  local query='(if (not (fboundp (quote agent-shell-buffers))) "[]" (json-serialize (vconcat (delq nil (mapcar (lambda (b) (condition-case nil (with-current-buffer b (let ((st (agent-shell--state))) (list (cons (quote buffer) (buffer-name)) (cons (quote session_id) (or (map-nested-elt st (quote (:session :id))) :null)) (cons (quote agent) (let ((i (map-elt (map-elt st :agent-config) :identifier))) (if i (format "%s" i) :null))) (cons (quote status) (symbol-name (agent-shell-status))) (cons (quote pending_prompts) (length (map-elt st :pending-prompts))) (cons (quote cwd) (or (ignore-errors (agent-shell-cwd)) :null))))) (error nil))) (agent-shell-buffers))))))'
+
+  local shells unreachable pid socket out
+  shells=$(mktemp) || return 1
+  unreachable=$(mktemp) || { rm -f -- "$shells"; return 1; }
+  while IFS=$'\t' read -r pid socket
+  do
+    if ! out=$(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null)
+    then
+      jq -n --argjson pid "$pid" --arg socket "$socket" \
+        '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket}' >> "$unreachable"
+      continue
+    fi
+    timvisher_emacs__elisp_string_value <<< "$out" |
+      jq -c --argjson pid "$pid" --arg socket "$socket" \
+        '.[] + {emacs_pid: $pid, server_name: ($socket | split("/") | last), socket: $socket}' >> "$shells"
+  done < <(timvisher_emacs__server_sockets)
+
+  local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
+  local -a session_files=("$sessions_dir"/*.json)
+  local claude='[]'
+  if [[ -e ${session_files[0]} ]]
+  then
+    local sid claude_pid name sock tmux ref
+    local -a rows=()
+    while IFS=$'\x1f' read -r sid claude_pid name sock tmux
+    do
+      kill -0 "$claude_pid" 2>/dev/null || continue
+      ref=''
+      [[ -n $sock ]] && ref=$(timvisher_emacs__ref_for "$sock" "$sessions_dir")
+      rows+=("$(jq -cn --arg sid "$sid" --arg name "$name" --arg ref "$ref" --arg tmux "$tmux" \
+        '{($sid): {name: (if $name == "" then null else $name end),
+                   ref: (if $ref == "" then null else $ref end),
+                   tmux: (if $tmux == "" then null else $tmux end)}}')")
+    done < <(jq -r '[.sessionId, (.pid | tostring), (.name // ""), (.messagingSocketPath // ""), (.tmux // "")] | join("\u001f")' \
+               "${session_files[@]}" 2>/dev/null)
+    (( 0 == ${#rows[@]} )) || claude=$(printf '%s\n' "${rows[@]}" | jq -s 'add')
+  fi
+
+  local listing
+  listing=$(jq -n \
+    --argjson schema_version "$timvisher_emacs__schema_version" \
+    --argjson claude "$claude" \
+    --slurpfile shells "$shells" --slurpfile unreachable "$unreachable" \
+    '{schema_version: $schema_version,
+      sessions: ($shells | map({name: null, ref: null, tmux: null}
+                                 + . + ($claude[.session_id // ""] // {}))
+                         | sort_by(.emacs_pid, .buffer)),
+      unreachable: $unreachable}')
+  rm -f -- "$shells" "$unreachable"
+
+  if [[ $format == json ]]
+  then
+    jq . <<< "$listing"
+    return
+  fi
+
+  {
+    printf 'NAME\tREF\tSTATUS\tQUEUED\tAGENT\tEMACS\tBUFFER\tCWD\n'
+    jq -r --arg home "$HOME" '.sessions[] |
+      [(.name // "-"), (.ref // "-"), .status, (.pending_prompts | tostring), (.agent // "-"),
+       (.emacs_pid | tostring), .buffer, ((.cwd // "-") | sub("^" + $home; "~"))] | @tsv' <<< "$listing"
+  } | column -t -s $'\t'
+  jq -r '.unreachable[] | "unreachable: Emacs \(.pid) (\(.server_name)) did not answer within 3s"' <<< "$listing" >&2
 }
 
 timvisher_emacs__session_server_json() {
@@ -996,6 +1085,11 @@ case ${1-} in
     ;;
   session)
     case ${2-} in
+      ls)
+        shift 2
+        timvisher_emacs__session_ls "$@"
+        exit
+        ;;
       start)
         shift 2
         timvisher_emacs__session_start "$@"

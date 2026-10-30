@@ -282,7 +282,7 @@ start_emacs tvshell "(progn
                                 (list (cons :session (list (cons :id \"abcd1111-0000\")))
                                       (cons :supports-session-fork t)
                                       (cons :pending-prompts (list \"queued one\" \"queued two\"))
-                                      (cons :agent-config 'claude)))))
+                                      (cons :agent-config (list (cons :identifier 'claude-code)))))))
   (set-window-buffer (selected-window) \"shell-sess-1\")
   (with-current-buffer \"shell-sess-1\"
     (let ((process (make-pipe-process :name \"fake-shell\" :buffer (current-buffer) :noquery t)))
@@ -479,6 +479,23 @@ check 'session start, pid not an Emacs: exits 1 with timvisher_emacs_not_emacs' 
 emacs_tool session start --agent claude
 rc=$?
 check 'session start without --emacs: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool session ls
+rc=$?
+check 'session ls: without a terminal, lists every shell as JSON joined with its session file' \
+      eval "(( rc == 0 )) && [[ \$(field '.sessions[] | select(.buffer == \"shell-sess-1\") | [.name, .ref, .session_id, .agent, .status, .pending_prompts, .emacs_pid] | @tsv') == 'tvshell-1a	$shell_ref	abcd1111-0000	claude-code	ready	2	$shell_pid' ]] && [[ \$(field '.sessions[] | select(.buffer == \"shell-new\") | .name') == tvnew-3c ]]"
+check 'session ls: an Emacs that does not answer is listed as unreachable' \
+      eval "[[ \$(field '.unreachable[].pid') == $busy_pid ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool session ls --format table
+rc=$?
+check 'session ls --format table: a header and a row per shell' \
+      eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q '^NAME  *REF  *STATUS' && grep -q '^tvshell-1a  *$shell_ref  *ready  *2 ' '$tmpdir/stdout' && grep -q 'unreachable: Emacs $busy_pid' '$tmpdir/stderr'"
+
+emacs_tool session ls --format yaml
+rc=$?
+check 'session ls with an unknown format: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
 printf 'Pick up the deploy.\n' > "$tmpdir/recover-note"
