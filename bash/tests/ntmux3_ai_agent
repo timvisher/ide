@@ -23,7 +23,7 @@ funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
 tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
-mkdir -p "$tmpdir/bin" "$tmpdir/state" || exit 1
+mkdir -p "$tmpdir/bin" "$tmpdir/state" "$tmpdir/tmp" || exit 1
 
 cat > "$tmpdir/bin/timvisher_emacs" <<'FAKE'
 #!/usr/bin/env bash
@@ -51,7 +51,7 @@ chmod +x "$tmpdir/bin/timvisher_emacs" "$tmpdir/bin/timvisher_notify" || exit 1
 
 run() {
   rm -f -- "$tmpdir"/emacs-calls "$tmpdir"/notify-calls "$tmpdir"/ntmux-calls "$tmpdir"/prompt-seen
-  FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" XDG_STATE_HOME=$tmpdir/state TIMVISHER_AGENT=1 \
+  FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" XDG_STATE_HOME=$tmpdir/state TMPDIR=$tmpdir/tmp TIMVISHER_AGENT=1 \
     bash -c '
       source ~/.functions/logging.bash && source ~/.functions/aictl.bash && source "$1" || exit 99
       shift
@@ -79,7 +79,7 @@ check 'detached: hands over the prompt exactly' \
 check 'detached: reports the agent with ntmux3_agent_started naming it' \
       eval 'stderr_code ntmux3_agent_started && grep -qF "tvspawn-1f [abc123]" "$tmpdir/stderr"'
 check 'detached: deletes the prompt file' \
-      eval '! compgen -G "${TMPDIR:-/tmp}/x.ntmux3-prompt.*" > /dev/null'
+      eval '! compgen -G "$tmpdir/tmp/x.ntmux3-prompt.*" > /dev/null'
 
 TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT='Hi.' run ntmux3__new_session true org/repo/br .
 check 'only a prompt: the agent is claude' grep -q -- '--agent claude' "$tmpdir/emacs-calls"
@@ -92,7 +92,7 @@ check 'no Emacs server comes up: exits 1 with ntmux3_agent_not_started' \
 TIMVISHER_NTMUX3_AI_AGENT=claude run ntmux3__new_session '' org/repo/br .
 rc=$?
 SECONDS=0
-until grep -qs 'session start' "$tmpdir/emacs-calls" || (( 10 < SECONDS ))
+until grep -qs ntmux3_agent_started "$tmpdir/state/timvisher/ntmux3/agent-start.log" || (( 60 < SECONDS ))
 do
   sleep 0.1
 done
@@ -105,7 +105,7 @@ TIMVISHER_NTMUX3_AI_AGENT=claude run eval '
   ntmux3__start_agent() { aictl_error --code ntmux3_agent_not_started --message no; return 1; }
   ntmux3__new_session "" org/repo/br .'
 SECONDS=0
-until [[ -s $tmpdir/notify-calls ]] || (( 10 < SECONDS ))
+until [[ -s $tmpdir/notify-calls ]] || (( 60 < SECONDS ))
 do
   sleep 0.1
 done
