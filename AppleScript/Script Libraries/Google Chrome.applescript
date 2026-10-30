@@ -107,19 +107,78 @@ on focusTabWithUrl(u)
 	return false
 end focusTabWithUrl
 
-on openTabWithUrl(u)
+on tabIds()
+	set ids to {}
+	if application "Google Chrome" is not running then
+		return ids
+	end if
+	
 	tell application "Google Chrome"
-		activate
-		if (count of windows) is 0 then
-			make new window
-			set t to active tab of front window
-			set URL of t to u
-		else
-			set t to make new tab at end of tabs of front window with properties {URL:u}
-			set active tab index of front window to (count of tabs of front window)
+		repeat with w in windows
+			set ids to ids & (id of tabs of w)
+		end repeat
+	end tell
+	return ids
+end tabIds
+
+-- A tab is found by its id not being in knownIds rather than by its
+-- URL alone: SSO and other redirects change the URL while it loads.
+-- The URL only picks between several new tabs, e.g. when Chrome
+-- restores a session as it starts. With several new tabs and none
+-- matching, no tab is safe to claim.
+on newTab(u, knownIds)
+	if application "Google Chrome" is not running then
+		return missing value
+	end if
+	
+	tell application "Google Chrome"
+		set newTabs to {}
+		repeat with w in windows
+			set windowId to id of w
+			set windowTabIds to id of tabs of w
+			repeat with tabIdRef in windowTabIds
+				set tabId to contents of tabIdRef
+				if knownIds does not contain tabId then
+					set t to tab id tabId of window id windowId
+					set tabUrl to URL of t
+					considering case
+						set matched to tabUrl is u or tabUrl is (u & "/")
+					end considering
+					if matched then
+						return t
+					end if
+					set end of newTabs to t
+				end if
+			end repeat
+		end repeat
+		if 1 is (count of newTabs) then
+			return item 1 of newTabs
 		end if
 	end tell
-	my waitForTabToLoad(t)
+	return missing value
+end newTab
+
+-- `open location` outside any tell, not a new tab made in Chrome's
+-- front window: the default URL handler (Finicky) picks the browser
+-- and profile. Chrome runs every profile in one process, so the tab
+-- shows up here whichever profile Finicky picks. When Finicky picks
+-- another app, no tab shows up: return false rather than error,
+-- since the URL did open.
+on openTabWithUrl(u)
+	set knownIds to my tabIds()
+	open location u
+	set deadline to (current date) + 10
+	repeat
+		set t to my newTab(u, knownIds)
+		if t is not missing value then
+			my waitForTabToLoad(t)
+			return true
+		end if
+		if deadline < (current date) then
+			return false
+		end if
+		delay 0.1
+	end repeat
 end openTabWithUrl
 
 on closeTabWithUrl(u)
