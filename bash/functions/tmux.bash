@@ -319,6 +319,9 @@ function ntmux3__usage() {
     echo '  new branch.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
     echo '  get-editor-pid prints the pid of the Emacs in a session'"'"'s editor window; the session is a' >&2
     echo '  name, or a path whose session ntmux3 would use, and defaults to the current worktree'"'"'s.' >&2
+    echo '  TIMVISHER_NTMUX3_AI_AGENT=claude|codex starts that agent-shell in a new session'"'"'s editor' >&2
+    echo '  Emacs, submitting TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT (setting only the prompt means' >&2
+    echo '  claude).  With -d ntmux3 waits for it and reports it; otherwise it starts in the background.' >&2
     return 1
 }
 
@@ -819,6 +822,93 @@ function ntmux3__get_editor_pid() {
     return 1
 }
 
+function ntmux3__start_agent() {
+    local session_name=$1 agent=$2 prompt=$3 deadline=${4:-120}
+
+    local emacs_pid='' socket=''
+    SECONDS=0
+    until [[ -n $socket ]] || (( deadline < SECONDS ))
+    do
+        if emacs_pid=$(ntmux3__get_editor_pid "$session_name" 2>/dev/null)
+        then
+            socket=$(timvisher_emacs server socket "$emacs_pid" 2>/dev/null)
+        fi
+        [[ -n $socket ]] || sleep 1
+    done
+
+    if [[ -z $socket ]]
+    then
+        aictl_error \
+            --code ntmux3_agent_not_started \
+            --message "No Emacs server came up in the editor window of '${session_name}' within ${deadline}s, so no ${agent} agent-shell was started." \
+            --suggestion "Start it by hand: timvisher_emacs session start --emacs \$(ntmux3 get-editor-pid '${session_name}') --agent ${agent}" \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        return 1
+    fi
+
+    local -a prompt_args=()
+    local prompt_file=''
+    if [[ -n $prompt ]]
+    then
+        prompt_file=$(mktemp "${TMPDIR:-/tmp}/x.ntmux3-prompt.XXXXXX") || return 1
+        printf '%s\n' "$prompt" > "$prompt_file" || { rm -f -- "$prompt_file"; return 1; }
+        prompt_args=(--prompt-file "$prompt_file")
+    fi
+
+    local started rc
+    started=$(timvisher_emacs session start --emacs "$emacs_pid" --agent "$agent" "${prompt_args[@]}")
+    rc=$?
+    [[ -z $prompt_file ]] || rm -f -- "$prompt_file"
+    (( 0 == rc )) || return "$rc"
+
+    aictl_info \
+        --code ntmux3_agent_started \
+        --message "Started a ${agent} agent-shell in the editor Emacs of '${session_name}': $(jq -r '"\(.name // .session_id) [\(.ref // "no ref")]"' <<< "$started")." \
+        --data "$(jq -c . <<< "$started")" \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+}
+
+# Only new sessions get an agent: re-attaching to an existing session
+# with the variables still exported must not start another one.
+function ntmux3__new_session() {
+    local detached=$1 session_name=$2 target=$3
+
+    local agent=${TIMVISHER_NTMUX3_AI_AGENT-}
+    local prompt=${TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT-}
+    if [[ -z $agent && -n $prompt ]]
+    then
+        agent=claude
+    fi
+
+    if [[ -z $agent ]]
+    then
+        ntmux ${detached:+-d} "$session_name" "$target"
+        return
+    fi
+
+    if [[ -n $detached ]]
+    then
+        ntmux -d "$session_name" "$target" || return
+        ntmux3__start_agent "$session_name" "$agent" "$prompt"
+        return
+    fi
+
+    # Attaching blocks until the session is detached, so the agent start
+    # runs in the background, before the attach, and reports a failure as
+    # a notification because nobody is reading its output.
+    local log_dir=${XDG_STATE_HOME:-${HOME}/.local/state}/timvisher/ntmux3
+    mkdir -p -- "$log_dir" || return
+    (
+        if ! ntmux3__start_agent "$session_name" "$agent" "$prompt"
+        then
+            timvisher_notify 'ntmux3: agent-shell not started' \
+                "No ${agent} agent-shell was started in '${session_name}'; see ${log_dir}/agent-start.log"
+        fi
+    ) >> "${log_dir}/agent-start.log" 2>&1 &
+    disown
+    ntmux "$session_name" "$target"
+}
+
 function ntmux3__history() {
     if [[ -n ${ntmux3__state_dir:-} ]]
     then
@@ -1089,7 +1179,7 @@ function ntmux3__main() {
                     info 'attach with: ntmux3 '\''%s'\''' "$session_name"
                 fi
             else
-                ntmux ${detached:+-d} "${sanitized_session_name}" "${target_file:-.}"
+                ntmux3__new_session "$detached" "${sanitized_session_name}" "${target_file:-.}"
             fi
         )
     }
@@ -1252,7 +1342,7 @@ function ntmux3__main() {
                 info 'attach with: ntmux3 '\''%s'\''' "$session_name"
             fi
         else
-            ntmux ${detached:+-d} "${sanitized_session_name}" "${target_file:-.}"
+            ntmux3__new_session "$detached" "${sanitized_session_name}" "${target_file:-.}"
         fi
     )
 }
