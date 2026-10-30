@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034 # rc is read inside the eval strings passed to check
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" "$tmpdir/state" "$tmpdir/tmp" || exit 1
+
+cat > "$tmpdir/bin/timvisher_emacs" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_DIR/emacs-calls"
+case "$1 $2" in
+  'server socket')
+    [[ -n ${FAKE_NO_SERVER-} ]] && exit 1
+    printf '/tmp/fake/timvisher-%s\n' "$3"
+    ;;
+  'agent-shell start')
+    while (( 0 < $# ))
+    do
+      [[ $1 == --prompt-file ]] && cp -- "$2" "$FAKE_DIR/prompt-seen"
+      shift
+    done
+    printf '{"session_id": "sess-9", "name": "tvspawn-1f", "ref": "abc123"}\n'
+    ;;
+esac
+FAKE
+cat > "$tmpdir/bin/timvisher_notify" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_DIR/notify-calls"
+FAKE
+chmod +x "$tmpdir/bin/timvisher_emacs" "$tmpdir/bin/timvisher_notify" || exit 1
+
+run() {
+  rm -f -- "$tmpdir"/emacs-calls "$tmpdir"/notify-calls "$tmpdir"/ntmux-calls "$tmpdir"/prompt-seen
+  FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" XDG_STATE_HOME=$tmpdir/state TMPDIR=$tmpdir/tmp TIMVISHER_AGENT=1 \
+    bash -c '
+      source ~/.functions/logging.bash && source ~/.functions/aictl.bash && source "$1" || exit 99
+      shift
+      ntmux() { printf "%s\n" "$*" >> "$FAKE_DIR/ntmux-calls"; }
+      ntmux3__get_editor_pid() { printf "4242\n"; }
+      "$@"' _ "$funcs_dir/tmux.bash" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+stderr_code() {
+  grep -qF "\"code\":\"$1\"" "$tmpdir/stderr"
+}
+
+run ntmux3__new_session true org/repo/br .
+rc=$?
+check 'no agent variables: just ntmux -d, no agent' \
+      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "-d org/repo/br ." ]] && [[ ! -e $tmpdir/emacs-calls ]]'
+
+TIMVISHER_NTMUX3_AI_AGENT=codex TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT=$'Do the thing.\nCarefully.' \
+  run ntmux3__new_session true org/repo/br .
+rc=$?
+check 'detached: creates the session, then starts the agent in its editor Emacs with the prompt' \
+      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "-d org/repo/br ." ]] && grep -q "^agent-shell start --emacs 4242 --agent codex --prompt-file " "$tmpdir/emacs-calls"'
+check 'detached: hands over the prompt exactly' \
+      eval '[[ $(cat "$tmpdir/prompt-seen") == $'"'"'Do the thing.\nCarefully.'"'"' ]]'
+check 'detached: reports the agent with ntmux3_agent_started naming it' \
+      eval 'stderr_code ntmux3_agent_started && grep -qF "tvspawn-1f [abc123]" "$tmpdir/stderr"'
+check 'detached: deletes the prompt file' \
+      eval '! compgen -G "$tmpdir/tmp/x.ntmux3-prompt.*" > /dev/null'
+
+TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT='Hi.' run ntmux3__new_session true org/repo/br .
+check 'only a prompt: the agent is claude' grep -q -- '--agent claude' "$tmpdir/emacs-calls"
+
+FAKE_NO_SERVER=1 run ntmux3__start_agent org/repo/br claude '' 1
+rc=$?
+check 'no Emacs server comes up: exits 1 with ntmux3_agent_not_started' \
+      eval '(( rc == 1 )) && stderr_code ntmux3_agent_not_started && ! grep -q "agent-shell start" "$tmpdir/emacs-calls"'
+
+TIMVISHER_NTMUX3_AI_AGENT=claude run ntmux3__new_session '' org/repo/br .
+rc=$?
+SECONDS=0
+until grep -qs ntmux3_agent_started "$tmpdir/state/timvisher/ntmux3/agent-start.log" || (( 60 < SECONDS ))
+do
+  sleep 0.1
+done
+check 'attached: attaches with ntmux and starts the agent in the background' \
+      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "org/repo/br ." ]] && grep -q "^agent-shell start --emacs 4242 --agent claude$" "$tmpdir/emacs-calls"'
+check 'attached: logs the background start' \
+      grep -q ntmux3_agent_started "$tmpdir/state/timvisher/ntmux3/agent-start.log"
+
+TIMVISHER_NTMUX3_AI_AGENT=claude run eval '
+  ntmux3__start_agent() { aictl_error --code ntmux3_agent_not_started --message no; return 1; }
+  ntmux3__new_session "" org/repo/br .'
+SECONDS=0
+until [[ -s $tmpdir/notify-calls ]] || (( 60 < SECONDS ))
+do
+  sleep 0.1
+done
+check 'attached: a failed background start raises a notification' \
+      grep -q 'agent-shell not started' "$tmpdir/notify-calls"
+
+cat > "$tmpdir/bin/osascript" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s' "$2" > "$FAKE_DIR/osascript-arg"
+FAKE
+chmod +x "$tmpdir/bin/osascript" || exit 1
+rm -f -- "$tmpdir/osascript-arg"
+FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" TIMVISHER_NTMUX3_AI_AGENT=codex \
+  TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT="Don't stop; it's \"urgent\"." \
+  bash -c 'source ~/.functions/logging.bash && source ~/.functions/aictl.bash && source "$1" && unset TIMVISHER_AGENT && ntmux3 -T org/repo/br' \
+  _ "$funcs_dir/tmux.bash" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+rc=$?
+check 'ntmux3 -T: carries the agent variables into the new window, quoted' \
+      eval '(( rc == 0 )) && grep -qF "TIMVISHER_NTMUX3_AI_AGENT=codex " "$tmpdir/osascript-arg" && command=$(sed -n "s/.*runCommandInteractively(\"\(.*\)\")\$/\1/p" "$tmpdir/osascript-arg" | sed "s/\\\\\(.\)/\1/g") && [[ $(bash -c "TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT=; ntmux3() { printf %s \"\$TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT\"; }; ${command#*&& }") == "Don'"'"'t stop; it'"'"'s \"urgent\"." ]]'
+
+echo "${tests} tests, ${failures} failures"
+(( 0 == failures ))

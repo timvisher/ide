@@ -1,3 +1,5 @@
+;;; timvisher_emacs.agent-shell.el --- Start an agent-shell for timvisher_emacs agent-shell launch -*- lexical-binding: t -*-
+
 (setq frame-background-mode 'light)
 
 (setq load-prefer-newer t)
@@ -20,7 +22,11 @@
 _**DO NOT UNDER ANY CIRCUMSTANCES EDIT ANYTHING. YOUR GOAL IS PURE INVESTIGATION AND REPORTING.**_"))
 
 (setq timvisher--shell-buffer
-      (let ((started (funcall (intern (getenv "timvisher_agent_start_fn")))))
+      ;; The start commands insert context from the current buffer (by
+      ;; default its current line) into the new prompt, which would then
+      ;; be submitted ahead of the prompt below.
+      (let ((started (let ((agent-shell-context-sources nil))
+                       (funcall (intern (getenv "timvisher_agent_start_fn"))))))
         (or (and (bufferp started) started)
             (and (consp started) (map-elt started :buffer))
             (car (agent-shell-buffers))

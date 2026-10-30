@@ -147,10 +147,13 @@ def wait_until_merged(target):
 
 
 TRUNK_PULL = """printf '%s git pull --ff-only after %s\\n' "$(date -u '+%FT%TZ')" "$3" >> "$2"
-if ! git -C "$1" pull --ff-only >> "$2" 2>&1
+git -C "$1" pull --ff-only >> "$2" 2>&1
+rc=$?
+if (( 0 != rc ))
 then
   timvisher_notify 'timvisher_gh: trunk pull failed' "git pull --ff-only failed in $1; see $2" >> "$2" 2>&1
 fi
+printf '%s git pull --ff-only exited %d\\n' "$(date -u '+%FT%TZ')" "$rc" >> "$2"
 """
 
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agent-Shell Sessions"
+  short_description: "Message, find, start and recover agent-shell sessions"

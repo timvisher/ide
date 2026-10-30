@@ -191,11 +191,13 @@ class MergeTest(GhTestCase):
         git("clone", "-q", str(self.remote), str(trunk), cwd=self.tmp)
         self.assertEqual(0, self.merge(PR, stdin="y\n", cwd=feature)[0], self.err)
         log = trunk / ".timvisher_gh" / "trunk-pull.log"
-        for _ in range(100):
-            if log.exists() and "git pull --ff-only after" in log.read_text():
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if log.exists() and "git pull --ff-only exited" in log.read_text():
                 break
             time.sleep(0.05)
         self.assertIn(f"git pull --ff-only after {PR}", log.read_text())
+        self.assertIn("git pull --ff-only exited 0", log.read_text())
 
 
 if __name__ == "__main__":

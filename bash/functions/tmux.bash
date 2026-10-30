@@ -140,6 +140,8 @@ function new_tmux_session {
             TIMVISHER_AICTL_LOG
             TIMVISHER_CLAUDE
             TIMVISHER_CODEX
+            TIMVISHER_NTMUX3_AI_AGENT
+            TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT
         )
         local -a env_unsets=()
         local agent_env_var
@@ -311,11 +313,17 @@ alias nt=ntmux
 function ntmux3__usage() {
     echo 'Usage: ntmux3 [-d | -T] [GitHub PR URL | org/repo[/branch] | path] [file]' >&2
     echo '       ntmux3 [-d | -T] org/repo/branch branch-ish' >&2
+    echo '       ntmux3 get-editor-pid [session | path]' >&2
     echo '  -d creates the session detached.  -T runs ntmux3 in a new terminal window; under an agent it' >&2
     echo '  waits for the session and reports it like -d.' >&2
     echo '  org may be an org alias.  An existing file as arg 2 opens in the editor.' >&2
     echo '  The second form stacks a new worktree for org/repo/branch on branch-ish; the target must be a' >&2
     echo '  new branch.  branch-ish may be relative: a bare branch name is resolved against org/repo.' >&2
+    echo '  get-editor-pid prints the pid of the Emacs in a session'"'"'s editor window; the session is a' >&2
+    echo '  name, or a path whose session ntmux3 would use, and defaults to the current worktree'"'"'s.' >&2
+    echo '  TIMVISHER_NTMUX3_AI_AGENT=claude|codex starts that agent-shell in a new session'"'"'s editor' >&2
+    echo '  Emacs, submitting TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT (setting only the prompt means' >&2
+    echo '  claude).  With -d ntmux3 waits for it and reports it; otherwise it starts in the background.' >&2
     return 1
 }
 
@@ -478,6 +486,15 @@ function ntmux3__terminal() (
             }
         command+="TIMVISHER_AICTL_LOG=$(printf '%q' "$log") "
     fi
+
+    local agent_var
+    for agent_var in TIMVISHER_NTMUX3_AI_AGENT TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT
+    do
+        if [[ -n ${!agent_var-} ]]
+        then
+            command+="${agent_var}=$(printf '%q' "${!agent_var}") "
+        fi
+    done
 
     command+=ntmux3
     if (( 0 < $# ))
@@ -740,6 +757,175 @@ function ntmux3__resolve_session_name() {
     printf '%s' "$name"
 }
 
+function ntmux3__get_editor_pid() {
+    if (( 1 < $# ))
+    then
+        ntmux3__usage
+        return
+    fi
+
+    local target=${1-}
+    if [[ -z $target ]]
+    then
+        target=$(git rev-parse --show-toplevel 2>/dev/null) || target=$PWD
+    fi
+
+    local session_name=$target
+    if ! tmux has-session -t "=${session_name}" 2>/dev/null
+    then
+        local target_dir=$target worktree_root
+        [[ -d $target_dir ]] || target_dir=$(dirname -- "$target")
+        if worktree_root=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)
+        then
+            target=$worktree_root
+        fi
+        session_name=$(ntmux3__resolve_session_name "$target" 2>/dev/null)
+        session_name=${session_name//./_}
+    fi
+
+    if ! tmux has-session -t "=${session_name}" 2>/dev/null
+    then
+        aictl_error \
+            --code ntmux3_no_such_session \
+            --message "No tmux session '${session_name}' (from '${target}')." \
+            --suggestion "Pass the session name ntmux3 printed, or a path inside its worktree" \
+            --suggestion "List sessions with: tmux list-sessions" \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        return 1
+    fi
+
+    local pane_pid
+    if ! pane_pid=$(tmux list-panes -t "=${session_name}:editor" -F '#{pane_pid}' 2>/dev/null) ||
+            [[ -z $pane_pid ]]
+    then
+        aictl_error \
+            --code ntmux3_no_editor_window \
+            --message "tmux session '${session_name}' has no editor window." \
+            --reason "ntmux3 starts Emacs in a window named editor; this session was made some other way, or the window was closed." \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        return 1
+    fi
+    pane_pid=${pane_pid%%$'\n'*}
+
+    local -A children=() names=()
+    local pid ppid comm
+    while read -r pid ppid comm
+    do
+        children[$ppid]+=" $pid"
+        names[$pid]=${comm##*/}
+    done < <(ps -A -o pid=,ppid=,comm=)
+
+    local -a queue=("$pane_pid")
+    local -l name
+    while (( 0 < ${#queue[@]} ))
+    do
+        pid=${queue[0]}
+        queue=("${queue[@]:1}")
+        name=${names[$pid]-}
+        if [[ $name =~ ^emacs(-[0-9.]+)?$ ]]
+        then
+            printf '%s\n' "$pid"
+            return 0
+        fi
+        # shellcheck disable=SC2206
+        queue+=(${children[$pid]-})
+    done
+
+    aictl_error \
+        --code ntmux3_no_editor_emacs \
+        --message "No Emacs is running in the editor window of tmux session '${session_name}'." \
+        --suggestion "Start one there: tmux send-keys -t '=${session_name}:editor' emacs C-m" \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+    return 1
+}
+
+function ntmux3__start_agent() {
+    local session_name=$1 agent=$2 prompt=$3 deadline=${4:-120}
+
+    local emacs_pid='' socket=''
+    SECONDS=0
+    until [[ -n $socket ]] || (( deadline < SECONDS ))
+    do
+        if emacs_pid=$(ntmux3__get_editor_pid "$session_name" 2>/dev/null)
+        then
+            socket=$(timvisher_emacs server socket "$emacs_pid" 2>/dev/null)
+        fi
+        [[ -n $socket ]] || sleep 1
+    done
+
+    if [[ -z $socket ]]
+    then
+        aictl_error \
+            --code ntmux3_agent_not_started \
+            --message "No Emacs server came up in the editor window of '${session_name}' within ${deadline}s, so no ${agent} agent-shell was started." \
+            --suggestion "Start it by hand: timvisher_emacs agent-shell start --emacs \$(ntmux3 get-editor-pid '${session_name}') --agent ${agent}" \
+            --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+        return 1
+    fi
+
+    local -a prompt_args=()
+    local prompt_file=''
+    if [[ -n $prompt ]]
+    then
+        prompt_file=$(mktemp "${TMPDIR:-/tmp}/x.ntmux3-prompt.XXXXXX") || return 1
+        printf '%s\n' "$prompt" > "$prompt_file" || { rm -f -- "$prompt_file"; return 1; }
+        prompt_args=(--prompt-file "$prompt_file")
+    fi
+
+    local started rc
+    started=$(timvisher_emacs agent-shell start --emacs "$emacs_pid" --agent "$agent" "${prompt_args[@]}")
+    rc=$?
+    [[ -z $prompt_file ]] || rm -f -- "$prompt_file"
+    (( 0 == rc )) || return "$rc"
+
+    aictl_info \
+        --code ntmux3_agent_started \
+        --message "Started a ${agent} agent-shell in the editor Emacs of '${session_name}': $(jq -r '"\(.name // .session_id) [\(.ref // "no ref")]"' <<< "$started")." \
+        --data "$(jq -c . <<< "$started")" \
+        --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
+}
+
+# Only new sessions get an agent: re-attaching to an existing session
+# with the variables still exported must not start another one.
+function ntmux3__new_session() {
+    local detached=$1 session_name=$2 target=$3
+
+    local agent=${TIMVISHER_NTMUX3_AI_AGENT-}
+    local prompt=${TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT-}
+    if [[ -z $agent && -n $prompt ]]
+    then
+        agent=claude
+    fi
+
+    if [[ -z $agent ]]
+    then
+        ntmux ${detached:+-d} "$session_name" "$target"
+        return
+    fi
+
+    if [[ -n $detached ]]
+    then
+        ntmux -d "$session_name" "$target" || return
+        ntmux3__start_agent "$session_name" "$agent" "$prompt"
+        return
+    fi
+
+    # Attaching blocks until the session is detached, so the agent start
+    # runs in the background, before the attach, and reports a failure as
+    # a notification because nobody is reading its output.
+    local log_dir=${XDG_STATE_HOME:-${HOME}/.local/state}/timvisher/ntmux3
+    mkdir -p -- "$log_dir" || return
+    (
+        if ! ntmux3__start_agent "$session_name" "$agent" "$prompt"
+        then
+            timvisher_notify 'ntmux3: agent-shell not started' \
+                "No ${agent} agent-shell was started in '${session_name}'; see ${log_dir}/agent-start.log"
+        fi
+    ) >> "${log_dir}/agent-start.log" 2>&1 &
+    disown
+    ntmux "$session_name" "$target"
+}
+
 function ntmux3__history() {
     if [[ -n ${ntmux3__state_dir:-} ]]
     then
@@ -794,6 +980,13 @@ function ntmux3__reporting() {
 }
 
 function ntmux3() {
+    if [[ ${1-} == get-editor-pid ]]
+    then
+        shift
+        ntmux3__get_editor_pid "$@"
+        return
+    fi
+
     if [[ ${1-} == -T ]]
     then
         shift
@@ -1003,7 +1196,7 @@ function ntmux3__main() {
                     info 'attach with: ntmux3 '\''%s'\''' "$session_name"
                 fi
             else
-                ntmux ${detached:+-d} "${sanitized_session_name}" "${target_file:-.}"
+                ntmux3__new_session "$detached" "${sanitized_session_name}" "${target_file:-.}"
             fi
         )
     }
@@ -1166,7 +1359,7 @@ function ntmux3__main() {
                 info 'attach with: ntmux3 '\''%s'\''' "$session_name"
             fi
         else
-            ntmux ${detached:+-d} "${sanitized_session_name}" "${target_file:-.}"
+            ntmux3__new_session "$detached" "${sanitized_session_name}" "${target_file:-.}"
         fi
     )
 }

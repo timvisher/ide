@@ -26,7 +26,7 @@ script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_cleanup_shell_procs"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Helper: create a bin dir with default mocks (cleanup_emacs, pgrep,
+# Helper: create a bin dir with default mocks (timvisher_emacs, pgrep,
 # tmux, ps, kill, sleep). Each mock logs its call to $MOCK_LOG.
 # Callers can override individual files afterward. The real `awk` on
 # PATH is used unchanged — the mock `ps` output is plain text and awk
@@ -38,9 +38,9 @@ trap 'rm -rf "$tmpdir"' EXIT
 make_mock_bin() {
   local bin_dir=$1
   mkdir -p "$bin_dir"
-  cat > "$bin_dir/cleanup_emacs" <<'MOCK'
+  cat > "$bin_dir/timvisher_emacs" <<'MOCK'
 #!/usr/bin/env bash
-echo "cleanup_emacs $*" >> "$MOCK_LOG"
+echo "timvisher_emacs $*" >> "$MOCK_LOG"
 MOCK
   cat > "$bin_dir/pgrep" <<'MOCK'
 #!/usr/bin/env bash
@@ -80,7 +80,7 @@ MOCK
 #!/usr/bin/env bash
 echo "sleep $*" >> "$MOCK_LOG"
 MOCK
-  chmod +x "$bin_dir"/{cleanup_emacs,pgrep,tmux,ps,kill,sleep}
+  chmod +x "$bin_dir"/{timvisher_emacs,pgrep,tmux,ps,kill,sleep}
 }
 
 # Extract the single kill line padded with spaces on both sides so
@@ -91,18 +91,18 @@ kill_line_padded() {
   [[ -n $line ]] && printf ' %s ' "$line"
 }
 
-# Test 1: calls cleanup_emacs and tmux kill-server when tmux is running
+# Test 1: calls timvisher_emacs cleanup and tmux kill-server when tmux is running
 run_test
 make_mock_bin "$tmpdir/bin1"
 
 export MOCK_LOG="$tmpdir/log1"
 touch "$MOCK_LOG"
 PATH="$tmpdir/bin1:$PATH" bash "$script"
-if grep -q 'cleanup_emacs --no-dry-run' "$MOCK_LOG" && grep -q 'tmux kill-server' "$MOCK_LOG"
+if grep -q 'timvisher_emacs cleanup --no-dry-run' "$MOCK_LOG" && grep -q 'tmux kill-server' "$MOCK_LOG"
 then
-  pass "calls cleanup_emacs and tmux kill-server when tmux running"
+  pass "calls timvisher_emacs cleanup and tmux kill-server when tmux running"
 else
-  fail "expected cleanup_emacs and tmux calls, got: $(cat "$MOCK_LOG")"
+  fail "expected timvisher_emacs cleanup and tmux calls, got: $(cat "$MOCK_LOG")"
 fi
 
 # Test 2: skips tmux kill-server when tmux is not running
@@ -118,31 +118,31 @@ chmod +x "$tmpdir/bin2/pgrep"
 export MOCK_LOG="$tmpdir/log2"
 touch "$MOCK_LOG"
 PATH="$tmpdir/bin2:$PATH" bash "$script"
-if grep -q 'cleanup_emacs --no-dry-run' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
+if grep -q 'timvisher_emacs cleanup --no-dry-run' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
 then
   pass "skips tmux kill-server when tmux not running"
 else
-  fail "expected only cleanup_emacs, got: $(cat "$MOCK_LOG")"
+  fail "expected only timvisher_emacs cleanup, got: $(cat "$MOCK_LOG")"
 fi
 
-# Test 3: aborts if cleanup_emacs fails
+# Test 3: aborts if timvisher_emacs cleanup fails
 run_test
 make_mock_bin "$tmpdir/bin3"
-cat > "$tmpdir/bin3/cleanup_emacs" <<'MOCK'
+cat > "$tmpdir/bin3/timvisher_emacs" <<'MOCK'
 #!/usr/bin/env bash
-echo "cleanup_emacs $*" >> "$MOCK_LOG"
+echo "timvisher_emacs $*" >> "$MOCK_LOG"
 exit 1
 MOCK
-chmod +x "$tmpdir/bin3/cleanup_emacs"
+chmod +x "$tmpdir/bin3/timvisher_emacs"
 
 export MOCK_LOG="$tmpdir/log3"
 touch "$MOCK_LOG"
 PATH="$tmpdir/bin3:$PATH" bash "$script" || true
-if grep -q 'cleanup_emacs' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
+if grep -q 'timvisher_emacs cleanup' "$MOCK_LOG" && ! grep -q 'tmux kill-server' "$MOCK_LOG"
 then
-  pass "aborts if cleanup_emacs fails"
+  pass "aborts if timvisher_emacs cleanup fails"
 else
-  fail "expected abort on cleanup_emacs failure, got: $(cat "$MOCK_LOG")"
+  fail "expected abort on timvisher_emacs cleanup failure, got: $(cat "$MOCK_LOG")"
 fi
 
 # Test 4: SIGTERMs the fg process group of every pane

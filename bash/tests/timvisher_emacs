@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd -P)/bin/timvisher_emacs"
+
+tmpdir=
+socket_dir=
+emacs_pids=()
+other_pids=()
+cleanup() {
+  local pid
+  for pid in "${emacs_pids[@]}" "${other_pids[@]}"
+  do
+    kill -9 "$pid" 2>/dev/null
+  done
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+  [[ -z $socket_dir ]] || rm -rf -- "$socket_dir"
+}
+trap cleanup EXIT
+
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+# Under /tmp because the suite's $TMPDIR pushes socket paths past
+# macOS's 104-byte limit.
+socket_dir=$(mktemp -d /tmp/tvemacs.XXXXXX) || { echo 'FAIL: mktemp socket dir' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" || exit 1
+
+emacs_tool() {
+  TIMVISHER_AGENT=1 \
+    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+stdout_empty() {
+  [[ ! -s $tmpdir/stdout ]]
+}
+
+field() {
+  jq -r "$1" "$tmpdir/stdout"
+}
+
+start_emacs() {
+  local name=$1 form=$2
+  local start=''
+  if [[ -n $name ]]
+  then
+    start="(require 'server) (setq server-socket-dir \"$socket_dir\" server-name \"$name\") (server-start)"
+  fi
+  emacs -Q --batch --eval "(progn $start $form)" > /dev/null 2>&1 &
+  started_pid=$!
+  emacs_pids+=("$started_pid")
+  if [[ -n $name ]]
+  then
+    SECONDS=0
+    until [[ -S $socket_dir/$name ]] || (( 20 < SECONDS ))
+    do
+      sleep 0.1
+    done
+  fi
+}
+
+idle='(while t (accept-process-output nil 1))'
+
+start_emacs tvserved "$idle"
+served_pid=$started_pid
+start_emacs tvbusy '(while t)'
+busy_pid=$started_pid
+start_emacs '' "$idle"
+unserved_pid=$started_pid
+
+emacs_tool server ls
+rc=$?
+check 'server ls: exits 0' test "$rc" -eq 0
+check 'server ls: schema_version is 1' test "$(field .schema_version)" = 1
+check 'server ls: lists the served Emacs with its name and absolute socket' \
+      test "$(field ".servers[] | select(.pid == $served_pid) | [.server_name, .socket] | @tsv")" \
+           = "tvserved	$socket_dir/tvserved"
+check 'server ls: the command is the Emacs command line' \
+      eval "field '.servers[] | select(.pid == $served_pid) | .command' | grep -q -- '--batch'"
+check 'server ls: an Emacs without a server is not listed' \
+      test -z "$(field ".servers[] | select(.pid == $unserved_pid) | .pid")"
+
+emacs_tool server ls --schema-version 2
+rc=$?
+check 'server ls --schema-version: a mismatch exits 1 with nothing on stdout' \
+      eval '(( rc == 1 )) && stdout_empty'
+check 'server ls --schema-version: a mismatch reports timvisher_emacs_schema_version_mismatch' \
+      stderr_has '"code":"timvisher_emacs_schema_version_mismatch"'
+
+emacs_tool server ls --help
+rc=$?
+check 'server ls --help: on stdout, exit 0' \
+      eval "(( rc == 0 )) && grep -q 'server_name' '$tmpdir/stdout' && [[ ! -s '$tmpdir/stderr' ]]"
+
+emacs_tool server socket "$served_pid"
+rc=$?
+check 'server socket: prints the absolute socket path' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == '$socket_dir/tvserved' ]]"
+
+emacs_tool server socket "$unserved_pid"
+rc=$?
+check 'server socket, no server: exits 1 with timvisher_emacs_no_server' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_server\""'
+
+sleep 300 &
+other_pids+=("$!")
+emacs_tool server socket "$!"
+rc=$?
+check 'server socket, not an Emacs: exits 1 with timvisher_emacs_not_emacs' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_not_emacs\""'
+
+emacs_tool server socket 99999999
+rc=$?
+check 'server socket, no such process: exits 1 with timvisher_emacs_no_such_process alone on stderr' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_process\"" && (( 1 == $(wc -l < "$tmpdir/stderr") ))'
+
+emacs_tool server socket nope
+rc=$?
+check 'server socket, not a pid: exits 1 with timvisher_emacs_bad_pid' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_bad_pid\""'
+
+emacs_tool server socket
+rc=$?
+check 'server socket without a pid: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && stdout_empty && grep -q 'server socket <pid>' '$tmpdir/stderr'"
+
+emacs_tool server eval "$served_pid" '(* 6 7)'
+rc=$?
+check "server eval: prints the expression's value" \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == 42 ]]"
+
+emacs_tool server eval --timeout 1 "$busy_pid" '(* 6 7)'
+rc=$?
+check 'server eval, busy Emacs: times out with timvisher_emacs_eval_failed' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_eval_failed\""'
+
+emacs_tool server eval "$unserved_pid" '(* 6 7)'
+rc=$?
+check 'server eval, no server: exits 1 with timvisher_emacs_no_server' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_server\""'
+
+emacs_tool server eval "$served_pid"
+rc=$?
+check 'server eval without an expression: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+# cleanup, against a fake pgrep so real Emacsen are never selected
+
+sleep 300 &
+client_victim=$!
+sleep 300 &
+emacs_victim=$!
+other_pids+=("$client_victim" "$emacs_victim")
+cat > "$tmpdir/bin/pgrep" <<FAKE
+#!/usr/bin/env bash
+[[ \$* == *-il* ]] && exit 1
+case \${@: -1} in
+  *emacsclient*) printf '%s\n' "$client_victim" ;;
+  *) printf '%s\n' "$emacs_victim" ;;
+esac
+FAKE
+chmod +x "$tmpdir/bin/pgrep" || exit 1
+
+PATH="$tmpdir/bin:$PATH" emacs_tool cleanup
+rc=$?
+check 'cleanup: a dry run by default leaves every process alive' \
+      eval "(( rc == 0 )) && kill -0 '$client_victim' && kill -0 '$emacs_victim' && stderr_has 'DRY_RUN: kill $emacs_victim'"
+
+PATH="$tmpdir/bin:$PATH" emacs_tool cleanup --no-dry-run
+rc=$?
+check 'cleanup --no-dry-run: kills the emacsclients and the Emacsen' \
+      eval "(( rc == 0 )) && ! kill -0 '$client_victim' 2>/dev/null && ! kill -0 '$emacs_victim' 2>/dev/null"
+check 'cleanup --no-dry-run: kills the emacsclients before the Emacsen' \
+      eval "awk '/Killing emacsclients/ { c = NR } /Killing emacsen/ { e = NR } END { exit !(c && e && c < e) }' '$tmpdir/stderr'"
+
+emacs_tool cleanup --bogus
+rc=$?
+check 'cleanup with an unknown option: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+# dev and agent-shell, against a fake emacs and op
+
+cat > "$tmpdir/bin/emacs" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/emacs-args"
+env > "$FAKE_DIR/emacs-env"
+FAKE
+cat > "$tmpdir/bin/op" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/op-args"
+while [[ $1 != -- ]]
+do
+  shift
+done
+shift
+exec "$@"
+FAKE
+chmod +x "$tmpdir/bin/emacs" "$tmpdir/bin/op" || exit 1
+
+checkouts=()
+for c in agent-shell acp-el shell-maker
+do
+  mkdir -p "$tmpdir/$c" && touch "$tmpdir/$c/x.elc" "$tmpdir/$c/x.el" || exit 1
+  checkouts+=("--$c" "$tmpdir/$c")
+done
+
+fake() {
+  rm -f -- "$tmpdir"/emacs-* "$tmpdir"/op-*
+  FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" emacs_tool "$@"
+}
+
+env_has() {
+  grep -qxF -- "$1" "$tmpdir/emacs-env"
+}
+
+real_tmpdir=$(cd "$tmpdir" && pwd -P)
+
+fake dev "${checkouts[@]}" -- --eval '(message "hi")'
+rc=$?
+check 'dev: runs emacs with each checkout on the load-path and the rest of the args' \
+      eval "(( rc == 0 )) && [[ \$(paste -sd ' ' '$tmpdir/emacs-args') == '-L $real_tmpdir/agent-shell -L $real_tmpdir/shell-maker -L $real_tmpdir/acp-el --eval (message \"hi\")' ]]"
+check 'dev: exports the checkouts init.el reads' \
+      eval "env_has 'timvisher_agent_shell_checkout=$real_tmpdir/agent-shell' && env_has 'timvisher_acp_el_checkout=$real_tmpdir/acp-el' && env_has 'timvisher_shell_maker_checkout=$real_tmpdir/shell-maker'"
+check 'dev: deletes the checkouts .elc files and nothing else' \
+      eval "[[ ! -e '$tmpdir/acp-el/x.elc' && -e '$tmpdir/acp-el/x.el' ]]"
+
+timvisher_acp_el_checkout=$tmpdir/acp-el fake dev --agent-shell "$tmpdir/agent-shell" --shell-maker "$tmpdir/shell-maker"
+check 'dev: a checkout without its option comes from the environment' \
+      env_has "timvisher_acp_el_checkout=$real_tmpdir/acp-el"
+
+fake dev --acp-el "$tmpdir/missing"
+rc=$?
+check 'dev, missing checkout: exits 1 with timvisher_emacs_no_such_checkout and starts no emacs' \
+      eval "(( rc == 1 )) && stderr_has '\"code\":\"timvisher_emacs_no_such_checkout\"' && [[ ! -e '$tmpdir/emacs-args' ]]"
+
+CLAUDECODE=1 fake agent-shell launch "${checkouts[@]}" claude --debug-init
+rc=$?
+check 'agent-shell launch: runs emacs through op run' \
+      eval "(( rc == 0 )) && [[ \$(paste -sd ' ' '$tmpdir/op-args') == 'run --no-masking -- emacs '* ]]"
+check 'agent-shell launch: loads the start file after the checkouts and passes the rest of the args' \
+      eval "[[ \$(paste -sd ' ' '$tmpdir/emacs-args') == '-L $real_tmpdir/agent-shell -L $real_tmpdir/shell-maker -L $real_tmpdir/acp-el -l '*'/bin/timvisher_emacs.agent-shell.el --debug-init' ]]"
+check 'agent-shell launch claude: starts claude code' \
+      env_has 'timvisher_agent_start_fn=agent-shell-anthropic-start-claude-code'
+check 'agent-shell launch: does not pass CLAUDECODE on' \
+      eval "! grep -q '^CLAUDECODE=' '$tmpdir/emacs-env'"
+check 'agent-shell launch: exports the checkouts like dev' \
+      env_has "timvisher_acp_el_checkout=$real_tmpdir/acp-el"
+
+fake agent-shell launch "${checkouts[@]}" codex
+check 'agent-shell launch codex: starts codex' \
+      env_has 'timvisher_agent_start_fn=agent-shell-openai-start-codex'
+
+fake agent-shell launch "${checkouts[@]}" gemini
+rc=$?
+check 'agent-shell launch, unknown agent: exits 2 with timvisher_emacs_unknown_agent and starts nothing' \
+      eval "(( rc == 2 )) && stderr_has '\"code\":\"timvisher_emacs_unknown_agent\"' && [[ ! -e '$tmpdir/op-args' ]]"
+
+check 'agent-shell launch: the start file exists' test -f "$(dirname "$script")/timvisher_emacs.agent-shell.el"
+
+send_log=$tmpdir/send-log
+busy_flag=$tmpdir/busy
+start_emacs tvshell "(progn
+  (defvar tv-states (list (cons (get-buffer-create \"shell-sess-1\")
+                                (list (cons :session (list (cons :id \"abcd1111-0000\")))
+                                      (cons :supports-session-fork t)
+                                      (cons :pending-prompts (list \"queued one\" \"queued two\"))
+                                      (cons :agent-config (list (cons :identifier 'claude-code)))))))
+  (set-window-buffer (selected-window) \"shell-sess-1\")
+  (with-current-buffer \"shell-sess-1\"
+    (let ((process (make-pipe-process :name \"fake-shell\" :buffer (current-buffer) :noquery t)))
+      (insert \"Claude> \")
+      (set-marker (process-mark process) (point-max))))
+  (defun agent-shell-buffers () (seq-filter #'buffer-live-p (mapcar #'car tv-states)))
+  (defun agent-shell--state () (alist-get (current-buffer) tv-states))
+  (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
+  (defun agent-shell-status (&rest _) (if (shell-maker-busy) 'busy 'ready))
+  (defun agent-shell--start (&rest _)
+    (let ((new (get-buffer-create \"shell-new\")))
+      (push (cons new (list (cons :session (list (cons :id \"new-0000\"))))) tv-states)
+      new))
+  (defun agent-shell-subscribe-to (&rest args)
+    (when (eq 'prompt-ready (plist-get args :event))
+      (run-at-time 1 nil (plist-get args :on-event) '((:event . prompt-ready))))
+    (plist-get args :event))
+  (defun agent-shell-unsubscribe (&rest _) nil)
+  (defun agent-shell-anthropic-make-claude-code-config () 'claude)
+  (defun agent-shell-openai-make-codex-config () 'codex)
+  (defun agent-shell--prompt-queue-enqueue (&rest args)
+    (append-to-file (format \"enqueue %S\n\" (plist-get args :prompt)) nil \"$send_log\"))
+  (defun agent-shell--insert-to-shell-buffer (&rest args)
+    (append-to-file (format \"insert %S\n\" (plist-get args :text)) nil \"$send_log\"))
+  (with-temp-file \"$tmpdir/child-pid\"
+    (insert (number-to-string (process-id (start-process \"child\" nil \"sleep\" \"300\")))))
+  $idle)"
+shell_pid=$started_pid
+SECONDS=0
+until [[ -s $tmpdir/child-pid ]] || (( 20 < SECONDS ))
+do
+  sleep 0.1
+done
+child_pid=$(< "$tmpdir/child-pid")
+other_pids+=("$child_pid")
+
+mkdir -p "$tmpdir/claude/sessions" "$tmpdir/claude-empty/sessions" || exit 1
+shell_sock=$tmpdir/socks/$child_pid.sock
+shell_ref=$(printf 'session:%s' "$shell_sock" | shasum -a 256 | cut -c1-6)
+stable_ref=$(printf 'session:sid:abcd1111-0000' | shasum -a 256 | cut -c1-8)
+printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvshell-1a", "messagingSocketPath": "%s"}\n' \
+       "$child_pid" "$shell_sock" > "$tmpdir/claude/sessions/$child_pid.json"
+printf '{"pid": 99999999, "sessionId": "dead0000-0000", "name": "tvstale-9z", "messagingSocketPath": "/tmp/dead.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999999.json"
+printf '{"pid": 99999998, "sessionId": "abcd1111-0000", "name": "tvdead-4d", "messagingSocketPath": "/tmp/dead2.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999998.json"
+printf '{"pid": 99999997, "sessionId": "abcd1111-0000", "name": "", "messagingSocketPath": "/tmp/noname.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999997.json"
+noname_ref=$(printf 'session:/tmp/noname.sock' | shasum -a 256 | cut -c1-6)
+sleep 300 &
+dup_pid=$!
+other_pids+=("$dup_pid")
+printf '{"pid": %s, "sessionId": "abcd2222-0000", "name": "tvdup-2b", "messagingSocketPath": "/tmp/a.sock"}\n' \
+       "$$" > "$tmpdir/claude/sessions/$$.json"
+printf '{"pid": %s, "sessionId": "abcd3333-0000", "name": "tvdup-2b", "messagingSocketPath": "/tmp/b.sock"}\n' \
+       "$dup_pid" > "$tmpdir/claude/sessions/$dup_pid.json"
+
+real_lsof=$(command -v lsof)
+mkdir -p "$tmpdir/onlyours" || exit 1
+cat > "$tmpdir/onlyours/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $served_pid $busy_pid $shell_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/onlyours/lsof" || exit 1
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server abcd1111-0000
+rc=$?
+check "agent-shell get-server: finds the session's Emacs through its process's parents" \
+      eval "(( rc == 0 )) && [[ \$(field '[.pid, .server_name, .found_by] | @tsv') == '$shell_pid	tvshell	process' ]]"
+
+for ref in tvshell-1a "$shell_ref" "tvshell-1a [$shell_ref]" "$stable_ref"
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server "$ref"
+  rc=$?
+  check "agent-shell get-server: '$ref' resolves to the session's id and name" \
+        eval "(( rc == 0 )) && [[ \$(field '[.session_id, .name, .pid] | @tsv') == 'abcd1111-0000	tvshell-1a	$shell_pid' ]]"
+done
+
+for ref in "tvdup-2b [$shell_ref]" abcd1111 tvstale-9z
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server "$ref"
+  rc=$?
+  check "agent-shell get-server: '$ref' (a ref under another name, an id prefix, a dead session whose shell is gone) reaches no shell" \
+        eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+done
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server tvdup-2b
+rc=$?
+check 'agent-shell get-server, two live sessions with one name: exits 1 with timvisher_emacs_ambiguous_session naming each' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvdup-2b is session abcd2222-0000" && stderr_has "tvdup-2b is session abcd3333-0000"'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server abcd1111-0000
+rc=$?
+check 'agent-shell get-server, no session file: not found while no server has the helper loaded' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+: > "$send_log"
+printf 'From the test agent (session t)\n\nhello "there"\n\n' > "$tmpdir/message"
+expected_insert='insert "From the test agent (session t)
+
+hello \"there\""'
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send abcd1111-0000 "$tmpdir/message"
+rc=$?
+check 'agent-shell send, idle shell: submits the trimmed file and prints submitted' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == submitted ]] && [[ \$(cat '$send_log') == '$expected_insert' ]]"
+
+touch "$busy_flag"
+: > "$send_log"
+(cd "$tmpdir" && CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send tvshell-1a message)
+rc=$?
+check 'agent-shell send, busy shell: queues it, taking a session name and a relative path, and prints queued' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log'"
+rm -f -- "$busy_flag"
+
+for ref in tvdead-4d "$noname_ref"
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server "$ref"
+  rc=$?
+  check "agent-shell get-server: '$ref' (a dead agent process, or a file with no name) still finds its shell by scan" \
+        eval "(( rc == 0 )) && [[ \$(field '[.session_id, .pid, .found_by] | @tsv') == 'abcd1111-0000	$shell_pid	scan' ]]"
+done
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server abcd1111-0000
+rc=$?
+check 'agent-shell get-server, no session file: scans servers once send has loaded the helper' \
+      eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send abcd1111-0000 "$tmpdir/missing"
+rc=$?
+check 'agent-shell send, missing file: exits 1 with timvisher_emacs_no_such_message_file' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_message_file\""'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell send nope-9999 "$tmpdir/message"
+rc=$?
+check 'agent-shell send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+emacsclient -s "$socket_dir/tvshell" --eval '(with-current-buffer "shell-sess-1" (goto-char (point-max)) (insert "half typed"))' > /dev/null
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send tvshell-1a "$tmpdir/message"
+rc=$?
+check 'agent-shell send, idle shell with half-typed input: queues it and leaves the input alone' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log' && ! grep -q '^insert ' '$send_log' && [[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(with-current-buffer \"shell-sess-1\" (buffer-string))') == '\"Claude> half typed\"' ]]"
+emacsclient -s "$socket_dir/tvshell" --eval '(with-current-buffer "shell-sess-1" (delete-region (process-mark (get-buffer-process (current-buffer))) (point-max)))' > /dev/null
+
+touch "$busy_flag"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged tvshell-1a
+rc=$?
+check 'agent-shell is-wedged: a busy shell with no agent process and no prompt request is wedged' \
+      eval "(( rc == 0 )) && [[ \$(field '[.wedged, .session_id, (.reasons | join(\",\"))] | @tsv') == 'true	abcd1111-0000	agent-process-dead,busy-without-prompt-request' ]]"
+rm -f -- "$busy_flag"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --quiet-seconds 1 "$shell_ref"
+rc=$?
+check 'agent-shell is-wedged: an idle shell is not wedged' \
+      eval "(( rc == 0 )) && [[ \$(field '[.wedged, .status, .quiet_seconds_threshold] | @tsv') == 'false	ready	1' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --quiet-seconds soon abcd1111
+rc=$?
+check 'agent-shell is-wedged with a non-numeric --quiet-seconds: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+emacs_tool agent-shell send abcd1111-0000
+rc=$?
+check 'agent-shell send without a file: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+sleep 300 &
+new_pid=$!
+other_pids+=("$new_pid")
+new_sock=$tmpdir/socks/$new_pid.sock
+printf '{"pid": %s, "sessionId": "new-0000", "name": "tvnew-3c", "messagingSocketPath": "%s"}\n' \
+       "$new_pid" "$new_sock" > "$tmpdir/claude/sessions/$new_pid.json"
+new_ref=$(printf 'session:%s' "$new_sock" | shasum -a 256 | cut -c1-6)
+printf 'From the test agent (session t)\n\nStart on the docs.\n' > "$tmpdir/start-prompt"
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell start --emacs "$shell_pid" --prompt-file "$tmpdir/start-prompt"
+rc=$?
+check 'agent-shell start: starts a claude shell and prints its session, name and ref' \
+      eval "(( rc == 0 )) && [[ \$(field '[.agent, .buffer, .session_id, .name, .server_name] | @tsv') == 'claude	shell-new	new-0000	tvnew-3c	tvshell' ]] && [[ \$(field .ref) == $new_ref* ]]"
+check 'agent-shell start: submits the prompt file to the new shell' \
+      grep -q 'Start on the docs\.' "$send_log"
+
+emacs_tool agent-shell start --emacs "$shell_pid" --agent gemini
+rc=$?
+check 'agent-shell start, unknown agent: exits 2 with timvisher_emacs_unknown_agent' \
+      eval '(( rc == 2 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_unknown_agent\""'
+
+emacs_tool agent-shell start --emacs "$new_pid"
+rc=$?
+check 'agent-shell start, pid not an Emacs: exits 1 with timvisher_emacs_not_emacs' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_not_emacs\""'
+
+emacs_tool agent-shell start --agent claude
+rc=$?
+check 'agent-shell start without --emacs: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls
+rc=$?
+check 'agent-shell ls: without a terminal, lists every shell as JSON joined with its session file' \
+      eval "(( rc == 0 )) && [[ \$(field '.sessions[] | select(.buffer == \"shell-sess-1\") | [.name, .ref, .session_id, .agent, .status, .pending_prompts, .emacs_pid] | @tsv') == 'tvshell-1a	$shell_ref	abcd1111-0000	claude-code	ready	2	$shell_pid' ]] && [[ \$(field '.sessions[] | select(.buffer == \"shell-new\") | .name') == tvnew-3c ]]"
+check 'agent-shell ls: an Emacs that does not answer is listed as unreachable' \
+      eval "[[ \$(field '.unreachable[].pid') == $busy_pid ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --format table
+rc=$?
+check 'agent-shell ls --format table: a header and a row per shell' \
+      eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q '^NAME  *REF  *STATUS' && grep -q '^tvshell-1a  *$shell_ref  *ready  *2 ' '$tmpdir/stdout' && grep -q 'unreachable: Emacs $busy_pid' '$tmpdir/stderr'"
+
+emacs_tool agent-shell ls --format yaml
+rc=$?
+check 'agent-shell ls with an unknown format: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+printf 'Pick up the deploy.\n' > "$tmpdir/recover-note"
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell recover fork --timeout 20 --message-file "$tmpdir/recover-note" tvshell-1a
+rc=$?
+check 'agent-shell recover fork: waits for the new shell and prints the recovery' \
+      eval "(( rc == 0 )) && [[ \$(field '[.status, .old_session_id, .new_session_id, .new_buffer, .forwarded_prompts] | @tsv') == 'recovered	abcd1111-0000	new-0000	shell-new	2' ]]"
+check 'agent-shell recover fork: the window that showed the old shell shows the new one' \
+      eval "[[ \$(field .reused_windows) == 1 ]] && [[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(buffer-name (window-buffer (selected-window)))') == '\"shell-new\"' ]]"
+check 'agent-shell recover fork: carries the old queue in the note, in order, and queues nothing' \
+      eval "! grep -q '^enqueue' '$send_log' && (( 1 == \$(grep -c '^insert' '$send_log') )) && [[ \$(grep -n -e '^queued one\$' -e '^queued two\$' '$send_log' | cut -d: -f2 | paste -sd '|' -) == 'queued one|queued two' ]]"
+check 'agent-shell recover fork: kills the old shell' \
+      eval "[[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(buffer-live-p (get-buffer \"shell-sess-1\"))') == nil ]]"
+check 'agent-shell recover fork: tells the new shell it is a recovery fork, with the message file' \
+      eval "grep -q 'recovery fork of session abcd1111-0000 (shell-sess-1)' '$send_log' && grep -q 'Pick up the deploy\\.' '$send_log'"
+
+emacs_tool agent-shell recover spoon abcd1111
+rc=$?
+check 'agent-shell recover with an unknown strategy: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+emacs_tool session send tvshell-1a "$tmpdir/message"
+rc=$?
+check 'session (renamed): exits 2 with timvisher_emacs_renamed naming the agent-shell command' \
+      eval '(( rc == 2 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_renamed\"" && stderr_has "timvisher_emacs agent-shell send tvshell-1a"'
+
+emacs_tool --help
+rc=$?
+check '--help: on stdout, exit 0' \
+      eval "(( rc == 0 )) && grep -q 'server ls' '$tmpdir/stdout' && [[ ! -s '$tmpdir/stderr' ]]"
+
+emacs_tool
+rc=$?
+check 'no arguments: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && stdout_empty && grep -q 'server ls' '$tmpdir/stderr'"
+
+echo "${tests} tests, ${failures} failures"
+(( 0 == failures ))

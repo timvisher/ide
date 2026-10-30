@@ -9,6 +9,8 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 - Spinning up a new worktree for a branch or PR.
 - Creating a worktree from an agent without stealing the terminal.
 - Opening a worktree for the human in a new terminal window (`-T`).
+- Starting an agent-shell with a prompt in a worktree's Emacs, in a new
+  session or an existing one.
 - Understanding the worktree directory layout under ~/git/.
 
 ## Usage
@@ -16,6 +18,7 @@ description: Create and manage git worktrees via ntmux3, including detached (-d)
 ```
 ntmux3 [-d | -T] [GitHub PR URL | org/repo[/branch] | path] [file]
 ntmux3 [-d | -T] org/repo/branch branch-ish
+ntmux3 get-editor-pid [session | path]
 ntmux  [-d] [namespace/]session_name [base_dir | file]
 ```
 
@@ -174,6 +177,40 @@ your local trunk onto the base. Neither is allowed:
 Re-running is still safe. If the target worktree already exists it is
 left alone rather than re-stacked, and an interrupted stack (an
 `x.ntmux3-building` marker in the target) is resumed.
+
+## Starting an agent-shell in a worktree
+
+To have a new session start an agent-shell in its editor Emacs, set
+the agent (and optionally a first prompt) for that one invocation:
+
+```bash
+source ~/.bashrc && TIMVISHER_NTMUX3_AI_AGENT=claude \
+  TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT='From the ... agent (session ...): ...' \
+  ntmux3 -d org/repo/branch-name
+```
+
+- `claude` or `codex`; setting only the prompt means `claude`.
+- With `-d`, ntmux3 waits for the agent and reports it as an
+  `ntmux3_agent_started` instruction whose `data` has its `session_id`,
+  `name` and `ref`. It fails with `ntmux3_agent_not_started` when no
+  Emacs server comes up, or with `timvisher_emacs agent-shell start`'s own
+  error (such as `timvisher_emacs_start_pending`) when the start fails.
+- Without `-d` it starts the agent in the background and attaches; a
+  failure lands in `$XDG_STATE_HOME/timvisher/ntmux3/agent-start.log`
+  and a notification.
+- Only a session ntmux3 creates gets an agent. For an existing session,
+  start one directly:
+
+```bash
+source ~/.bashrc && timvisher_emacs agent-shell start \
+  --emacs "$(ntmux3 get-editor-pid org/repo/branch-name)" \
+  --agent claude --prompt-file /tmp/x.prompt
+```
+
+`ntmux3 get-editor-pid` takes a session name or a path in its worktree
+and defaults to the current worktree's. A prompt reaches the new agent
+as though Tim typed it, so open it with a "From the ... agent (session
+...)" line.
 
 ## When is the worktree ready? (read this before editing)
 

@@ -11,7 +11,7 @@
 # watches. Done before the tmux teardown so it still runs if that hangs.
 timvisher_fsmonitor_stop_all || true
 
-cleanup_emacs --no-dry-run &&
+timvisher_emacs cleanup --no-dry-run &&
   if pgrep tmux >/dev/null
   then
     # SIGTERM each pane's FOREGROUND process group before tmux

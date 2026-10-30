@@ -54,7 +54,7 @@ fi
 # Test 2: all wrappers source agents.bash
 run_test
 all_agents_bash=true
-for tool in claude codex claude-agent-acp codex-acp timvisher_emacs_agent_shell
+for tool in claude codex claude-agent-acp codex-acp timvisher_emacs
 do
   if ! grep -q 'agents\.bash' "$bin_dir/$tool"
   then

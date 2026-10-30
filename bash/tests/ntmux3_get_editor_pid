@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034 # rc is read inside the eval strings passed to check
+
+# A real tmux server on a private socket, with a real Emacs typed into
+# the editor window the way ntmux3 starts one, so the pane-to-Emacs walk
+# runs against real processes.
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$t_dir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)"
+
+t_dir=
+# shellcheck disable=SC2329
+cleanup() {
+  if [[ -n $t_dir ]]
+  then
+    env -u TMUX TMUX_TMPDIR="$t_dir" tmux kill-server 2>/dev/null
+    rm -rf -- "$t_dir"
+  fi
+}
+trap cleanup EXIT
+t_dir=$(mktemp -d /tmp/tvntmux.XXXXXX) || { echo 'FAIL: mktemp' >&2; exit 1; }
+
+unset TMUX
+export TMUX_TMPDIR=$t_dir
+
+worktree=$HOME/git/testorg/testrepo/v1.2
+mkdir -p "$worktree/src" || exit 1
+git -C "$worktree" init -q || exit 1
+
+tmux new-session -d -s testorg/testrepo/v1_2 -n editor bash || exit 1
+tmux send-keys -t '=testorg/testrepo/v1_2:editor' "emacs -Q --batch --eval '(while t (sleep-for 1))'" C-m
+tmux new-session -d -s no-emacs -n editor bash || exit 1
+tmux new-session -d -s no-editor -n other bash || exit 1
+
+emacs_pid=
+SECONDS=0
+until [[ -n $emacs_pid ]] || (( 20 < SECONDS ))
+do
+  sleep 0.2
+  emacs_pid=$(pgrep -P "$(tmux list-panes -t '=testorg/testrepo/v1_2:editor' -F '#{pane_pid}')" emacs)
+done
+
+get_editor_pid() {
+  TIMVISHER_AGENT=1 bash -c 'source ~/.functions/logging.bash && source ~/.functions/aictl.bash && source "$1" && shift && ntmux3 get-editor-pid "$@"' \
+       _ "$funcs_dir/tmux.bash" "$@" > "$t_dir/stdout" 2> "$t_dir/stderr"
+}
+
+stdout_is() {
+  [[ $(cat "$t_dir/stdout") == "$1" ]]
+}
+
+stderr_code() {
+  grep -qF "\"code\":\"$1\"" "$t_dir/stderr"
+}
+
+check 'setup: an Emacs is running in the editor window' test -n "$emacs_pid"
+
+get_editor_pid testorg/testrepo/v1_2
+rc=$?
+check 'by session name: prints the editor Emacs pid' eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$worktree"
+rc=$?
+check "by worktree path: finds the session ntmux3 names after it, dots and all" \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$worktree/src"
+rc=$?
+check 'by a path below the worktree root: finds the worktree'"'"'s session' \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+(cd "$worktree" && get_editor_pid)
+rc=$?
+check 'with no argument: uses the current directory' eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid no-emacs
+rc=$?
+check 'no Emacs in the editor window: exits 1 with ntmux3_no_editor_emacs' \
+      eval '(( rc == 1 )) && [[ ! -s $t_dir/stdout ]] && stderr_code ntmux3_no_editor_emacs'
+
+get_editor_pid no-editor
+rc=$?
+check 'no editor window: exits 1 with ntmux3_no_editor_window' \
+      eval '(( rc == 1 )) && stderr_code ntmux3_no_editor_window'
+
+get_editor_pid "$HOME/git/nowhere/at/all"
+rc=$?
+check 'no such session: exits 1 with ntmux3_no_such_session alone on stderr' \
+      eval '(( rc == 1 )) && stderr_code ntmux3_no_such_session && (( 1 == $(wc -l < "$t_dir/stderr") ))'
+
+get_editor_pid one two
+check 'two arguments: usage on stderr, exit 1' \
+      eval "(( $? == 1 )) && [[ ! -s \$t_dir/stdout ]] && grep -q get-editor-pid \"\$t_dir/stderr\""
+
+echo "${tests} tests, ${failures} failures"
+(( 0 == failures ))
