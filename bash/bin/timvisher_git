@@ -4386,7 +4386,7 @@ push__granted() {
         --code timvisher_git_push_grant_decision \
         --message "Someone else pushed to the PR's '${branch}', and their changes differ from yours: nothing was pushed." \
         --suggestion "Bring in ${remote}'s commits: git rebase ${remote}/${branch}, then rerun" \
-        --suggestion "Or ask Tim to choose: timvisher_gh pr push --ours or --theirs"
+        --suggestion "Or ask Tim to push yours over theirs: timvisher_gh pr push --ours"
       return 3
       ;;
     behind)
