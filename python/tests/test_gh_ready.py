@@ -32,8 +32,8 @@ class ReadyTest(GhTestCase):
 
     def ready(self, *args, **env):
         rc, out, err = self.run_gh_as_tim("pr", "ready", *args, TIMVISHER_GH_PR_READY_POLL_INTERVAL="0",
-                                   HOOK_LOG=str(self.log), TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
-                                   TIMVISHER_GH_CONFIG_DIR=str(self.ext), **env)
+                                          HOOK_LOG=str(self.log), TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
+                                          TIMVISHER_GH_CONFIG_DIR=str(self.ext), **env)
         self.err = err
         return rc, out
 

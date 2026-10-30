@@ -245,7 +245,6 @@ class PrTest(GhTestCase):
         self.assertNotIn("feature", git("ls-remote", "--heads", "origin", cwd=self.work))
 
 
-
 class AgentPrTest(GhTestCase):
     def setUp(self):
         super().setUp()
@@ -347,6 +346,7 @@ class AgentPrTest(GhTestCase):
             self.assertIn("timvisher_gh_agent_refused", self.codes(), args)
         self.assertTrue(self.pull_state()["draft"])
         self.assertEqual([], [c for c in self.github.calls if c["argv"][2:4] == ["pr", "merge"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,7 +43,8 @@ class HooksTest(GhTestCase):
 
     def pr(self, *args):
         rc, out, err = self.run_gh_as_tim("pr", *args, HOOK_LOG=str(self.log),
-                                   TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core), TIMVISHER_GH_CONFIG_DIR=str(self.ext))
+                                          TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
+                                          TIMVISHER_GH_CONFIG_DIR=str(self.ext))
         self.err = err
         return rc, out
 

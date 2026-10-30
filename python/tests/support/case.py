@@ -41,7 +41,6 @@ class GhTestCase(unittest.TestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return done.returncode, done.stdout, done.stderr
 
-    # Tim, not an agent: agents are refused what these exercise.
     def run_gh_as_tim(self, *args, **env):
         log = self.tmp / "aictl.jsonl"
         log.write_text("")
