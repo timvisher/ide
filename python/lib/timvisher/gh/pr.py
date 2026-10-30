@@ -207,12 +207,18 @@ def _local_sha(context):
 
 def _push_branch(context, flags, grant=None):
     args = ["timvisher_git", "push"]
-    if flags["resolution"] == "ours":
+    if _ours(flags):
         args.append("--ours")
     if flags["plan"]:
         args.append("--plan")
     env = {**os.environ, "TIMVISHER_GIT_PUSH_GRANT": grant} if grant else None
     return subprocess.run(args, cwd=context.toplevel, env=env).returncode
+
+
+# An agent's --ours settles the PR's title and body, never its branch:
+# timvisher_git refuses --ours under a grant.
+def _ours(flags):
+    return flags["resolution"] == "ours" and not _agent()
 
 
 def _record_head(opened, object_id, sha):
@@ -223,7 +229,7 @@ def _record_head(opened, object_id, sha):
 # Pre-push hooks gate a push, so they run only when the branch is about to
 # move, as #6's do: not when it's already pushed, or behind without --ours.
 def _branch_moves(context, flags, grant=None):
-    ours = flags["resolution"] == "ours"
+    ours = _ours(flags)
     args = ["timvisher_git", "push", "--plan"] + (["--ours"] if ours else [])
     done = subprocess.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     kind = (done.stdout.split() or [""])[0]

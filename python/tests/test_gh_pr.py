@@ -306,6 +306,14 @@ class AgentPrTest(GhTestCase):
         self.assertIn("timvisher_git_push_grant_decision", self.err)
         self.assertEqual(theirs, self.remote_head())
 
+    def test_an_agents_ours_settles_the_title_without_touching_the_branch(self):
+        self.agent_create()
+        self.github.update_pull(REPO, 1, title="Edited on GitHub")
+        (self.work / "pr.md").write_text("Edited here\n\nBody\n")
+        self.assertEqual(3, self.agent("push")[0])
+        self.assertEqual(0, self.agent("push", "--ours")[0], self.err)
+        self.assertEqual("Edited here", self.pull_state()["title"])
+
     def test_an_agent_cant_push_a_pr_that_isnt_a_draft(self):
         self.agent_create()
         self.github.update_pull(REPO, 1, draft=False)
