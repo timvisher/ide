@@ -773,6 +773,12 @@ function ntmux3__get_editor_pid() {
     local session_name=$target
     if ! tmux has-session -t "=${session_name}" 2>/dev/null
     then
+        local target_dir=$target worktree_root
+        [[ -d $target_dir ]] || target_dir=$(dirname -- "$target")
+        if worktree_root=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)
+        then
+            target=$worktree_root
+        fi
         session_name=$(ntmux3__resolve_session_name "$target" 2>/dev/null)
         session_name=${session_name//./_}
     fi

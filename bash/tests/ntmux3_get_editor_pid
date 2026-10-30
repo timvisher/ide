@@ -40,7 +40,8 @@ unset TMUX
 export TMUX_TMPDIR=$t_dir
 
 worktree=$HOME/git/testorg/testrepo/v1.2
-mkdir -p "$worktree" || exit 1
+mkdir -p "$worktree/src" || exit 1
+git -C "$worktree" init -q || exit 1
 
 tmux new-session -d -s testorg/testrepo/v1_2 -n editor bash || exit 1
 tmux send-keys -t '=testorg/testrepo/v1_2:editor' "emacs -Q --batch --eval '(while t (sleep-for 1))'" C-m
@@ -52,7 +53,7 @@ SECONDS=0
 until [[ -n $emacs_pid ]] || (( 20 < SECONDS ))
 do
   sleep 0.2
-  emacs_pid=$(pgrep -f "emacs -Q --batch --eval \(while t \(sleep-for 1\)\)" | head -1)
+  emacs_pid=$(pgrep -P "$(tmux list-panes -t '=testorg/testrepo/v1_2:editor' -F '#{pane_pid}')" emacs)
 done
 
 get_editor_pid() {
@@ -77,6 +78,11 @@ check 'by session name: prints the editor Emacs pid' eval '(( rc == 0 )) && stdo
 get_editor_pid "$worktree"
 rc=$?
 check "by worktree path: finds the session ntmux3 names after it, dots and all" \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$worktree/src"
+rc=$?
+check 'by a path below the worktree root: finds the worktree'"'"'s session' \
       eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
 
 (cd "$worktree" && get_editor_pid)
