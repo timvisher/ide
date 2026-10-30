@@ -275,11 +275,9 @@ check 'agent-shell, unknown agent: exits 2 with timvisher_emacs_unknown_agent an
 
 check 'agent-shell: the start file exists' test -f "$(dirname "$script")/timvisher_emacs.agent-shell.el"
 
-emacs_d="$(cd "$(dirname "$script")/../../emacs/emacs.d" && pwd -P)"
 send_log=$tmpdir/send-log
 busy_flag=$tmpdir/busy
 start_emacs tvshell "(progn
-  (setq user-emacs-directory \"$emacs_d/\")
   (defvar tv-states (list (cons (get-buffer-create \"shell-sess-1\")
                                 (list (cons :session (list (cons :id \"abcd1111-0000\")))
                                       (cons :supports-session-fork t)

@@ -281,7 +281,16 @@ timvisher_emacs__elisp_string() {
 }
 
 timvisher_emacs__with_helpers() {
-  printf '(progn (unless (fboundp (quote timvisher-agent-shell-send)) (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-recover-fork)) (load (expand-file-name "timvisher-agent-shell-recover" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-start)) (load (expand-file-name "timvisher-agent-shell-start" user-emacs-directory) nil t)) %s)' "$1"
+  local emacs_d
+  emacs_d=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../emacs/emacs.d" && pwd -P) || return 1
+  # Loaded from this checkout on every call, not from the target Emacs's
+  # own config: the helpers then always match this CLI, and an Emacs
+  # holding an older copy picks up the current one.
+  printf '(progn (load %s nil t) (load %s nil t) (load %s nil t) %s)' \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-send")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-recover")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-start")" \
+    "$1"
 }
 
 timvisher_emacs__elisp_string_value() {
