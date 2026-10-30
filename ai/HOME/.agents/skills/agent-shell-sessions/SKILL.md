@@ -13,8 +13,8 @@ description: Message, find, start, and recover other agent-shell sessions (Claud
 ## Naming a session
 
 Every `<session>` below takes any of the forms `ListAgents` shows:
-a name (`datadog-a7`), a ref (`cc09f8`), both as printed
-(`"datadog-a7 [cc09f8]"`), or a full session id. Names and refs come
+a name (`ide-3f`), a ref (`4b1e9a`), both as printed
+(`"ide-3f [4b1e9a]"`), or a full session id. Names and refs come
 from Claude Code's session files, so a Codex session has neither:
 reach it by its full session id. An ambiguous name or short ref fails
 with `timvisher_emacs_ambiguous_session`, listing each match.

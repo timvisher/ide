@@ -60,9 +60,9 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
 Servers are found by the pid of the Emacs that owns them, whatever the
 server is named and wherever its socket lives.
 
-A <session> is a live Claude session's id, its name (datadog-a7), its
-ListAgents ref (cc09f8), or both as ListAgents prints them ("datadog-a7
-[cc09f8]"), resolved through the Claude session files. Its Emacs is the
+A <session> is a live Claude session's id, its name (ide-3f), its
+ListAgents ref (4b1e9a), or both as ListAgents prints them ("ide-3f
+[4b1e9a]"), resolved through the Claude session files. Its Emacs is the
 nearest Emacs ancestor of the session's process, else the server whose
 agent-shell buffers include the session.
 Queued text reads as though Tim typed it, so start a message to another
