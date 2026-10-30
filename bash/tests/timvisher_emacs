@@ -275,6 +275,89 @@ check 'agent-shell, unknown agent: exits 2 with timvisher_emacs_unknown_agent an
 
 check 'agent-shell: the start file exists' test -f "$(dirname "$script")/timvisher_emacs.agent-shell.el"
 
+emacs_d="$(cd "$(dirname "$script")/../../emacs/emacs.d" && pwd -P)"
+send_log=$tmpdir/send-log
+busy_flag=$tmpdir/busy
+start_emacs tvshell "(progn
+  (setq user-emacs-directory \"$emacs_d/\")
+  (defun agent-shell-buffers () (list (get-buffer-create \"shell-sess-1\")))
+  (defun agent-shell--state () '((:session . ((:id . \"sess-1\")))))
+  (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
+  (defun agent-shell--prompt-queue-enqueue (&rest args)
+    (append-to-file (format \"enqueue %S\n\" (plist-get args :prompt)) nil \"$send_log\"))
+  (defun agent-shell--insert-to-shell-buffer (&rest args)
+    (append-to-file (format \"insert %S\n\" (plist-get args :text)) nil \"$send_log\"))
+  (with-temp-file \"$tmpdir/child-pid\"
+    (insert (number-to-string (process-id (start-process \"child\" nil \"sleep\" \"300\")))))
+  $idle)"
+shell_pid=$started_pid
+SECONDS=0
+until [[ -s $tmpdir/child-pid ]] || (( 20 < SECONDS ))
+do
+  sleep 0.1
+done
+child_pid=$(< "$tmpdir/child-pid")
+other_pids+=("$child_pid")
+
+mkdir -p "$tmpdir/claude/sessions" "$tmpdir/claude-empty/sessions" || exit 1
+printf '{"pid": %s, "sessionId": "sess-1"}\n' "$child_pid" > "$tmpdir/claude/sessions/$child_pid.json"
+
+real_lsof=$(command -v lsof)
+mkdir -p "$tmpdir/onlyours" || exit 1
+cat > "$tmpdir/onlyours/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $served_pid $busy_pid $shell_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/onlyours/lsof" || exit 1
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session server sess-1
+rc=$?
+check "session server: finds the session's Emacs through its process's parents" \
+      eval "(( rc == 0 )) && [[ \$(field '[.pid, .server_name, .found_by] | @tsv') == '$shell_pid	tvshell	process' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session server sess-1
+rc=$?
+check 'session server, no session file: not found while no server has the helper loaded' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+: > "$send_log"
+printf 'From the test agent (session t)\n\nhello "there"\n\n' > "$tmpdir/message"
+expected_insert='insert "From the test agent (session t)
+
+hello \"there\""'
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 "$tmpdir/message"
+rc=$?
+check 'session send, idle shell: submits the trimmed file and prints submitted' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == submitted ]] && [[ \$(cat '$send_log') == '$expected_insert' ]]"
+
+touch "$busy_flag"
+: > "$send_log"
+(cd "$tmpdir" && CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 message)
+rc=$?
+check 'session send, busy shell: queues it, taking a relative path, and prints queued' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log'"
+rm -f -- "$busy_flag"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session server sess-1
+rc=$?
+check 'session server, no session file: scans servers once send has loaded the helper' \
+      eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session send sess-1 "$tmpdir/missing"
+rc=$?
+check 'session send, missing file: exits 1 with timvisher_emacs_no_such_message_file' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_message_file\""'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session send sess-9 "$tmpdir/message"
+rc=$?
+check 'session send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+emacs_tool session send sess-1
+rc=$?
+check 'session send without a file: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
 emacs_tool --help
 rc=$?
 check '--help: on stdout, exit 0' \
