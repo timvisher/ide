@@ -297,6 +297,8 @@ start_emacs tvshell "(progn
       (run-at-time 1 nil (plist-get args :on-event) '((:event . prompt-ready))))
     (plist-get args :event))
   (defun agent-shell-unsubscribe (&rest _) nil)
+  (defun agent-shell-anthropic-make-claude-code-config () 'claude)
+  (defun agent-shell-openai-make-codex-config () 'codex)
   (defun agent-shell--prompt-queue-enqueue (&rest args)
     (append-to-file (format \"enqueue %S\n\" (plist-get args :prompt)) nil \"$send_log\"))
   (defun agent-shell--insert-to-shell-buffer (&rest args)
@@ -421,6 +423,37 @@ check 'session is-wedged with a non-numeric --quiet-seconds: usage on stderr, ex
 emacs_tool session send abcd1111-0000
 rc=$?
 check 'session send without a file: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+sleep 300 &
+new_pid=$!
+other_pids+=("$new_pid")
+new_sock=$tmpdir/socks/$new_pid.sock
+printf '{"pid": %s, "sessionId": "new-0000", "name": "tvnew-3c", "messagingSocketPath": "%s"}\n' \
+       "$new_pid" "$new_sock" > "$tmpdir/claude/sessions/$new_pid.json"
+new_ref=$(printf 'session:%s' "$new_sock" | shasum -a 256 | cut -c1-6)
+printf 'From the test agent (session t)\n\nStart on the docs.\n' > "$tmpdir/start-prompt"
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session start --emacs "$shell_pid" --prompt-file "$tmpdir/start-prompt"
+rc=$?
+check 'session start: starts a claude shell and prints its session, name and ref' \
+      eval "(( rc == 0 )) && [[ \$(field '[.agent, .buffer, .session_id, .name, .server_name] | @tsv') == 'claude	shell-new	new-0000	tvnew-3c	tvshell' ]] && [[ \$(field .ref) == $new_ref* ]]"
+check 'session start: submits the prompt file to the new shell' \
+      grep -q 'Start on the docs\.' "$send_log"
+
+emacs_tool session start --emacs "$shell_pid" --agent gemini
+rc=$?
+check 'session start, unknown agent: exits 2 with timvisher_emacs_unknown_agent' \
+      eval '(( rc == 2 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_unknown_agent\""'
+
+emacs_tool session start --emacs "$new_pid"
+rc=$?
+check 'session start, pid not an Emacs: exits 1 with timvisher_emacs_not_emacs' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_not_emacs\""'
+
+emacs_tool session start --agent claude
+rc=$?
+check 'session start without --emacs: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
 printf 'Pick up the deploy.\n' > "$tmpdir/recover-note"

@@ -25,6 +25,7 @@ show_help() {
 Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server socket <pid>
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
+       timvisher_emacs session start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
        timvisher_emacs session get-server <session>
        timvisher_emacs session send [--timeout <seconds>] <session> <message-file>
        timvisher_emacs session is-wedged [--quiet-seconds <N>] <session>
@@ -36,6 +37,10 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
   server socket  print the absolute socket path of the Emacs with that pid
   server eval    evaluate an expression in the Emacs with that pid; prints its value
+  session start       start a new agent-shell (claude by default) in the Emacs with that pid,
+                      submit the prompt file once it is ready, wait for its session, and
+                      print it as JSON with the name and ref to message it by; for an
+                      ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
   session get-server  print, as JSON, the Emacs server hosting that session's agent-shell
   session send        queue the file's text in that agent-shell, or submit it if the shell
                       is idle; prints queued or submitted
@@ -274,7 +279,7 @@ timvisher_emacs__elisp_string() {
 }
 
 timvisher_emacs__with_helpers() {
-  printf '(progn (unless (fboundp (quote timvisher-agent-shell-send)) (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-recover-fork)) (load (expand-file-name "timvisher-agent-shell-recover" user-emacs-directory) nil t)) %s)' "$1"
+  printf '(progn (unless (fboundp (quote timvisher-agent-shell-send)) (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-recover-fork)) (load (expand-file-name "timvisher-agent-shell-recover" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-start)) (load (expand-file-name "timvisher-agent-shell-start" user-emacs-directory) nil t)) %s)' "$1"
 }
 
 timvisher_emacs__elisp_string_value() {
@@ -615,6 +620,152 @@ timvisher_emacs__session_recover_fork() {
   esac
 }
 
+timvisher_emacs__ref_for() {
+  local sock=$1 sessions_dir=$2 hash other n=6
+  hash=$(printf 'session:%s' "$sock" | shasum -a 256 | cut -d' ' -f1)
+
+  local -a others=()
+  local pid other_sock
+  while IFS=$'\t' read -r pid other_sock
+  do
+    [[ $other_sock == "$sock" ]] && continue
+    kill -0 "$pid" 2>/dev/null || continue
+    others+=("$(printf 'session:%s' "$other_sock" | shasum -a 256 | cut -d' ' -f1)")
+  done < <(jq -r '[.pid, (.messagingSocketPath // "")] | @tsv' "$sessions_dir"/*.json 2>/dev/null)
+
+  for other in "${others[@]}"
+  do
+    while (( n < 12 )) && [[ ${other:0:n} == "${hash:0:n}" ]]
+    do
+      (( n += 1 ))
+    done
+  done
+  printf '%s\n' "${hash:0:n}"
+}
+
+timvisher_emacs__session_start() {
+  local emacs_pid='' agent=claude prompt_file='' timeout=120
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --emacs)
+        emacs_pid=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --agent)
+        agent=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --prompt-file)
+        prompt_file=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  [[ -n $emacs_pid ]] || { usage; return 2; }
+  case $agent in
+    claude|codex)
+      ;;
+    *)
+      aictl_error \
+        --code timvisher_emacs_unknown_agent \
+        --message "Unknown agent '${agent}'." \
+        --suggestion "Pass --agent claude or --agent codex"
+      return 2
+      ;;
+  esac
+
+  local prompt_arg=nil
+  if [[ -n $prompt_file ]]
+  then
+    if [[ ! -f $prompt_file || ! -r $prompt_file ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_no_such_message_file \
+        --message "The prompt file '${prompt_file}' is not a readable file." \
+        --suggestion "Write the prompt to a file outside any worktree (e.g. /tmp/x.prompt) and pass its path"
+      return 1
+    fi
+    prompt_file=$(cd -- "$(dirname -- "$prompt_file")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "$prompt_file")") || return 1
+    prompt_arg=$(timvisher_emacs__elisp_string "$prompt_file")
+  fi
+
+  local socket
+  socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
+
+  local status
+  status=$(timvisher_emacs__emacsclient 20 "$emacs_pid" "$socket" \
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg)")" |
+    timvisher_emacs__elisp_string_value) || return 1
+
+  local buffer buffer_arg
+  buffer=$(jq -r .buffer <<< "$status") || return 1
+  buffer_arg=$(timvisher_emacs__elisp_string "$buffer")
+
+  SECONDS=0
+  while [[ $(jq -r '.live and (.session_id == null)' <<< "$status") == true ]] && (( SECONDS < timeout ))
+  do
+    sleep 1
+    status=$(timvisher_emacs__emacsclient 10 "$emacs_pid" "$socket" \
+      "(timvisher-agent-shell-start-status $buffer_arg)" |
+      timvisher_emacs__elisp_string_value) || return 1
+  done
+
+  local session_id
+  session_id=$(jq -r '.session_id // empty' <<< "$status")
+  if [[ -z $session_id ]]
+  then
+    if [[ $(jq -r .live <<< "$status") != true ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_start_failed \
+        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} went away before opening a session." \
+        --suggestion "Look in that Emacs's *Messages* and the agent's stderr buffer for why"
+    else
+      aictl_error \
+        --code timvisher_emacs_start_pending \
+        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} had no session after ${timeout}s; it may still open one." \
+        --reason "The prompt is submitted when the shell is ready, whether or not this command is waiting." \
+        --suggestion "Check on it: timvisher_emacs server eval ${emacs_pid} '(timvisher-agent-shell-start-status ${buffer_arg})'"
+    fi
+    return 1
+  fi
+
+  local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions name='' sock='' ref=''
+  if [[ $agent == claude ]]
+  then
+    SECONDS=0
+    while [[ -z $sock ]] && (( SECONDS < 10 ))
+    do
+      IFS=$'\t' read -r name sock < <(jq -r --arg sid "$session_id" \
+        'select(.sessionId == $sid) | [(.name // ""), (.messagingSocketPath // "")] | @tsv' \
+        "$sessions_dir"/*.json 2>/dev/null)
+      [[ -n $sock ]] || sleep 0.5
+    done
+    [[ -n $sock ]] && ref=$(timvisher_emacs__ref_for "$sock" "$sessions_dir")
+  fi
+
+  jq -n \
+    --argjson schema_version "$timvisher_emacs__schema_version" \
+    --argjson pid "$emacs_pid" --arg socket "$socket" --arg buffer "$buffer" \
+    --arg agent "$agent" --arg session_id "$session_id" --arg name "$name" --arg ref "$ref" \
+    '{schema_version: $schema_version, pid: $pid, server_name: ($socket | split("/") | last),
+      socket: $socket, buffer: $buffer, agent: $agent, session_id: $session_id,
+      name: (if $name == "" then null else $name end),
+      ref: (if $ref == "" then null else $ref end)}'
+}
+
 timvisher_emacs__kill_each() {
   local dry_run=$1 label=$2 re=$3
 
@@ -830,6 +981,11 @@ case ${1-} in
     ;;
   session)
     case ${2-} in
+      start)
+        shift 2
+        timvisher_emacs__session_start "$@"
+        exit
+        ;;
       get-server)
         (( 3 == $# )) || { usage; exit 2; }
         timvisher_emacs__session_server_json "$3" || exit 1
