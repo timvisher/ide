@@ -27,6 +27,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
        timvisher_emacs session get-server <session>
        timvisher_emacs session send [--timeout <seconds>] <session> <message-file>
+       timvisher_emacs session is-wedged [--quiet-seconds <N>] <session>
+       timvisher_emacs session recover fork [--message-file <file>] [--timeout <seconds>] <session>
        timvisher_emacs cleanup [--no-dry-run]
        timvisher_emacs dev [<checkout options>] [--] [<emacs args>...]
        timvisher_emacs agent-shell [<checkout options>] claude|codex [<emacs args>...]
@@ -37,6 +39,12 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   session get-server  print, as JSON, the Emacs server hosting that session's agent-shell
   session send        queue the file's text in that agent-shell, or submit it if the shell
                       is idle; prints queued or submitted
+  session is-wedged   print a JSON report on whether that agent-shell is wedged; the
+                      answer is .wedged (jq -e .wedged), with the evidence in .reasons
+  session recover fork
+                      fork that agent-shell into a new one, kill the old one once the
+                      new one is ready, and tell the new one it is a recovery fork
+                      (plus --message-file's text); prints the outcome as JSON
   cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
                  a dry run unless --no-dry-run
   dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker
@@ -52,6 +60,12 @@ nearest Emacs ancestor of the session's process, else the server whose
 agent-shell buffers include the session.
 Queued text reads as though Tim typed it, so start a message to another
 agent with a "From the ... agent (session ...)" line.
+
+A busy agent-shell (not one waiting on a permission prompt) is wedged
+when its agent process is dead, when no session/prompt request is in
+flight, or when the agent has been silent for --quiet-seconds (default
+300) with no tool call running. Silence during a running tool call is a
+long tool call and never counts.
 
 Checkout options (dev and agent-shell):
   --agent-shell <dir>  default $timvisher_agent_shell_checkout, else agent-shell-plus/main
@@ -259,8 +273,12 @@ timvisher_emacs__elisp_string() {
   printf '"%s"' "$s"
 }
 
-timvisher_emacs__with_send_helper() {
-  printf '(progn (unless (fboundp (quote timvisher-agent-shell-send)) (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)) %s)' "$1"
+timvisher_emacs__with_helpers() {
+  printf '(progn (unless (fboundp (quote timvisher-agent-shell-send)) (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)) (unless (fboundp (quote timvisher-agent-shell-recover-fork)) (load (expand-file-name "timvisher-agent-shell-recover" user-emacs-directory) nil t)) %s)' "$1"
+}
+
+timvisher_emacs__elisp_string_value() {
+  perl -0pe 's/\A"//; s/"\n?\z//; s/\\(.)/$1/gs'
 }
 
 timvisher_emacs__ancestor_emacs() {
@@ -421,7 +439,7 @@ timvisher_emacs__session_send() {
 
   local status
   status=$(timvisher_emacs__emacsclient "$timeout" "$emacs_pid" "$socket" \
-    "$(timvisher_emacs__with_send_helper \
+    "$(timvisher_emacs__with_helpers \
       "(timvisher-agent-shell-send $(timvisher_emacs__elisp_string "$session_id") $(timvisher_emacs__elisp_string "$file"))")") ||
     return 1
   status=${status#\"}
@@ -437,6 +455,135 @@ timvisher_emacs__session_send() {
         --message "Emacs ${emacs_pid} has no agent-shell buffer with session id ${session_id}." \
         --reason "timvisher-agent-shell-send answered: ${status}" \
         --suggestion "The session may have ended or restarted under a new id; re-check it before retrying"
+      return 1
+      ;;
+  esac
+}
+
+timvisher_emacs__session_is_wedged() {
+  local quiet_seconds=nil
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --quiet-seconds)
+        quiet_seconds=${2-}
+        [[ $quiet_seconds =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 1 == $# )) || { usage; return 2; }
+
+  local found emacs_pid socket session_id
+  found=$(timvisher_emacs__session_server "$1") || return 1
+  IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
+
+  local report
+  report=$(timvisher_emacs__emacsclient 10 "$emacs_pid" "$socket" \
+    "$(timvisher_emacs__with_helpers \
+      "(timvisher-agent-shell-wedge-report $(timvisher_emacs__elisp_string "$session_id") $quiet_seconds)")" |
+    timvisher_emacs__elisp_string_value) || return 1
+
+  if [[ $report != '{'* ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "Emacs ${emacs_pid} has no agent-shell buffer with session id ${session_id}." \
+      --reason "timvisher-agent-shell-wedge-report answered: ${report}"
+    return 1
+  fi
+  jq . <<< "$report"
+}
+
+timvisher_emacs__session_recover_fork() {
+  local timeout=180 message_file=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      --message-file)
+        message_file=${2-}
+        shift 2 || { usage; return 2; }
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 1 == $# )) || { usage; return 2; }
+
+  local message_arg=nil
+  if [[ -n $message_file ]]
+  then
+    if [[ ! -f $message_file || ! -r $message_file ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_no_such_message_file \
+        --message "The message file '${message_file}' is not a readable file." \
+        --suggestion "Write the message to a file outside any worktree (e.g. /tmp/x.message) and pass its path"
+      return 1
+    fi
+    message_file=$(cd -- "$(dirname -- "$message_file")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "$message_file")") || return 1
+    message_arg=$(timvisher_emacs__elisp_string "$message_file")
+  fi
+
+  local found emacs_pid socket session_id
+  found=$(timvisher_emacs__session_server "$1") || return 1
+  IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
+  local sid_arg
+  sid_arg=$(timvisher_emacs__elisp_string "$session_id")
+
+  local status
+  status=$(timvisher_emacs__emacsclient 10 "$emacs_pid" "$socket" \
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-recover-fork $sid_arg $message_arg)")" |
+    timvisher_emacs__elisp_string_value) || return 1
+  if [[ $status != '{'* ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "Emacs ${emacs_pid} has no agent-shell buffer with session id ${session_id}." \
+      --reason "timvisher-agent-shell-recover-fork answered: ${status}"
+    return 1
+  fi
+
+  SECONDS=0
+  while [[ $(jq -r .status <<< "$status") == forking ]] && (( SECONDS < timeout ))
+  do
+    sleep 1
+    status=$(timvisher_emacs__emacsclient 10 "$emacs_pid" "$socket" \
+      "(timvisher-agent-shell-recover-status $sid_arg)" |
+      timvisher_emacs__elisp_string_value) || return 1
+  done
+
+  case $(jq -r .status <<< "$status") in
+    recovered)
+      jq . <<< "$status"
+      ;;
+    failed)
+      aictl_error \
+        --code timvisher_emacs_recovery_failed \
+        --message "The recovery fork of session ${session_id} failed; the old shell was left running." \
+        --reason "$(jq -r '.error // "unknown"' <<< "$status")" \
+        --suggestion "Fork it by hand with C-c F in that shell, or kill it and start over"
+      return 1
+      ;;
+    *)
+      aictl_error \
+        --code timvisher_emacs_recovery_pending \
+        --message "The recovery fork of session ${session_id} was not ready after ${timeout}s; it may still finish." \
+        --reason "Emacs finishes the recovery (killing the old shell and briefing the new one) when the new shell is ready, whether or not this command is waiting." \
+        --suggestion "Check on it: timvisher_emacs server eval ${emacs_pid} '(timvisher-agent-shell-recover-status ${sid_arg})'"
       return 1
       ;;
   esac
@@ -664,6 +811,17 @@ case ${1-} in
       send)
         shift 2
         timvisher_emacs__session_send "$@"
+        exit
+        ;;
+      is-wedged)
+        shift 2
+        timvisher_emacs__session_is_wedged "$@"
+        exit
+        ;;
+      recover)
+        [[ ${3-} == fork ]] || { usage; exit 2; }
+        shift 3
+        timvisher_emacs__session_recover_fork "$@"
         exit
         ;;
       *)

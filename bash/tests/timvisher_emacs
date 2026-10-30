@@ -280,9 +280,23 @@ send_log=$tmpdir/send-log
 busy_flag=$tmpdir/busy
 start_emacs tvshell "(progn
   (setq user-emacs-directory \"$emacs_d/\")
-  (defun agent-shell-buffers () (list (get-buffer-create \"shell-sess-1\")))
-  (defun agent-shell--state () '((:session . ((:id . \"abcd1111-0000\")))))
+  (defvar tv-states (list (cons (get-buffer-create \"shell-sess-1\")
+                                (list (cons :session (list (cons :id \"abcd1111-0000\")))
+                                      (cons :supports-session-fork t)
+                                      (cons :agent-config 'claude)))))
+  (defun agent-shell-buffers () (seq-filter #'buffer-live-p (mapcar #'car tv-states)))
+  (defun agent-shell--state () (alist-get (current-buffer) tv-states))
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
+  (defun agent-shell-status (&rest _) (if (shell-maker-busy) 'busy 'ready))
+  (defun agent-shell--start (&rest _)
+    (let ((new (get-buffer-create \"shell-new\")))
+      (push (cons new (list (cons :session (list (cons :id \"new-0000\"))))) tv-states)
+      new))
+  (defun agent-shell-subscribe-to (&rest args)
+    (when (eq 'prompt-ready (plist-get args :event))
+      (run-at-time 1 nil (plist-get args :on-event) '((:event . prompt-ready))))
+    (plist-get args :event))
+  (defun agent-shell-unsubscribe (&rest _) nil)
   (defun agent-shell--prompt-queue-enqueue (&rest args)
     (append-to-file (format \"enqueue %S\n\" (plist-get args :prompt)) nil \"$send_log\"))
   (defun agent-shell--insert-to-shell-buffer (&rest args)
@@ -368,9 +382,42 @@ rc=$?
 check 'session send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
 
+touch "$busy_flag"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged tvshell-1a
+rc=$?
+check 'session is-wedged: a busy shell with no agent process and no prompt request is wedged' \
+      eval "(( rc == 0 )) && [[ \$(field '[.wedged, .session_id, (.reasons | join(\",\"))] | @tsv') == 'true	abcd1111-0000	agent-process-dead,busy-without-prompt-request' ]]"
+rm -f -- "$busy_flag"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged --quiet-seconds 1 abcd1111
+rc=$?
+check 'session is-wedged: an idle shell is not wedged' \
+      eval "(( rc == 0 )) && [[ \$(field '[.wedged, .status, .quiet_seconds_threshold] | @tsv') == 'false	ready	1' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged --quiet-seconds soon abcd1111
+rc=$?
+check 'session is-wedged with a non-numeric --quiet-seconds: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
 emacs_tool session send abcd1111-0000
 rc=$?
 check 'session send without a file: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+printf 'Pick up the deploy.\n' > "$tmpdir/recover-note"
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session recover fork --timeout 20 --message-file "$tmpdir/recover-note" tvshell-1a
+rc=$?
+check 'session recover fork: waits for the new shell and prints the recovery' \
+      eval "(( rc == 0 )) && [[ \$(field '[.status, .old_session_id, .new_session_id, .new_buffer] | @tsv') == 'recovered	abcd1111-0000	new-0000	shell-new' ]]"
+check 'session recover fork: kills the old shell' \
+      eval "[[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(buffer-live-p (get-buffer \"shell-sess-1\"))') == nil ]]"
+check 'session recover fork: tells the new shell it is a recovery fork, with the message file' \
+      eval "grep -q 'recovery fork of session abcd1111-0000 (shell-sess-1)' '$send_log' && grep -q 'Pick up the deploy\\.' '$send_log'"
+
+emacs_tool session recover spoon abcd1111
+rc=$?
+check 'session recover with an unknown strategy: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
 emacs_tool --help
