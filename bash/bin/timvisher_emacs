@@ -293,9 +293,9 @@ timvisher_emacs__with_helpers() {
   # own config: the helpers then always match this CLI, and an Emacs
   # holding an older copy picks up the current one.
   printf '(progn (load %s nil t) (load %s nil t) (load %s nil t) %s)' \
-    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-send")" \
-    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-recover")" \
-    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-start")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-send.el")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-recover.el")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-start.el")" \
     "$1"
 }
 
