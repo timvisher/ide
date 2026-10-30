@@ -1039,7 +1039,9 @@ fi
 #
 # git is the authority. Entries are data, never sourced, and a caller cannot
 # assert its own exemption — being the named ancestor process is the only
-# credential, which is why there is no env-var form of this.
+# credential. An env var never exempts anything by itself; the one that
+# exists, TIMVISHER_GIT_PUSH_GRANT, only narrows what the timvisher_gh and
+# timvisher_git ancestors may push (see push_guard__is_draft_grant).
 #
 # Core ships no entries. Datadog-specific tools live in the system-extensions
 # repo and contribute through ~/.config/timvisher/ide/git/guard_allow.
@@ -1729,14 +1731,38 @@ then
       guard_allow__has_ancestor bd
     }
 
-    if ! push_guard__is_bd_dolt "$@"
+    # In code, not the allow-list, for the same reason as bd's: the argv
+    # must match the grant exactly.
+    push_guard__is_draft_grant() {
+      local branch local_sha head moved extra
+      read -r branch local_sha head moved extra <<< "${TIMVISHER_GIT_PUSH_GRANT-}"
+      [[ -n $branch && -z $extra ]] || return 1
+      [[ $local_sha =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1
+      case $moved in
+        new) [[ $head == - ]] || return 1; head= ;;
+        moved|unmoved) [[ $head =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1 ;;
+        *) return 1 ;;
+      esac
+      (( $# == 4 )) &&
+        [[ $1 == push &&
+           $2 == "--force-with-lease=refs/heads/${branch}:${head}" &&
+           $3 == origin &&
+           $4 == "${local_sha}:refs/heads/${branch}" ]] || return 1
+      local main
+      main=$(_timvisher_git__get_main_branch) || return 1
+      [[ $branch != "$main" && $branch != main && $branch != master ]] || return 1
+      guard_allow__has_ancestor timvisher_gh && guard_allow__has_ancestor timvisher_git
+    }
+
+    if ! push_guard__is_bd_dolt "$@" && ! push_guard__is_draft_grant "$@"
     then
       aictl_die \
         --code "git_push_blocked" \
         --message "Agents must NEVER push to remotes. This is a non-negotiable safety rule." \
         --reason "Remote mutations are human-only operations." \
         --doc "ai/HOME/.agents/skills/git/SKILL.md" \
-        --suggestion "Ask the human to run 'git push'"
+        --suggestion "To update a draft PR's branch, run 'timvisher_gh pr push'" \
+        --suggestion "Otherwise ask the human to run 'git push'"
     fi
   fi
 fi

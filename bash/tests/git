@@ -241,6 +241,130 @@ else
   fail "deep bd ancestor: got '${result}'"
 fi
 
+# ---------------------------------------------------------------------------
+# draft PR push grant allow-path
+# ---------------------------------------------------------------------------
+
+mkdir -p "$tmpdir/grantprefix/bin" "$tmpdir/grantselflink" "$tmpdir/fakegrant-bin" || exit 1
+cat > "$tmpdir/grantprefix/bin/git" <<'MOCK'
+#!/usr/bin/env bash
+if [[ $1 == symbolic-ref ]]
+then
+  echo refs/remotes/origin/trunk
+  exit 0
+fi
+echo "real-git $*"
+MOCK
+chmod +x "$tmpdir/grantprefix/bin/git"
+ln -s "$script" "$tmpdir/grantselflink/git"
+grant_path="$tmpdir/grantselflink:$tmpdir/grantprefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
+for faketool in timvisher_gh timvisher_git
+do
+  cat > "$tmpdir/fakegrant-bin/$faketool" <<'FAKE_TOOL'
+#!/usr/bin/env bash
+"$@"
+FAKE_TOOL
+  chmod +x "$tmpdir/fakegrant-bin/$faketool"
+done
+
+grant_local=1111111111111111111111111111111111111111
+grant_head=2222222222222222222222222222222222222222
+
+run_granted() {
+  local grant=$1 ancestors=$2
+  shift 2
+  local -a chain=()
+  [[ $ancestors == git ]] || chain+=("$tmpdir/fakegrant-bin/timvisher_gh")
+  [[ $ancestors == gh ]] || chain+=("$tmpdir/fakegrant-bin/timvisher_git")
+  TIMVISHER_AGENT=true TIMVISHER_GIT_PUSH_GRANT=$grant PATH="$grant_path" \
+    "${chain[@]}" bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+check_granted() {
+  local description=$1 want=$2
+  run_test
+  if [[ $want == allowed && $result == *"real-git push"* && $result != *'"code":"git_push_blocked"'* ]] ||
+     [[ $want == blocked && $result == *'"code":"git_push_blocked"'* ]]
+  then
+    pass "push grant: $description"
+  else
+    fail "push grant: $description: want ${want}, got '${result}'"
+  fi
+}
+
+result=$(run_granted "feature $grant_local $grant_head unmoved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'allows the granted push under timvisher_gh and timvisher_git' allowed
+
+result=$(run_granted "feature $grant_local - new" both \
+  push "--force-with-lease=refs/heads/feature:" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'allows creating the branch under a new grant' allowed
+
+result=$(run_granted "feature $grant_local $grant_head moved" gh \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks without timvisher_git as an ancestor' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" git \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks without timvisher_gh as an ancestor' blocked
+
+result=$(TIMVISHER_AGENT=true TIMVISHER_GIT_PUSH_GRANT="feature $grant_local $grant_head moved" PATH="$grant_path" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' push --force-with-lease=refs/heads/feature:$grant_head origin $grant_local:refs/heads/feature" 2>&1 || true)
+check_granted 'blocks the granted argv with neither ancestor (the env var alone)' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both push || true)
+check_granted 'blocks a bare push' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both push origin feature || true)
+check_granted 'blocks a push without the lease' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin ":refs/heads/feature" || true)
+check_granted 'blocks a delete' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both push --mirror origin || true)
+check_granted 'blocks a mirror push' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push --force "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks an extra flag' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" "$grant_local:refs/heads/other" || true)
+check_granted 'blocks an extra refspec' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" upstream "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks another remote' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_local" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks a lease on another SHA' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_head:refs/heads/feature" || true)
+check_granted 'blocks pushing another local SHA' blocked
+
+result=$(run_granted "feature $grant_local $grant_head moved" both \
+  push "--force-with-lease=refs/heads/other:$grant_head" origin "$grant_local:refs/heads/other" || true)
+check_granted 'blocks another branch' blocked
+
+result=$(run_granted "feature $grant_local $grant_head" both \
+  push "--force-with-lease=refs/heads/feature:$grant_head" origin "$grant_local:refs/heads/feature" || true)
+check_granted 'blocks a malformed grant' blocked
+
+result=$(run_granted "feature $grant_local - moved" both \
+  push "--force-with-lease=refs/heads/feature:" origin "$grant_local:refs/heads/feature" || true)
+check_granted "blocks a missing head that isn't a new grant" blocked
+
+result=$(run_granted "trunk $grant_local $grant_head unmoved" both \
+  push "--force-with-lease=refs/heads/trunk:$grant_head" origin "$grant_local:refs/heads/trunk" || true)
+check_granted "blocks origin's default branch" blocked
+
+result=$(run_granted "main $grant_local $grant_head unmoved" both \
+  push "--force-with-lease=refs/heads/main:$grant_head" origin "$grant_local:refs/heads/main" || true)
+check_granted 'blocks main even when it is not the default branch' blocked
+
 # Test 4: requires Co-authored-by trailer for Claude agent commits
 run_test
 result=$(TIMVISHER_AGENT=true CLAUDECODE=1 PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' commit -m 'no trailer'" 2>&1 || true)
