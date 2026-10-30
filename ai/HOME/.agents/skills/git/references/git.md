@@ -13,10 +13,11 @@
 - Agents must NEVER merge. Always rebase locally.
 - Agents must NEVER modify git hooks or hook configuration.
   Do not edit `.git/hooks`, `core.hooksPath`, or `/usr/local/dd/global_hooks`.
-- Agents must NEVER change or update remote state. That is user-only work.
+- Agents must NEVER change or update remote state, beyond that draft PR push.
+  That is user-only work.
 
-If remote updates are needed, ask the user to run the command and then continue
-with local-only work.
+If any other remote update is needed, ask the user to run the command and then
+continue with local-only work.
 
 ## Remote Read-Only Commands (Allowed)
 

@@ -79,7 +79,7 @@ timvisher_gh pr push     # push only
 
 The first push creates a draft PR from `pr.md` (`--ready-for-review` for a ready one, `--base <branch>` for a base other than the default branch), moves `pr.md` into the store and leaves a `pr.md` symlink to it; later runs push the branch (through `timvisher_git push`) and the title, body, draft state and base. `--draft`, `--ready-for-review` and `--base` are remembered and re-applied. Every write is safe to rerun after any failure. `--plan` shows what it would do and changes nothing. `--open` opens the PR afterwards. `timvisher_gh -C <path> pr` resolves the worktree from `<path>` (`-C` goes before the noun).
 
-Under an agent, `timvisher_gh` creates a PR only as a draft and pushes only a draft PR for this worktree's branch. It fetches the PR fresh and grants `timvisher_git push` exactly that one push, which the git wrapper lets through; a plain `git push` is still blocked. If nobody else has pushed to the PR since `timvisher_gh` last did, any rewrite goes out; if someone has, only a fast-forward or a rewrite with the same changes does, and anything else stops for Tim. Marking a PR ready (`--ready-for-review`, `pr ready`), `pr merge` and `pr release` are refused: hand Tim the one-line invocation.
+Under an agent, `timvisher_gh` creates a PR only as a draft and pushes only a draft PR for this worktree's branch. It fetches the PR fresh and grants `timvisher_git push` exactly that one push, which the git wrapper lets through; a plain `git push` is still blocked. If nobody else has pushed to the PR since `timvisher_gh` last did, a rewrite goes out without comparing content (a branch that's behind still stops); if someone has, only a fast-forward or a rewrite with the same changes does, and anything else stops for Tim. Marking a PR ready (`--ready-for-review`, `pr ready`), `pr merge` and `pr release` are refused: hand Tim the one-line invocation.
 
 Changes are three-way: against what was last pushed or agreed, yours and GitHub's. Yours only is pushed; GitHub's only is pulled into your file by `pull` and the bare sync, and refused by `push` (exit 4: pull first). Both, differently, is a decision: exit 3 with the exact reruns for `--ours` (push yours), `--theirs` (take GitHub's) and `--merge` (`git merge-file`). Never write ad hoc `y.*.sh` push scripts; everything they did is a rerun.
 
@@ -109,7 +109,7 @@ It works like `pr`: created on the first sync, `issue.md` moved into the store, 
 
 ## Workflow — marking a PR ready for review
 
-Wait for CI checks to pass, then remove draft status:
+Tim's step: agents are refused it. Wait for CI checks to pass, then remove draft status:
 
 ```bash
 timvisher_gh pr ready
