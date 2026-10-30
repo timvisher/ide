@@ -6,8 +6,8 @@
 ;; with a session id is wedged; `timvisher-agent-shell-recover-fork'
 ;; forks it into a new shell, kills the old one once the new one is
 ;; ready, and tells the new one it is a recovery fork.  Both return
-;; JSON strings for `timvisher_emacs session is-wedged' and `session
-;; recover fork'.
+;; JSON strings for `timvisher_emacs agent-shell is-wedged' and
+;; `agent-shell recover fork'.
 
 ;;; Code:
 
@@ -103,7 +103,7 @@ the list of prompts that were waiting in its queue, carried in the note
 in order, and EXTRA, when non-nil, is appended."
   (let ((count (length queued)))
     (concat
-     (format "From timvisher_emacs session recover fork: this session is a recovery fork of session %s (%s), which was wedged and has been killed. Its conversation is yours; continue its work. Anything it had running (commands, tool calls, half-made edits) may not have finished, so check that state before building on it."
+     (format "From timvisher_emacs agent-shell recover fork: this session is a recovery fork of session %s (%s), which was wedged and has been killed. Its conversation is yours; continue its work. Anything it had running (commands, tool calls, half-made edits) may not have finished, so check that state before building on it."
              old-session-id old-buffer-name)
      (when (< 0 count)
        (concat

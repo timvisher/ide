@@ -1,4 +1,4 @@
-;;; timvisher_emacs.agent-shell.el --- Start an agent-shell for timvisher_emacs agent-shell -*- lexical-binding: t -*-
+;;; timvisher_emacs.agent-shell.el --- Start an agent-shell for timvisher_emacs agent-shell launch -*- lexical-binding: t -*-
 
 (setq frame-background-mode 'light)
 

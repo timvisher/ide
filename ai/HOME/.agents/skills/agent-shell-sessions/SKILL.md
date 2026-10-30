@@ -28,7 +28,7 @@ with `timvisher_emacs_ambiguous_session`, listing each match.
 3. Send it:
 
    ```bash
-   timvisher_emacs session send <session> /tmp/x.message
+   timvisher_emacs agent-shell send <session> /tmp/x.message
    ```
 
 It prints `submitted` when the shell was idle, or `queued` when it
@@ -39,16 +39,16 @@ whatever Tim is typing along with your message.
 
 ## Finding and starting sessions
 
-- `timvisher_emacs session ls` lists every agent-shell in every live
+- `timvisher_emacs agent-shell ls` lists every agent-shell in every live
   Emacs with its name, ref, status, queued prompts, buffer and
   directory: JSON when you run it (no terminal), a table for Tim.
-- `timvisher_emacs session get-server <session>` prints the Emacs
+- `timvisher_emacs agent-shell get-server <session>` prints the Emacs
   pid and server socket hosting a session, as JSON.
 - `timvisher_emacs server ls` lists every live Emacs server by pid.
 - Start a new agent-shell with a first prompt in a given Emacs:
 
   ```bash
-  timvisher_emacs session start --emacs <pid> --agent claude \
+  timvisher_emacs agent-shell start --emacs <pid> --agent claude \
     --prompt-file /tmp/x.prompt
   ```
 
@@ -65,8 +65,8 @@ whatever Tim is typing along with your message.
 ## Wedged sessions
 
 ```bash
-timvisher_emacs session is-wedged <session>        # jq -e .wedged
-timvisher_emacs session recover fork <session>     # [--message-file F]
+timvisher_emacs agent-shell is-wedged <session>        # jq -e .wedged
+timvisher_emacs agent-shell recover fork <session>     # [--message-file F]
 ```
 
 `is-wedged` calls a busy session wedged when its agent process is

@@ -33,7 +33,7 @@ case "$1 $2" in
     [[ -n ${FAKE_NO_SERVER-} ]] && exit 1
     printf '/tmp/fake/timvisher-%s\n' "$3"
     ;;
-  'session start')
+  'agent-shell start')
     while (( 0 < $# ))
     do
       [[ $1 == --prompt-file ]] && cp -- "$2" "$FAKE_DIR/prompt-seen"
@@ -73,7 +73,7 @@ TIMVISHER_NTMUX3_AI_AGENT=codex TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT=$'Do th
   run ntmux3__new_session true org/repo/br .
 rc=$?
 check 'detached: creates the session, then starts the agent in its editor Emacs with the prompt' \
-      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "-d org/repo/br ." ]] && grep -q "^session start --emacs 4242 --agent codex --prompt-file " "$tmpdir/emacs-calls"'
+      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "-d org/repo/br ." ]] && grep -q "^agent-shell start --emacs 4242 --agent codex --prompt-file " "$tmpdir/emacs-calls"'
 check 'detached: hands over the prompt exactly' \
       eval '[[ $(cat "$tmpdir/prompt-seen") == $'"'"'Do the thing.\nCarefully.'"'"' ]]'
 check 'detached: reports the agent with ntmux3_agent_started naming it' \
@@ -87,7 +87,7 @@ check 'only a prompt: the agent is claude' grep -q -- '--agent claude' "$tmpdir/
 FAKE_NO_SERVER=1 run ntmux3__start_agent org/repo/br claude '' 1
 rc=$?
 check 'no Emacs server comes up: exits 1 with ntmux3_agent_not_started' \
-      eval '(( rc == 1 )) && stderr_code ntmux3_agent_not_started && ! grep -q "session start" "$tmpdir/emacs-calls"'
+      eval '(( rc == 1 )) && stderr_code ntmux3_agent_not_started && ! grep -q "agent-shell start" "$tmpdir/emacs-calls"'
 
 TIMVISHER_NTMUX3_AI_AGENT=claude run ntmux3__new_session '' org/repo/br .
 rc=$?
@@ -97,7 +97,7 @@ do
   sleep 0.1
 done
 check 'attached: attaches with ntmux and starts the agent in the background' \
-      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "org/repo/br ." ]] && grep -q "^session start --emacs 4242 --agent claude$" "$tmpdir/emacs-calls"'
+      eval '(( rc == 0 )) && [[ $(cat "$tmpdir/ntmux-calls") == "org/repo/br ." ]] && grep -q "^agent-shell start --emacs 4242 --agent claude$" "$tmpdir/emacs-calls"'
 check 'attached: logs the background start' \
       grep -q ntmux3_agent_started "$tmpdir/state/timvisher/ntmux3/agent-start.log"
 

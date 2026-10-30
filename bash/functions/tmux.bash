@@ -858,7 +858,7 @@ function ntmux3__start_agent() {
         aictl_error \
             --code ntmux3_agent_not_started \
             --message "No Emacs server came up in the editor window of '${session_name}' within ${deadline}s, so no ${agent} agent-shell was started." \
-            --suggestion "Start it by hand: timvisher_emacs session start --emacs \$(ntmux3 get-editor-pid '${session_name}') --agent ${agent}" \
+            --suggestion "Start it by hand: timvisher_emacs agent-shell start --emacs \$(ntmux3 get-editor-pid '${session_name}') --agent ${agent}" \
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
         return 1
     fi
@@ -873,7 +873,7 @@ function ntmux3__start_agent() {
     fi
 
     local started rc
-    started=$(timvisher_emacs session start --emacs "$emacs_pid" --agent "$agent" "${prompt_args[@]}")
+    started=$(timvisher_emacs agent-shell start --emacs "$emacs_pid" --agent "$agent" "${prompt_args[@]}")
     rc=$?
     [[ -z $prompt_file ]] || rm -f -- "$prompt_file"
     (( 0 == rc )) || return "$rc"

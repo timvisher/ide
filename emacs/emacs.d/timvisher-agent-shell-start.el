@@ -13,7 +13,7 @@
 ;; the worktree for an ntmux3 Emacs.  Poll
 ;; `timvisher-agent-shell-start-status' with the returned buffer name for
 ;; the new session id.  Both return JSON strings for `timvisher_emacs
-;; session start'.
+;; agent-shell start'.
 
 ;;; Code:
 
