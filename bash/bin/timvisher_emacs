@@ -32,7 +32,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
   server socket  print the absolute socket path of the Emacs with that pid
   server eval    evaluate an expression in the Emacs with that pid; prints its value
-  cleanup        stop every Emacs (TERM, then KILL after 5s); a dry run unless --no-dry-run
+  cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
+                 a dry run unless --no-dry-run
   dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker
   agent-shell    start an Emacs, through op run, running a claude or codex agent-shell
 
@@ -234,6 +235,47 @@ timvisher_emacs__eval() {
   printf '%s\n' "$out"
 }
 
+timvisher_emacs__kill_each() {
+  local dry_run=$1 label=$2 re=$3
+
+  local -a pids=()
+  local pid
+  while read -r pid
+  do
+    pids+=("$pid")
+  done < <(pgrep -u "$(id -u)" -i "$re")
+
+  local i
+  for i in "${!pids[@]}"
+  do
+    pid=${pids[$i]}
+    printf "%s Killing %s %d/%d '%s'\n" "$(date -u '+%FT%T%z')" "$label" "$(( i + 1 ))" "${#pids[@]}" "$pid" >&2
+    if [[ $dry_run == true ]]
+    then
+      printf 'DRY_RUN: kill %s\n' "$pid" >&2
+      continue
+    fi
+
+    kill "$pid"
+
+    SECONDS=0
+    while kill -0 "$pid" 2>/dev/null && (( SECONDS < 5 ))
+    do
+      sleep 0.1
+    done
+
+    if kill -0 "$pid" 2>/dev/null
+    then
+      kill -9 "$pid"
+    fi
+  done
+
+  if [[ $dry_run == false ]]
+  then
+    pgrep -u "$(id -u)" -il "$re" >&2
+  fi
+}
+
 timvisher_emacs__cleanup() {
   local dry_run=true
 
@@ -249,42 +291,8 @@ timvisher_emacs__cleanup() {
       ;;
   esac
 
-  local -a emacs_pids=()
-  local emacs_pid
-  while read -r emacs_pid
-  do
-    emacs_pids+=("$emacs_pid")
-  done < <(pgrep -u "$(id -u)" -i "$timvisher_emacs__process_re")
-
-  local i
-  for i in "${!emacs_pids[@]}"
-  do
-    emacs_pid=${emacs_pids[$i]}
-    printf "%s Killing emacsen %d/%d '%s'\n" "$(date -u '+%FT%T%z')" "$(( i + 1 ))" "${#emacs_pids[@]}" "$emacs_pid" >&2
-    if [[ $dry_run == true ]]
-    then
-      printf 'DRY_RUN: kill %s\n' "$emacs_pid" >&2
-      continue
-    fi
-
-    kill "$emacs_pid"
-
-    SECONDS=0
-    while kill -0 "$emacs_pid" 2>/dev/null && (( SECONDS < 5 ))
-    do
-      sleep 0.1
-    done
-
-    if kill -0 "$emacs_pid" 2>/dev/null
-    then
-      kill -9 "$emacs_pid"
-    fi
-  done
-
-  if [[ $dry_run == false ]]
-  then
-    pgrep -u "$(id -u)" -il "$timvisher_emacs__process_re" >&2
-  fi
+  timvisher_emacs__kill_each "$dry_run" emacsclients '^emacsclient$'
+  timvisher_emacs__kill_each "$dry_run" emacsen "$timvisher_emacs__process_re"
 
   echo 'Done' >&2
 }

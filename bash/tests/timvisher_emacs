@@ -165,24 +165,31 @@ check 'server eval without an expression: usage on stderr, exit 2' \
 # cleanup, against a fake pgrep so real Emacsen are never selected
 
 sleep 300 &
-victim=$!
-other_pids+=("$victim")
+client_victim=$!
+sleep 300 &
+emacs_victim=$!
+other_pids+=("$client_victim" "$emacs_victim")
 cat > "$tmpdir/bin/pgrep" <<FAKE
 #!/usr/bin/env bash
 [[ \$* == *-il* ]] && exit 1
-printf '%s\n' "$victim"
+case \${@: -1} in
+  *emacsclient*) printf '%s\n' "$client_victim" ;;
+  *) printf '%s\n' "$emacs_victim" ;;
+esac
 FAKE
 chmod +x "$tmpdir/bin/pgrep" || exit 1
 
 PATH="$tmpdir/bin:$PATH" emacs_tool cleanup
 rc=$?
-check 'cleanup: a dry run by default leaves the process alive' \
-      eval "(( rc == 0 )) && kill -0 '$victim' && stderr_has 'DRY_RUN: kill $victim'"
+check 'cleanup: a dry run by default leaves every process alive' \
+      eval "(( rc == 0 )) && kill -0 '$client_victim' && kill -0 '$emacs_victim' && stderr_has 'DRY_RUN: kill $emacs_victim'"
 
 PATH="$tmpdir/bin:$PATH" emacs_tool cleanup --no-dry-run
 rc=$?
-check 'cleanup --no-dry-run: kills the process' \
-      eval "(( rc == 0 )) && ! kill -0 '$victim' 2>/dev/null"
+check 'cleanup --no-dry-run: kills the emacsclients and the Emacsen' \
+      eval "(( rc == 0 )) && ! kill -0 '$client_victim' 2>/dev/null && ! kill -0 '$emacs_victim' 2>/dev/null"
+check 'cleanup --no-dry-run: kills the emacsclients before the Emacsen' \
+      eval "awk '/Killing emacsclients/ { c = NR } /Killing emacsen/ { e = NR } END { exit !(c && e && c < e) }' '$tmpdir/stderr'"
 
 emacs_tool cleanup --bogus
 rc=$?
