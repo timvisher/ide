@@ -142,8 +142,10 @@ in order, and EXTRA, when non-nil, is appended."
 (defun timvisher-agent-shell--hand-over-windows (old new)
   "Show NEW, at its prompt, in every window showing OLD or OLD's viewport.
 
-Return how many windows now show NEW.  Done before OLD is killed so its
-windows never fall back to some other buffer."
+A window dedicated to OLD stays dedicated, to NEW.  Return how many
+windows now show NEW.  Done before OLD is killed so its windows never
+fall back to some other buffer, and a window that cannot be switched
+is logged and skipped rather than stopping the recovery."
   (let* ((viewport (and (fboundp 'agent-shell-viewport--buffer)
                         (agent-shell-viewport--buffer :shell-buffer old :existing-only t)))
          ;; A viewport window gets the shell itself rather than NEW's
@@ -151,10 +153,20 @@ windows never fall back to some other buffer."
          ;; into it.
          (windows (seq-uniq (append (get-buffer-window-list old nil t)
                                     (and viewport (get-buffer-window-list viewport nil t))))))
-    (dolist (window windows)
-      (set-window-buffer window new)
-      (set-window-point window (with-current-buffer new (point-max))))
-    (length windows)))
+    (seq-count
+     (lambda (window)
+       (condition-case err
+           (let ((dedicated (window-dedicated-p window)))
+             (set-window-dedicated-p window nil)
+             (set-window-buffer window new)
+             (set-window-dedicated-p window dedicated)
+             (set-window-point window (with-current-buffer new (point-max)))
+             t)
+         (error
+          (message "timvisher recover fork: could not show %s in %S: %S"
+                   (buffer-name new) window err)
+          nil)))
+     windows)))
 
 (defun timvisher-agent-shell-recover-fork (session-id &optional message-file)
   "Fork the agent-shell with SESSION-ID to recover it, and return its status.

@@ -226,7 +226,8 @@ Nothing goes back into a queue."
 (ert-deftest test-timvisher-agent-shell-recover-fork-hands-the-old-windows-over ()
   "Windows showing the old shell or its viewport show the new shell, at its prompt.
 
-Other windows, and which window is selected, are left alone."
+A strongly dedicated one stays dedicated, now to the new shell.  Other
+windows, and which window is selected, are left alone."
   (test-timvisher-agent-shell-recover--with-fork t
     (let ((viewport (generate-new-buffer "shell-old[viewport]"))
           (other (generate-new-buffer "unrelated")))
@@ -240,6 +241,7 @@ Other windows, and which window is selected, are left alone."
                    (w-other (split-window w-old-2 nil 'below)))
               (set-window-buffer selected old)
               (set-window-buffer w-old-2 old)
+              (set-window-dedicated-p w-old-2 t)
               (set-window-buffer w-viewport viewport)
               (set-window-buffer w-other other)
               (cl-letf (((symbol-function 'agent-shell-viewport--buffer)
@@ -251,6 +253,7 @@ Other windows, and which window is selected, are left alone."
               (dolist (window (list selected w-old-2 w-viewport))
                 (should (eq new (window-buffer window)))
                 (should (= (with-current-buffer new (point-max)) (window-point window))))
+              (should (eq t (window-dedicated-p w-old-2)))
               (should (eq other (window-buffer w-other)))
               (should (eq selected (selected-window)))
               (should (= 3 (alist-get 'reused_windows (test-timvisher-agent-shell-recover--status "old"))))))
