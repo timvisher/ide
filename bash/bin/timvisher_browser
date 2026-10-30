@@ -26,8 +26,8 @@ Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
   tab info   print the active tab's record (see 'timvisher_browser tab info --help')
   tab js     run a JavaScript expression in the active tab; prints its value
   tab close  close the first tab with exactly that URL
-  tab <url>  focus a tab with that URL, or open one in the front window,
-             once it has loaded; prints the URL
+  tab <url>  focus a tab with that URL, or open it through the default URL
+             handler (Finicky) and wait for its tab to load; prints the URL
 
 The browser is the timvisher Browser AppleScript library's currentBrowser().
 EOF
@@ -218,16 +218,30 @@ end run' "$url") || return 1
 }
 
 timvisher_browser__tab() {
-  local url=$1
-  timvisher_browser__osascript '
+  local url=$1 out
+  out=$(timvisher_browser__osascript '
 on run argv
 	set u to item 1 of argv
 	tell script "timvisher Browser"
-		if focusTabWithUrl(u) then return "focused"
-		openTabWithUrl(u)
+		if focusTabWithUrl(u) then return "focused" & linefeed & currentBrowser()
+		if openTabWithUrl(u) then return "opened" & linefeed & currentBrowser()
+		return "untracked" & linefeed & currentBrowser()
 	end tell
-	return "opened"
-end run' "$url" > /dev/null || return 1
+end run' "$url") || return 1
+
+  local state browser
+  {
+    IFS= read -r state
+    IFS= read -r browser
+  } <<< "$out"
+
+  if [[ $state == untracked ]]
+  then
+    aictl_info \
+      --code timvisher_browser_tab_untracked \
+      --message "Opened ${url}, but no new ${browser} tab appeared, so nothing waited for it to load." \
+      --reason "The default URL handler (Finicky) chooses the browser; it probably sent the URL to another app."
+  fi
   printf '%s\n' "$url"
 }
 

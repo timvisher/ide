@@ -41,7 +41,7 @@ case $osa_script in
     printf '%s\nVivaldi\n' "${FAKE_CLOSE:-closed}"
     ;;
   *focusTabWithUrl*)
-    printf '%s\n' "${FAKE_TAB:-opened}"
+    printf '%s\nVivaldi\n' "${FAKE_TAB:-opened}"
     ;;
   *getActiveTabUrl*)
     case ${FAKE_STATE:-ok} in
@@ -143,6 +143,15 @@ FAKE_TAB=focused browser tab 'https://github.com/DataDog/x/pull/8'
 rc=$?
 check 'tab <url>: a focused tab also prints the URL' \
       eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == https://github.com/DataDog/x/pull/8 ]]"
+
+check 'tab <url>: an opened tab emits no instruction' eval "! stderr_has timvisher_browser_tab_untracked"
+
+FAKE_TAB=untracked browser tab 'https://github.com/DataDog/x/pull/8'
+rc=$?
+check 'tab <url>, untracked: exits 0 and prints the URL' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == https://github.com/DataDog/x/pull/8 ]]"
+check 'tab <url>, untracked: reports timvisher_browser_tab_untracked naming the URL and browser' \
+      eval 'stderr_has "\"code\":\"timvisher_browser_tab_untracked\"" && stderr_has "https://github.com/DataDog/x/pull/8" && stderr_has "Vivaldi"'
 
 FAKE_OSA_RC=1 browser tab 'https://github.com/DataDog/x/pull/8'
 rc=$?
