@@ -4559,6 +4559,95 @@ pg -C "$pf/work" switch -q --detach || die 'detach'
 push_run "$pf/work"
 check_push 'a detached HEAD is refused' eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_detached* ]]'
 
+# --- push under a grant from timvisher_gh ---
+
+grant_run() {
+  local repo=$1 grant=$2
+  shift 2
+  push_out=$(cd "$repo" &&
+    PATH="$(dirname "$test_git"):$PATH" TIMVISHER_AGENT=1 TIMVISHER_GIT_PUSH_GRANT=$grant \
+      "$script" push "$@" </dev/null 2>"$push_root/err") && push_rc=0 || push_rc=$?
+  push_err=$(< "$push_root/err")
+}
+
+pf=$(push_fixture grant_new)
+grant_run "$pf/work" "feature $(head_of "$pf") - new"
+check_push 'a new grant pushes a branch origin lacks' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+push_commit "$pf/work" a2 || die 'commit a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+grant_run "$pf/work" "feature $(head_of "$pf") - new"
+check_push 'a new grant is refused once origin has the branch' \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_grant_refused* && $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture grant_unmoved)
+push_run "$pf/work"
+printf 'a1, changed\n' > "$pf/work/a1" && pg -C "$pf/work" commit -q -a --amend -m a1 ||
+  die 'change a1 while rewriting'
+grant_run "$pf/work" "feature $(head_of "$pf") $(remote_feature "$pf") unmoved"
+check_push 'an unmoved grant pushes a rewrite that changes the content, with a lease' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture grant_moved_same)
+push_run "$pf/work"
+pg -C "$pf/work" commit -q --amend -m 'a1, reworded' || die 'amend'
+grant_run "$pf/work" "feature $(head_of "$pf") $(remote_feature "$pf") moved"
+check_push 'a moved grant pushes a rewrite with the same changes' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+push_commit "$pf/work" a2 || die 'commit a2'
+grant_run "$pf/work" "feature $(head_of "$pf") $(remote_feature "$pf") moved"
+check_push 'a moved grant pushes a fast-forward' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
+
+pf=$(push_fixture grant_moved_decision)
+push_run "$pf/work"
+printf 'a1, changed\n' > "$pf/work/a1" && pg -C "$pf/work" commit -q -a --amend -m a1 ||
+  die 'change a1 while rewriting'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+grant_run "$pf/work" "feature $(head_of "$pf") $remote_before moved"
+check_push 'a moved grant stops at a decision (exit 3) and pushes nothing' \
+  eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_grant_decision* && $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") $remote_before moved" --ours
+check_push 'a grant never allows --ours' \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_grant_refused* && $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture grant_behind)
+push_commit "$pf/work" a2 && push_run "$pf/work"
+pg -C "$pf/work" reset -q --hard HEAD~1 || die 'drop a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+grant_run "$pf/work" "feature $(head_of "$pf") $remote_before unmoved"
+check_push 'a grant stops when behind (exit 4), even unmoved' \
+  eval '(( push_rc == 4 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture grant_mismatch)
+push_run "$pf/work"
+push_commit "$pf/work" a2 || die 'commit a2'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+grant_run "$pf/work" "feature $remote_before $remote_before unmoved"
+check_push "a grant for another local SHA is refused" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_grant_refused* && $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "other $(head_of "$pf") $remote_before unmoved"
+check_push "a grant for another branch is refused" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_grant_refused* && $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") $(pg -C "$pf/origin.git" rev-parse main) unmoved"
+check_push "a grant for a head origin's branch isn't at is refused" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *"head moved"* && $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") $remote_before"
+check_push "a malformed grant is refused" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *"malformed grant"* && $(remote_feature "$pf") == "$remote_before" ]]'
+
+pf=$(push_fixture grant_default_branch)
+pg -C "$pf/work" switch -q main && push_commit "$pf/work" m2 || die 'commit on main'
+# shellcheck disable=SC2034
+main_before=$(pg -C "$pf/origin.git" rev-parse refs/heads/main)
+grant_run "$pf/work" "main $(head_of "$pf") $main_before unmoved"
+check_push "a grant never pushes the default branch" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *"default branch"* && $(pg -C "$pf/origin.git" rev-parse refs/heads/main) == "$main_before" ]]'
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

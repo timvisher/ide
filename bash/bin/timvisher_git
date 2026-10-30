@@ -4300,7 +4300,13 @@ push__changes() {
 push__send() {
   local remote=$1 branch=$2 local_sha=$3 lease=$4
   local -a args=(push)
-  [[ -z $lease ]] || args+=("--force-with-lease=refs/heads/${branch}:${lease}")
+  if [[ $lease == - ]]
+  then
+    args+=("--force-with-lease=refs/heads/${branch}:")
+  elif [[ -n $lease ]]
+  then
+    args+=("--force-with-lease=refs/heads/${branch}:${lease}")
+  fi
   args+=("$remote" "${local_sha}:refs/heads/${branch}")
   if ! command git "${args[@]}"
   then
@@ -4341,6 +4347,58 @@ push__theirs() {
   return 4
 }
 
+# An unmoved grant skips the content comparison: GitHub's head is still
+# the one timvisher_gh last pushed, so a rewrite can only drop this
+# worktree's own commits.
+push__granted() {
+  local remote=$1 branch=$2 local_sha=$3 class=$4 side=$5 head=$6 moved=$7 base_ref=$8
+  if [[ $side == theirs && $class != same ]]
+  then
+    push__theirs "$remote" "$branch"
+    return
+  fi
+  case $class in
+    same)
+      aictl_info \
+        --code timvisher_git_push_already_pushed \
+        --message "Already pushed: ${remote}'s '${branch}' is at ${local_sha:0:12}."
+      return 0
+      ;;
+    new|fast-forward|same-content)
+      push__send "$remote" "$branch" "$local_sha" "$head"
+      return
+      ;;
+    decision)
+      if [[ $moved == unmoved ]]
+      then
+        push__send "$remote" "$branch" "$local_sha" "$head"
+        return
+      fi
+      push__show_changes "$base_ref"
+      aictl_error \
+        --code timvisher_git_push_grant_decision \
+        --message "Someone else pushed to the PR's '${branch}', and their changes differ from yours: nothing was pushed." \
+        --suggestion "Bring in ${remote}'s commits: git rebase ${remote}/${branch}, then rerun" \
+        --suggestion "Or ask Tim to choose: timvisher_gh pr push --ours or --theirs"
+      return 3
+      ;;
+    behind)
+      aictl_error \
+        --code timvisher_git_push_behind \
+        --message "'${branch}' is behind ${remote}/${branch}; nothing to push." \
+        --suggestion "Bring in ${remote}'s commits first: git pull --rebase ${remote} ${branch}"
+      return 4
+      ;;
+  esac
+}
+
+push__grant_refused() {
+  aictl_die \
+    --code timvisher_git_push_grant_refused \
+    --message "push: $1" \
+    --suggestion 'Rerun timvisher_gh pr push, which grants the push afresh'
+}
+
 push__cmd() {
   local plan=false side='' base=''
   while (( 0 < $# ))
@@ -4379,6 +4437,24 @@ push__cmd() {
   local_sha=$(command git rev-parse HEAD) ||
     die "push: couldn't resolve HEAD"
 
+  local grant=${TIMVISHER_GIT_PUSH_GRANT-} grant_branch='' grant_local='' grant_head='' grant_moved='' grant_extra=''
+  if [[ -n $grant ]]
+  then
+    read -r grant_branch grant_local grant_head grant_moved grant_extra <<< "$grant"
+    case $grant_moved in
+      new) [[ $grant_head == - ]] ;;
+      moved|unmoved) [[ $grant_head =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] ;;
+      *) false ;;
+    esac && [[ -z $grant_extra ]] ||
+      push__grant_refused "malformed grant '${grant}'"
+    [[ $side != ours ]] ||
+      push__grant_refused "--ours is never granted; only Tim pushes over someone else's commits"
+    [[ $grant_branch == "$branch" ]] ||
+      push__grant_refused "the grant is for '${grant_branch}', but '${branch}' is checked out"
+    [[ $grant_local == "$local_sha" ]] ||
+      push__grant_refused "the grant is for ${grant_local:0:12}, but HEAD is at ${local_sha:0:12}"
+  fi
+
   # Not ls-remote: it ignores the fetch refspecs selective fetching
   # configures and, given a pattern, lists every ref on the remote.
   command git fetch -q --prune "$remote" ||
@@ -4387,6 +4463,18 @@ push__cmd() {
       --message "Couldn't fetch from ${remote}." \
       --suggestion "Check that ${remote} is reachable (git fetch ${remote}), then rerun"
   remote_sha=$(command git rev-parse -q --verify "refs/remotes/${remote}/${branch}") || remote_sha=
+
+  if [[ -n $grant ]]
+  then
+    [[ ${remote_sha:--} == "$grant_head" ]] ||
+      push__grant_refused "the PR's head moved to ${remote_sha:-nothing} since timvisher_gh checked it (${grant_head})"
+    base_ref=$(push__base_ref "$remote" '') ||
+      push__grant_refused "couldn't find ${remote}'s default branch, so can't tell '${branch}' isn't it"
+    [[ $base_ref != "refs/remotes/${remote}/${branch}" ]] ||
+      push__grant_refused "'${branch}' is ${remote}'s default branch, and that's never granted"
+    [[ -z $base ]] || base_ref=$(push__base_ref "$remote" "$base") ||
+      push__grant_refused "couldn't find the base branch '${base}'"
+  fi
 
   local class
   if [[ -z $remote_sha ]]
@@ -4406,7 +4494,10 @@ push__cmd() {
     local theirs ours
     # Pushing the base branch itself, origin's side has no changes against
     # it to compare, so it is always a decision.
-    if base_ref=$(push__base_ref "$remote" "$base") &&
+    if [[ $grant_moved == unmoved ]]
+    then
+      :
+    elif base_ref=$(push__base_ref "$remote" "$base") &&
        [[ $base_ref != "refs/remotes/${remote}/${branch}" ]] &&
        theirs=$(push__changes "$base_ref" "$remote_sha") &&
        ours=$(push__changes "$base_ref" "$local_sha")
@@ -4422,6 +4513,12 @@ push__cmd() {
       "${remote_sha:0:12}" "${local_sha:0:12}"
     [[ $class == decision && -z $side ]] && return 3
     return 0
+  fi
+
+  if [[ -n $grant ]]
+  then
+    push__granted "$remote" "$branch" "$local_sha" "$class" "$side" "$grant_head" "$grant_moved" "$base_ref"
+    return
   fi
 
   case $class in
