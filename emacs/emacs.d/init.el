@@ -837,6 +837,7 @@ hand) keeps it under its existing name."
 
 (load (expand-file-name "timvisher-agent-shell-send" user-emacs-directory) nil t)
 (load (expand-file-name "timvisher-agent-shell-recover" user-emacs-directory) nil t)
+(load (expand-file-name "timvisher-agent-shell-start" user-emacs-directory) nil t)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Load AI tooling

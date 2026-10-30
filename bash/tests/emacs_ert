@@ -13,6 +13,7 @@ emacs --batch \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-alert-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-send-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-recover-test.el")' \
+  --eval '(load "~/.config/emacs/timvisher-agent-shell-start-test.el")' \
   --eval '(ert-run-tests-batch-and-exit)' \
   >"$tmpdir/out" 2>&1
 rc=$?
