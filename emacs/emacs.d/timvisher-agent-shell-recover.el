@@ -23,6 +23,7 @@
 (declare-function agent-shell-unsubscribe "agent-shell")
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
 (declare-function agent-shell--prompt-queue-enqueue "agent-shell-prompt-queue")
+(declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 
 (defvar shell-maker-prompt-before-killing-buffer)
 
@@ -129,13 +130,31 @@ non-nil, is appended."
                (assq-delete-all 'new_session_id (copy-alist record)))))
     "no recovery"))
 
+(defun timvisher-agent-shell--hand-over-windows (old new)
+  "Show NEW, at its prompt, in every window showing OLD or OLD's viewport.
+
+Return how many windows now show NEW.  Done before OLD is killed so its
+windows never fall back to some other buffer."
+  (let* ((viewport (and (fboundp 'agent-shell-viewport--buffer)
+                        (agent-shell-viewport--buffer :shell-buffer old :existing-only t)))
+         ;; A viewport window gets the shell itself rather than NEW's
+         ;; viewport: a fresh viewport is empty until something renders
+         ;; into it.
+         (windows (seq-uniq (append (get-buffer-window-list old nil t)
+                                    (and viewport (get-buffer-window-list viewport nil t))))))
+    (dolist (window windows)
+      (set-window-buffer window new)
+      (set-window-point window (with-current-buffer new (point-max))))
+    (length windows)))
+
 (defun timvisher-agent-shell-recover-fork (session-id &optional message-file)
   "Fork the agent-shell with SESSION-ID to recover it, and return its status.
 
 The fork starts a new agent and forks the session from the agent's own
 copy, so it does not need the old agent to answer.  When the new shell
-is ready, the old shell's queued prompts are taken, the old shell is
-killed, and the new one is sent a note that it is a recovery fork,
+is ready, the old shell's queued prompts are taken, its windows switch
+to the new shell, the old shell is killed, and the new one is sent a
+note that it is a recovery fork,
 followed by MESSAGE-FILE's contents when given, with the old queue
 enqueued behind it in order.
 Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
@@ -164,6 +183,7 @@ Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
                          :new-session t
                          :no-focus t)))
                  (subscriptions nil)
+                 (reused-windows 0)
                  (finish
                   (lambda (outcome &optional error-message)
                     (mapc (lambda (subscription)
@@ -178,6 +198,8 @@ Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
                                             (copy-sequence
                                              (map-elt (agent-shell--state) :pending-prompts))))))
                             (when (buffer-live-p old)
+                              (setq reused-windows
+                                    (timvisher-agent-shell--hand-over-windows old new))
                               (let ((shell-maker-prompt-before-killing-buffer nil))
                                 (kill-buffer old)))
                             (agent-shell--insert-to-shell-buffer
@@ -191,7 +213,8 @@ Poll `timvisher-agent-shell-recover-status' for the outcome.  Return
                                 (agent-shell--prompt-queue-enqueue :prompt prompt)))
                             (timvisher-agent-shell--recovery-record
                              session-id 'status "recovered" 'new_session_id new-session-id
-                             'forwarded_prompts (length queued))))
+                             'forwarded_prompts (length queued)
+                             'reused_windows reused-windows)))
                       (timvisher-agent-shell--recovery-record
                        session-id 'status "failed" 'error (or error-message "the fork failed"))))))
             (timvisher-agent-shell--recovery-record session-id 'new_buffer (buffer-name new))

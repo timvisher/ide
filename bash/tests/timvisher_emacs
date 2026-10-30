@@ -285,6 +285,7 @@ start_emacs tvshell "(progn
                                       (cons :supports-session-fork t)
                                       (cons :pending-prompts (list \"queued one\" \"queued two\"))
                                       (cons :agent-config 'claude)))))
+  (set-window-buffer (selected-window) \"shell-sess-1\")
   (defun agent-shell-buffers () (seq-filter #'buffer-live-p (mapcar #'car tv-states)))
   (defun agent-shell--state () (alist-get (current-buffer) tv-states))
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
@@ -463,6 +464,8 @@ CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session recover fork --timeout 20 --
 rc=$?
 check 'session recover fork: waits for the new shell and prints the recovery' \
       eval "(( rc == 0 )) && [[ \$(field '[.status, .old_session_id, .new_session_id, .new_buffer, .forwarded_prompts] | @tsv') == 'recovered	abcd1111-0000	new-0000	shell-new	2' ]]"
+check 'session recover fork: the window that showed the old shell shows the new one' \
+      eval "[[ \$(field .reused_windows) == 1 ]] && [[ \$(emacsclient -s '$socket_dir/tvshell' --eval '(buffer-name (window-buffer (selected-window)))') == '\"shell-new\"' ]]"
 check 'session recover fork: forwards the old queue behind the note, in order' \
       eval "[[ \$(grep -o '^[a-z]*' '$send_log' | paste -sd ' ' -) == 'insert enqueue enqueue' ]] && [[ \$(grep '^enqueue' '$send_log' | paste -sd '|' -) == 'enqueue \"queued one\"|enqueue \"queued two\"' ]]"
 check 'session recover fork: kills the old shell' \

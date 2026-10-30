@@ -222,6 +222,40 @@ arguments)."
             (should (= 2 (alist-get 'forwarded_prompts status)))))
       (delete-file extra))))
 
+(ert-deftest test-timvisher-agent-shell-recover-fork-hands-the-old-windows-over ()
+  "Windows showing the old shell or its viewport show the new shell, at its prompt.
+
+Other windows, and which window is selected, are left alone."
+  (test-timvisher-agent-shell-recover--with-fork t
+    (let ((viewport (generate-new-buffer "shell-old[viewport]"))
+          (other (generate-new-buffer "unrelated")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (let* ((window-min-height 1) (window-min-width 1)
+                   (selected (selected-window))
+                   (w-old-2 (split-window selected nil 'right))
+                   (w-viewport (split-window selected nil 'below))
+                   (w-other (split-window w-old-2 nil 'below)))
+              (set-window-buffer selected old)
+              (set-window-buffer w-old-2 old)
+              (set-window-buffer w-viewport viewport)
+              (set-window-buffer w-other other)
+              (cl-letf (((symbol-function 'agent-shell-viewport--buffer)
+                         (lambda (&rest args)
+                           (and (eq old (plist-get args :shell-buffer)) viewport))))
+                (timvisher-agent-shell-recover-fork "old")
+                (with-current-buffer new (insert "prompt> "))
+                (funcall (alist-get 'prompt-ready handlers) '((:event . prompt-ready))))
+              (dolist (window (list selected w-old-2 w-viewport))
+                (should (eq new (window-buffer window)))
+                (should (= (with-current-buffer new (point-max)) (window-point window))))
+              (should (eq other (window-buffer w-other)))
+              (should (eq selected (selected-window)))
+              (should (= 3 (alist-get 'reused_windows (test-timvisher-agent-shell-recover--status "old"))))))
+        (kill-buffer viewport)
+        (kill-buffer other)))))
+
 (ert-deftest test-timvisher-agent-shell-recover-note-counts-the-forwarded-queue ()
   "The note mentions forwarded prompts only when there are some, in good English."
   (should-not (string-match-p "queued" (timvisher-agent-shell--recovery-note "o" "b" 0 nil)))
