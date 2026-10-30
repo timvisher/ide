@@ -1,6 +1,6 @@
 ---
 name: git
-description: Local-only git workflow and safety rules; never mutate remotes.
+description: Local-only git workflow and safety rules; never mutate remotes, except a draft PR's branch through timvisher_gh.
 ---
 
 # Git safety policy
@@ -10,6 +10,8 @@ description: Local-only git workflow and safety rules; never mutate remotes.
 
 ## Workflow
 - Never run commands that mutate remotes (push, force push, delete, etc.).
+  The one exception is a draft PR's branch, pushed with `timvisher_gh pr push`
+  or `timvisher_gh pr` (see the github skill); never `git push` it yourself.
 - Never merge; rebase locally only.
 - Never modify git hooks.
 - If remote updates are needed, ask the user to run the command.

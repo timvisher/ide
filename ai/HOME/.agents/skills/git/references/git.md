@@ -5,6 +5,9 @@
 - Agents must NEVER run any git command that mutates a remote.
   This includes (but is not limited to): `git push`, `git push --force`,
   `git push --delete`, `git push --mirror`, `git send-pack`.
+  The one exception: a draft PR's branch, pushed by `timvisher_gh pr push` or
+  `timvisher_gh pr`, which the git wrapper allows as a single leased push
+  (see the github skill).
 - For any GitHub interactions (PRs, releases, repo metadata, checks), use `gh`
   only; see `github-mcp.md`.
 - Agents must NEVER merge. Always rebase locally.
