@@ -3,8 +3,9 @@
 # might `git push`, with a pointer to bash/bin/git's push guard for the
 # canonical aictl_die error message.
 #
-# The wrapper at ~/git/ide/bash/bin/git aictl_die's any non-bd-dolt
-# push with code git_push_blocked. This hook intercepts the *textual*
+# The wrapper at ~/git/ide/bash/bin/git aictl_die's any push but bd's
+# dolt sync and timvisher_gh's granted push of a draft PR's branch with
+# code git_push_blocked. This hook intercepts the *textual*
 # suggestions before they get acted on (or before the user has to read
 # them), and forces the agent to re-read the wrapper before proposing
 # push again.
@@ -27,6 +28,23 @@ TEXT=$(tail -n 200 "$TP" 2>/dev/null \
   2>/dev/null)
 
 [ -z "$TEXT" ] && exit 0
+
+# Once a timvisher_gh push of a draft PR succeeded this turn, talk of
+# pushing reports it rather than proposing one, so it isn't blocked.
+DRAFT_PUSHED=$(tail -n 400 "$TP" 2>/dev/null | jq -rs '
+  (map(select(.type == "user" and ((.message.content | type) == "string"
+      or any(.message.content[]?; .type == "text")))) | last) as $prompt
+  | (if $prompt then index($prompt) + 1 else 0 end) as $start
+  | .[$start:] as $turn
+  | [$turn[] | select(.type == "assistant") | .message.content[]?
+      | select(.type == "tool_use" and .name == "Bash")
+      | select(.input.command // "" | test("--plan\\b") | not)
+      | select(.input.command // "" | test("timvisher_gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr([[:space:]]+(push|sync|edit)\\b|[[:space:]]*($|[;&|)]|[[:space:]]+(--|https?:)))"))
+      | .id] as $ids
+  | [$turn[] | select(.type == "user") | .message.content[]?
+      | select(.type == "tool_result" and (.is_error | not) and (.tool_use_id as $id | $ids | index($id)))]
+  | length' 2>/dev/null)
+(( 0 < ${DRAFT_PUSHED:-0} )) && exit 0
 
 # Patterns suggesting the agent thinks it can push (case-insensitive,
 # extended regex). Covers asking, declarative, conditional, and
@@ -91,7 +109,7 @@ REGEX=$(IFS='|'; echo "${PATTERNS[*]}")
 
 if printf '%s' "$TEXT" | grep -iEq "$REGEX"
 then
-    REASON='STOP HOOK VIOLATION: Agents must NEVER push to remotes. Re-read ~/git/ide/bash/bin/git (push guard, ~line 1357) for the canonical aictl_die: code "git_push_blocked", message "Agents must NEVER push to remotes. This is a non-negotiable safety rule.", suggestion "Ask the human to run git push". Do not ask, propose, condition on, or announce push. Just stop.'
+    REASON='STOP HOOK VIOLATION: Agents must NEVER push to remotes, except a draft PR'"'"'s branch through timvisher_gh pr push or sync. Re-read the push guard in ~/git/ide/bash/bin/git (push_guard__is_draft_grant and the git_push_blocked aictl_die below it). Run timvisher_gh pr push for a draft PR, or hand the human the command; do not ask, propose, condition on, or announce any other push. Just stop.'
     jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
     exit 0
 fi

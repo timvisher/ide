@@ -271,7 +271,7 @@ When ending a session of beads-tracked work:
 2. **Run quality gates** if code changed: tests, linters, builds.
 3. **Update status.** Close what is actually finished (`bd close <id1> <id2> …`). For unfinished work, `bd note` where you stopped, and `bd unclaim` anything you won't come back to.
 4. **Commit** per the `git` skill.
-5. **Push git** only if the user's instructions allow it (the `git` skill forbids agents from mutating remotes by default). Otherwise hand the human the exact `git push` or `timvisher_gh pr` command.
+5. **Push** a draft PR's branch with `timvisher_gh pr push`, the one push the `git` skill allows agents. For anything else, hand the human the exact `git push` or `timvisher_gh pr` command.
 6. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
 
 Beads changes need no sync step.

@@ -27,10 +27,10 @@ class MergeTest(GhTestCase):
         self.log.touch()
 
     def merge(self, *args, stdin="", cwd=None, **env):
-        rc, out, err = self.run_gh("pr", "merge", *args, cwd=cwd, stdin=stdin, TIMVISHER_AGENT="1",
-                                   TIMVISHER_GH_PR_MERGE_POLL_INTERVAL="0", HOOK_LOG=str(self.log),
-                                   TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
-                                   TIMVISHER_GH_CONFIG_DIR=str(self.tmp / "no-ext"), **env)
+        rc, out, err = self.run_gh_as_tim("pr", "merge", *args, cwd=cwd, stdin=stdin,
+                                          TIMVISHER_GH_PR_MERGE_POLL_INTERVAL="0", HOOK_LOG=str(self.log),
+                                          TIMVISHER_GH_CORE_CONFIG_DIR=str(self.core),
+                                          TIMVISHER_GH_CONFIG_DIR=str(self.tmp / "no-ext"), **env)
         self.err = err
         return rc, out
 

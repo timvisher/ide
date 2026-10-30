@@ -124,6 +124,38 @@ else
   fail "no-push: loop guard didn't suppress: '${result}'"
 fi
 
+run_hook_after_command() {
+  local command=$1 is_error=$2 text=$3
+  jq -nc --arg c "$command" --argjson e "$is_error" --arg t "$text" '
+    {type:"user",message:{content:"go"}},
+    {type:"assistant",message:{content:[{type:"tool_use",id:"t1",name:"Bash",input:{command:$c}}]}},
+    {type:"user",message:{content:[{type:"tool_result",tool_use_id:"t1",is_error:$e}]}},
+    {type:"assistant",message:{content:[{type:"text",text:$t}]}}' > "$tp"
+  jq -nc --arg p "$tp" '{transcript_path:$p, stop_hook_active:false}' > "$input_file"
+  "${hooks_dir}/no-push-stop.sh" < "$input_file"
+}
+
+check_after_command() {
+  local command=$1 is_error=$2 want=$3
+  run_test
+  result=$(run_hook_after_command "$command" "$is_error" "Then push to origin.")
+  if [[ $want == passes && -z $result ]] ||
+     [[ $want == blocks && $result == *'"decision":"block"'* ]]
+  then
+    pass "no-push: ${want} after '${command}' (is_error=${is_error})"
+  else
+    fail "no-push: expected it to ${want} after '${command}' (is_error=${is_error}): '${result}'"
+  fi
+}
+
+check_after_command 'timvisher_gh pr push' false passes
+check_after_command 'timvisher_gh pr' false passes
+check_after_command 'cd x && timvisher_gh -C /x pr sync' false passes
+check_after_command 'timvisher_gh pr push' true blocks
+check_after_command 'timvisher_gh pr push --plan' false blocks
+check_after_command 'timvisher_gh pr pull' false blocks
+check_after_command 'git push origin feature' false blocks
+
 # ---------------------------------------------------------------------------
 # no-stalling-stop.sh
 # ---------------------------------------------------------------------------

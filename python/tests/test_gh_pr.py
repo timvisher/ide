@@ -26,7 +26,7 @@ class PrTest(GhTestCase):
         self.github.respond(["pr", "list"], stdout="[]")
 
     def pr(self, *args):
-        rc, out, err = self.run_gh("pr", *args, TIMVISHER_AGENT="1", FAKE_BROWSER_LOG=str(self.browser_log))
+        rc, out, err = self.run_gh_as_tim("pr", *args, FAKE_BROWSER_LOG=str(self.browser_log))
         self.err = err
         return rc, out
 
@@ -162,7 +162,9 @@ class PrTest(GhTestCase):
     def test_a_failed_branch_push_fails_the_sync(self):
         self.create()
         commit_on_remote(self.tmp, self.remote, "feature", "someone else's")
-        git("commit", "-q", "--amend", "--allow-empty", "-m", "rewritten", cwd=self.work)
+        (self.work / "rewritten").write_text("rewritten\n")
+        git("add", "rewritten", cwd=self.work)
+        git("commit", "-q", "--amend", "-m", "rewritten", cwd=self.work)
         (self.work / "pr.md").write_text("Changed\n\nBody\n")
         rc, _ = self.pr("push")
         self.assertNotEqual(0, rc)
@@ -241,6 +243,109 @@ class PrTest(GhTestCase):
         self.assertEqual(0, self.pr("push", url)[0], self.err)
         self.assertEqual([], self.mutations())
         self.assertNotIn("feature", git("ls-remote", "--heads", "origin", cwd=self.work))
+
+
+class AgentPrTest(GhTestCase):
+    def setUp(self):
+        super().setUp()
+        git("checkout", "-q", "-b", "feature", cwd=self.work)
+        git("commit", "-q", "--allow-empty", "-m", "work", cwd=self.work)
+        self.github.respond(["pr", "list"], stdout="[]")
+
+    def codes(self):
+        return [json.loads(line)["code"] for line in self.err.splitlines() if line.startswith('{"type":"instruction"')]
+
+    def pull_state(self):
+        return self.github.state["pulls"][REPO]["1"]
+
+    def agent(self, *args):
+        rc, out, err = self.run_gh("pr", *args, TIMVISHER_AGENT="1")
+        self.err = err
+        return rc, out
+
+    def remote_head(self):
+        return git("rev-parse", "feature", cwd=self.remote)
+
+    def rewrite(self, text):
+        (self.work / "a").write_text(text)
+        git("add", "a", cwd=self.work)
+        git("commit", "-q", "--amend", "-m", "work", cwd=self.work)
+
+    def agent_create(self):
+        (self.work / "pr.md").write_text("Title\n\nBody\n")
+        rc, out = self.agent()
+        self.assertEqual((0, f"{PR1}\n"), (rc, out), self.err)
+
+    def test_an_agent_creates_a_draft_pr(self):
+        self.agent_create()
+        self.assertTrue(self.pull_state()["draft"])
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_an_agent_can_push_any_rewrite_while_nobody_else_has_pushed(self):
+        self.agent_create()
+        self.rewrite("changed\n")
+        self.assertEqual(0, self.agent("push")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+        self.rewrite("changed again\n")
+        self.assertEqual(0, self.agent("push")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_after_someone_elses_push_an_agent_pushes_only_the_same_changes(self):
+        self.agent_create()
+        commit_on_remote(self.tmp, self.remote, "feature", "someone else's")
+        git("commit", "-q", "--amend", "--allow-empty", "-m", "work, reworded", cwd=self.work)
+        self.assertEqual(0, self.agent("push")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_after_someone_elses_push_an_agent_stops_at_a_decision(self):
+        self.agent_create()
+        theirs = commit_on_remote(self.tmp, self.remote, "feature", "someone else's")
+        self.rewrite("changed\n")
+        self.assertEqual(3, self.agent("push")[0])
+        self.assertIn("timvisher_git_push_grant_decision", self.err)
+        self.assertEqual(theirs, self.remote_head())
+
+    def test_an_agents_ours_settles_the_title_without_touching_the_branch(self):
+        self.agent_create()
+        self.github.update_pull(REPO, 1, title="Edited on GitHub")
+        (self.work / "pr.md").write_text("Edited here\n\nBody\n")
+        self.assertEqual(3, self.agent("push")[0])
+        self.assertEqual(0, self.agent("push", "--ours")[0], self.err)
+        self.assertEqual("Edited here", self.pull_state()["title"])
+
+    def test_an_agent_cant_push_a_pr_that_isnt_a_draft(self):
+        self.agent_create()
+        self.github.update_pull(REPO, 1, draft=False)
+        pushed = self.remote_head()
+        git("commit", "-q", "--allow-empty", "-m", "more", cwd=self.work)
+        self.assertEqual(1, self.agent("push")[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+        self.assertEqual(pushed, self.remote_head())
+
+    def test_an_agent_cant_sync_a_pr_whose_source_says_ready(self):
+        (self.work / "pr.md").write_text("Title\n\nBody\n")
+        self.assertEqual(0, self.run_gh_as_tim("pr", "push", "--ready-for-review")[0])
+        self.github.update_pull(REPO, 1, draft=True)
+        self.assertEqual(1, self.agent()[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+
+    def test_an_agent_cant_push_another_branchs_pr(self):
+        self.github.add_pull(REPO, 9, head="elsewhere", title="Elsewhere", draft=True)
+        self.assertEqual(1, self.agent("edit", f"https://github.com/{REPO}/pull/9")[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+
+    def test_an_agent_cant_push_a_branch_with_no_pr(self):
+        self.assertEqual(1, self.agent("push")[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+        self.assertNotIn("feature", git("ls-remote", "--heads", "origin", cwd=self.work))
+
+    def test_an_agent_cant_mark_a_pr_ready_merge_or_release_it(self):
+        self.agent_create()
+        for args in (["push", "--ready-for-review"], ["ready"], ["merge"], ["release"]):
+            self.assertEqual(1, self.agent(*args)[0], args)
+            self.assertIn("timvisher_gh_agent_refused", self.codes(), args)
+        self.assertTrue(self.pull_state()["draft"])
+        self.assertEqual([], [c for c in self.github.calls if c["argv"][2:4] == ["pr", "merge"]])
 
 
 if __name__ == "__main__":
