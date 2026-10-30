@@ -140,6 +140,8 @@ function new_tmux_session {
             TIMVISHER_AICTL_LOG
             TIMVISHER_CLAUDE
             TIMVISHER_CODEX
+            TIMVISHER_NTMUX3_AI_AGENT
+            TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT
         )
         local -a env_unsets=()
         local agent_env_var
@@ -484,6 +486,15 @@ function ntmux3__terminal() (
             }
         command+="TIMVISHER_AICTL_LOG=$(printf '%q' "$log") "
     fi
+
+    local agent_var
+    for agent_var in TIMVISHER_NTMUX3_AI_AGENT TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT
+    do
+        if [[ -n ${!agent_var-} ]]
+        then
+            command+="${agent_var}=$(printf '%q' "${!agent_var}") "
+        fi
+    done
 
     command+=ntmux3
     if (( 0 < $# ))

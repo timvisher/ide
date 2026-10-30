@@ -112,5 +112,19 @@ done
 check 'attached: a failed background start raises a notification' \
       grep -q 'agent-shell not started' "$tmpdir/notify-calls"
 
+cat > "$tmpdir/bin/osascript" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s' "$2" > "$FAKE_DIR/osascript-arg"
+FAKE
+chmod +x "$tmpdir/bin/osascript" || exit 1
+rm -f -- "$tmpdir/osascript-arg"
+FAKE_DIR=$tmpdir PATH="$tmpdir/bin:$PATH" TIMVISHER_NTMUX3_AI_AGENT=codex \
+  TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT="Don't stop; it's \"urgent\"." \
+  bash -c 'source ~/.functions/logging.bash && source ~/.functions/aictl.bash && source "$1" && unset TIMVISHER_AGENT && ntmux3 -T org/repo/br' \
+  _ "$funcs_dir/tmux.bash" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+rc=$?
+check 'ntmux3 -T: carries the agent variables into the new window, quoted' \
+      eval '(( rc == 0 )) && grep -qF "TIMVISHER_NTMUX3_AI_AGENT=codex " "$tmpdir/osascript-arg" && command=$(sed -n "s/.*runCommandInteractively(\"\(.*\)\")\$/\1/p" "$tmpdir/osascript-arg" | sed "s/\\\\\(.\)/\1/g") && [[ $(bash -c "TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT=; ntmux3() { printf %s \"\$TIMVISHER_NTMUX3_AI_AGENT_INITIAL_PROMPT\"; }; ${command#*&& }") == "Don'"'"'t stop; it'"'"'s \"urgent\"." ]]'
+
 echo "${tests} tests, ${failures} failures"
 (( 0 == failures ))
