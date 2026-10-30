@@ -327,6 +327,11 @@ printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvshell-1a", "messagi
        "$child_pid" "$shell_sock" > "$tmpdir/claude/sessions/$child_pid.json"
 printf '{"pid": 99999999, "sessionId": "dead0000-0000", "name": "tvstale-9z", "messagingSocketPath": "/tmp/dead.sock"}\n' \
        > "$tmpdir/claude/sessions/99999999.json"
+printf '{"pid": 99999998, "sessionId": "abcd1111-0000", "name": "tvdead-4d", "messagingSocketPath": "/tmp/dead2.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999998.json"
+printf '{"pid": 99999997, "sessionId": "abcd1111-0000", "name": "", "messagingSocketPath": "/tmp/noname.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999997.json"
+noname_ref=$(printf 'session:/tmp/noname.sock' | shasum -a 256 | cut -c1-6)
 sleep 300 &
 dup_pid=$!
 other_pids+=("$dup_pid")
@@ -360,7 +365,7 @@ for ref in "tvdup-2b [$shell_ref]" abcd1111 tvstale-9z
 do
   CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server "$ref"
   rc=$?
-  check "session get-server: '$ref' (a ref under another name, an id prefix, a dead session) matches nothing" \
+  check "session get-server: '$ref' (a ref under another name, an id prefix, a dead session whose shell is gone) reaches no shell" \
         eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
 done
 
@@ -391,6 +396,14 @@ rc=$?
 check 'session send, busy shell: queues it, taking a session name and a relative path, and prints queued' \
       eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == queued ]] && grep -q '^enqueue ' '$send_log'"
 rm -f -- "$busy_flag"
+
+for ref in tvdead-4d "$noname_ref"
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server "$ref"
+  rc=$?
+  check "session get-server: '$ref' (a dead agent process, or a file with no name) still finds its shell by scan" \
+        eval "(( rc == 0 )) && [[ \$(field '[.session_id, .pid, .found_by] | @tsv') == 'abcd1111-0000	$shell_pid	scan' ]]"
+done
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server abcd1111-0000
 rc=$?

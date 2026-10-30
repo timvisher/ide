@@ -341,19 +341,18 @@ timvisher_emacs__resolve_session() {
     want_ref=$ref
   fi
 
-  local sid pid name sock rank hash best=3 entry
+  local sid pid name sock rank hash best=6 entry
   local -a matches=()
-  while IFS=$'\t' read -r sid pid name sock
+  while IFS=$'\x1f' read -r sid pid name sock
   do
-    kill -0 "$pid" 2>/dev/null || continue
     rank=''
     if [[ -z $want_name && ( $sid == "$ref" ) ]]
     then
       rank=0
-    elif [[ -z $want_name && $name == "$ref" ]]
+    elif [[ -z $want_name && -n $name && $name == "$ref" ]]
     then
       rank=1
-    elif [[ -n $want_ref && ( -z $want_name || $name == "$want_name" ) ]]
+    elif [[ -n $want_ref && -n $sock && ( -z $want_name || $name == "$want_name" ) ]]
     then
       while read -r hash
       do
@@ -361,6 +360,10 @@ timvisher_emacs__resolve_session() {
       done < <(timvisher_emacs__ref_hashes "$sock" "$sid")
     fi
     [[ -n $rank ]] || continue
+    # A session whose process is gone still resolves, after every live
+    # match: a wedge with a dead agent is what recover fork is for, and
+    # its shell is found by session id in the buffer scan.
+    kill -0 "$pid" 2>/dev/null || (( rank += 3 ))
     entry=$sid$'\t'$pid$'\t'$name
     if (( rank < best ))
     then
@@ -370,7 +373,7 @@ timvisher_emacs__resolve_session() {
     then
       matches+=("$entry")
     fi
-  done < <(jq -r '[.sessionId, .pid, (.name // ""), (.messagingSocketPath // "")] | @tsv' \
+  done < <(jq -r '[.sessionId, (.pid | tostring), (.name // ""), (.messagingSocketPath // "")] | join("\u001f")' \
              "${session_files[@]}" 2>/dev/null)
 
   if (( 1 < ${#matches[@]} ))
@@ -383,7 +386,7 @@ timvisher_emacs__resolve_session() {
     done
     aictl_error \
       --code timvisher_emacs_ambiguous_session \
-      --message "'${ref}' matches ${#matches[@]} live sessions." \
+      --message "'${ref}' matches ${#matches[@]} sessions." \
       --reason "A short ref can collide with a session started after it was listed." \
       --suggestion "Name the session by its full id, or by its name and ref as ListAgents prints them" \
       "${suggestions[@]}"
@@ -637,12 +640,12 @@ timvisher_emacs__ref_for() {
 
   local -a others=()
   local pid other_sock
-  while IFS=$'\t' read -r pid other_sock
+  while IFS=$'\x1f' read -r pid other_sock
   do
-    [[ $other_sock == "$sock" ]] && continue
+    [[ -z $other_sock || $other_sock == "$sock" ]] && continue
     kill -0 "$pid" 2>/dev/null || continue
     others+=("$(printf 'session:%s' "$other_sock" | shasum -a 256 | cut -d' ' -f1)")
-  done < <(jq -r '[.pid, (.messagingSocketPath // "")] | @tsv' "$sessions_dir"/*.json 2>/dev/null)
+  done < <(jq -r '[(.pid | tostring), (.messagingSocketPath // "")] | join("\u001f")' "$sessions_dir"/*.json 2>/dev/null)
 
   for other in "${others[@]}"
   do
@@ -759,8 +762,8 @@ timvisher_emacs__session_start() {
     SECONDS=0
     while [[ -z $sock ]] && (( SECONDS < 10 ))
     do
-      IFS=$'\t' read -r name sock < <(jq -r --arg sid "$session_id" \
-        'select(.sessionId == $sid) | [(.name // ""), (.messagingSocketPath // "")] | @tsv' \
+      IFS=$'\x1f' read -r name sock < <(jq -r --arg sid "$session_id" \
+        'select(.sessionId == $sid) | [(.name // ""), (.messagingSocketPath // "")] | join("\u001f")' \
         "$sessions_dir"/*.json 2>/dev/null)
       [[ -n $sock ]] || sleep 0.5
     done
