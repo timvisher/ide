@@ -885,10 +885,15 @@ the secret references cannot be resolved."
   (agent-shell-file-completion-enabled nil)
   :init
   (setq agent-shell-mcp-servers
-        '(((name . "homebrew")
+        `(((name . "homebrew")
            (command . "/opt/homebrew/bin/brew")
            (args . ("mcp-server"))
-           (env . ()))))
+           (env . ()))
+          ((name . "screencap")
+           (command . ,(expand-file-name "~/.local/bin/macos-screencap-mcp"))
+           (args . ())
+           (env . (((name . "SCREENCAP_OUTPUT_DIR")
+                    (value . ,(expand-file-name "~/Downloads"))))))))
   :config
   (setq acp-logging-enabled t)
   (setq agent-shell-logging-enabled t)
