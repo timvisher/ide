@@ -53,9 +53,9 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
 Servers are found by the pid of the Emacs that owns them, whatever the
 server is named and wherever its socket lives.
 
-A <session> is a Claude session's id, its name (datadog-7e) or a unique
-prefix of its id of at least 4 characters (caa0f99c), as found in the
-Claude session files; live sessions win over stale files. Its Emacs is the
+A <session> is a live Claude session's id, its name (datadog-a7), its
+ListAgents ref (cc09f8), or both as ListAgents prints them ("datadog-a7
+[cc09f8]"), resolved through the Claude session files. Its Emacs is the
 nearest Emacs ancestor of the session's process, else the server whose
 agent-shell buffers include the session.
 Queued text reads as though Tim typed it, so start a message to another
@@ -300,6 +300,14 @@ timvisher_emacs__ancestor_emacs() {
   return 1
 }
 
+timvisher_emacs__ref_hashes() {
+  local sock=$1 session_id=$2
+  printf 'session:%s' "$sock" | shasum -a 256 | cut -d' ' -f1
+  # Claude Code hashes session:sid:<id> instead behind its
+  # tengu_session_stable_address flag, so a ref minted either way resolves.
+  printf 'session:sid:%s' "$session_id" | shasum -a 256 | cut -d' ' -f1
+}
+
 timvisher_emacs__resolve_session() {
   local ref=$1
   local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
@@ -307,43 +315,61 @@ timvisher_emacs__resolve_session() {
   local -a session_files=("$sessions_dir"/*.json)
   [[ -e ${session_files[0]} ]] || return 0
 
-  local rank sid pid name best='' live
-  local -a matches=()
-  while IFS=$'\t' read -r rank sid pid name
-  do
-    [[ -z $best || $rank == "$best" ]] || break
-    best=$rank
-    matches+=("$sid"$'\t'"$pid"$'\t'"$name")
-  done < <(jq -r --arg r "$ref" '
-      select(.sessionId == $r or .name == $r
-             or (4 <= ($r | length) and (.sessionId | startswith($r))))
-      | [(if .sessionId == $r then 0 elif .name == $r then 1 else 2 end),
-         .sessionId, .pid, .name]
-      | @tsv' "${session_files[@]}" 2>/dev/null | sort -n)
-
-  if (( 1 < ${#matches[@]} ))
+  local want_name='' want_ref=''
+  if [[ $ref =~ ^(.*[^[:space:]])[[:space:]]*\[([0-9a-f]{6,12})\]$ ]]
   then
-    local -a live_matches=()
-    for live in "${matches[@]}"
-    do
-      IFS=$'\t' read -r _ pid _ <<< "$live"
-      kill -0 "$pid" 2>/dev/null && live_matches+=("$live")
-    done
-    (( 0 < ${#live_matches[@]} )) && matches=("${live_matches[@]}")
+    want_name=${BASH_REMATCH[1]}
+    want_ref=${BASH_REMATCH[2]}
+  elif [[ $ref =~ ^[0-9a-f]{6,12}$ ]]
+  then
+    want_ref=$ref
   fi
+
+  local sid pid name sock rank hash best=3 entry
+  local -a matches=()
+  while IFS=$'\t' read -r sid pid name sock
+  do
+    kill -0 "$pid" 2>/dev/null || continue
+    rank=''
+    if [[ -z $want_name && ( $sid == "$ref" ) ]]
+    then
+      rank=0
+    elif [[ -z $want_name && $name == "$ref" ]]
+    then
+      rank=1
+    elif [[ -n $want_ref && ( -z $want_name || $name == "$want_name" ) ]]
+    then
+      while read -r hash
+      do
+        [[ $hash == "$want_ref"* ]] && rank=2
+      done < <(timvisher_emacs__ref_hashes "$sock" "$sid")
+    fi
+    [[ -n $rank ]] || continue
+    entry=$sid$'\t'$pid$'\t'$name
+    if (( rank < best ))
+    then
+      best=$rank
+      matches=("$entry")
+    elif (( rank == best ))
+    then
+      matches+=("$entry")
+    fi
+  done < <(jq -r '[.sessionId, .pid, (.name // ""), (.messagingSocketPath // "")] | @tsv' \
+             "${session_files[@]}" 2>/dev/null)
 
   if (( 1 < ${#matches[@]} ))
   then
     local -a suggestions=()
-    for live in "${matches[@]}"
+    for entry in "${matches[@]}"
     do
-      IFS=$'\t' read -r sid _ name <<< "$live"
+      IFS=$'\t' read -r sid _ name <<< "$entry"
       suggestions+=(--suggestion "${name} is session ${sid}")
     done
     aictl_error \
       --code timvisher_emacs_ambiguous_session \
-      --message "'${ref}' matches ${#matches[@]} sessions." \
-      --reason "A session can be named by its id, its name, or a unique prefix of its id of at least 4 characters." \
+      --message "'${ref}' matches ${#matches[@]} live sessions." \
+      --reason "A short ref can collide with a session started after it was listed." \
+      --suggestion "Name the session by its full id, or by its name and ref as ListAgents prints them" \
       "${suggestions[@]}"
     return 1
   fi
@@ -386,7 +412,7 @@ timvisher_emacs__session_server() {
     --code timvisher_emacs_no_such_session \
     --message "No Emacs server hosts an agent-shell for session '${ref}'." \
     --reason "Neither the session's process (from ${sessions_dir}) nor any live server's agent-shell buffers matched." \
-    --suggestion "Name the session by its id, its name or a unique prefix of its id; ${sessions_dir}/*.json has sessionId and name" \
+    --suggestion "Name the session by its id, its name or its ListAgents ref; ${sessions_dir}/*.json has sessionId and name" \
     --suggestion "An Emacs without a server cannot be reached: start one there with M-x ide-control-server-start"
   return 1
 }

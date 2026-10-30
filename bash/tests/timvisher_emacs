@@ -314,9 +314,20 @@ child_pid=$(< "$tmpdir/child-pid")
 other_pids+=("$child_pid")
 
 mkdir -p "$tmpdir/claude/sessions" "$tmpdir/claude-empty/sessions" || exit 1
-printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvshell-1a"}\n' "$child_pid" > "$tmpdir/claude/sessions/$child_pid.json"
-printf '{"pid": 99999999, "sessionId": "dead0000-0000", "name": "tvshell-1a"}\n' > "$tmpdir/claude/sessions/99999999.json"
-printf '{"pid": %s, "sessionId": "abcd2222-0000", "name": "tvother-2b"}\n' "$$" > "$tmpdir/claude/sessions/$$.json"
+shell_sock=$tmpdir/socks/$child_pid.sock
+shell_ref=$(printf 'session:%s' "$shell_sock" | shasum -a 256 | cut -c1-6)
+stable_ref=$(printf 'session:sid:abcd1111-0000' | shasum -a 256 | cut -c1-8)
+printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvshell-1a", "messagingSocketPath": "%s"}\n' \
+       "$child_pid" "$shell_sock" > "$tmpdir/claude/sessions/$child_pid.json"
+printf '{"pid": 99999999, "sessionId": "dead0000-0000", "name": "tvstale-9z", "messagingSocketPath": "/tmp/dead.sock"}\n' \
+       > "$tmpdir/claude/sessions/99999999.json"
+sleep 300 &
+dup_pid=$!
+other_pids+=("$dup_pid")
+printf '{"pid": %s, "sessionId": "abcd2222-0000", "name": "tvdup-2b", "messagingSocketPath": "/tmp/a.sock"}\n' \
+       "$$" > "$tmpdir/claude/sessions/$$.json"
+printf '{"pid": %s, "sessionId": "abcd3333-0000", "name": "tvdup-2b", "messagingSocketPath": "/tmp/b.sock"}\n' \
+       "$dup_pid" > "$tmpdir/claude/sessions/$dup_pid.json"
 
 real_lsof=$(command -v lsof)
 mkdir -p "$tmpdir/onlyours" || exit 1
@@ -331,18 +342,26 @@ rc=$?
 check "session get-server: finds the session's Emacs through its process's parents" \
       eval "(( rc == 0 )) && [[ \$(field '[.pid, .server_name, .found_by] | @tsv') == '$shell_pid	tvshell	process' ]]"
 
-for ref in tvshell-1a abcd1111
+for ref in tvshell-1a "$shell_ref" "tvshell-1a [$shell_ref]" "$stable_ref"
 do
   CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server "$ref"
   rc=$?
-  check "session get-server: '$ref' resolves to the session's id and name, preferring the live session" \
+  check "session get-server: '$ref' resolves to the session's id and name" \
         eval "(( rc == 0 )) && [[ \$(field '[.session_id, .name, .pid] | @tsv') == 'abcd1111-0000	tvshell-1a	$shell_pid' ]]"
 done
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server abcd
+for ref in "tvdup-2b [$shell_ref]" abcd1111 tvstale-9z
+do
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server "$ref"
+  rc=$?
+  check "session get-server: '$ref' (a ref under another name, an id prefix, a dead session) matches nothing" \
+        eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+done
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session get-server tvdup-2b
 rc=$?
-check 'session get-server, ambiguous prefix: exits 1 with timvisher_emacs_ambiguous_session naming each match' \
-      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvshell-1a is session abcd1111-0000" && stderr_has "tvother-2b is session abcd2222-0000"'
+check 'session get-server, two live sessions with one name: exits 1 with timvisher_emacs_ambiguous_session naming each' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvdup-2b is session abcd2222-0000" && stderr_has "tvdup-2b is session abcd3333-0000"'
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool session get-server abcd1111-0000
 rc=$?
@@ -389,7 +408,7 @@ check 'session is-wedged: a busy shell with no agent process and no prompt reque
       eval "(( rc == 0 )) && [[ \$(field '[.wedged, .session_id, (.reasons | join(\",\"))] | @tsv') == 'true	abcd1111-0000	agent-process-dead,busy-without-prompt-request' ]]"
 rm -f -- "$busy_flag"
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged --quiet-seconds 1 abcd1111
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool session is-wedged --quiet-seconds 1 "$shell_ref"
 rc=$?
 check 'session is-wedged: an idle shell is not wedged' \
       eval "(( rc == 0 )) && [[ \$(field '[.wedged, .status, .quiet_seconds_threshold] | @tsv') == 'false	ready	1' ]]"
