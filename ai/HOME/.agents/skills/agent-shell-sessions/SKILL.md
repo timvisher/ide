@@ -39,6 +39,9 @@ whatever Tim is typing along with your message.
 
 ## Finding and starting sessions
 
+- `timvisher_emacs session ls` lists every agent-shell in every live
+  Emacs with its name, ref, status, queued prompts, buffer and
+  directory: JSON when you run it (no terminal), a table for Tim.
 - `timvisher_emacs session get-server <session>` prints the Emacs
   pid and server socket hosting a session, as JSON.
 - `timvisher_emacs server ls` lists every live Emacs server by pid.
