@@ -4423,6 +4423,22 @@ push_run "$pf/work"
 check_push 'a rewrite that makes the same change somewhere else needs a decision (exit 3)' \
   eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
 
+pf=$(push_fixture same_context_elsewhere)
+printf 'x\na\nb\nc\nflag=0\nd\ne\nf\nx\na\nb\nc\nflag=0\nd\ne\nf\n' > "$pf/seed/conf" &&
+  pg -C "$pf/seed" add conf && pg -C "$pf/seed" commit -q -m conf &&
+  pg -C "$pf/seed" push -q origin HEAD:refs/heads/main &&
+  pg -C "$pf/work" fetch -q origin && pg -C "$pf/work" rebase -q origin/main &&
+  sed -i.bak '5s/flag=0/flag=1/' "$pf/work/conf" && pg -C "$pf/work" commit -q -am 'flag' &&
+  push_run "$pf/work" &&
+  pg -C "$pf/work" reset -q --hard HEAD~1 &&
+  sed -i.bak '13s/flag=0/flag=1/' "$pf/work/conf" && pg -C "$pf/work" commit -q -am 'flag' ||
+  die 'change the same line in another place with the same context'
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push 'a rewrite that makes the same change somewhere with the same context needs a decision (exit 3)' \
+  eval '(( push_rc == 3 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
+
 pf=$(push_fixture base_branch)
 pg -C "$pf/work" switch -q main && pg -C "$pf/work" commit -q --allow-empty -m 'nothing' &&
   push_commit "$pf/seed" m2 && pg -C "$pf/seed" push -q origin HEAD:refs/heads/main ||

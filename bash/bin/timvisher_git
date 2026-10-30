@@ -2198,10 +2198,11 @@ Subcommands
       origin is ahead             refuse (exit 4); pull --rebase first
       diverged, same changes      push with a lease on origin's: a
                                   rebase that changed nothing, judged
-                                  by content, not commits (git diff
-                                  <base>...origin/<branch> matches git
-                                  diff <base>...HEAD; <base> is
-                                  origin's default branch, or --base)
+                                  by content, not commits (origin's
+                                  changes against <base>, replayed onto
+                                  HEAD's fork point, give HEAD's tree;
+                                  <base> is origin's default branch, or
+                                  --base)
       diverged, changes differ    a decision: asked when interactive,
       (or can't be compared)      after paging git diff <base>...HEAD;
                                   else its --stat and exit 3 with the
@@ -4281,20 +4282,26 @@ push__base_ref() {
   printf 'refs/remotes/%s/%s\n' "$remote" "$head"
 }
 
-# Content, not commits: no line numbers or index lines, so a rebase that
-# changed nothing hashes the same.  Context stays, so the same line
-# changed in two places doesn't.  The real git, because the agent range
-# guard in ~/bin/git refuses comparing pinned SHAs.
-push__changes() {
-  local -
-  set -o pipefail
-  local base_ref=$1 tip=$2 real_git fork_point
+# Content, not commits: origin's changes replayed onto our fork point
+# must give our tree.  Not a comparison of the two sides' diffs: without
+# line numbers, which a rebase shifts, a diff can't tell the same edit in
+# two places with the same context apart.  The real git, because the
+# agent range guard in ~/bin/git refuses comparing pinned SHAs.
+push__same_content() {
+  local base_ref=$1 theirs=$2 ours=$3 real_git theirs_fork ours_fork ours_tree replayed
   real_git="$(brew --prefix)"/bin/git
-  fork_point=$("$real_git" merge-base "$base_ref" "$tip") || return 1
-  "$real_git" diff --no-color --no-ext-diff --no-textconv --no-relative --binary \
-    --ignore-submodules=none "$fork_point" "$tip" |
-    sed -e '/^index /d' -e 's/^@@ .*/@@/' |
-    "$real_git" hash-object --stdin
+  theirs_fork=$("$real_git" merge-base "$base_ref" "$theirs") &&
+    ours_fork=$("$real_git" merge-base "$base_ref" "$ours") &&
+    ours_tree=$("$real_git" rev-parse "${ours}^{tree}") ||
+    return 2
+  replayed=$("$real_git" merge-tree --write-tree --no-messages \
+    --merge-base="$theirs_fork" "$ours_fork" "$theirs" 2>/dev/null)
+  case $? in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+  [[ ${replayed%%$'\n'*} == "$ours_tree" ]]
 }
 
 push__send() {
@@ -4491,19 +4498,24 @@ push__cmd() {
     class=behind
   else
     class=decision
-    local theirs ours
     # Pushing the base branch itself, origin's side has no changes against
     # it to compare, so it is always a decision.
     if [[ $grant_moved == unmoved ]]
     then
       :
     elif base_ref=$(push__base_ref "$remote" "$base") &&
-       [[ $base_ref != "refs/remotes/${remote}/${branch}" ]] &&
-       theirs=$(push__changes "$base_ref" "$remote_sha") &&
-       ours=$(push__changes "$base_ref" "$local_sha")
+       [[ $base_ref != "refs/remotes/${remote}/${branch}" ]]
     then
-      compared=true
-      [[ $theirs != "$ours" ]] || class=same-content
+      push__same_content "$base_ref" "$remote_sha" "$local_sha"
+      case $? in
+        0)
+          compared=true
+          class=same-content
+          ;;
+        1)
+          compared=true
+          ;;
+      esac
     fi
   fi
 
