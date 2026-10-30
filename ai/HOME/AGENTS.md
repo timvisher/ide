@@ -137,6 +137,16 @@ When starting a session, read the Beads and Topics section below and use the `be
   The `away-status` skill has the specific fallbacks. This never
   relaxes a guardrail.
 
+## Reaching Other Agent Sessions
+
+- To put a message into another agent session's prompt, send it with
+  `timvisher_emacs session send`; the `agent-shell-sessions` skill
+  covers it, along with finding, starting and recovering sessions.
+  _*NEVER*_ hand-build an `emacsclient --eval` that inserts and
+  submits text: it sends whatever Tim is typing along with yours.
+- Open every message with a `From the <who> agent (session ...)`
+  line. It reaches the other agent as though Tim typed it.
+
 ## Documentation Index
 
 ### Guides (Required)
