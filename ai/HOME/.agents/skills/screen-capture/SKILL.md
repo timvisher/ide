@@ -1,16 +1,69 @@
 ---
 name: screen-capture
-description: Capture all macOS displays at full resolution to ~/Pictures/agent screen captures/<timestamp>/ and read them back. Use when the user asks you to look at, see, or read their screen.
+description: Look at the user's macOS screen — a specific window (on any Space, without switching to it), a region, or whole displays. Uses the screencap MCP server when it is available, otherwise captures all displays with screencapture. Use when the user asks you to look at, see, or read their screen or a window.
 ---
 
 # Screen capture
 
 ## When to use
-- The user asks you to look at, see, or read their screen.
+- The user asks you to look at, see, or read their screen or a window.
 - The user wants visual context shared (window contents, error dialogs,
   rendered output) that isn't easily described in text.
 
-## Workflow
+## Choose a method
+
+Check your tool list for the screencap MCP server's tools (named like
+`mcp__screencap__list_windows`). agent-shell sessions register it
+through `agent-shell-mcp-servers` in `emacs/emacs.d/init.el` when
+`~/.local/bin/macos-screencap-mcp` is installed.
+
+- **Tools available:** use them (below). They can capture one window,
+  including windows on other Spaces, so you rarely need every display.
+- **Tools not available:** use the fallback script, which captures every
+  display. If the user wanted one window, say that the fallback can only
+  capture whole displays.
+
+## With the screencap MCP server
+
+The server is a fork of macos-screencap-mcp
+(`~/git/timvisher-dd/macos-screencap-mcp/timvisher/all-spaces`) that
+lists and captures windows on every Space.
+
+1. **Find the target.** `list_windows` is text only, so call it first.
+   Pass `app` to filter by app name or bundle id. Each window has a
+   `window_id`, app, title, frame and `on_screen`. `on_screen: false`
+   means another Space, hidden or minimized; macOS can't tell those
+   apart. Untitled off-screen windows are omitted.
+2. **Capture the smallest thing that answers the question.**
+   - One window: `screenshot_window` with `window_id`, or `app` and/or
+     `title` substrings (frontmost match wins). Works when the window is
+     covered or on another Space, without switching to it.
+   - Part of the screen: `screenshot_region` with `x`, `y`, `width`,
+     `height` in global points (the same space as `list_displays` and
+     window frames).
+   - Whole displays: `list_displays`, then `screenshot_region` with just
+     `display_id` for each one.
+   - Pass `name` (short kebab-case, e.g. `checkout-error-dialog`) so the
+     saved file is findable.
+3. **Look at the inline image.** Each capture returns a downscaled JPEG
+   preview inline, so there is nothing to Read. The full-resolution PNG
+   is saved to `~/Downloads` (`output_path` in the result).
+4. **Describe what's relevant** to what the user asked.
+
+Captures are silent: unlike the fallback, there is no shutter sound.
+
+Don't use the recording tools unless the user asks for a recording.
+
+### Failure modes
+
+- "Could not read screen content": the app that launched the server
+  lacks Screen Recording permission. For agent-shell that is Emacs.
+  Fix it in System Settings → Privacy & Security → Screen & System
+  Audio Recording, then restart Emacs.
+- A window can't be found: call `list_windows` again; window ids change
+  when windows close and reopen.
+
+## Fallback: capture every display
 
 1. Run the capture script:
    ```bash
@@ -37,7 +90,7 @@ description: Capture all macOS displays at full resolution to ~/Pictures/agent s
 3. Describe what's relevant from the captures. Don't enumerate every window —
    focus on what the user asked about.
 
-## Failure modes
+### Failure modes
 
 Failures come back as `{"type":"instruction","level":"error",...}` via
 `aictl_die`, with a code and suggestions you can act on:
@@ -62,7 +115,7 @@ Diagnostic per-step output (e.g. "detected 3 display(s)") goes through
 `{"type":"log",...}` JSON under agent context but is suppressed below
 ERROR by default. Export `timvisher_logging_log_level=INFO` to see it.
 
-## Cookie file
+### Cookie file
 
 Each capture directory contains a `.cookie` file with:
 - ISO 8601 timestamp and the directory's timestamp slug
