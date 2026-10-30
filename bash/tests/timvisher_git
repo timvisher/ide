@@ -4564,6 +4564,20 @@ push_run "$pf/work"
 check_push 'a rejected push fails' \
   eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_failed* ]]'
 
+pf=$(push_fixture single_branch)
+push_run "$pf/work"
+pg -C "$pf/work" config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main' &&
+  pg -C "$pf/work" update-ref -d refs/remotes/origin/feature &&
+  pg -C "$pf/other" fetch -q origin &&
+  pg -C "$pf/other" switch -q -c feature origin/feature && push_commit "$pf/other" o1 &&
+  pg -C "$pf/other" push -q origin feature ||
+  die "fetch only main, and push to feature from elsewhere"
+# shellcheck disable=SC2034
+remote_before=$(remote_feature "$pf")
+push_run "$pf/work"
+check_push "a branch the fetch config leaves out is still read from origin, not taken for new" \
+  eval '(( push_rc == 4 )) && [[ $push_err == *timvisher_git_push_behind* && $(remote_feature "$pf") == "$remote_before" ]]'
+
 pf=$(push_fixture unreachable)
 pg -C "$pf/work" remote set-url origin "$pf/nowhere.git" || die 'point origin nowhere'
 push_run "$pf/work"

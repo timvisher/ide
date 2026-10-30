@@ -4469,7 +4469,15 @@ push__cmd() {
       --code timvisher_git_push_remote_unreachable \
       --message "Couldn't fetch from ${remote}." \
       --suggestion "Check that ${remote} is reachable (git fetch ${remote}), then rerun"
-  remote_sha=$(command git rev-parse -q --verify "refs/remotes/${remote}/${branch}") || remote_sha=
+  # And the branch's own refspec: selective or single-branch fetch config
+  # can leave its tracking ref missing or stale.  Failing to fetch it,
+  # with origin reachable, means origin doesn't have it.
+  if command git fetch -q "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" 2>/dev/null
+  then
+    remote_sha=$(command git rev-parse -q --verify "refs/remotes/${remote}/${branch}") || remote_sha=
+  else
+    remote_sha=
+  fi
 
   if [[ -n $grant ]]
   then
