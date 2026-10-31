@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_daily_review_collect
+
+failures=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+tmpdir=
+cleanup() {
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+tmpdir=$(mktemp -d) || exit 1
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_daily_review_collect"
+
+mkdir -- "$tmpdir/bin" || exit 1
+
+cat > "$tmpdir/bin/op" <<'FAKE' || exit 1
+#!/usr/bin/env bash
+: > "$FAKE_STATE/real-op-called"
+printf 'token\n'
+FAKE
+
+cat > "$tmpdir/bin/timvisher_EXP_daily_review" <<'FAKE' || exit 1
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_STATE/args"
+dirname "$(command -v op)" > "$FAKE_STATE/op-dir"
+if op read op://Employee/Atlassian/credential 2> "$FAKE_STATE/op-err"
+then
+  printf '0\n' > "$FAKE_STATE/op-rc"
+else
+  printf '%s\n' "$?" > "$FAKE_STATE/op-rc"
+fi
+if [[ -n $FAKE_SLEEP ]]
+then
+  sleep "$FAKE_SLEEP"
+fi
+printf 'parallel: This job succeeded:\n'
+printf '2026-10-30\t{"type":"report_start","report_id":"dr_1","date":"2026-10-30"}\n'
+printf '2026-10-30\t{"type":"section_report","report_id":"dr_1","section":"git","status":"ok","data":{}}\n'
+printf '2026-10-30\t{"type":"section_report","report_id":"dr_1","section":"jira","status":"error","error":{"message":"op read failed:\\nnope","exit_code":1}}\n'
+exit "${FAKE_RC:-0}"
+FAKE
+
+chmod +x "$tmpdir/bin/op" "$tmpdir/bin/timvisher_EXP_daily_review" || exit 1
+
+run() {
+  rm -rf -- "$tmpdir/state"
+  mkdir -- "$tmpdir/state" || exit 1
+  FAKE_STATE="$tmpdir/state" PATH="$tmpdir/bin:$PATH" \
+    "$script" > "$tmpdir/out" 2> "$tmpdir/err"
+}
+
+yesterday=$(date -d yesterday +%Y-%m-%d) || exit 1
+today=$(date +%Y-%m-%d) || exit 1
+
+run
+rc=$?
+
+if (( rc == 0 ))
+then
+  pass 'a clean run exits 0'
+else
+  fail "a clean run exited $rc: $(< "$tmpdir/err")"
+fi
+
+expected_args=$(printf '%s\n' --from "$yesterday" --to "$today" --format json)
+if [[ $(< "$tmpdir/state/args") == "$expected_args" ]]
+then
+  pass 'gathers yesterday through today as JSON'
+else
+  fail "unexpected args: $(tr '\n' ' ' < "$tmpdir/state/args")"
+fi
+
+if [[ ! -e $tmpdir/state/real-op-called ]] &&
+   [[ $(< "$tmpdir/state/op-rc") != 0 ]] &&
+   grep -q 'disabled in the scheduled daily review' "$tmpdir/state/op-err"
+then
+  pass 'op is a stub that fails instead of reaching 1Password'
+else
+  fail "op was not stubbed: rc=$(< "$tmpdir/state/op-rc") err=$(< "$tmpdir/state/op-err")"
+fi
+
+if [[ ! -e $(< "$tmpdir/state/op-dir") ]]
+then
+  pass 'the op stub directory is removed on exit'
+else
+  fail "the op stub directory was left behind: $(< "$tmpdir/state/op-dir")"
+fi
+
+expected_out=$(printf '%s\n' '2026-10-30 git ok' '2026-10-30 jira error op read failed: nope')
+if [[ $(< "$tmpdir/out") == "$expected_out" ]]
+then
+  pass 'prints one line per section, errors on one line'
+else
+  fail "unexpected summary: $(< "$tmpdir/out")"
+fi
+
+FAKE_RC=3 run
+rc=$?
+if (( rc != 0 )) && grep -q 'exited 3' "$tmpdir/err"
+then
+  pass 'a failing gather fails the run'
+else
+  fail "a failing gather exited $rc: $(< "$tmpdir/err")"
+fi
+
+start=$SECONDS
+FAKE_SLEEP=30 TIMVISHER_DAILY_REVIEW_COLLECT_TIMEOUT=1s run
+rc=$?
+elapsed=$(( SECONDS - start ))
+if (( rc != 0 )) && (( elapsed < 10 )) && grep -q 'timed out after 1s' "$tmpdir/err"
+then
+  pass 'a hung gather is killed at the timeout'
+else
+  fail "timeout: rc=$rc elapsed=${elapsed}s err=$(< "$tmpdir/err")"
+fi
+
+if out=$("$script" --help 2>/dev/null) && [[ $out == Usage:* ]]
+then
+  pass '--help prints usage on stdout and exits 0'
+else
+  fail "--help: $out"
+fi
+
+if out=$("$script" bogus 2>/dev/null)
+then
+  fail 'an unknown argument exits 0'
+elif [[ -n $out ]]
+then
+  fail "an unknown argument printed to stdout: $out"
+else
+  pass 'an unknown argument exits non-zero with usage on stderr only'
+fi
+
+(( failures == 0 ))

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+# Tests for com.twonegatives.daily-review
+
+failures=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+tmpdir=
+cleanup() {
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+tmpdir=$(mktemp -d) || exit 1
+
+tree="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
+label=com.twonegatives.daily-review
+plist="$tree/${label}.plist"
+
+key() {  # key <plist> <keypath>
+  plutil -extract "$2" raw -o - "$1" 2>/dev/null
+}
+
+if plutil -lint -s "$plist"
+then
+  pass 'the plist is well-formed'
+else
+  fail "plutil -lint rejected $plist"
+fi
+
+if [[ $(key "$plist" Label) == "$label" ]]
+then
+  pass 'Label matches the file name'
+else
+  fail "Label is '$(key "$plist" Label)'"
+fi
+
+if [[ $(key "$plist" StartCalendarInterval.Hour) == 16 ]] &&
+   [[ $(key "$plist" StartCalendarInterval.Minute) == 0 ]] &&
+   [[ -z $(key "$plist" StartInterval) ]]
+then
+  pass 'runs daily at 16:00 local time'
+else
+  fail "schedule: Hour=$(key "$plist" StartCalendarInterval.Hour) Minute=$(key "$plist" StartCalendarInterval.Minute) StartInterval=$(key "$plist" StartInterval)"
+fi
+
+if [[ $(key "$plist" RunAtLoad) == false ]]
+then
+  pass 'does not run at load'
+else
+  fail "RunAtLoad is '$(key "$plist" RunAtLoad)'"
+fi
+
+if [[ $(key "$plist" ProcessType) == Background ]]
+then
+  pass 'runs as a Background process'
+else
+  fail "ProcessType is '$(key "$plist" ProcessType)'"
+fi
+
+program=$(key "$plist" ProgramArguments.0)
+if [[ $program == __HOME__/bin/timvisher_daily_review_collect ]] &&
+   [[ -x $tree/../bash/bin/${program##*/} ]]
+then
+  pass 'runs the launcher installed from bash/bin'
+else
+  fail "ProgramArguments.0 is '$program'"
+fi
+
+agent_path=$(key "$plist" EnvironmentVariables.PATH)
+missing=()
+for dir in __HOME__/.config/timvisher/ide/bash/bin __HOME__/bin /opt/homebrew/opt/coreutils/libexec/gnubin /opt/homebrew/bin
+do
+  [[ :$agent_path: == *:"$dir":* ]] || missing+=("$dir")
+done
+if (( ${#missing[@]} == 0 ))
+then
+  pass 'PATH reaches the system-extensions tools, GNU coreutils and Homebrew'
+else
+  fail "PATH lacks: ${missing[*]}"
+fi
+
+log=__HOME__/Library/Logs/timvisher_daily_review_collect.log
+if [[ $(key "$plist" StandardOutPath) == "$log" ]] &&
+   [[ $(key "$plist" StandardErrorPath) == "$log" ]]
+then
+  pass 'logs to a ~/Library/Logs/timvisher_*.log the log rotator covers'
+else
+  fail "logs: out=$(key "$plist" StandardOutPath) err=$(key "$plist" StandardErrorPath)"
+fi
+
+mkdir -- "$tmpdir/mockbin" || exit 1
+cat > "$tmpdir/mockbin/launchctl" <<'MOCK' || exit 1
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_LOG"
+MOCK
+chmod +x "$tmpdir/mockbin/launchctl" || exit 1
+
+dest="$tmpdir/dest"
+MOCK_LOG="$tmpdir/mocklog" PATH="$tmpdir/mockbin:$PATH" TIMVISHER_LAUNCHAGENTS_DIR="$dest" \
+  "$tree/bin/start" "$label" 2> "$tmpdir/err"
+rc=$?
+deployed="$dest/${label}.plist"
+domain="gui/$(id -u)"
+if (( rc == 0 )) &&
+   grep -qx "bootstrap ${domain} ${deployed}" "$tmpdir/mocklog" &&
+   ! grep -q __HOME__ "$deployed" &&
+   [[ $(key "$deployed" ProgramArguments.0) == "$HOME/bin/timvisher_daily_review_collect" ]] &&
+   plutil -lint -s "$deployed"
+then
+  pass 'start deploys it with __HOME__ substituted'
+else
+  fail "start: rc=$rc log=[$(tr '\n' ';' < "$tmpdir/mocklog" 2>/dev/null)] err=$(< "$tmpdir/err")"
+fi
+
+(( failures == 0 ))
