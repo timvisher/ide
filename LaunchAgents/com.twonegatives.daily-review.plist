@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Gather yesterday and today for the daily review at 16:00 local time,
+  so a day that runs past midnight is still collected the next
+  afternoon. Every run adds new reports; nothing is replaced.
+
+  StartCalendarInterval rather than StartInterval: it follows local
+  time across DST, and launchd runs a slot missed while asleep once on
+  wake. No catch-up beyond that: a day the Mac was off stays lost.
+
+  RunAtLoad is false so LaunchAgents/bin/start redeploying the agent
+  does not trigger an extra gather.
+
+  __HOME__ is substituted with the real home directory by the deployer
+  (LaunchAgents/bin/start); launchd does not expand ~ in path values.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.twonegatives.daily-review</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_daily_review_collect</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/.config/timvisher/ide/bash/bin:__HOME__/bin:/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>16</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_daily_review_collect.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_daily_review_collect.log</string>
+</dict>
+</plist>
