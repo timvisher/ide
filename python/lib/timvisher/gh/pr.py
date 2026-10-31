@@ -30,6 +30,9 @@ Usage: timvisher_gh [-C <path>] pr [fetch|pull|push|edit] [<target>] [options]
 Options: --plan, --ours, --theirs, --merge, --open, --draft, --ready-for-review,
          --base <branch>
 
+--draft and --ready-for-review set the PR's draft state and are remembered for
+later pushes.
+
 The source is <toplevel>/pr.md: the title on line 1, the body from line 3.
 """
 
@@ -196,9 +199,22 @@ def _agent():
     return bool(os.environ.get("TIMVISHER_AGENT"))
 
 
-def _refuse(what):
+def _refuse(what, suggestions=()):
     fail("timvisher_gh_agent_refused", f"Agents can't {what}; that's for Tim.",
-         suggestions=["Ask Tim to run it", "Agents can push and sync draft PRs on their own worktree's branch"])
+         suggestions=[*suggestions, "Ask Tim to run it",
+                      "Agents can push and sync draft PRs on their own worktree's branch, and move its PR back "
+                      "to draft with --draft"])
+
+
+# The conversion lands before the branch push, so nobody reviews a push to a
+# PR that is still ready for review.
+def _convert_to_draft(opened, found, object_id, url, now):
+    fetch.api(f"{found.owner}/{found.repo}", "graphql", "-f", f"query={TO_DRAFT}", "-f", f"id={object_id}")
+    with opened.write() as db:
+        set_source_state(db, object_id, {"draft": True}, now)
+        fetch.Fetcher(opened, now).pr(found.owner, found.repo, found.number, conversation=False)
+    aictl.info(code="timvisher_gh_pr_draft", message=f"Moved {url} back to draft.")
+    return json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
 
 
 def _local_sha(context):
@@ -401,7 +417,10 @@ def run(context, args):
             if not worktree_pr:
                 _refuse("push or edit a PR that isn't for this worktree's branch")
             if not raw["draft"]:
-                _refuse("push a PR that isn't a draft")
+                if not flags["draft"]:
+                    _refuse("push a PR that isn't a draft",
+                            [f"Move it back to draft and push with '{rerun} --draft'"])
+                raw = _convert_to_draft(opened, found, object_id, url, now)
             if source_state(opened.db, object_id).get("draft") is False:
                 _refuse("sync a PR whose source says draft: false")
             recorded = store.bases(opened.db, object_id).get("head")
