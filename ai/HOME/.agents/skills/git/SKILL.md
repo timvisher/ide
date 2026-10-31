@@ -10,8 +10,11 @@ description: Local-only git workflow and safety rules; never mutate remotes, exc
 
 ## Workflow
 - Never run commands that mutate remotes (push, force push, delete, etc.).
-  The one exception is a draft PR's branch, pushed with `timvisher_gh pr push`
-  or `timvisher_gh pr` (see the github skill); never `git push` it yourself.
+  The one exception is a draft PR's branch, pushed (rebases and force-pushes
+  included) with `timvisher_gh pr push` or `timvisher_gh pr` (see the github
+  skill); never `git push` it yourself. To push to your own PR that's ready for
+  review, move it back to draft with `timvisher_gh pr push --draft`. Only Tim
+  marks a PR ready, merges it or releases it.
 - Never merge; rebase locally only.
 - Never modify git hooks.
 - If any other remote update is needed, ask the user to run the command.
