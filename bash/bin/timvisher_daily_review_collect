@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+collect_timeout=${TIMVISHER_DAILY_REVIEW_COLLECT_TIMEOUT:-30m}
+
+show_help() {
+  cat <<HELP
+Usage: timvisher_daily_review_collect
+
+Gather yesterday and today with timvisher_EXP_daily_review, saving one
+new report per day, without anything that can prompt. Run by the
+com.twonegatives.daily-review LaunchAgent.
+
+op is replaced by a stub that fails at once, so the jira section
+reports an error instead of raising a 1Password dialog. The whole run
+is bounded by TIMVISHER_DAILY_REVIEW_COLLECT_TIMEOUT (a timeout(1)
+duration, default ${collect_timeout}).
+
+Prints one line per section: <date> <section> <status> [error].
+HELP
+}
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  '')
+    ;;
+  *)
+    show_help >&2
+    exit 1
+    ;;
+esac
+
+summarize() {
+  jq -R -r '
+    capture("^(?<day>[^\t]*)\t(?<event>.*)$") as $line |
+    ($line.event | fromjson?) // empty |
+    select(.type == "section_report") |
+    [$line.day, .section, .status] +
+      (if .error.message then [.error.message | gsub("\\s+"; " ")] else [] end) |
+    join(" ")
+  '
+}
+
+tmpdir=
+cleanup() {
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+tmpdir=$(mktemp -d) ||
+  die 'could not create a temp dir'
+
+# A stub rather than a timeout around op: killing op does not take down
+# a 1Password dialog it already raised, and a launchd job has no
+# approved terminal session for op to ride on, so a real op would prompt
+# on nearly every run.
+cat > "$tmpdir/op" <<'STUB' ||
+#!/usr/bin/env bash
+printf 'op is disabled in the scheduled daily review (timvisher_daily_review_collect) so it cannot raise a 1Password prompt\n' >&2
+exit 1
+STUB
+  die 'could not write the op stub'
+chmod +x "$tmpdir/op" ||
+  die 'could not make the op stub executable'
+
+yesterday=$(date -d yesterday +%Y-%m-%d) ||
+  die 'could not compute yesterday'
+today=$(date +%Y-%m-%d) ||
+  die 'could not compute today'
+
+info 'collecting %s through %s' "$yesterday" "$today"
+
+PATH="$tmpdir:$PATH" timeout -k 1m "$collect_timeout" \
+  timvisher_EXP_daily_review --from "$yesterday" --to "$today" --format json |
+  summarize
+statuses=("${PIPESTATUS[@]}")
+
+if (( statuses[0] == 124 ))
+then
+  die 'timed out after %s' "$collect_timeout"
+elif (( statuses[0] != 0 ))
+then
+  die 'timvisher_EXP_daily_review exited %s' "${statuses[0]}"
+elif (( statuses[1] != 0 ))
+then
+  warn 'could not summarize the output (jq exited %s); the reports are still saved' "${statuses[1]}"
+fi
+
+info 'collected %s through %s' "$yesterday" "$today"
