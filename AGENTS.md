@@ -28,6 +28,20 @@ calling subshell) or `timvisher_tests_with_home <dir> <cmd>` (a command
 run with `HOME`, every XDG dir and `TIMVISHER_GIT_HOME` under `<dir>`), from
 `bash/tests/lib/timvisher_tests.bash`.
 
+A suite tests its unit, not the tools the unit runs. Mock those
+(`git`, `gh`, `tmux`, `ps`, `jq`, ...) with
+`bash/tests/lib/mock_commands.bash`: `mock_init` puts stubs first on
+`PATH`, `mock_respond <cmd> [--stdout|--stderr|--exit|--times|--run]
+-- <pattern>...` says how a call is answered, and `mock_calls`,
+`mock_called` and `mock_call_count` assert on the calls made. A call
+no rule answers fails the suite through `mock_finish`. On a suite's
+`PATH`, `git` is the `bash/bin/git` wrapper, about ten times the cost
+of the real one, so a test that does need a real repository builds it
+with `"$(mock_real git)"`, and lets the unit reach real git with
+`mock_passthrough git "$(mock_real git)"`, never through the wrapper.
+The wrapper's own suite mocks the real git behind it. The header of
+`mock_commands.bash` documents the rest.
+
 ## Testing a Worktree
 
 To test changes from a worktree without affecting the live `~/git/ide/`
