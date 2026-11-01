@@ -63,6 +63,7 @@ out=$(shell_in --overlay "$overlay" --shell bash -c '
   printf "token=%s\n" "${GH_TOKEN-unset}"
   printf "probe=%s\n" "${TIMVISHER_TESTS_PROBE-unset}"
   printf "hooks=%s\n" "$(git config core.hooksPath)"
+  printf "receive_hooks=%s\n" "$(env -u GIT_CONFIG_COUNT git config core.hooksPath)"
   printf "trace2=%s\n" "$(git config trace2.eventTarget)"
   printf "author=%s\n" "$(git var GIT_AUTHOR_IDENT | cut -d" " -f1)"
   printf "pwd=%s\n" "$(pwd -P)"
@@ -97,6 +98,8 @@ check 'GH_TOKEN is not passed' test "$(field token)" = unset
 check 'other caller variables are not passed' test "$(field probe)" = unset
 check 'core.hooksPath is an empty directory in HOME' \
       eval '[[ $(field hooks) == "$home"/* ]]'
+check 'core.hooksPath stays in HOME without the GIT_CONFIG_* overrides' \
+      eval '[[ $(field receive_hooks) == "$home"/* ]]'
 check 'trace2 goes to the git wrapper state in HOME' \
       test "$(field trace2)" = "$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
 check 'git has a test identity' test "$(field author)" = Test
@@ -107,6 +110,11 @@ fresh=$(shell_in --overlay "$overlay" --shell bash -c '
   source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
   (timvisher_tests_fresh_home && printf %s "$HOME")')
 check 'a fresh HOME made under --shell is made' test -n "$fresh"
+fresh_hooks=$(shell_in --overlay "$overlay" --shell bash -c '
+  source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
+  (timvisher_tests_fresh_home && env -u GIT_CONFIG_COUNT git config core.hooksPath)')
+check 'a fresh HOME keeps core.hooksPath out of the global config' \
+      eval '[[ $fresh_hooks == */fresh_home.*/home/* ]]'
 check 'a fresh HOME made under --shell is removed afterwards' test ! -e "$fresh"
 
 second=$(shell_in --overlay "$overlay" --shell bash -c 'printf %s "$HOME"')
