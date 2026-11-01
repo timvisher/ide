@@ -406,6 +406,19 @@ extra_env=()
 expect_cred "git-credential get defers to a GH_TOKEN already in the environment" \
   "real-gh git-credential get GH_TOKEN=caller stdin=protocol=https,host=github.com,path=ddoghq/dd-source.git,"
 
+# --- every call is logged, with the caller's own argv ---
+run_test
+extra_env=(TIMVISHER_TOOL_LOG_DIR="$tmpdir/toollogs")
+run_shim "$tmpdir/norepo" -R ddoghq/dd-source pr view 5
+extra_env=()
+logged=$(tail -n 1 "$tmpdir/toollogs/gh.jsonl" 2>/dev/null)
+if (( rc == 0 )) && jq -e '.tool == "gh" and .argv == ["-R","ddoghq/dd-source","pr","view","5"] and .gh_repo == "ddoghq/dd-source" and .rc == 0' <<<"$logged" >/dev/null
+then
+  pass "a gh call is logged with the caller's argv and the GH_REPO it chose"
+else
+  fail "gh tool log: rc=$rc line='$logged'"
+fi
+
 # --- the real gh is never the shim itself ---
 # A brew whose prefix leads back to the shim (a workspace's stand-in brew)
 # and no other gh: the shim must fail, not exec itself.
