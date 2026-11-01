@@ -142,6 +142,10 @@ check 'mock_brew_prefix routes $(brew --prefix)/bin to the mocks' via-prefix \
 check 'a mock reached through realpath answers as itself' via-prefix \
   "$("$(realpath "$TIMVISHER_MOCK_DIR/bin/git")" --version)"
 
+# A mock still works when the caller's PATH finds an older bash first.
+check 'a mock runs under the suite bash whatever PATH says' via-prefix \
+  "$(PATH=/bin "$TIMVISHER_MOCK_DIR/bin/git" --version)"
+
 # mock_real looks past the mocks.
 real=$(mock_real git)
 if [[ -n $real && $real != "$TIMVISHER_MOCK_DIR"/* && -x $real ]]
