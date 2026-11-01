@@ -27,6 +27,14 @@ script="${script_dir}/bin/timvisher_dev_ci"
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmpdir"' EXIT
 
+# git is mocked with a passthrough to the real git, so neither the
+# script's git calls nor the fixtures' go through the ~/bin/git wrapper.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$real_git"
+
 [[ -n ${TIMVISHER_TESTS_TEMPLATE-} ]] ||
   { echo "run this suite through timvisher_tests" >&2; exit 1; }
 export TIMVISHER_GIT_HOME="$tmpdir/git"
@@ -645,7 +653,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # Use the real git (not the agent wrapper) for fixture setup.
-test_git="$(brew --prefix)/bin/git"
+test_git=$real_git
 
 # Load the script's functions by stripping the top-level dispatch.
 rrmr_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
