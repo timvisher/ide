@@ -98,6 +98,18 @@ check 'server ls: the command is the Emacs command line' \
 check 'server ls: an Emacs without a server is not listed' \
       test -z "$(field ".servers[] | select(.pid == $unserved_pid) | .pid")"
 
+mkdir -p "$tmpdir/linuxlsof" || exit 1
+cat > "$tmpdir/linuxlsof/lsof" <<FAKE
+#!/usr/bin/env bash
+"$(command -v lsof)" "\$@" | sed '/^n\//s/\$/ type=STREAM/'
+FAKE
+chmod +x "$tmpdir/linuxlsof/lsof" || exit 1
+
+PATH="$tmpdir/linuxlsof:$PATH" emacs_tool server ls
+rc=$?
+check "server ls, Linux lsof (' type=STREAM' after the socket name): still lists the served Emacs's socket" \
+      eval "(( rc == 0 )) && [[ \$(field '.servers[] | select(.pid == $served_pid) | .socket') == '$socket_dir/tvserved' ]]"
+
 emacs_tool server ls --schema-version 2
 rc=$?
 check 'server ls --schema-version: a mismatch exits 1 with nothing on stdout' \

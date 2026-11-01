@@ -152,7 +152,7 @@ timvisher_emacs__server_sockets() {
     scope+=(-p "$1")
   fi
 
-  local line pid
+  local line pid socket
   while IFS= read -r line
   do
     case $line in
@@ -160,7 +160,10 @@ timvisher_emacs__server_sockets() {
         pid=${line#p}
         ;;
       n/*)
-        [[ -S ${line#n} ]] && printf '%s\t%s\n' "$pid" "${line#n}"
+        # Linux lsof follows a Unix socket's path with ' type=STREAM'.
+        socket=${line#n}
+        socket=${socket% type=*}
+        [[ -S $socket ]] && printf '%s\t%s\n' "$pid" "$socket"
         ;;
     esac
   done < <(lsof -a -U -u "$(id -u)" "${scope[@]}" -F pn 2>/dev/null)
