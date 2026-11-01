@@ -49,12 +49,14 @@ check 'a trailing ... matches no arguments' glob "$(git log feature/y)"
 git log main >/dev/null 2>&1
 check 'an unanswered call exits 127' 127 "$?"
 check 'an unanswered call is recorded as unexpected' 'git log main' "$(mock_unexpected)"
-check 'mock_finish fails on unexpected calls' 1 "$(mock_finish 2>/dev/null; echo "$?")"
+mock_reset
+check 'mock_reset keeps unexpected calls' 'git log main' "$(mock_unexpected)"
 check 'mock_finish names each unexpected call' 'FAIL: mock: unexpected call: git log main' \
   "$(mock_finish 2>&1)"
-
-mock_reset
-check 'mock_reset clears unexpected calls' 0 "$(mock_finish; echo "$?")"
+git log other >/dev/null 2>&1
+mock_finish 2>/dev/null
+check 'mock_finish fails on unexpected calls' 1 "$?"
+check 'mock_finish forgets what it reported' 0 "$(mock_finish; echo "$?")"
 
 # Streams and status.
 mock_respond git --stdout out --stderr err --exit 3 -- fetch origin
@@ -126,6 +128,7 @@ check 'passed-through calls are not unexpected' 0 "$(mock_finish; echo "$?")"
 mock_passthrough git ''
 git log -1 >/dev/null 2>&1
 check 'an empty passthrough removes it' 127 "$?"
+mock_finish 2>/dev/null
 mock_reset
 
 # brew --prefix reaches the mocks.
