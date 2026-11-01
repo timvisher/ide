@@ -8,6 +8,7 @@ emacs --batch \
   --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
   --eval "(require 'package)" \
   --eval "(package-initialize)" \
+  --eval '(prepare-user-lisp)' \
   --eval '(load "~/.config/emacs/init.el")' \
   --eval '(load "~/.config/emacs/init-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-alert-test.el")' \
