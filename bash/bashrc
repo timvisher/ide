@@ -4,6 +4,26 @@
 # that's still the only version by default on macs
 
 ##########################################################################
+### Early overlay
+##########################################################################
+
+# The overlay's bash/bashrc_early runs before anything else here, so it
+# can set what core init reads (API keys before ~/.functions/ai.bash
+# defaults them) and end init for a shell that wants none of it by
+# setting timvisher_ide_bashrc_stop. It is not a .bash file so the
+# overlay functions loop below does not source it a second time.
+if [[ -r ~/.config/timvisher/ide/bash/bashrc_early ]]
+then
+  # shellcheck source=/dev/null
+  source ~/.config/timvisher/ide/bash/bashrc_early
+  if [[ -n ${timvisher_ide_bashrc_stop-} ]]
+  then
+    unset timvisher_ide_bashrc_stop
+    return 0
+  fi
+fi
+
+##########################################################################
 ### Shell Options
 ##########################################################################
 
