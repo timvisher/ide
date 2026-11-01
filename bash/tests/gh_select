@@ -345,6 +345,34 @@ else
   fail "human deferred; rc=$rc err='$err'"
 fi
 
+# --- the real gh is never the shim itself ---
+# A brew whose prefix leads back to the shim (a workspace's stand-in brew)
+# and no other gh: the shim must fail, not exec itself.
+mkdir -p "$tmpdir/selfprefix" "$tmpdir/selfbrew" "$tmpdir/tools"
+ln -s "${script%/*}" "$tmpdir/selfprefix/bin"
+printf '#!/bin/sh\necho %q\n' "$tmpdir/selfprefix" > "$tmpdir/selfbrew/brew"
+chmod +x "$tmpdir/selfbrew/brew"
+ln -s "$(command -v bash)" "$tmpdir/tools/bash"
+for t in git realpath dirname jq date
+do
+  t_path=$(command -v "$t") && ln -sf "$t_path" "$tmpdir/tools/$t"
+done
+run_test
+self_out=$(
+  cd "$tmpdir/norepo" &&
+    env -u GH_TOKEN -u GITHUB_TOKEN -u TIMVISHER_AGENT \
+      PATH="${script%/*}:$tmpdir/selfbrew:$tmpdir/tools:/usr/bin:/bin" \
+      TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+      "$script" --version 2>&1
+)
+self_rc=$?
+if (( self_rc != 0 )) && [[ $self_out == *gh_real_gh_missing* || $self_out == *"No gh found besides this shim"* ]]
+then
+  pass "with no gh but the shim itself, the shim fails instead of execing itself"
+else
+  fail "self-resolving brew; rc=$self_rc out='$self_out'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 (( failures == 0 ))

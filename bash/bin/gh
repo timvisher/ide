@@ -228,7 +228,21 @@ then
   fi
 fi
 
-gh_account__real_gh="$(brew --prefix)"/bin/gh
+# The real gh this shim stands in for: Homebrew's gh when it exists, else
+# the first gh on PATH, never this shim or another copy of it.
+# shellcheck source=../functions/real_bin.bash
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/real_bin.bash" ||
+  {
+    echo "Unable to source real_bin.bash" >&2
+    exit 1
+  }
+gh_account__real_gh=$(timvisher_real_bin gh "${BASH_SOURCE[0]}") ||
+  aictl_die \
+    --code gh_real_gh_missing \
+    --message "No gh found besides this shim ('${BASH_SOURCE[0]}')." \
+    --doc 'ai/HOME/.agents/skills/github/SKILL.md' \
+    --suggestion "Install gh with Homebrew or put it on PATH."
+timvisher_real_bin_skip_self "${BASH_SOURCE[0]}"
 gh_account__doc='ai/HOME/.agents/skills/github/SKILL.md'
 
 gh_account__valid_owner() {
