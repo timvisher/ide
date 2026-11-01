@@ -12,6 +12,13 @@
 #   <dir>/.agents/skills/<name>     → ~/.agents/skills/<name>
 #   <dir>/.agents/languages/<name>  → ~/.agents/languages/<name>
 #   <dir>/.claude/hooks/<name>      → ~/.claude/hooks/<name>
+#   <dir>/.claude/settings.json     → ~/.claude/settings.json
+#
+# settings.json is linked, not copied, so Claude Code's own edits land in
+# the repo. It must not name absolute home paths: use $HOME in hook
+# commands (run through a shell) and ~ in permission rules,
+# additionalDirectories and marketplace paths, so one file works under
+# any HOME. Only one <dir> may provide it.
 #
 # Typical layout in a config repo:
 #   <repo>/ai/HOME/        — cross-agent home (skills, languages)
@@ -270,6 +277,8 @@ ensure_claude_md_stub() {
   info "Created locked stub '%s'" "$path"
 }
 
+claude_settings_source=''
+
 do_install_from() {
   local dir=$1
   local found_something=false
@@ -323,6 +332,23 @@ do_install_from() {
         name=$(basename "$hook")
         ensure_symlink "${HOME}/.claude/hooks/${name}" "$(prefer_path "$hook")"
       done
+    fi
+  fi
+
+  local claude_settings="${dir}/.claude/settings.json"
+  if [[ -f $claude_settings ]]
+  then
+    found_something=true
+    if [[ ! -d ${HOME}/.claude ]]
+    then
+      # shellcheck disable=SC2088 # ~ is intentional in log message
+      warn '~/.claude does not exist; skipping Claude settings from %s' "$dir"
+    elif [[ -n $claude_settings_source ]]
+    then
+      found_error "Both '${claude_settings_source}' and '${claude_settings}' provide ~/.claude/settings.json; keep one"
+    else
+      claude_settings_source=$claude_settings
+      ensure_symlink "${HOME}/.claude/settings.json" "$(prefer_path "$claude_settings")"
     fi
   fi
 
