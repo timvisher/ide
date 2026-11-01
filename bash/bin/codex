@@ -7,7 +7,11 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-source ~/git/ide/bash/ai/agents.bash ||
+bin_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
+  die "Couldn't resolve the wrapper's directory"
+
+# shellcheck source=../ai/agents.bash
+source "$bin_dir/../ai/agents.bash" ||
   die "Couldn't source agents.bash"
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-op://Private/OpenAI API Secret Key/credential}"
@@ -21,8 +25,10 @@ export TIMVISHER_CODEX=true
 # dumped by `declare -f`. The init file must stay cheap; it runs on
 # every subshell. Clobbers any pre-existing BASH_ENV for codex's
 # subprocesses, which is fine in practice (we have no other consumers).
-export BASH_ENV="$HOME/git/ide/bash/lib/codex_bash_env.bash"
+export BASH_ENV="$bin_dir/../lib/codex_bash_env.bash"
 
-p=$(brew --prefix)
+real_codex=$(timvisher_real_bin codex "${BASH_SOURCE[0]}") ||
+  die 'No codex found besides this wrapper ("%s"); install it with Homebrew or put it on PATH.' "${BASH_SOURCE[0]}"
 
-exec op run --no-masking -- "${p}/bin/codex" "$@"
+timvisher_real_bin_skip_self "${BASH_SOURCE[0]}"
+timvisher_agent_exec "$real_codex" "$@"

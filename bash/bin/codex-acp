@@ -7,7 +7,11 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-source ~/git/ide/bash/ai/agents.bash ||
+bin_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
+  die "Couldn't resolve the wrapper's directory"
+
+# shellcheck source=../ai/agents.bash
+source "$bin_dir/../ai/agents.bash" ||
   die "Couldn't source agents.bash"
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-op://Private/OpenAI API Secret Key/credential}"
@@ -26,8 +30,10 @@ fi
 
 if [[ ${#AGENT_BIN[@]} -eq 0 ]]
 then
-  p=$(brew --prefix)
-  AGENT_BIN=("${p}/bin/codex-acp")
+  real_codex_acp=$(timvisher_real_bin codex-acp "${BASH_SOURCE[0]}") ||
+    die 'No codex-acp found besides this wrapper ("%s"); install it with Homebrew, put it on PATH, or set AGENT_BIN in %s.' "${BASH_SOURCE[0]}" "$bin_config"
+  AGENT_BIN=("$real_codex_acp")
 fi
 
-exec op run --no-masking -- "${AGENT_BIN[@]}" "$@"
+timvisher_real_bin_skip_self "${BASH_SOURCE[0]}"
+timvisher_agent_exec "${AGENT_BIN[@]}" "$@"
