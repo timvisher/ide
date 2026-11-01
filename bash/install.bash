@@ -143,6 +143,17 @@ if [[ -d ~/.config/timvisher/ide/ai/HOME ]]
 then
     agent_homes+=(~/.config/timvisher/ide/ai/HOME)
 fi
+# Claude's hooks and settings.json. timvisher_agents_install skips them
+# without ~/.claude, which a fresh box doesn't have until Claude Code
+# first runs.
+for claude_home in ~/git/ide/ai/claude/HOME ~/.config/timvisher/ide/ai/claude/HOME
+do
+    if [[ -d $claude_home ]]
+    then
+        mkdir -p ~/.claude || { echo "# Couldn't create ~/.claude" >&2; exit 1; }
+        agent_homes+=("$claude_home")
+    fi
+done
 ~/git/ide/bash/bin/timvisher_agents_install "${agent_homes[@]}" || exit 1
 
 # shellcheck source=/dev/null

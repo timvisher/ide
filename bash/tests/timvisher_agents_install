@@ -572,6 +572,59 @@ fi
 cleanup "$test_home"
 
 # --- Results ---
+# --- settings.json ---
+settings_source() {
+  local dir
+  dir=$(mktemp -d "${test_root}/t.XXXXXX")
+  mkdir -p "${dir}/.claude"
+  printf '{"cmd": "$HOME/.claude/hooks/h.sh", "dirs": ["~"]}\n' > "${dir}/.claude/settings.json"
+  echo "$dir"
+}
+
+run_test
+test_home=$(setup_home)
+source_dir=$(settings_source)
+timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" "$source_dir" 2>/dev/null
+if [[ -L ${test_home}/.claude/settings.json && ${test_home}/.claude/settings.json -ef ${source_dir}/.claude/settings.json ]]
+then
+  pass "settings.json: ~/.claude/settings.json links to the agent home's"
+else
+  fail "settings.json link: '$(ls -l "${test_home}/.claude/settings.json" 2>&1)'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+run_test
+test_home=$(setup_home)
+source_dir=$(settings_source)
+printf '{"mine": true}\n' > "${test_home}/.claude/settings.json"
+result=$(timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" "$source_dir" 2>&1)
+exit_code=$?
+if (( exit_code != 0 )) && [[ ! -L ${test_home}/.claude/settings.json && $(< "${test_home}/.claude/settings.json") == '{"mine": true}' ]]
+then
+  pass "settings.json: an existing settings.json is an error and left alone"
+else
+  fail "settings.json existing file: rc=${exit_code} out='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_dir"
+
+run_test
+test_home=$(setup_home)
+source_a=$(settings_source)
+source_b=$(settings_source)
+result=$(timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" "$source_a" "$source_b" 2>&1)
+exit_code=$?
+if (( exit_code != 0 )) && [[ $result == *"provide ~/.claude/settings.json"* ]]
+then
+  pass "settings.json: two sources are an error"
+else
+  fail "settings.json two sources: rc=${exit_code} out='${result}'"
+fi
+cleanup "$test_home"
+cleanup "$source_a"
+cleanup "$source_b"
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

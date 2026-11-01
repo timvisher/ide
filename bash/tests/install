@@ -41,6 +41,12 @@ INSTALL
 chmod +x "$overlay/git/bin/install" || exit 1
 printf '[core]\n' > "$overlay/git/XDG_CONFIG_HOME/git/config_overlay"
 printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
+# A Claude home like the system extensions': a hook and a settings.json.
+mkdir -p "$overlay/ai/claude/HOME/.claude/hooks" || exit 1
+printf '#!/bin/sh\n' > "$overlay/ai/claude/HOME/.claude/hooks/overlay-hook.sh"
+chmod +x "$overlay/ai/claude/HOME/.claude/hooks/overlay-hook.sh" || exit 1
+printf '{"hooks": "$HOME/.claude/hooks/overlay-hook.sh"}\n' \
+  > "$overlay/ai/claude/HOME/.claude/settings.json"
 
 uv_stub="$tmpdir/timvisher_uv_stub"
 cat > "$uv_stub" <<STUB
@@ -106,6 +112,14 @@ check 'overlay skills are installed' \
       test "$home/.agents/skills/overlay-skill" -ef "$overlay/ai/HOME/.agents/skills/overlay-skill"
 check '~/AGENTS.md is the core AGENTS.md' \
       test "$home/AGENTS.md" -ef "$core/ai/HOME/AGENTS.md"
+core_hook=$(cd "$core/ai/claude/HOME/.claude/hooks" && ls | head -n 1)
+check "core Claude hooks are installed ($core_hook)" \
+      test "$home/.claude/hooks/$core_hook" -ef "$core/ai/claude/HOME/.claude/hooks/$core_hook"
+check 'overlay Claude hooks are installed' \
+      test "$home/.claude/hooks/overlay-hook.sh" -ef "$overlay/ai/claude/HOME/.claude/hooks/overlay-hook.sh"
+check "~/.claude/settings.json links to the overlay's" \
+      test "$home/.claude/settings.json" -ef "$overlay/ai/claude/HOME/.claude/settings.json"
+check "~/.claude/settings.json is a link" test -L "$home/.claude/settings.json"
 
 check 'install runs timvisher_uv once' test "$(grep -c '^args=' "$tmpdir/uv_calls")" = 1
 check 'install runs bare timvisher_uv' grep -qx 'args=|' "$tmpdir/uv_calls"
