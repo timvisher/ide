@@ -111,3 +111,49 @@ timvisher_anthropic_connectivity_gate() {
   die 'connectivity gate: cannot reach Anthropic endpoint "%s". Check VPN/gateway connectivity, or set TIMVISHER_SKIP_CONNECTIVITY_GATE=1 to bypass.' "$url"
 }
 
+
+# shellcheck source=../functions/real_bin.bash
+source "$(dirname "${BASH_SOURCE[0]}")/../functions/real_bin.bash" ||
+  die "Couldn't source real_bin.bash"
+
+# Exec <cmd> [<arg>...] for an agent wrapper. Runs it under 'op run' only
+# when some exported variable holds an op:// reference and op is
+# installed. When op is missing, those variables are unset (with a
+# warning) so the tool falls back to its own login instead of receiving a
+# literal op:// string.
+#
+# A wrapper that runs itself again instead of the real tool is an error
+# the first time it happens. Before exec, the wrapper records
+# "<pid>:<name>" in TIMVISHER_AGENT_WRAPPER_EXEC. The same wrapper started
+# again by that pid (exec kept it) or by its direct child (what 'op run'
+# starts) means the real-binary lookup came back to a wrapper. A nested
+# agent started from a shell, or a different tool, has another parent and
+# runs normally.
+timvisher_agent_exec() {
+  local name=${0##*/} exec_pid=${TIMVISHER_AGENT_WRAPPER_EXEC%%:*} exec_name=${TIMVISHER_AGENT_WRAPPER_EXEC#*:}
+  if [[ -n ${TIMVISHER_AGENT_WRAPPER_EXEC-} && $exec_name == "$name" ]] &&
+       [[ $exec_pid == "$$" || $exec_pid == "$PPID" ]]
+  then
+    die 'agent wrapper: %s ran itself again instead of the real %s (wrapper pid %s, caller pid %s). The real-binary lookup returned a wrapper; check PATH and the install.' "$0" "$name" "$$" "$exec_pid"
+  fi
+  export TIMVISHER_AGENT_WRAPPER_EXEC="$$:$name"
+
+  local var
+  local -a op_refs=()
+  for var in $(compgen -e)
+  do
+    [[ ${!var} == op://* ]] && op_refs+=("$var")
+  done
+
+  if (( 0 < ${#op_refs[@]} ))
+  then
+    if command -v op >/dev/null 2>&1
+    then
+      exec op run --no-masking -- "$@"
+    fi
+    warn 'agent wrapper: op not installed, unsetting op:// references: %s' "${op_refs[*]}"
+    unset -v "${op_refs[@]}"
+  fi
+
+  exec "$@"
+}

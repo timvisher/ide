@@ -107,40 +107,207 @@ else
   fail "codex missing OPENAI_API_KEY setup"
 fi
 
-# Test 7: both use op run --no-masking
-run_test
-all_op=true
+# Tests 7-12 run the wrappers against a fake PATH: wrap/ holds them the
+# way ~/bin does, real/ a stand-in for the real tool that prints what it
+# got, tools/ a bash and (when a test asks) a fake op and brew. No system
+# directory that could hold a real codex, claude or op is on it.
+wrap_fixture=$(mktemp -d)
+trap '[[ -z $fixture_home ]] || rm -rf "$fixture_home"; rm -rf "$wrap_fixture"' EXIT
+mkdir -p "$wrap_fixture"/{wrap,real,tools}
 for tool in claude codex
 do
-  if ! grep -q 'op run --no-masking' "$bin_dir/$tool"
+  ln -s "$bin_dir/$tool" "$wrap_fixture/wrap/$tool"
+done
+ln -s "$(command -v bash)" "$wrap_fixture/tools/bash"
+
+# A brew whose prefix is the fixture, with bin/ linked to the wrappers: the
+# workspace case where $(brew --prefix)/bin/codex is the wrapper itself.
+ln -s "$wrap_fixture/wrap" "$wrap_fixture/bin"
+printf '#!/bin/sh\necho %q\n' "$wrap_fixture" > "$wrap_fixture/tools/brew"
+
+for tool in claude codex
+do
+  # shellcheck disable=SC2016 # expanded by the fake tool
+  printf '#!/bin/sh\necho "real %s args=$*"\necho "key=${ANTHROPIC_API_KEY-}${OPENAI_API_KEY-}"\n' "$tool" \
+    > "$wrap_fixture/real/$tool.disabled"
+done
+
+cat > "$wrap_fixture/op.disabled" <<'OP'
+#!/bin/sh
+echo "op argv=$*"
+while [ $# -gt 0 ] && [ "$1" != -- ]
+do
+  shift
+done
+shift
+exec "$@"
+OP
+chmod +x "$wrap_fixture"/tools/* "$wrap_fixture"/real/* "$wrap_fixture/op.disabled"
+
+# Run wrapper $1 with the fake PATH and args $2...; output in wrap_out,
+# status in wrap_rc. Kills it after 20s so a recursion can't hang or
+# fork-bomb the suite; wrap_rc is then 124.
+run_wrapper() {
+  local tool=$1 i pid
+  shift
+  : > "$wrap_fixture/out"
+  env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u TIMVISHER_AGENT_WRAPPER_EXEC -u TIMVISHER_REAL_BIN_SKIP \
+    PATH="$wrap_fixture/wrap:$wrap_fixture/real:$wrap_fixture/tools:/usr/bin:/bin" \
+    TIMVISHER_SKIP_CONNECTIVITY_GATE=1 \
+    "${wrap_env[@]}" \
+    "$wrap_fixture/wrap/$tool" "$@" > "$wrap_fixture/out" 2>&1 &
+  pid=$!
+  for (( i = 0; i < 200; i += 1 ))
+  do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null
   then
-    all_op=false
-    break
+    pkill -P "$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    wrap_rc=124
+  else
+    wait "$pid"
+    wrap_rc=$?
+  fi
+  wrap_out=$(<"$wrap_fixture/out")
+}
+
+enable_real() {
+  local tool
+  for tool in "$@"
+  do
+    mv "$wrap_fixture/real/$tool.disabled" "$wrap_fixture/real/$tool"
+  done
+}
+
+# Test 7: with no op and no real tool, and brew's prefix pointing back at
+# the wrappers, both fail fast instead of execing themselves.
+for tool in claude codex
+do
+  run_test
+  wrap_env=()
+  run_wrapper "$tool" login --with-api-key
+  if (( wrap_rc != 0 && wrap_rc != 124 )) && [[ $wrap_out == *"No $tool found besides this wrapper"* ]]
+  then
+    pass "$tool fails fast when it can only find itself"
+  else
+    fail "$tool did not fail fast without a real binary (rc $wrap_rc): $wrap_out"
   fi
 done
-if [[ $all_op == true ]]
+
+enable_real claude codex
+
+# Test 8: without op, the op:// default is dropped and the real tool runs
+# directly with the wrapper's args.
+for tool in claude codex
+do
+  run_test
+  wrap_env=()
+  run_wrapper "$tool" a 'b c'
+  if (( wrap_rc == 0 )) &&
+       [[ $wrap_out == *"real $tool args=a b c"* ]] &&
+       [[ $wrap_out == *"key="* ]] &&
+       [[ $wrap_out != *"key=op://"* ]]
+  then
+    pass "$tool runs the real binary without op, dropping op:// references"
+  else
+    fail "$tool without op (rc $wrap_rc): $wrap_out"
+  fi
+done
+
+mv "$wrap_fixture/op.disabled" "$wrap_fixture/tools/op"
+
+# Test 9: with op installed, the op:// default goes through op run.
+for tool in claude codex
+do
+  run_test
+  wrap_env=()
+  run_wrapper "$tool" x
+  if (( wrap_rc == 0 )) &&
+       [[ $wrap_out == *"op argv=run --no-masking -- "*"/real/$tool x"* ]] &&
+       [[ $wrap_out == *"real $tool args=x"* ]]
+  then
+    pass "$tool resolves op:// references through op run --no-masking"
+  else
+    fail "$tool with op (rc $wrap_rc): $wrap_out"
+  fi
+done
+
+# Test 10: with op installed but real values in the environment, op is
+# skipped.
+for tool in claude codex
+do
+  run_test
+  wrap_env=(ANTHROPIC_API_KEY=sk-real OPENAI_API_KEY=sk-real)
+  run_wrapper "$tool" y
+  if (( wrap_rc == 0 )) && [[ $wrap_out != *"op argv="* && $wrap_out == *"real $tool args=y"* ]]
+  then
+    pass "$tool skips op run when no variable holds an op:// reference"
+  else
+    fail "$tool ran op with no op:// references (rc $wrap_rc): $wrap_out"
+  fi
+done
+
+# Test 11: a wrapper that ends up running itself again is an error the
+# first time. "launch" runs the codex wrapper from a bash whose pid is
+# recorded as the last agent-wrapper exec (exec: as that pid; child: as its
+# direct child, the way op run starts the tool).
+# shellcheck disable=SC2016 # the bash -c script expands its own args
+launch() {
+  local how=$1 recorded=$2
+  shift 2
+  env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u TIMVISHER_REAL_BIN_SKIP \
+    PATH="$wrap_fixture/wrap:$wrap_fixture/real:$wrap_fixture/tools:/usr/bin:/bin" \
+    TIMVISHER_SKIP_CONNECTIVITY_GATE=1 OPENAI_API_KEY=sk-real ANTHROPIC_API_KEY=sk-real \
+    bash -c 'how=$1 recorded=$2; shift 2
+      [[ $recorded == self ]] && recorded=$$
+      export TIMVISHER_AGENT_WRAPPER_EXEC="$recorded:$1"
+      shift
+      if [[ $how == exec ]]; then exec "$@"; else "$@"; fi' _ "$how" "$recorded" "$@" 2>&1
+}
+for how in exec child
+do
+  run_test
+  out=$(launch "$how" self codex "$wrap_fixture/wrap/codex" z)
+  rc=$?
+  if (( rc != 0 )) && [[ $out == *"ran itself again"* && $out != *"real codex args"* ]]
+  then
+    pass "codex re-entered as its own ${how} is an error at once"
+  else
+    fail "codex re-entry (${how}) not caught (rc $rc): $out"
+  fi
+done
+
+run_test
+out=$(launch child self codex "$wrap_fixture/wrap/claude" z)
+if [[ $out == *"real claude args=z"* ]]
 then
-  pass "both use op run --no-masking"
+  pass "a different tool started by the same parent runs"
 else
-  fail "missing op run --no-masking"
+  fail "claude after codex's exec was refused: $out"
 fi
 
-# Test 8: both use brew --prefix for binary lookup
 run_test
-all_brew=true
-for tool in claude codex
-do
-  if ! grep -q 'brew --prefix' "$bin_dir/$tool"
-  then
-    all_brew=false
-    break
-  fi
-done
-if [[ $all_brew == true ]]
+out=$(launch child 1 codex "$wrap_fixture/wrap/codex" z)
+if [[ $out == *"real codex args=z"* ]]
 then
-  pass "both use brew --prefix for binary lookup"
+  pass "the same tool from an unrelated parent (a nested agent) runs"
 else
-  fail "missing brew --prefix"
+  fail "nested codex was refused: $out"
+fi
+
+# Test 12: no wrapper sources the ide through an absolute ~/git path.
+run_test
+# shellcheck disable=SC2088 # literal ~ we grep for
+abs_refs=$(grep -l '~/git/ide\|HOME/git/ide' "$bin_dir"/{claude,codex,claude-agent-acp,codex-acp})
+if [[ -z $abs_refs ]]
+then
+  pass "wrappers resolve the ide relative to themselves"
+else
+  fail "wrappers reference ~/git/ide by absolute path: $abs_refs"
 fi
 
 echo ""
