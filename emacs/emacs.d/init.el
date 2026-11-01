@@ -850,49 +850,68 @@ hand) keeps it under its existing name."
 ;;; Load AI tooling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defconst timvisher-op-environment-references
+  '(("OPENAI_API_KEY" . "op://Private/OpenAI API Secret Key/credential")
+    ("ANTHROPIC_API_KEY" . "op://Private/Anthropic API Key/credential"))
+  "Environment variables agent-shell's agents read, and their 1Password references.")
+
 (defun timvisher-load-op-environment-variables ()
-  "Resolve 1Password secrets and update the current Emacs environment.
+  "Resolve the agents' API keys through 1Password into Emacs's environment.
 
-This function finds all environment variables whose values are
-`op://` secret references, uses `op run` to resolve them, and
-then updates the environment for the current Emacs session using
-`setenv'.
-
-It will signal an error if the `op` command fails or if any of
-the secret references cannot be resolved."
+Only variables in `timvisher-op-environment-references' that don't
+already hold a real value (unset, or still an op:// reference) are
+resolved, with one `op run'.  Without op on PATH (a workspace) nothing
+is run and nothing is set: the agents use their own login.  When op
+fails, a warning is shown and the unresolved variables are unset, so no
+op:// placeholder is left behind.  Returns the number of variables
+resolved."
   (interactive)
-  ;; Define all the op:// references we need
-  (let ((op-env-vars `(("OPENAI_API_KEY" . ,(or (getenv "OPENAI_API_KEY")
-                                                "op://Private/OpenAI API Secret Key/credential"))
-                       ("ANTHROPIC_API_KEY" . ,(or (getenv "ANTHROPIC_API_KEY")
-                                                   "op://Private/Anthropic API Key/credential")))))
+  (let ((wanted (seq-remove (lambda (ref)
+                              (let ((value (getenv (car ref))))
+                                (and value (not (string-prefix-p "op://" value)))))
+                            timvisher-op-environment-references))
+        (resolved 0))
+    (cond
+     ((null wanted) 0)
+     ((not (executable-find "op"))
+      (dolist (ref wanted)
+        (when (string-prefix-p "op://" (or (getenv (car ref)) ""))
+          (setenv (car ref) nil)))
+      (message "No op on PATH; agents will use their own login for %s."
+               (mapconcat #'car wanted ", "))
+      0)
+     (t
+      (with-temp-buffer
+        ;; Only op run sees the op:// references; the resolved values are
+        ;; set in Emacs's own environment below.
+        (if (/= 0 (let ((process-environment
+                         (append (mapcar (lambda (ref) (format "%s=%s" (car ref) (cdr ref)))
+                                         wanted)
+                                 process-environment)))
+                    (call-process-shell-command "op run --no-masking -- env" nil t)))
+            (display-warning 'timvisher-op "op run failed; agents will use their own login.")
+          (goto-char (point-min))
+          (while (re-search-forward "^\\([^=\n]+\\)=\\(.*\\)$" nil t)
+            (let ((key (match-string 1))
+                  (value (match-string 2)))
+              (when (and (assoc key wanted) (not (string-prefix-p "op://" value)))
+                (setenv key value)
+                (setq resolved (1+ resolved)))))))
+      (dolist (ref wanted)
+        (when (string-prefix-p "op://" (or (getenv (car ref)) ""))
+          (setenv (car ref) nil)))
+      (when (< resolved (length wanted))
+        (display-warning 'timvisher-op
+                         (format "Resolved %d of %d 1Password references."
+                                 resolved (length wanted))))
+      resolved))))
 
-    ;; First, set all the op:// references in the environment
-    (dolist (var-pair op-env-vars)
-      (setenv (car var-pair) (cdr var-pair)))
-
-    ;; Now use `op run` to resolve them all at once
-    (with-temp-buffer
-      (let ((exit-code (call-process-shell-command "op run --no-masking -- env" nil t)))
-        (when (/= exit-code 0)
-          (error "1Password command failed with exit code %d" exit-code)))
-
-      ;; Process the output and update environment variables
-      (goto-char (point-min))
-      (let ((resolved-count 0))
-        (while (re-search-forward "^\\([^=]+\\)=\\(.*\\)$" nil t)
-          (let ((key (match-string 1))
-                (val (match-string 2)))
-            ;; Only update vars we care about and that got resolved (not still op://)
-            (when (and (assoc key op-env-vars)
-                      (not (string-prefix-p "op://" val)))
-              (setenv key val)
-              (setq resolved-count (1+ resolved-count)))))
-
-        (if (= resolved-count (length op-env-vars))
-            (message "Successfully loaded %d 1Password variable(s)." resolved-count)
-          (error "Failed to resolve all 1Password secret references. Expected %d, got %d"
-                 (length op-env-vars) resolved-count))))))
+(defun timvisher-agent-shell-authentication (maker variable)
+  "Authentication from MAKER for the key in VARIABLE, else login."
+  (let ((key (getenv variable)))
+    (if (and key (not (string-empty-p key)))
+        (funcall maker :api-key key)
+      (funcall maker :login t))))
 
 (dolist (p '("acp_el" "shell_maker" "agent_shell"))
   (if-let (p (getenv (format "timvisher_%s_checkout" p)))
@@ -944,15 +963,16 @@ included only when its executable exists."
   (setq acp-logging-enabled t)
   (setq agent-shell-logging-enabled t)
 
-  ;; Load 1Password secrets for agent authentication
+  ;; Load 1Password secrets for agent authentication, where there is op
   (timvisher-load-op-environment-variables)
 
   (setq agent-shell-anthropic-authentication
-        (agent-shell-anthropic-make-authentication
-         :api-key (getenv "ANTHROPIC_API_KEY")))
+        (timvisher-agent-shell-authentication
+         #'agent-shell-anthropic-make-authentication "ANTHROPIC_API_KEY"))
 
   (setq agent-shell-openai-authentication
-        (agent-shell-openai-make-authentication :api-key (getenv "OPENAI_API_KEY")))
+        (timvisher-agent-shell-authentication
+         #'agent-shell-openai-make-authentication "OPENAI_API_KEY"))
 
   (add-to-list 'display-buffer-alist
                '("\\[viewport\\]\\'"
