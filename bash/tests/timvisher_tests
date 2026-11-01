@@ -426,6 +426,44 @@ check '--suite runs only those suites' \
       eval '[[ $(grep -cE " (pass|fail)\$" "$results") == 2 ]]'
 check 'an unchanged tree reuses the template' test "$(wc -l < "$tmpdir/installs")" = 1
 
+runs="$caller_home/.local/state/timvisher_tests/runs"
+kept=$(sed -n 's/^run: \(.*\) (peak load average [0-9.]*)$/\1/p' "$tmpdir/out")
+check 'the last line names the kept run and its peak load average' \
+      eval '[[ $(tail -n 1 "$tmpdir/out") == "run: $kept (peak load average "* ]]'
+check 'the run is kept under the caller state dir' \
+      eval '[[ $kept == "$runs"/* && -d $kept ]]'
+check 'the kept joblog has a line per suite' \
+      eval '[[ $(tail -n +2 "$kept/joblog" | wc -l | tr -d " ") == 2 ]]'
+check 'the kept log has the suite output' \
+      grep -q '^ide/bash/tests/pass	PASS: fine' "$kept/log"
+check 'the kept loadavg has samples' \
+      eval '[[ $(head -n 1 "$kept/loadavg") =~ ^[0-9]+\ [0-9.]+\ [0-9.]+\ [0-9.]+$ ]]'
+check 'the kept run records the core and overlay' \
+      eval 'grep -q "^core: $fcore " "$kept/run" && grep -q "^overlay: $fover " "$kept/run"'
+half=$(( $(getconf _NPROCESSORS_ONLN) / 2 ))
+(( 1 <= half )) || half=1
+check 'jobs defaults to half the online CPUs' grep -qx "jobs: $half" "$kept/run"
+
+run_fixture --jobs 1 --suite bash/tests/pass
+rc=$?
+check 'a --jobs run passes' test "$rc" = 0
+check '--jobs is recorded' \
+      eval 'grep -qx "jobs: 1" "$(sed -n "s/^run: \(.*\) (peak.*/\1/p" "$tmpdir/out")/run"'
+
+run_fixture --jobs 0 --suite bash/tests/pass
+rc=$?
+check '--jobs 0 is refused' test "$rc" = 1
+
+for i in {1..101}
+do
+  mkdir -p "$runs/19700101T000000Z-$i"
+done
+run_fixture --suite bash/tests/pass
+check 'only the newest 100 runs are kept' \
+      eval '[[ $(/usr/bin/find "$runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d " ") == 100 ]]'
+check 'the newest run is among them' \
+      test -d "$(sed -n 's/^run: \(.*\) (peak.*/\1/p' "$tmpdir/out")"
+
 suite "$fcore/bash/tests/dirty" <<'SUITE'
 touch dirty-file
 echo 'PASS: wrote'

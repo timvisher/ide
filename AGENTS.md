@@ -14,7 +14,13 @@ bash/bin/timvisher_tests                                # every suite of both re
 bash/bin/timvisher_tests --suite bash/tests/git         # only this suite (repeatable)
 bash/bin/timvisher_tests --integration                  # also the integration suites
 bash/bin/timvisher_tests --overlay <system-extensions>  # a system-extensions worktree other than the installed one
+bash/bin/timvisher_tests --jobs 16                      # more suites at once than the default, half the CPUs
 ```
+
+Suites run at nice 10. Each run's joblog, output and sampled load
+averages are kept under `~/.local/state/timvisher_tests/runs/` (the
+newest 100), and the run's last line names its directory and peak load
+average.
 
 `timvisher_dev_ci run-tests` runs the same thing. From a
 system-extensions worktree, run `~/git/ide/bash/bin/timvisher_tests`
