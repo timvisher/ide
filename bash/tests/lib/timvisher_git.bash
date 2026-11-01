@@ -2,13 +2,13 @@
 
 # Shared setup for the timvisher_git suites: sourced by
 # bash/tests/timvisher_git (units, git mocked) and
-# bash/tests/timvisher_git_integration (real repositories). It sources
+# bash/tests/integration/timvisher_git (real repositories). It sources
 # the script's functions into the suite and mocks gh and timvisher_gh.
 
 # shellcheck disable=SC1091
-source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
+source "$(dirname "${BASH_SOURCE[0]}")/timvisher_tests.bash" || exit 1
 # shellcheck disable=SC1091
-source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+source "$(dirname "${BASH_SOURCE[0]}")/mock_commands.bash" || exit 1
 
 
 # shellcheck source=/dev/null
@@ -31,7 +31,7 @@ run_test() {
   ((tests++)) || true
 }
 
-script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" ||
   die "cannot resolve script_dir"
 script="${script_dir}/bin/timvisher_git"
 
