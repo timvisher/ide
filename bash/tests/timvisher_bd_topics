@@ -403,6 +403,29 @@ else
   fail "mv-stale-pid: result='${result}'"
 fi
 
+# Test: a repo subscribed through a symlinked path is the same subscriber
+# as its resolved path.
+run_test
+mkdir -p "$tmpdir/topics/sym-a/.beads" "$tmpdir/topics/sym-b/.beads" \
+  "$tmpdir/DevVolume/repo/.timvisher_bd_topics" "$tmpdir/DevVolume/repo/.beads" || exit 1
+ln -s "$tmpdir/DevVolume" "$tmpdir/symgit" || exit 1
+git -C "$tmpdir/DevVolume/repo" init -q 2>/dev/null
+printf 'sym-a\n' > "$tmpdir/DevVolume/repo/.timvisher_bd_topics/topic.txt"
+printf '%s\n' "$topics_real/sym-a/.beads" > "$tmpdir/DevVolume/repo/.beads/redirect"
+mkdir -p "$tmpdir/topics/sym-a/.timvisher_bd_topics" || exit 1
+printf '%s\0' "$tmpdir/symgit/repo" > "$tmpdir/topics/sym-a/.timvisher_bd_topics/subscribers.txt"
+sym_repo_real=$(cd "$tmpdir/DevVolume/repo" && pwd -P)
+result=$(cd "$sym_repo_real" && run_cli set sym-b 2>&1)
+(cd "$sym_repo_real" && run_cli set sym-b >/dev/null 2>&1)
+a_subs=$(tr '\0' '\n' < "$tmpdir/topics/sym-a/.timvisher_bd_topics/subscribers.txt")
+b_subs=$(tr '\0' '\n' < "$tmpdir/topics/sym-b/.timvisher_bd_topics/subscribers.txt" 2>/dev/null)
+if [[ -z $a_subs && $b_subs == "$sym_repo_real" ]]
+then
+  pass "subscribers match across a symlinked repo path"
+else
+  fail "symlinked subscriber: sym-a='${a_subs}' sym-b='${b_subs}' set='${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
