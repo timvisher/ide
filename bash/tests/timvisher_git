@@ -646,6 +646,44 @@ else
   fail "maybe_execute_hook should succeed when no hook exists"
 fi
 
+printf '#!/usr/bin/env bash\necho "PRE_REMOVE_RAN:$#:$1"\n' \
+  > "$hooks_dir/DataDog/dd-source/pre-remove-branch-dir"
+chmod +x "$hooks_dir/DataDog/dd-source/pre-remove-branch-dir"
+
+run_test
+stderr=$(maybe_execute_hook DataDog dd-source pre-remove-branch-dir '/a b/wt' 2>&1 >/dev/null)
+if [[ $stderr == *"PRE_REMOVE_RAN:1:/a b/wt"* ]]
+then
+  pass "maybe_execute_hook passes trailing arguments to the hook"
+else
+  fail "maybe_execute_hook should pass '/a b/wt' as the hook's only argument, got '${stderr}'"
+fi
+
+pre_remove_saved_repo_trunks_dir=$repo_trunks_dir
+repo_trunks_dir="$tmpdir/pre_remove/repo_trunks"
+
+run_test
+stderr=$(timvisher_logging_log_level=WARN \
+  run_pre_remove_hook "$repo_trunks_dir/ddoghq/dd-source" /x/wt 2>&1 >/dev/null)
+if [[ $stderr == *"PRE_REMOVE_RAN:1:/x/wt"* ]]
+then
+  pass "run_pre_remove_hook resolves org/repo from the trunk path"
+else
+  fail "run_pre_remove_hook should run ddoghq/dd-source's hook via its alias org, got '${stderr}'"
+fi
+
+run_test
+stderr=$(timvisher_logging_log_level=WARN \
+  run_pre_remove_hook "$tmpdir/elsewhere/dd-source" /x/wt 2>&1 >/dev/null)
+if [[ $stderr != *PRE_REMOVE_RAN* && $stderr == *"skipping hook"* ]]
+then
+  pass "run_pre_remove_hook skips a trunk outside repo_trunks_dir"
+else
+  fail "run_pre_remove_hook should skip a trunk outside repo_trunks_dir, got '${stderr}'"
+fi
+
+repo_trunks_dir=$pre_remove_saved_repo_trunks_dir
+
 # ---------------------------------------------------------------------------
 # die_if_trunk_cached_under_alias_org tests
 # ---------------------------------------------------------------------------
@@ -4281,6 +4319,41 @@ then
   pass "worktree gc warns about a legacy keep file"
 else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
+fi
+
+gc_hooks="$gc_base/hooks"
+gc_hook_log="$gc_base/pre-remove.log"
+mkdir -p "$gc_hooks/gcorg/gcrepo"
+cat > "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir" <<HOOK
+#!/usr/bin/env bash
+if [[ -d \$1 ]]
+then
+  printf 'present %s\\n' "\$1" >> '$gc_hook_log'
+else
+  printf 'absent %s\\n' "\$1" >> '$gc_hook_log'
+fi
+HOOK
+chmod +x "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir"
+
+# shellcheck disable=SC2034
+gc_out=$(
+  repo_trunks_dir=$gc_trunks
+  live_repo_dir=$gc_live
+  hooks_dir=$gc_hooks
+  worktree_gc__protect_dir=$gc_protect
+  worktree_gc__archive_dir="$gc_base/archives"
+  timvisher_logging_log_level=INFO
+  TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" PATH="$gc_bin:$PATH" \
+    worktree_gc 2>&1 <<< y
+)
+
+run_test
+if [[ $(< "$gc_hook_log") == "present $gc_live/gcorg/gcrepo/unpinned" &&
+      ! -e $gc_live/gcorg/gcrepo/unpinned ]]
+then
+  pass "worktree gc runs pre-remove-branch-dir with the worktree path before removing it"
+else
+  fail "worktree gc pre-remove-branch-dir: log '$(cat "$gc_hook_log" 2>&1)' out: ${gc_out}"
 fi
 
 # ---------------------------------------------------------------------------
