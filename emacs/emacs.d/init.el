@@ -923,6 +923,7 @@ the secret references cannot be resolved."
   (agent-shell-cwd-function (lambda () command-line-default-directory))
   (agent-shell-preferred-agent-config 'claude-code)
   (agent-shell-file-completion-enabled nil)
+  (agent-shell-command-completion-enabled nil)
   :init
   (setq agent-shell-mcp-servers
         `(((name . "homebrew")
