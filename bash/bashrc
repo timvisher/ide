@@ -108,11 +108,9 @@ current_aws_region() {
 }
 
 current_kube_context() {
-  local timvisher_kctx timvisher_kns
-  mkdir -p ~/.cache
-  touch ~/.cache/timvisher_k{ctx,ns}
-  timvisher_kctx="$(< ~/.cache/timvisher_kctx)"
-  timvisher_kns="$(< ~/.cache/timvisher_kns)"
+  local timvisher_kctx='' timvisher_kns=''
+  { IFS= read -r timvisher_kctx; } 2>/dev/null < ~/.cache/timvisher_kctx
+  { IFS= read -r timvisher_kns; } 2>/dev/null < ~/.cache/timvisher_kns
   printf 'kctx=‘%s’ kns=‘%s’' "$timvisher_kctx" "$timvisher_kns"
 }
 
@@ -140,7 +138,7 @@ else
   timvisher_ps1_symbol='${timvisher_ps1_animals[RANDOM % ${#timvisher_ps1_animals[@]}]}'
 fi
 
-export DEFAULT_PS1='\n\D{%FT%T%z}\n\u@\H\n$(current_kube_context)\nAWS_PROFILE=‘${AWS_PROFILE}’ AWS_REGION=‘${AWS_REGION}’\n\w\n'"$timvisher_ps1_symbol"' '
+export DEFAULT_PS1='\n\D{%FT%T%z}\n\u@\H\n${ current_kube_context; }\nAWS_PROFILE=‘${AWS_PROFILE}’ AWS_REGION=‘${AWS_REGION}’\n\w\n'"$timvisher_ps1_symbol"' '
 export PS1="$DEFAULT_PS1"
 
 ##########################################################################
