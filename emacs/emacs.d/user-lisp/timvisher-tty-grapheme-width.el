@@ -12,8 +12,30 @@
 ;;
 ;; `timvisher-tty-grapheme-width-mode' makes text-terminal compositions
 ;; of those sequences 2 columns wide.  Graphic frames are untouched.
+;;
+;; `timvisher-tty-emoji-presentation-mode' additionally shows bare
+;; emoji-capable symbols such as 🏳 or ⚠ as their 2-column emoji
+;; on text terminals, by sending VS16 after them.
 
 ;;; Code:
+
+;; VS16 bases from Unicode's emoji-variation-sequences.txt that lie in
+;; the blocks Ghostty 1.4 lets a 1-column glyph spill out of (its
+;; is_symbol: Arrows, Dingbats, Emoticons, Miscellaneous Symbols,
+;; Enclosed Alphanumerics and Supplement, Miscellaneous Symbols and
+;; Pictographs, Transport and Map Symbols) and that `char-width' calls 1
+;; column.  ASCII keycap bases and symbols like ™ are left out so
+;; ordinary text never turns into emoji.
+(defconst timvisher-tty-grapheme-width--emoji-bases
+  (concat "↔↕↖↗↘↙↩↪Ⓜ☀☁☂☃☄☎☑☘☝☠☢☣☦☪☮"
+          "☯☸☹☺♀♂♟♠♣♥♦♨♻♾⚔⚕⚖⚗⚙⚛⚜⚠⚧⚰"
+          "⚱⛈⛏⛑⛓⛩⛰⛱⛴⛷⛸⛹✂✈✉✌✍✏✒✔✖✝✡✳"
+          "✴❄❇❣❤➡🅰🅱🅾🅿🌡🌤🌥🌦🌧🌨🌩🌪🌫🌬🌶🍽🎖🎗"
+          "🎙🎚🎛🎞🎟🏋🏌🏍🏎🏔🏕🏖🏗🏘🏙🏚🏛🏜🏝🏞🏟🏳🏵🏷"
+          "🐿👁📽🕉🕊🕯🕰🕳🕴🕵🕶🕷🕸🕹🖇🖊🖋🖌🖍🖐🖥🖨🖱🖲"
+          "🖼🗂🗃🗄🗑🗒🗓🗜🗝🗞🗡🗣🗨🗯🗳🗺🛋🛍🛎🛏🛠🛡🛢🛣"
+          "🛤🛥🛩🛰🛳")
+  "Symbols `timvisher-tty-emoji-presentation-mode' shows as emoji.")
 
 (defun timvisher-tty-grapheme-width--wide-cluster-p (chars)
   "Return non-nil if CHARS form a sequence the terminal draws 2 wide."
@@ -45,6 +67,21 @@ Return GSTRING, modified in place."
                         glyphs)))
     gstring))
 
+(defun timvisher-tty-grapheme-width--present (gstring direction)
+  "Compose GSTRING for an emoji base on a graphic display.
+DIRECTION is as for `compose-gstring-for-graphic'."
+  (compose-gstring-for-graphic gstring direction))
+
+(defun timvisher-tty-grapheme-width--add-vs16 (gstring)
+  "Append VS16 to GSTRING's single base glyph and make it 2 columns.
+Return the resulting gstring."
+  (let* ((base (lgstring-glyph gstring 0))
+         (vs16 (lglyph-copy base)))
+    (lglyph-set-char vs16 #xFE0F)
+    (lglyph-set-width vs16 0)
+    (lglyph-set-width base 2)
+    (lgstring-insert-glyph gstring 1 vs16)))
+
 (defun timvisher-tty-grapheme-width-compose
     (func from to font-object string direction)
   "Compose like `auto-compose-chars', widening emoji on text terminals.
@@ -52,9 +89,12 @@ FUNC, FROM, TO, FONT-OBJECT, STRING and DIRECTION are as for
 `auto-compose-chars'."
   (let ((gstring (auto-compose-chars func from to font-object string
                                      direction)))
-    (if (and gstring (not (fontp font-object 'font-object)))
-        (timvisher-tty-grapheme-width--widen gstring)
-      gstring)))
+    (cond
+     ((or (null gstring) (fontp font-object 'font-object)) gstring)
+     ((and (eq func #'timvisher-tty-grapheme-width--present)
+           (= 1 (- to from)))
+      (timvisher-tty-grapheme-width--add-vs16 gstring))
+     (t (timvisher-tty-grapheme-width--widen gstring)))))
 
 ;;;###autoload
 (define-minor-mode timvisher-tty-grapheme-width-mode
@@ -68,6 +108,34 @@ the screen."
                 (if timvisher-tty-grapheme-width-mode
                     #'timvisher-tty-grapheme-width-compose
                   #'auto-compose-chars))
+  (clear-composition-cache))
+
+(defun timvisher-tty-grapheme-width--presentation-rule (char)
+  "Return the composition rule that presents CHAR as emoji."
+  ;; The rule absorbs a following VS15 or VS16 itself because once it
+  ;; claims CHAR the display engine never tries the selector's own
+  ;; look-back rule, which it shadows; `--present' does that rule's job
+  ;; on graphic frames.
+  (vector (concat (string char) "[\uFE0E\uFE0F]?")
+          0
+          #'timvisher-tty-grapheme-width--present))
+
+;;;###autoload
+(define-minor-mode timvisher-tty-emoji-presentation-mode
+  "Show bare emoji-capable symbols as 2-column emoji on text terminals.
+Symbols in `timvisher-tty-grapheme-width--emoji-bases' are sent to the
+terminal followed by VS16, as though written with it, unless the text
+already follows them with VS15 or VS16.  Use together with
+`timvisher-tty-grapheme-width-mode'."
+  :global t
+  :group 'display
+  (seq-doseq (char timvisher-tty-grapheme-width--emoji-bases)
+    (let* ((rule (timvisher-tty-grapheme-width--presentation-rule char))
+           (rules (remove rule (aref composition-function-table char))))
+      (set-char-table-range composition-function-table char
+                            (if timvisher-tty-emoji-presentation-mode
+                                (append rules (list rule))
+                              rules))))
   (clear-composition-cache))
 
 (provide 'timvisher-tty-grapheme-width)
