@@ -287,6 +287,7 @@ home_env() {
     XDG_CACHE_HOME="$home/.cache"
     TIMVISHER_GIT_HOME="$home/git"
     TIMVISHER_TESTS_TEMPLATE="$template"
+    TIMVISHER_TESTS_BASE_PATH="$base_path"
     PATH="$path"
     PYTHONPATH="$pythonpath"
     TMPDIR="$tmp"
