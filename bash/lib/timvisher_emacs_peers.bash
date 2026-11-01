@@ -233,7 +233,10 @@ timvisher_emacs_peers__ssh() {
   host=$(jq -r .host <<< "$config")
   mapfile -t opts < <(jq -r '.ssh_options[]' <<< "$config")
   # ssh keeps the first value it sees for an option, so the peer's own
-  # ssh_options come first and these are only defaults.
+  # ssh_options come first and these are only defaults. ssh reads stdin
+  # whether or not the remote command does, so a caller with nothing to
+  # send redirects it from /dev/null; inside a loop reading a list, ssh
+  # would otherwise swallow the rest of the list.
   ssh -o BatchMode=yes "${opts[@]}" -o ConnectTimeout=5 -- "$host" "$@"
 }
 
@@ -378,7 +381,7 @@ timvisher_emacs_peers__fetch() {
     case $transport in
       ssh)
         listing=$(timvisher_emacs_peers__ssh "$config" \
-                    "$(jq -r .command <<< "$config") agent-shell ls --local --format json" 2>/dev/null) ||
+                    "$(jq -r .command <<< "$config") agent-shell ls --local --format json" 2>/dev/null < /dev/null) ||
           { listing=''; error='ssh failed'; }
         ;;
       socket)

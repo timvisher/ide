@@ -770,7 +770,7 @@ timvisher_emacs__agent_shell_peers() {
         else
           reason='no answer to ping'
         fi
-      elif timvisher_emacs_peers__ssh "$config" true > /dev/null 2>&1
+      elif timvisher_emacs_peers__ssh "$config" true > /dev/null 2>&1 < /dev/null
       then
         reachable=true
       else

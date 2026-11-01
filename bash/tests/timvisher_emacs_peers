@@ -61,6 +61,7 @@ printf 'x\n' >> "$FAKE_DIR/ssh-calls"
 command=${!#}
 case $command in
   *'agent-shell ls --local'*)
+    cat > /dev/null
     cat "$FAKE_DIR/ssh-listing"
     ;;
   *'agent-shell send'*)
@@ -73,6 +74,7 @@ case $command in
     echo submitted
     ;;
   true)
+    cat > /dev/null
     exit 0
     ;;
 esac
@@ -274,6 +276,12 @@ rc=$?
 check 'ssh send, probe fails: unreachable without running ssh' \
       eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_peer_unreachable\"" && [[ ! -e $tmpdir/ssh-calls ]]'
 mv "$tmpdir/ws1.json.orig" "$peers/ws1.json"
+
+sed 's/"ws1"/"ws2"/; s/workspace-ws1/workspace-ws2/' "$peers/ws1.json" > "$peers/ws2.json"
+peers_tool agent-shell peers --format json
+check 'peers: lists every peer, though ssh reads stdin (real ssh does unless given -n)' \
+      eval '[[ $(field "[.peers[] | \"\(.name)=\(.reachable)\"] | join(\",\")") == laptop=true,ws1=true,ws2=true ]]'
+rm -f -- "$peers/ws2.json"
 
 peers_tool agent-shell get-server ws1:ws-lead
 rc=$?
