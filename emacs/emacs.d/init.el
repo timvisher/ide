@@ -933,6 +933,11 @@ the secret references cannot be resolved."
   :config
   (setq acp-logging-enabled t)
   (setq agent-shell-logging-enabled t)
+  ;; Both trim each log buffer to 100MB by default, which across a dozen
+  ;; shells held over 500MB and left Emacs too slow to answer
+  ;; timvisher_emacs's 3s probes. 2MB per buffer keeps recent context.
+  (setq acp--log-buffer-max-bytes (* 2 1000 1000))
+  (setq agent-shell--log-buffer-max-bytes (* 2 1000 1000))
 
   ;; Load 1Password secrets for agent authentication
   (timvisher-load-op-environment-variables)
