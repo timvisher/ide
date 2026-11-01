@@ -387,7 +387,7 @@ command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myor
 command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/gone/a/branch"
 (
   XDG_CONFIG_HOME="$mr_home/.config" \
-  TIMVISHER_GIT_HOME="$mr_home/git" \
+  live_repo_dir="$mr_home/git" \
   repo_trunks_dir="$mr_trunks" \
     reconcile_maintenance_repos
 ) >/dev/null 2>&1
@@ -1117,6 +1117,81 @@ then
   pass "strip_live_prefix passes through shorthand unchanged"
 else
   fail "strip_live_prefix shorthand: expected 'testorg/testrepo/branch', got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# live_repo_dir behind a symlink (~/git -> /Volumes/Dev/git)
+# ---------------------------------------------------------------------------
+
+sym_vol="$tmpdir/DevVolume/checkouts"
+sym_live="$tmpdir/symlinked_live"
+mkdir -p "$sym_vol/testorg/testrepo/feature/branch" &&
+  ln -s "$sym_vol" "$sym_live" ||
+  { echo "FAIL: setup symlinked live dir" >&2; exit 1; }
+sym_vol_real=$(cd "$sym_vol" && pwd -P)
+
+run_test
+result=$(live_repo_dir=$sym_live; live_relative "$sym_vol_real/testorg/testrepo/feature/branch")
+if [[ $result == testorg/testrepo/feature/branch ]]
+then
+  pass "live_relative strips the resolved live_repo_dir"
+else
+  fail "live_relative resolved: got '${result}'"
+fi
+
+run_test
+result=$(live_repo_dir=$sym_live; live_relative "$sym_live/testorg/testrepo")
+if [[ $result == testorg/testrepo ]]
+then
+  pass "live_relative strips live_repo_dir as spelled"
+else
+  fail "live_relative spelled: got '${result}'"
+fi
+
+run_test
+if ! (live_repo_dir=$sym_live; live_relative "$tmpdir/DevVolume/elsewhere" >/dev/null)
+then
+  pass "live_relative rejects paths outside live_repo_dir"
+else
+  fail "live_relative accepted a path outside live_repo_dir"
+fi
+
+run_test
+result=$(live_repo_dir=$sym_live; strip_live_prefix "$sym_vol_real/testorg/testrepo/feature/branch")
+if [[ $result == testorg/testrepo/feature/branch ]]
+then
+  pass "strip_live_prefix strips the resolved live_repo_dir"
+else
+  fail "strip_live_prefix resolved: got '${result}'"
+fi
+
+run_test
+result=$(live_repo_dir=$sym_live; repo_trunks_dir=/trunks
+         maintenance_trunk_for "$sym_vol_real/testorg/testrepo/feature/branch")
+if [[ $result == /trunks/testorg/testrepo ]]
+then
+  pass "maintenance_trunk_for maps a resolved worktree path to its trunk"
+else
+  fail "maintenance_trunk_for resolved: got '${result}'"
+fi
+
+run_test
+sym_archive="$tmpdir/symlinked_archive"
+: > "$sym_vol/testorg/testrepo/feature/branch/x.notes"
+(
+  live_repo_dir=$sym_live
+  # shellcheck disable=SC2034
+  worktree_gc__archive_dir=$sym_archive
+  # shellcheck disable=SC2034
+  worktree_gc__list_ignored() { worktree_gc__ignored_files=(x.notes); }
+  worktree_gc__should_archive() { :; }
+  worktree_gc__do_archive "$sym_vol_real/testorg/testrepo/feature/branch"
+)
+if [[ -f $sym_archive/testorg/testrepo/feature/branch/x.notes ]]
+then
+  pass "worktree gc archives a resolved worktree path under its ~/git-relative name"
+else
+  fail "worktree gc archive dest: $(cd "$sym_archive" 2>/dev/null && find . -type f)"
 fi
 
 # ---------------------------------------------------------------------------
