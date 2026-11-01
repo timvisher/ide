@@ -40,6 +40,17 @@
     (not (string-blank-p
           (buffer-substring-no-properties (process-mark process) (point-max))))))
 
+(defun timvisher-agent-shell--point-at-prompt-p ()
+  "Return non-nil when point is at the current shell's prompt."
+  (if-let* ((process (get-buffer-process (current-buffer))))
+      (<= (process-mark process) (point))
+    (eobp)))
+
+(defun timvisher-agent-shell--submit (buffer text)
+  "Submit TEXT in the agent-shell BUFFER without displaying it."
+  (agent-shell--insert-to-shell-buffer
+   :shell-buffer buffer :text text :submit t :no-focus t))
+
 (defun timvisher-agent-shell-send-text (session-id text)
   "Queue or submit TEXT in the agent-shell whose session id is SESSION-ID.
 
@@ -56,8 +67,12 @@ queued prompt runs once the shell's current or next turn ends."
             (progn
               (agent-shell--prompt-queue-enqueue :prompt text)
               "queued")
-          (agent-shell--insert-to-shell-buffer
-           :shell-buffer buffer :text text :submit t :no-focus t)
+          (if (timvisher-agent-shell--point-at-prompt-p)
+              (timvisher-agent-shell--submit buffer text)
+            ;; `shell-maker-submit' jumps point to the prompt; someone
+            ;; reading back up the shell keeps their place instead.
+            (save-excursion
+              (timvisher-agent-shell--submit buffer text)))
           "submitted"))
     "no buffer"))
 
