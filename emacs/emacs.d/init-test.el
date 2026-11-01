@@ -14,6 +14,33 @@
 
 (require 'ert)
 
+;;; Tests for timvisher-agent-shell-mcp-servers
+
+(ert-deftest test-timvisher-agent-shell-mcp-servers-brew-from-path ()
+  "The homebrew MCP server runs whichever brew `executable-find' finds.
+
+A Linux workspace has /home/linuxbrew/.linuxbrew/bin/brew, not
+/opt/homebrew/bin/brew."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (name &optional _remote)
+               (when (equal name "brew")
+                 "/home/linuxbrew/.linuxbrew/bin/brew"))))
+    (let ((homebrew (seq-find (lambda (server)
+                                (equal (alist-get 'name server) "homebrew"))
+                              (timvisher-agent-shell-mcp-servers))))
+      (should homebrew)
+      (should (equal (alist-get 'command homebrew)
+                     "/home/linuxbrew/.linuxbrew/bin/brew"))
+      (should (equal (alist-get 'args homebrew) '("mcp-server"))))))
+
+(ert-deftest test-timvisher-agent-shell-mcp-servers-no-brew ()
+  "Without brew on the path there is no homebrew MCP server."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (&rest _) nil)))
+    (should-not (seq-find (lambda (server)
+                            (equal (alist-get 'name server) "homebrew"))
+                          (timvisher-agent-shell-mcp-servers)))))
+
 ;;; Tests for source-link--get-line-range
 
 (ert-deftest test-source-link--get-line-range-single-line ()
