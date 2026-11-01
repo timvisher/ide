@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+
+# Checks are single-quoted eval strings so they expand when they run,
+# after the command under test; shellcheck cannot see those uses.
+# shellcheck disable=SC2016,SC2034
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stdout: /' "$tmpdir/stdout" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+here="$(cd "$(dirname "$0")" && pwd -P)"
+script="$(cd "$here/.." && pwd -P)/bin/timvisher_emacs"
+stub_relay=$here/lib/timvisher_emacs_peers_stub_relay.py
+
+tmpdir=
+socket_dir=
+relay_pid=
+cleanup() {
+  [[ -z $relay_pid ]] || kill "$relay_pid" 2>/dev/null
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+  [[ -z $socket_dir ]] || rm -rf -- "$socket_dir"
+}
+trap cleanup EXIT
+
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+# Under /tmp because the suite's $TMPDIR pushes socket paths past
+# macOS's 104-byte limit.
+socket_dir=$(mktemp -d /tmp/tvpeers.XXXXXX) || { echo 'FAIL: mktemp socket dir' >&2; exit 1; }
+
+peers=$tmpdir/peers.d
+relay_state=$tmpdir/relay
+relay_sock=$socket_dir/relay.sock
+outbox=$tmpdir/outbox
+peer_cache=${XDG_CACHE_HOME:-$HOME/.cache}/timvisher/agent-shell/peers
+mkdir -p "$peers" "$tmpdir/bin" "$tmpdir/claude/sessions" "$relay_state" || exit 1
+
+cat > "$tmpdir/bin/lsof" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+
+cat > "$tmpdir/bin/ssh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/ssh-argv"
+printf 'x\n' >> "$FAKE_DIR/ssh-calls"
+[[ -e $FAKE_DIR/ssh-down ]] && exit 255
+command=${!#}
+case $command in
+  *'agent-shell ls --local'*)
+    cat "$FAKE_DIR/ssh-listing"
+    ;;
+  *'agent-shell send'*)
+    cat > "$FAKE_DIR/ssh-stdin"
+    if [[ -e $FAKE_DIR/ssh-send-error ]]
+    then
+      cat "$FAKE_DIR/ssh-send-error" >&2
+      exit 1
+    fi
+    echo submitted
+    ;;
+  true)
+    exit 0
+    ;;
+esac
+FAKE
+
+cat > "$tmpdir/bin/probe-false" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+chmod +x "$tmpdir/bin/"* || exit 1
+
+peers_tool() {
+  TIMVISHER_AGENT=1 \
+    TIMVISHER_EMACS_PEERS_DIR=$peers \
+    TIMVISHER_EMACS_PEER_SELF=testhost \
+    CLAUDE_CONFIG_DIR=$tmpdir/claude \
+    FAKE_DIR=$tmpdir \
+    PATH="$tmpdir/bin:$PATH" \
+    "$script" "$@" > "$tmpdir/stdout" 2> "$tmpdir/stderr"
+}
+
+stderr_has() {
+  grep -qF -- "$1" "$tmpdir/stderr"
+}
+
+stdout_is() {
+  [[ $(< "$tmpdir/stdout") == "$1" ]]
+}
+
+stdout_empty() {
+  [[ ! -s $tmpdir/stdout ]]
+}
+
+field() {
+  jq -r "$1" "$tmpdir/stdout"
+}
+
+last_request() {
+  local f
+  f=$(find "$relay_state/requests" -type f | sort | tail -1)
+  cat "$f"
+}
+
+reset_fakes() {
+  rm -rf -- "$peer_cache" "$outbox" "$tmpdir"/ssh-* "$relay_state/requests" \
+    "$relay_state/mode" "$relay_state/reply" "$relay_state/listing"
+}
+
+printf 'From the test agent (session t-1): hello\n' > "$tmpdir/msg"
+
+# --- no peers: today's behaviour --------------------------------------------
+
+peers_tool agent-shell ls --format json
+rc=$?
+check 'ls with no peers: schema_version 1 and no peers key' \
+      eval '(( rc == 0 )) && [[ $(field ".schema_version") == 1 && $(field "has(\"peers\")") == false ]]'
+
+peers_tool --help
+rc=$?
+check '--help: usage on stdout, nothing on stderr, exit 0' \
+      eval '(( rc == 0 )) && grep -qF "agent-shell peers" "$tmpdir/stdout" && [[ ! -s $tmpdir/stderr ]]'
+
+# --- config ----------------------------------------------------------------
+
+printf '{"name": "broken", "transport": "carrier-pigeon"}\n' > "$peers/broken.json"
+printf '{"name": "Bad_Name", "transport": "ssh", "host": "x"}\n' > "$peers/Bad_Name.json"
+
+peers_tool agent-shell send broken:t-1 "$tmpdir/msg"
+rc=$?
+check 'send to a peer with a bad config: timvisher_emacs_bad_peer_config, nothing on stdout' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_bad_peer_config\""'
+
+peers_tool agent-shell peers --format json
+check 'peers: lists the bad peer as unreachable, skips a file whose name is not a peer name' \
+      eval '[[ $(field "[.peers[].name] | join(\",\")") == broken && $(field ".peers[0].reason") == "bad peer config" ]]'
+rm -f -- "$peers/broken.json" "$peers/Bad_Name.json"
+
+peers_tool agent-shell send nope:t-1 "$tmpdir/msg"
+rc=$?
+check 'send to an unconfigured peer prefix: timvisher_emacs_unknown_peer' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_unknown_peer\""'
+
+# --- socket peer ------------------------------------------------------------
+
+cat > "$peers/laptop.json" <<EOF
+{"name": "laptop", "transport": "socket", "socket": "$relay_sock", "outbox": "$outbox"}
+EOF
+
+python3 -I "$stub_relay" "$relay_sock" "$relay_state" &
+relay_pid=$!
+for _ in {1..50}
+do
+  [[ -S $relay_sock ]] && break
+  sleep 0.1
+done
+
+reset_fakes
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/msg"
+rc=$?
+check 'socket send: prints submitted' \
+      eval '(( rc == 0 )) && stdout_is submitted'
+check 'socket send: the envelope carries To, From, Message-ID, X-Hops 1 and the body' \
+      eval 'req=$(last_request) && [[ $req == "X-Agent-Message: 1"* ]] && grep -qx "To: cfctl-b0" <<< "$req" && grep -qx "From: testhost" <<< "$req" && grep -qE "^Message-ID: [0-9]+\.[0-9]+P[0-9]+R[0-9]+\.testhost$" <<< "$req" && grep -qx "X-Hops: 1" <<< "$req" && grep -qx "From the test agent (session t-1): hello" <<< "$req"'
+
+reset_fakes
+echo duplicate > "$relay_state/reply"
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/msg"
+rc=$?
+check 'socket send: passes duplicate through as success' \
+      eval '(( rc == 0 )) && stdout_is duplicate'
+
+reset_fakes
+printf 'error: {"code":"timvisher_emacs_no_such_session","message":"no cfctl-zz"}\n' > "$relay_state/reply"
+peers_tool agent-shell send laptop:cfctl-zz "$tmpdir/msg"
+rc=$?
+check 'socket send: a relay error comes back as timvisher_emacs_peer_error with the remote code' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_peer_error\"" && stderr_has "timvisher_emacs_no_such_session"'
+
+reset_fakes
+echo silent > "$relay_state/mode"
+started=$SECONDS
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/msg"
+rc=$?
+elapsed=$(( SECONDS - started ))
+check 'socket send to a frozen relay: deferred within the ping timeout' \
+      eval '(( rc == 0 )) && stdout_is deferred && (( elapsed < 10 ))'
+check 'socket send to a frozen relay: timvisher_emacs_peer_deferred info on stderr' \
+      eval 'stderr_has "\"code\":\"timvisher_emacs_peer_deferred\""'
+check 'socket send to a frozen relay: the envelope waits in the outbox new/, tmp/ is empty' \
+      eval 'f=$(find "$outbox/new" -type f) && [[ -n $f && -z $(find "$outbox/tmp" -type f) ]] && grep -qx "To: cfctl-b0" "$f"'
+sleep 7
+
+reset_fakes
+mv "$relay_sock" "$relay_sock.away"
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/msg"
+rc=$?
+check 'socket send with no socket file: deferred' \
+      eval '(( rc == 0 )) && stdout_is deferred'
+
+jq 'del(.outbox)' "$peers/laptop.json" > "$tmpdir/x" && mv "$tmpdir/x" "$peers/laptop.json"
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/msg"
+rc=$?
+check 'socket send with no socket and no outbox: timvisher_emacs_peer_unreachable' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_peer_unreachable\""'
+mv "$relay_sock.away" "$relay_sock"
+
+reset_fakes
+head -c 70000 /dev/zero | tr '\0' a > "$tmpdir/big"
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/big"
+rc=$?
+check 'socket send over 64KiB: timvisher_emacs_message_too_large, nothing sent' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_message_too_large\"" && [[ ! -d $relay_state/requests ]]'
+
+reset_fakes
+printf 'X-Agent-Message: 1\nOp: send\nTo: x\nX-Hops: 2\n\nrelayed body\n' > "$tmpdir/env3"
+peers_tool agent-shell send laptop:cfctl-b0 "$tmpdir/env3"
+rc=$?
+check 'send of an envelope that has crossed 2 hosts already: hop 3 is refused with timvisher_emacs_peer_loop' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_peer_loop\""'
+
+# --- ssh peer -----------------------------------------------------------------
+
+cat > "$peers/ws1.json" <<'EOF'
+{"name": "ws1", "transport": "ssh", "host": "workspace-ws1",
+ "ssh_options": ["-o", "ProxyCommand=none"]}
+EOF
+
+reset_fakes
+printf 'X-Agent-Message: 1\nOp: send\nTo: x\nX-Hops: 1\n\nrelayed body\n' |
+  peers_tool agent-shell send ws1:ws-lead -
+rc=$?
+check 'ssh send from stdin: prints the remote answer' \
+      eval '(( rc == 0 )) && stdout_is submitted'
+check 'ssh send: BatchMode first, the peer options before the ConnectTimeout default, then the host' \
+      eval '[[ $(paste -sd " " "$tmpdir/ssh-argv") == "-o BatchMode=yes -o ProxyCommand=none -o ConnectTimeout=5 -- workspace-ws1 "* ]]'
+check 'ssh send: runs the remote send with the quoted session and stdin' \
+      eval '[[ $(tail -1 "$tmpdir/ssh-argv") == "TIMVISHER_AGENT=1 ~/bin/timvisher_emacs agent-shell send ws-lead -" ]]'
+check 'ssh send of an envelope: re-wrapped with X-Hops 2, the old headers stripped from the body' \
+      eval 'grep -qx "X-Hops: 2" "$tmpdir/ssh-stdin" && [[ $(grep -c "^X-Agent-Message" "$tmpdir/ssh-stdin") == 1 ]] && [[ $(tail -1 "$tmpdir/ssh-stdin") == "relayed body" ]]'
+
+reset_fakes
+printf '{"type":"instruction","level":"error","code":"timvisher_emacs_no_such_session","message":"nope"}\n' > "$tmpdir/ssh-send-error"
+peers_tool agent-shell send ws1:ws-gone "$tmpdir/msg"
+rc=$?
+check 'ssh send, remote error: timvisher_emacs_peer_error carrying the remote code' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_peer_error\"" && stderr_has "\"remote_code\":\"timvisher_emacs_no_such_session\""'
+
+reset_fakes
+touch "$tmpdir/ssh-down"
+peers_tool agent-shell send ws1:ws-lead "$tmpdir/msg"
+rc=$?
+check 'ssh send, host down: timvisher_emacs_peer_unreachable' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_peer_unreachable\""'
+
+reset_fakes
+jq --arg p "$tmpdir/bin/probe-false" '. + {probe: [$p]}' "$peers/ws1.json" > "$tmpdir/x" && cp "$peers/ws1.json" "$tmpdir/ws1.json.orig" && mv "$tmpdir/x" "$peers/ws1.json"
+peers_tool agent-shell send ws1:ws-lead "$tmpdir/msg"
+rc=$?
+check 'ssh send, probe fails: unreachable without running ssh' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_peer_unreachable\"" && [[ ! -e $tmpdir/ssh-calls ]]'
+mv "$tmpdir/ws1.json.orig" "$peers/ws1.json"
+
+peers_tool agent-shell get-server ws1:ws-lead
+rc=$?
+check 'get-server on a peer address: timvisher_emacs_peer_unsupported' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_peer_unsupported\""'
+
+# --- ls aggregation, cache and bare-name resolution ----------------------------
+
+reset_fakes
+cat > "$tmpdir/ssh-listing" <<'EOF'
+{"schema_version": 1, "sessions": [
+  {"name": "ws-lead", "ref": "abc123", "session_id": "s-ws", "status": "ready", "pending_prompts": 0,
+   "agent": "claude-code", "emacs_pid": 7, "buffer": "b", "cwd": "/home/bits"}], "unreachable": []}
+EOF
+printf '{"schema_version": 2, "sessions": [{"name": "cfctl-b0", "ref": "30b6a0", "session_id": "s-b0", "status": "busy", "pending_prompts": 1, "agent": "claude-code", "emacs_pid": 9, "buffer": "c", "cwd": "/Users/t", "host": null, "address": "cfctl-b0"}, {"name": "other", "ref": "ffff00", "session_id": "s-o", "status": "ready", "pending_prompts": 0, "agent": "claude-code", "emacs_pid": 3, "buffer": "d", "cwd": "/home/bits", "host": "ws2", "address": "ws2:other"}]}\n' > "$relay_state/listing"
+cp "$peers/laptop.json" "$tmpdir/laptop.json.orig"
+
+TIMVISHER_EMACS_NOW=1000 peers_tool agent-shell ls --format json
+rc=$?
+check 'ls with peers: schema_version 2' \
+      eval '(( rc == 0 )) && [[ $(field .schema_version) == 2 ]]'
+check 'ls with peers: ssh peer rows are addressed <peer>:<name> with host set' \
+      eval '[[ $(field "[.sessions[] | select(.host == \"ws1\") | .address] | join(\",\")") == ws1:ws-lead ]]'
+check 'ls with peers: a socket peer'"'"'s own peers nest as <peer>:<peer2>:<name>' \
+      eval '[[ $(field "[.sessions[] | .address] | sort | join(\",\")") == laptop:cfctl-b0,laptop:ws2:other,ws1:ws-lead ]]'
+check 'ls with peers: one entry per peer, reachable' \
+      eval '[[ $(field "[.peers[] | \"\(.name)=\(.reachable)\"] | join(\",\")") == laptop=true,ws1=true ]]'
+
+calls=$(wc -l < "$tmpdir/ssh-calls")
+TIMVISHER_EMACS_NOW=1020 peers_tool agent-shell ls --format json
+check 'ls within the TTL: served from the cache, no ssh' \
+      eval '[[ $(wc -l < "$tmpdir/ssh-calls") == "$calls" ]]'
+TIMVISHER_EMACS_NOW=1031 peers_tool agent-shell ls --format json
+check 'ls past the TTL: fetched again' \
+      eval '(( calls < $(wc -l < "$tmpdir/ssh-calls") ))'
+
+peers_tool agent-shell ls --local --format json
+check 'ls --local: schema_version 1, this host only' \
+      eval '[[ $(field .schema_version) == 1 && $(field ".sessions | length") == 0 ]]'
+
+TIMVISHER_EMACS_NOW=1032 peers_tool agent-shell send ws-lead "$tmpdir/msg"
+rc=$?
+check 'send to a bare name only a peer has: resolves through the cache to that peer' \
+      eval '(( rc == 0 )) && stdout_is submitted && [[ $(tail -1 "$tmpdir/ssh-argv") == *"agent-shell send ws-lead -" ]]'
+
+TIMVISHER_EMACS_NOW=1033 peers_tool agent-shell send other "$tmpdir/msg"
+rc=$?
+check 'send to a bare name on a peer'"'"'s peer: routed to the socket peer as <peer2>:<name>' \
+      eval '(( rc == 0 )) && grep -qx "To: ws2:other" <<< "$(last_request)"'
+
+jq '.sessions += [.sessions[0] | .name = "ws-lead" | .address = "ws-lead"]' "$relay_state/listing" > "$tmpdir/x" && mv "$tmpdir/x" "$relay_state/listing"
+TIMVISHER_EMACS_NOW=2000 peers_tool agent-shell send ws-lead "$tmpdir/msg"
+rc=$?
+check 'send to a bare name two peers have: timvisher_emacs_ambiguous_session suggesting each <peer>:<name>' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "laptop:ws-lead" && stderr_has "ws1:ws-lead"'
+
+touch "$tmpdir/ssh-down"
+TIMVISHER_EMACS_NOW=3000 peers_tool agent-shell ls --format table
+check 'ls --format table, a peer down: ADDRESS header on stdout, unreachable peer on stderr' \
+      eval '[[ $(head -1 "$tmpdir/stdout") == ADDRESS* ]] && stderr_has "unreachable: peer ws1 (ssh failed)"'
+check 'ls, a peer down: its stale sessions are left out' \
+      eval '! grep -q "ws1:ws-lead" "$tmpdir/stdout"'
+
+echo
+echo "$(( tests - failures ))/$tests passed"
+(( 0 == failures ))
