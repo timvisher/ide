@@ -53,6 +53,19 @@ arguments), `shell' (the buffer the stubbed start returns) and
                          inserted)))
       (delete-file prompt))))
 
+(ert-deftest test-timvisher-agent-shell-start-resumes-a-session ()
+  "A session id resumes that session, unfocused, and still gets the prompt."
+  (let ((prompt (make-temp-file "tvass" nil nil "Carry on.\n")))
+    (unwind-protect
+        (test-timvisher-agent-shell-start--with-stubs
+          (timvisher-agent-shell-start "claude" prompt "ae2b057e-a82c-4b6e-9aea-1e4c35927230")
+          (should (equal '((:config claude-config :session-strategy new :new-session t :no-focus t
+                                    :session-id "ae2b057e-a82c-4b6e-9aea-1e4c35927230"))
+                         started))
+          (should (equal `((:shell-buffer ,shell :text "Carry on." :submit t :no-focus t))
+                         inserted)))
+      (delete-file prompt))))
+
 (ert-deftest test-timvisher-agent-shell-start-codex-without-prompt ()
   "Codex starts with its own config, and no prompt means nothing inserted."
   (test-timvisher-agent-shell-start--with-stubs
