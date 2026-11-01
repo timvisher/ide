@@ -10,7 +10,7 @@ source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/logging.bash" 
 show_help() {
   cat <<'EOF'
 Usage: timvisher_tests [--core <path>] [--overlay <path>] [--suite <path>]...
-                       [--integration] [--timeout <seconds>]
+                       [--integration] [--jobs <n>] [--timeout <seconds>]
        timvisher_tests [--core <path>] [--overlay <path>] --shell [<cmd> [<arg>...]]
 
 Run the test suites of the worktrees under test at their repo roots,
@@ -45,6 +45,12 @@ The HOME is a scratch copy, not a sandbox: ~/git/ide and
 ~/.config/timvisher/ide in it link to the real worktrees under test,
 so writes through them land in those worktrees.
 
+Suites run at nice 10, at most --jobs at a time. Each run's joblog,
+output and load averages (sampled every 5 seconds) are kept in
+$XDG_STATE_HOME/timvisher_tests/runs/<time>-<pid>/, newest 100 runs,
+and the last line of output names that directory and the peak 1-minute
+load average.
+
 Each FAIL: line a suite prints is reported, including when the suite
 times out. When TIMVISHER_DEV_CI_RESULTS_FILE is set, a pass/fail line
 per suite, and each failing suite's FAIL: lines, are appended to it.
@@ -65,6 +71,8 @@ Options:
   --suite <path>      Run only this suite. Repeatable. An integration
                       suite named here runs without --integration.
   --integration       Also run the integration suites.
+  --jobs <n>          Run at most <n> suites at once (default: half the
+                      online CPUs).
   --timeout <seconds> Kill a suite that runs longer (default: 1200).
   --shell             Run <cmd> (default: bash) in a fresh HOME at the
                       current repo root and return its exit status.
@@ -83,6 +91,7 @@ shell=
 cmd=()
 only=()
 integration=
+jobs=
 timeout=1200
 
 args=("$@")
@@ -106,6 +115,10 @@ do
       integration=1
       shift
       ;;
+    --jobs)
+      jobs=${2-}
+      shift 2 || { usage; exit 1; }
+      ;;
     --timeout)
       timeout=${2-}
       shift 2 || { usage; exit 1; }
@@ -128,6 +141,21 @@ do
 done
 
 if ! [[ $timeout =~ ^[0-9]+$ ]] || (( timeout < 1 ))
+then
+  usage
+  exit 1
+fi
+
+# Not one suite per CPU: several suites background work of their own,
+# so a full set oversubscribes the machine and starves interactive use.
+if [[ -z $jobs ]]
+then
+  jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null) || jobs=2
+  jobs=$(( jobs / 2 ))
+  (( 1 <= jobs )) || jobs=1
+fi
+
+if ! [[ $jobs =~ ^[0-9]+$ ]] || (( jobs < 1 ))
 then
   usage
   exit 1
@@ -190,7 +218,12 @@ remove_tree() {
 }
 
 run_dir=
+sampler_pid=
 cleanup() {
+  if [[ -n $sampler_pid ]]
+  then
+    kill "$sampler_pid" 2>/dev/null
+  fi
   if [[ -n $run_dir ]]
   then
     remove_tree "$run_dir"
@@ -596,13 +629,43 @@ run_suite() {
   declare -f name_of new_home home_env tree_of show_log run_suite
 } > "$run_dir/state.bash" || die "Can't write '%s'" "$run_dir/state.bash"
 
+runs=${XDG_STATE_HOME:-$HOME/.local/state}/timvisher_tests/runs
+kept=$runs/$(date -u +%Y%m%dT%H%M%SZ)-$$
+mkdir -p "$kept" || die "Can't create '%s'" "$kept"
+while IFS= read -r old
+do
+  remove_tree "$old"
+done < <(printf '%s\n' "$runs"/*/ | LC_ALL=C sort -r | tail -n +101)
+{
+  printf 'args:'
+  printf ' %q' "${args[@]}"
+  printf '\ncore: %s %s\noverlay: %s %s\njobs: %s\n' \
+    "$core" "$core_tree" "$overlay" "$overlay_tree" "$jobs"
+} > "$kept/run" || die "Can't write '%s'" "$kept/run"
+
+load_average() {
+  local _ one five fifteen
+  if read -r _ one five fifteen _ < <(sysctl -n vm.loadavg 2>/dev/null) ||
+     read -r one five fifteen _ < /proc/loadavg 2>/dev/null
+  then
+    printf '%s %s %s %s\n' "$(date +%s)" "$one" "$five" "$fifteen"
+  fi
+}
+
+while :
+do
+  load_average
+  sleep 5
+done > "$kept/loadavg" 2>/dev/null &
+sampler_pid=$!
+
 printf 'ide: %s\nsystem-extensions: %s\n' "$core" "$overlay"
 
-exec {log_fd}> >(tee "$run_dir/log")
+exec {log_fd}> >(tee "$kept/log")
 tee_pid=$!
 
-PARALLEL_SHELL=bash parallel --keep-order --halt never --timeout "$timeout" \
-  --link --tagstring '{1}' --joblog "$run_dir/joblog" \
+PARALLEL_SHELL=bash nice -n 10 parallel --keep-order --halt never --timeout "$timeout" \
+  --jobs "$jobs" --link --tagstring '{1}' --joblog "$kept/joblog" \
   "source $(printf '%q' "$run_dir/state.bash") && run_suite {2}" \
   ::: "${labels[@]}" ::: "${!labels[@]}" </dev/null >&"$log_fd" 2>&1 {log_fd}>&- &
 parallel_pid=$!
@@ -620,6 +683,10 @@ wait "$parallel_pid"
 trap - INT TERM HUP
 exec {log_fd}>&-
 wait "$tee_pid"
+kill "$sampler_pid" 2>/dev/null
+wait "$sampler_pid" 2>/dev/null
+sampler_pid=
+load_average >> "$kept/loadavg"
 
 failed=()
 while read -r seq exitval signal
@@ -639,11 +706,14 @@ do
   while IFS= read -r name
   do
     record "test: $t FAIL: $name"
-  done < <(awk -F'\t' -v suite="$t" '$1 == suite && $2 ~ /^FAIL: / { sub(/^FAIL: /, "", $2); print $2 }' "$run_dir/log" |
+  done < <(awk -F'\t' -v suite="$t" '$1 == suite && $2 ~ /^FAIL: / { sub(/^FAIL: /, "", $2); print $2 }' "$kept/log" |
     sed -e 's/ ([^()]*[:=].*//' | LC_ALL=C sort -u)
-done < <(awk -F'\t' 'NR > 1 { print $1, $7, ($8 == "" ? 0 : $8) }' "$run_dir/joblog" | sort -n)
+done < <(awk -F'\t' 'NR > 1 { print $1, $7, ($8 == "" ? 0 : $8) }' "$kept/joblog" | sort -n)
 
-if (( ${#labels[@]} != $(tail -n +2 "$run_dir/joblog" | wc -l) ))
+printf 'run: %s (peak load average %s)\n' "$kept" \
+  "$(awk 'peak == "" || peak < $2 { peak = $2 } END { print peak }' "$kept/loadavg")"
+
+if (( ${#labels[@]} != $(tail -n +2 "$kept/joblog" | wc -l) ))
 then
   die 'parallel did not run every suite (see the output above)'
 fi
