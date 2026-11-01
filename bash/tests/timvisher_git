@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 
 # Tests for timvisher_git functions
 
@@ -310,6 +312,18 @@ source_timvisher_git() {
 # mockbin must be first on PATH to shadow the ~/bin/gh wrapper in the
 # runner HOME.
 export PATH="$tmpdir/mockbin:$PATH"
+
+# git is mocked ahead of mockbin. Calls no test has a rule for pass
+# through to the real git, never the ~/bin/git wrapper, whose own
+# suite covers it; brew --prefix points the script's
+# "$(brew --prefix)/bin/git" at the same mock.
+mock_init ||
+  die "mock_init failed"
+real_git=$(mock_real git) ||
+  die "no real git on the base PATH"
+mock_passthrough git "$real_git"
+mock_brew_prefix
+
 source_timvisher_git
 
 # ---------------------------------------------------------------------------
@@ -328,10 +342,10 @@ mkdir -p "$mr_live" "$mr_live2"
 # tilde-prefixed paths.
 run_test
 : > "$mr_config"
-command git config --file "$mr_config" --add maintenance.repo '~/definitely-not-a-real-dir-xyz'
-command git config --file "$mr_config" --add maintenance.repo "$mr_live"
+"$real_git" config --file "$mr_config" --add maintenance.repo '~/definitely-not-a-real-dir-xyz'
+"$real_git" config --file "$mr_config" --add maintenance.repo "$mr_live"
 XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos >/dev/null 2>&1
-mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+mr_after=$("$real_git" config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
 if [[ $mr_after == "${mr_live} " ]]
 then
   pass "reconcile_maintenance_repos prunes missing entries and keeps live ones"
@@ -341,7 +355,7 @@ fi
 
 run_test
 XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos "$mr_live2" >/dev/null 2>&1
-mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+mr_after=$("$real_git" config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
 if [[ $mr_after == "${mr_live} ${mr_live2} " ]]
 then
   pass "reconcile_maintenance_repos registers a new trunk"
@@ -352,7 +366,7 @@ fi
 # Re-registering must not duplicate.
 run_test
 XDG_CONFIG_HOME="$mr_home/.config" reconcile_maintenance_repos "$mr_live2" >/dev/null 2>&1
-mr_count=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | grep -cxF "$mr_live2")
+mr_count=$("$real_git" config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | grep -cxF "$mr_live2")
 if [[ $mr_count == 1 ]]
 then
   pass "reconcile_maintenance_repos does not duplicate an existing trunk"
@@ -383,16 +397,16 @@ mkdir -p "$mr_trunks/myorg/live"
 mkdir -p "$mr_home/git/myorg/live/some/branch"
 : > "$mr_config"
 : > "$mr_global"
-command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/live/some/branch"
-command git config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/gone/a/branch"
+"$real_git" config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/live/some/branch"
+"$real_git" config --file "$mr_global" --add maintenance.repo "$mr_home/git/myorg/gone/a/branch"
 (
   XDG_CONFIG_HOME="$mr_home/.config" \
   live_repo_dir="$mr_home/git" \
   repo_trunks_dir="$mr_trunks" \
     reconcile_maintenance_repos
 ) >/dev/null 2>&1
-mr_global_left=$(command git config --file "$mr_global" --get-all maintenance.repo 2>/dev/null | wc -l | tr -d ' ')
-mr_after=$(command git config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
+mr_global_left=$("$real_git" config --file "$mr_global" --get-all maintenance.repo 2>/dev/null | wc -l | tr -d ' ')
+mr_after=$("$real_git" config --file "$mr_config" --get-all maintenance.repo 2>/dev/null | tr '\n' ' ')
 if [[ $mr_global_left == 0 && $mr_after == "${mr_trunks}/myorg/live " ]]
 then
   pass "reconcile_maintenance_repos drains the tracked global config and normalises to trunks"
@@ -492,27 +506,27 @@ bp_make_malformed() {
   local d=$1
   rm -rf "$d"
   mkdir -p "$d"
-  command git init -q --bare "$d/trunk.git"
-  command git init -q "$d/seed"
+  "$real_git" init -q --bare "$d/trunk.git"
+  "$real_git" init -q "$d/seed"
   (
     cd "$d/seed" &&
       echo x > a &&
-      command git add a &&
-      command git -c user.email=a@b -c user.name=a commit -qm i &&
-      command git push -q "$d/trunk.git" HEAD:refs/heads/main
+      "$real_git" add a &&
+      "$real_git" -c user.email=a@b -c user.name=a commit -qm i &&
+      "$real_git" push -q "$d/trunk.git" HEAD:refs/heads/main
   ) >/dev/null 2>&1
-  command git -C "$d/trunk.git" symbolic-ref HEAD refs/heads/main
-  command git -C "$d/trunk.git" config extensions.worktreeConfig true
+  "$real_git" -C "$d/trunk.git" symbolic-ref HEAD refs/heads/main
+  "$real_git" -C "$d/trunk.git" config extensions.worktreeConfig true
 }
 
 run_test
 bp_make_malformed "$bp_dir/m1"
-command git -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt" main >/dev/null 2>&1
-poisoned_before=$(command git -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
+"$real_git" -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt" main >/dev/null 2>&1
+poisoned_before=$("$real_git" -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
 repair_bare_poisoning_source "$bp_dir/m1/trunk.git" >/dev/null 2>&1
-shared_after=$(command git -C "$bp_dir/m1/trunk.git" config --file "$bp_dir/m1/trunk.git/config" --get core.bare 2>/dev/null) || shared_after=""
-still_bare=$(command git -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
-poisoned_after=$(command git -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
+shared_after=$("$real_git" -C "$bp_dir/m1/trunk.git" config --file "$bp_dir/m1/trunk.git/config" --get core.bare 2>/dev/null) || shared_after=""
+still_bare=$("$real_git" -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
+poisoned_after=$("$real_git" -C "$bp_dir/m1/wt" rev-parse --is-bare-repository 2>/dev/null)
 if [[ $poisoned_before == true && -z $shared_after && $still_bare == true && $poisoned_after == false ]]
 then
   pass "repair_bare_poisoning_source migrates core.bare and heals worktrees"
@@ -523,8 +537,8 @@ fi
 # The whole point: raw `git worktree add` must work afterwards, with no
 # per-worktree healing involved.
 run_test
-command git -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt2" -b second main >/dev/null 2>&1
-raw_bare=$(command git -C "$bp_dir/m1/wt2" rev-parse --is-bare-repository 2>/dev/null)
+"$real_git" -C "$bp_dir/m1/trunk.git" worktree add -q "$bp_dir/m1/wt2" -b second main >/dev/null 2>&1
+raw_bare=$("$real_git" -C "$bp_dir/m1/wt2" rev-parse --is-bare-repository 2>/dev/null)
 if [[ $raw_bare == false ]]
 then
   pass "raw git worktree add yields a usable worktree after source repair"
@@ -536,7 +550,7 @@ fi
 run_test
 repair_bare_poisoning_source "$bp_dir/m1/trunk.git" >/dev/null 2>&1
 rc=$?
-still_bare2=$(command git -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
+still_bare2=$("$real_git" -C "$bp_dir/m1/trunk.git" rev-parse --is-bare-repository 2>/dev/null)
 if (( rc == 0 )) && [[ $still_bare2 == true ]]
 then
   pass "repair_bare_poisoning_source is idempotent"
@@ -549,9 +563,9 @@ fi
 run_test
 rm -rf "$bp_dir/healthy"
 mkdir -p "$bp_dir/healthy"
-command git init -q --bare "$bp_dir/healthy/trunk.git"
+"$real_git" init -q --bare "$bp_dir/healthy/trunk.git"
 repair_bare_poisoning_source "$bp_dir/healthy/trunk.git" >/dev/null 2>&1
-healthy_shared=$(command git -C "$bp_dir/healthy/trunk.git" config --file "$bp_dir/healthy/trunk.git/config" --get core.bare 2>/dev/null)
+healthy_shared=$("$real_git" -C "$bp_dir/healthy/trunk.git" config --file "$bp_dir/healthy/trunk.git/config" --get core.bare 2>/dev/null)
 if [[ $healthy_shared == true ]]
 then
   pass "repair_bare_poisoning_source leaves a healthy cache untouched"
@@ -1028,9 +1042,8 @@ fi
 # Setup for is_branch_ish and clone_stacked integration tests
 # ---------------------------------------------------------------------------
 
-# Use the real git binary directly to avoid the agent-safety wrapper
-# (~/bin/git) which requires Co-authored-by trailers on commits.
-test_git="$(brew --prefix)/bin/git"
+# Fixtures are built with the real git directly, unrecorded.
+test_git=$real_git
 
 # Create a source repo to serve as the remote
 source_repo="$tmpdir/remote"
