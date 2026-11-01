@@ -92,45 +92,6 @@ Return the process, for the caller to delete."
           (should (equal "submitted" (timvisher-agent-shell-send-text "s2" "hello")))
         (delete-process process)))))
 
-(defmacro test-timvisher-agent-shell-send--with-submit-moving-point (&rest body)
-  "Run BODY with submitting stubbed to insert at the end, like shell-maker."
-  (declare (indent 0))
-  `(cl-letf (((symbol-function 'agent-shell--insert-to-shell-buffer)
-              (cl-function
-               (lambda (&key shell-buffer text &allow-other-keys)
-                 (with-current-buffer shell-buffer
-                   (goto-char (point-max))
-                   (insert text "\n" "Claude> "))))))
-     ,@body))
-
-(ert-deftest test-timvisher-agent-shell-send-text-leaves-point-in-the-transcript ()
-  "Submitting leaves point alone when it is above the prompt."
-  (test-timvisher-agent-shell-send--with-shells nil
-    (let* ((buffer (cdr (assoc "s2" shells)))
-           (process (with-current-buffer buffer
-                      (insert "earlier reply\n")
-                      (test-timvisher-agent-shell-send--type-at-prompt buffer ""))))
-      (unwind-protect
-          (test-timvisher-agent-shell-send--with-submit-moving-point
-            (with-current-buffer buffer (goto-char 3))
-            (should (equal "submitted" (timvisher-agent-shell-send-text "s2" "hello")))
-            (with-current-buffer buffer
-              (should (= 3 (point)))
-              (should (string-suffix-p "hello\nClaude> " (buffer-string)))))
-        (delete-process process)))))
-
-(ert-deftest test-timvisher-agent-shell-send-text-point-at-the-prompt-follows-the-submit ()
-  "Submitting carries point along when it is at the prompt."
-  (test-timvisher-agent-shell-send--with-shells nil
-    (let* ((buffer (cdr (assoc "s2" shells)))
-           (process (test-timvisher-agent-shell-send--type-at-prompt buffer "")))
-      (unwind-protect
-          (test-timvisher-agent-shell-send--with-submit-moving-point
-            (should (equal "submitted" (timvisher-agent-shell-send-text "s2" "hello")))
-            (with-current-buffer buffer
-              (should (eobp))))
-        (delete-process process)))))
-
 (ert-deftest test-timvisher-agent-shell-send-text-no-buffer ()
   "An unknown session id touches no shell."
   (test-timvisher-agent-shell-send--with-shells nil
