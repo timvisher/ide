@@ -14,6 +14,75 @@
 
 (require 'ert)
 
+;;; Tests for timvisher-load-op-environment-variables
+
+(defmacro test-timvisher-op--with-env (bindings &rest body)
+  "Run BODY with the two agent key variables set as in BINDINGS, restored after."
+  (declare (indent 1))
+  `(let ((process-environment (copy-sequence process-environment)))
+     (setenv "OPENAI_API_KEY" nil)
+     (setenv "ANTHROPIC_API_KEY" nil)
+     (dolist (b ,bindings) (setenv (car b) (cdr b)))
+     ,@body))
+
+(ert-deftest test-timvisher-load-op-env-no-op-runs-nothing ()
+  "Without op on PATH (a workspace) nothing runs and no op:// is left set."
+  (test-timvisher-op--with-env '(("ANTHROPIC_API_KEY" . "op://Private/x/y"))
+    (let ((ran nil))
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil))
+                ((symbol-function 'call-process-shell-command)
+                 (lambda (&rest _) (setq ran t) 0)))
+        (should (= 0 (timvisher-load-op-environment-variables)))
+        (should-not ran)
+        (should-not (getenv "ANTHROPIC_API_KEY"))
+        (should-not (getenv "OPENAI_API_KEY"))))))
+
+(ert-deftest test-timvisher-load-op-env-real-values-skip-op ()
+  "Real values already in the environment mean op is never run."
+  (test-timvisher-op--with-env '(("ANTHROPIC_API_KEY" . "sk-a") ("OPENAI_API_KEY" . "sk-o"))
+    (let ((ran nil))
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/op"))
+                ((symbol-function 'call-process-shell-command)
+                 (lambda (&rest _) (setq ran t) 0)))
+        (should (= 0 (timvisher-load-op-environment-variables)))
+        (should-not ran)
+        (should (equal (getenv "ANTHROPIC_API_KEY") "sk-a"))))))
+
+(ert-deftest test-timvisher-load-op-env-resolves-through-op ()
+  "With op, the unresolved variables are set from op run's output."
+  (test-timvisher-op--with-env '(("OPENAI_API_KEY" . "sk-o"))
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/op"))
+              ((symbol-function 'call-process-shell-command)
+               (lambda (command _infile buffer &rest _)
+                 (should (string-match-p "op run" command))
+                 (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                   (insert "PATH=/bin\nANTHROPIC_API_KEY=sk-resolved\n"))
+                 0)))
+      (should (= 1 (timvisher-load-op-environment-variables)))
+      (should (equal (getenv "ANTHROPIC_API_KEY") "sk-resolved"))
+      (should (equal (getenv "OPENAI_API_KEY") "sk-o")))))
+
+(ert-deftest test-timvisher-load-op-env-failure-warns-not-errors ()
+  "A failing op run warns, leaves no op:// placeholder, and doesn't signal."
+  (test-timvisher-op--with-env '()
+    (let ((warned nil))
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/op"))
+                ((symbol-function 'call-process-shell-command) (lambda (&rest _) 1))
+                ((symbol-function 'display-warning) (lambda (&rest _) (setq warned t))))
+        (should (= 0 (timvisher-load-op-environment-variables)))
+        (should warned)
+        (should-not (getenv "ANTHROPIC_API_KEY"))
+        (should-not (getenv "OPENAI_API_KEY"))))))
+
+(ert-deftest test-timvisher-agent-shell-authentication-key-or-login ()
+  "An API key in the environment is used; without one, login."
+  (test-timvisher-op--with-env '(("ANTHROPIC_API_KEY" . "sk-a"))
+    (let ((maker (lambda (&rest args) args)))
+      (should (equal (timvisher-agent-shell-authentication maker "ANTHROPIC_API_KEY")
+                     '(:api-key "sk-a")))
+      (should (equal (timvisher-agent-shell-authentication maker "OPENAI_API_KEY")
+                     '(:login t))))))
+
 ;;; Tests for timvisher-agent-shell-mcp-servers
 
 (ert-deftest test-timvisher-agent-shell-mcp-servers-brew-from-path ()
