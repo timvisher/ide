@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# git is mocked with a passthrough to the real git, so neither the
+# fixtures nor the unit go through the ~/bin/git wrapper.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$mock_real_git"
+
 failures=0
 tests=0
 
