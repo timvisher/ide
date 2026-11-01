@@ -1149,6 +1149,35 @@ else
   fail "scrub guard: deadbranch2 should survive an unreachable remote: specs='${sf_specs}' out='${sf_out}'"
 fi
 
+# Test: the first fetch of a brand-new selective-fetch repo (what
+# timvisher_git's init_bare_cache makes: init, remote add, fetch) fetches
+# only the main branch. There is no origin/HEAD yet, so the main branch has to
+# come from the remote; before cf-m1w0.21 the refspec setup gave up and the
+# default +refs/heads/* fetched every branch (~40k on dd-source).
+run_test
+sf_setup firstfetch
+# As on GitHub, the remote's HEAD names its default branch.
+"$real_git" -C "$sf_remote" symbolic-ref HEAD refs/heads/main || true
+sf_new="$tmpdir/sf-firstfetch/new.git"
+"$real_git" init -q --bare "$sf_new" || true
+"$real_git" -C "$sf_new" remote add origin "git@github.com:testorg/testrepo.git" || true
+"$real_git" -C "$sf_new" config --add "url.${sf_remote}.insteadOf" "git@github.com:testorg/testrepo.git" || true
+sf_out=$( cd "$sf_new" && \
+  TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
+  PATH="$test_path_real_git" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch --prune origin" 2>&1 ) || true
+sf_specs=$("$real_git" -C "$sf_new" config --get-all remote.origin.fetch 2>/dev/null || true)
+sf_refs=$("$real_git" -C "$sf_new" for-each-ref --format='%(refname)' refs/remotes 2>/dev/null || true)
+if [[ $sf_specs == "+refs/heads/main:refs/remotes/origin/main" ]] \
+   && [[ $sf_refs == *refs/remotes/origin/main* ]] \
+   && [[ $sf_refs != *keepme* ]] \
+   && [[ $("$real_git" -C "$sf_new" config remote.origin.tagOpt 2>/dev/null) == --no-tags ]]
+then
+  pass "first fetch of a new selective-fetch repo fetches only main"
+else
+  fail "first fetch: specs='${sf_specs}' refs='${sf_refs}' out='${sf_out}'"
+fi
+
 # ---------------------------------------------------------------------------
 # Guard allow-list composition
 # ---------------------------------------------------------------------------
