@@ -8,12 +8,14 @@ emacs --batch \
   --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
   --eval "(require 'package)" \
   --eval "(package-initialize)" \
+  --eval '(prepare-user-lisp)' \
   --eval '(load "~/.config/emacs/init.el")' \
   --eval '(load "~/.config/emacs/init-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-alert-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-send-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-recover-test.el")' \
   --eval '(load "~/.config/emacs/timvisher-agent-shell-start-test.el")' \
+  --eval '(load "~/.config/emacs/timvisher-tty-grapheme-width-test.el")' \
   --eval '(ert-run-tests-batch-and-exit)' \
   >"$tmpdir/out" 2>&1
 rc=$?

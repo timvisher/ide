@@ -8,6 +8,8 @@ __pycache__/
 *.pyc
 emacs/emacs.d/agent/
 emacs/emacs.d/projectile-frecency.eld
+emacs/emacs.d/user-lisp/**/*.elc
+emacs/emacs.d/user-lisp/.user-lisp-autoloads.el
 !AGENTS.md
 !CLAUDE.md
 !ai/HOME/.agents/
