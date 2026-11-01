@@ -20,6 +20,12 @@ check() {
 core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
 script="$core/bash/bin/timvisher_tests"
 
+# Fixtures are built with the real git, not the ~/bin/git wrapper on
+# this suite's PATH.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+real_git=$(mock_real git) || { echo 'no real git on the base PATH' >&2; exit 1; }
+
 tmpdir=''
 trap '[[ -z $tmpdir ]] || { chflags -R nouchg "$tmpdir" 2>/dev/null; rm -rf -- "$tmpdir"; }' EXIT
 tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
@@ -28,7 +34,7 @@ tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
 overlay="$tmpdir/overlay"
 mkdir -p "$overlay/ai/HOME/.agents/skills/overlay-skill" || exit 1
 printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
-git -C "$overlay" init -q || exit 1
+"$real_git" -C "$overlay" init -q || exit 1
 
 caller_home="$tmpdir/caller"
 mkdir -p "$caller_home/.config/timvisher" || exit 1
@@ -296,9 +302,9 @@ printf '__pycache__/\n' > "$fcore/.gitignore"
 
 for root in "$fcore" "$fover"
 do
-  git -C "$root" init -q &&
-    git -C "$root" add -A &&
-    git -C "$root" -c commit.gpgsign=false commit -q -m fixture ||
+  "$real_git" -C "$root" init -q &&
+    "$real_git" -C "$root" add -A &&
+    "$real_git" -C "$root" -c commit.gpgsign=false commit -q -m fixture ||
     exit 1
 done
 
@@ -420,8 +426,8 @@ check 'the removed file is named' \
       eval 'grep -q "^test: ide/bash/tests/discard FAIL: .*precious" "$results"'
 
 printf 'tracked\n' > "$fcore/tracked" &&
-  git -C "$fcore" add tracked &&
-  git -C "$fcore" -c commit.gpgsign=false commit -q -m tracked &&
+  "$real_git" -C "$fcore" add tracked &&
+  "$real_git" -C "$fcore" -c commit.gpgsign=false commit -q -m tracked &&
   printf 'my edit\n' > "$fcore/tracked" || exit 1
 suite "$fcore/bash/tests/overwrite" <<'SUITE'
 printf 'clobbered\n' > tracked
@@ -457,17 +463,17 @@ rc=$?
 check 'a non-numeric --timeout is a usage error' test "$rc" != 0
 
 pair_trunk="$tmpdir/pair-trunk"
-pair_branch=$(git -C "$fcore" symbolic-ref --short HEAD) || exit 1
+pair_branch=$("$real_git" -C "$fcore" symbolic-ref --short HEAD) || exit 1
 mkdir -p "$pair_trunk" &&
-  git -C "$pair_trunk" init -q -b pair-trunk &&
-  git -C "$pair_trunk" -c commit.gpgsign=false commit -q --allow-empty -m trunk &&
-  git -C "$pair_trunk" worktree add -q -b "$pair_branch" "$tmpdir/pair-branch" ||
+  "$real_git" -C "$pair_trunk" init -q -b pair-trunk &&
+  "$real_git" -C "$pair_trunk" -c commit.gpgsign=false commit -q --allow-empty -m trunk &&
+  "$real_git" -C "$pair_trunk" worktree add -q -b "$pair_branch" "$tmpdir/pair-branch" ||
   exit 1
 ln -sfn "$pair_trunk" "$caller_home/.config/timvisher/ide" || exit 1
 paired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
 check 'the overlay defaults to its worktree on the current branch' \
       test "$paired" = "$tmpdir/pair-branch"
-git -C "$pair_trunk" worktree remove -f "$tmpdir/pair-branch" || exit 1
+"$real_git" -C "$pair_trunk" worktree remove -f "$tmpdir/pair-branch" || exit 1
 unpaired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
 check 'the overlay falls back to its trunk without a worktree on the branch' \
       test "$unpaired" = "$pair_trunk"
