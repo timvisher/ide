@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# The stub behind every mocked command. mock_commands.bash links
-# $TIMVISHER_MOCK_DIR/bin/<name> here, so the name it was called by is
-# the command being mocked. It records the call, then answers from the
+# The stub behind every mocked command. mock_commands.bash copies it to
+# $TIMVISHER_MOCK_DIR/bin/<name>, so the name it was called by is the
+# command being mocked. It records the call, then answers from the
 # newest rule whose patterns match the arguments, else hands the call
 # to the command's passthrough, else reports it as unexpected.
 #
