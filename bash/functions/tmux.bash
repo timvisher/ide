@@ -577,6 +577,20 @@ function ntmux3__handle_bd_topic() {
     fi
 }
 
+# ~/git with its symlinks resolved: the prefix every `pwd -P` path under
+# it carries, which is not ${home_real}/git once ~/git is a symlink to
+# another volume.
+function ntmux3__git_root_real() {
+    if (cd "${HOME}/git" 2>/dev/null && pwd -P)
+    then
+        return 0
+    fi
+
+    local home_real
+    home_real=$(cd "$HOME" && pwd -P) || return 1
+    printf '%s\n' "${home_real}/git"
+}
+
 function ntmux3__session_name_from_path() {
     local raw_path="$1"
 
@@ -627,6 +641,9 @@ function ntmux3__session_name_from_path() {
     local home_real
     home_real=$(cd "$HOME" && pwd -P) || return 1
 
+    local git_real
+    git_real=$(ntmux3__git_root_real) || return 1
+
     local config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
     local aliases_file=${config_dir}/ntmux3_path_aliases
 
@@ -668,7 +685,7 @@ function ntmux3__session_name_from_path() {
     fi
 
     # Try ~/git/ prefix first (existing worktree path)
-    local relative="${resolved#"${home_real}"/git/}"
+    local relative="${resolved#"${git_real}"/}"
     if [[ $relative != "$resolved" && -n $relative ]]
     then
         printf '%s' "$relative"
@@ -744,9 +761,9 @@ function ntmux3__resolve_session_name() {
     fallback_real=$(cd "$fallback_dir" && pwd -P) || true
     if [[ -n $fallback_real ]]
     then
-        local home_real
-        home_real=$(cd "$HOME" && pwd -P) || true
-        name=${fallback_real#"${home_real}"/git/}
+        local git_real
+        git_real=$(ntmux3__git_root_real) || true
+        name=${fallback_real#"${git_real}"/}
         if [[ $name == "$fallback_real" ]]
         then
             name=$(basename "$fallback_real")
@@ -1157,8 +1174,9 @@ function ntmux3__main() {
     # clearly not remotes and not under ~/git/.  Relative paths (which
     # could be org/repo shorthands) always go through clone first;
     # non-git dirs are handled as a post-clone fallback below.
-    local home_real_ngd
+    local home_real_ngd git_real_ngd
     home_real_ngd=$(cd "$HOME" && pwd -P 2>/dev/null) || true
+    git_real_ngd=$(ntmux3__git_root_real 2>/dev/null) || true
 
     ntmux3__open_nonrepo_dir() {
         local dir=$1
@@ -1261,6 +1279,7 @@ function ntmux3__main() {
 
     if [[ $clone_target == /* && -d $clone_target ]] &&
         [[ -z $home_real_ngd || $clone_target != "${home_real_ngd}/git/"* ]] &&
+        [[ -z $git_real_ngd || $clone_target != "${git_real_ngd}/"* ]] &&
         ! git -C "$clone_target" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
         ! [[ $(git -C "$clone_target" rev-parse --is-bare-repository 2>/dev/null) == true ]]
     then

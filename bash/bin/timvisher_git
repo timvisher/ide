@@ -2601,6 +2601,31 @@ info__cmd() {
   esac
 }
 
+# Print a path relative to live_repo_dir, or return 1 when it isn't under
+# it.  Matches the resolved live_repo_dir too: git records worktree paths
+# resolved, so once ~/git is a symlink to another volume `git worktree
+# list` and `rev-parse --show-toplevel` no longer start with
+# live_repo_dir.
+live_relative() {
+  local path=$1
+
+  if [[ $path == "${live_repo_dir}/"* ]]
+  then
+    printf '%s' "${path#"${live_repo_dir}/"}"
+    return 0
+  fi
+
+  local live_real
+  live_real=$(cd "$live_repo_dir" 2>/dev/null && pwd -P) || return 1
+  if [[ $live_real != "$live_repo_dir" && $path == "${live_real}/"* ]]
+  then
+    printf '%s' "${path#"${live_real}/"}"
+    return 0
+  fi
+
+  return 1
+}
+
 # Strip live_repo_dir prefix from a local path, yielding an
 # org/repo/branch shorthand that ensure_worktree can parse.
 # Same stripping ntmux3 does for paths under ~/git/.
@@ -2618,11 +2643,8 @@ strip_live_prefix() {
   # Only strip from absolute paths
   case $path in
     /*)
-      # Try direct prefix match first
-      local live_prefix="${live_repo_dir}/"
-      if [[ $path == "${live_prefix}"* ]]
+      if live_relative "$path"
       then
-        printf '%s' "${path#"${live_prefix}"}"
         return
       fi
       # Fallback: strip up to the first /git/ path component.
@@ -2702,7 +2724,7 @@ clone() {
 
     # If the original target was a non-existent path under ~/git/,
     # confirm before creating a new worktree (interactive only).
-    if [[ -t 0 && ! -d $resolved_target && $resolved_target == "${live_repo_dir}/"* ]]
+    if [[ -t 0 && ! -d $resolved_target ]] && live_relative "$resolved_target" >/dev/null
     then
       printf 'Create a new worktree at %q? (y/N) ' "$remote_target" >&2
       local reply
@@ -3547,7 +3569,8 @@ worktree_gc__count_archivable() {
 
 worktree_gc__do_archive() {
   local wt_path=$1
-  local rel="${wt_path#"${live_repo_dir}/"}"
+  local rel
+  rel=$(live_relative "$wt_path") || rel=${wt_path#/}
   local dest="${worktree_gc__archive_dir}/${rel}"
   local file
 
@@ -3745,7 +3768,7 @@ worktree_gc() {
         subpath=""
       fi
       if [[ -n $subpath ]]; then
-        scope_prefixes["$cache"]+="${live_repo_dir}/${org}/${repo}/${subpath}"$'\n'
+        scope_prefixes["$cache"]+="${org}/${repo}/${subpath}"$'\n'
         info "Scope: %s/%s under %s" "$org" "$repo" "$subpath"
       else
         info "Scope: %s/%s" "$org" "$repo"
@@ -3805,6 +3828,9 @@ worktree_gc() {
       local branch="${branch_ref#refs/heads/}"
       [[ $branch == "$trunk_branch" ]] && continue
 
+      local wt_rel
+      wt_rel=$(live_relative "$wt_path") || wt_rel=$wt_path
+
       # Sub-directory scope: when the target named a path within the repo,
       # only consider worktrees at or under it.
       if (( scoped )); then
@@ -3813,7 +3839,7 @@ worktree_gc() {
           local in_scope=0 p
           while IFS= read -r p; do
             [[ -n $p ]] || continue
-            if [[ $wt_path == "$p" || $wt_path == "$p"/* ]]; then
+            if [[ $wt_rel == "$p" || $wt_rel == "$p"/* ]]; then
               in_scope=1
               break
             fi
@@ -3828,7 +3854,6 @@ worktree_gc() {
       if [[ -n ${gc_protected["$resolved_wt"]+x} ]]; then
         continue
       fi
-      local wt_rel="${wt_path#"${live_repo_dir}/"}"
       if worktree_gc__is_pinned "$resolved_wt"
       then
         info "Pinned: %s (.timvisher_dev_ci/protected)" "$wt_rel"
@@ -4078,8 +4103,8 @@ reconcile_repo_config() {
 maintenance_trunk_for() {
   local path=$1
 
-  local rest=${path#"${TIMVISHER_GIT_HOME:-${HOME}/git}/"}
-  if [[ $rest == "$path" ]]
+  local rest
+  if ! rest=$(live_relative "$path")
   then
     printf '%s' "$path"
     return 0

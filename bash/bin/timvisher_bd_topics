@@ -420,6 +420,19 @@ with_subscribers_lock() {
   return $rc
 }
 
+# Subscribers are compared as directories, not strings: a repo root
+# reached through a symlink (~/git -> /Volumes/Dev/git) is recorded under
+# whichever spelling show-toplevel gave when it subscribed.
+same_subscriber() {
+  [[ $1 == "$2" ]] && return 0
+  [[ -d $1 && -d $2 ]] || return 1
+
+  local a b
+  a=$(cd "$1" && pwd -P) || return 1
+  b=$(cd "$2" && pwd -P) || return 1
+  [[ $a == "$b" ]]
+}
+
 _register_subscriber_impl() {
   local topic_abs=$1
   local subscriber=$2
@@ -433,7 +446,7 @@ _register_subscriber_impl() {
     local existing
     while IFS= read -r -d '' existing
     do
-      if [[ $existing == "$subscriber" ]]
+      if same_subscriber "$existing" "$subscriber"
       then
         return 0
       fi
@@ -461,7 +474,7 @@ _deregister_subscriber_impl() {
   local entry
   while IFS= read -r -d '' entry
   do
-    if [[ $entry != "$subscriber" ]]
+    if ! same_subscriber "$entry" "$subscriber"
     then
       entries+=("$entry")
     fi
