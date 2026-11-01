@@ -32,6 +32,12 @@ script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   { echo "cannot resolve script_dir" >&2; exit 1; }
 script="${script_dir}/bin/aishot"
 
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$real_git"
+
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
 trap 'rm -rf "${repo:-}"' EXIT
 
@@ -43,11 +49,11 @@ make_repo() {
   dir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
   (
     cd "$dir" || exit 1
-    git init -q
-    git config user.email t@example.com
-    git config user.name t
+    "$real_git" init -q
+    "$real_git" config user.email t@example.com
+    "$real_git" config user.name t
     printf 'original\n' > f.txt
-    git add f.txt
+    "$real_git" add f.txt
     printf 'original\nmodified line\n' > f.txt
   ) >/dev/null 2>&1
   printf '%s' "$dir"
@@ -558,7 +564,7 @@ repo=$(make_repo)
 # ~2.7MB of multi-line text, comfortably over ARG_MAX (~1MB), staged so it
 # lands in the embedded diff.
 head -c 2000000 /dev/urandom | base64 > "$repo/big.txt"
-(cd "$repo" && git add big.txt) >/dev/null 2>&1
+(cd "$repo" && "$real_git" add big.txt) >/dev/null 2>&1
 rj="$repo/.aishot/review.json"
 if (cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1 &&
    [[ -f $rj ]] &&
