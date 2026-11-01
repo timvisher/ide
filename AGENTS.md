@@ -10,8 +10,9 @@ conformance runner), in its own throwaway `HOME` built by
 environment:
 
 ```bash
-bash/bin/timvisher_tests                                # every suite of both repos
+bash/bin/timvisher_tests                                # every suite of both repos but the integration ones
 bash/bin/timvisher_tests --suite bash/tests/git         # only this suite (repeatable)
+bash/bin/timvisher_tests --integration                  # also the integration suites
 bash/bin/timvisher_tests --overlay <system-extensions>  # a system-extensions worktree other than the installed one
 ```
 
@@ -41,6 +42,11 @@ with `"$(mock_real git)"`, and lets the unit reach real git with
 `mock_passthrough git "$(mock_real git)"`, never through the wrapper.
 The wrapper's own suite mocks the real git behind it. The header of
 `mock_commands.bash` documents the rest.
+
+Tests whose subject is real repository state (worktrees, bare caches,
+pushes, submodules) go in `bash/tests/integration/<suite>`, apart from
+the unit suite. Default runs skip them; they run only on request, with
+`--integration` or by naming one with `--suite`.
 
 ## Testing a Worktree
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091
-source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+source "$(dirname "$0")/../lib/mock_commands.bash" || exit 1
 
 # Integration tests for the git wrapper: the guards that read real
 # repository state (upstream tracking, @{u}) and selective fetch's
@@ -24,8 +24,8 @@ run_test() {
   ((tests++)) || true
 }
 
-script="$(cd "$(dirname "$0")/.." && pwd)/bin/git"
-funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" || exit 1
+script="$(cd "$(dirname "$0")/../.." && pwd)/bin/git"
+funcs_dir="$(cd "$(dirname "$0")/../../functions" && pwd)" || exit 1
 
 tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT

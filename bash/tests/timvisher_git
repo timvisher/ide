@@ -5,7 +5,7 @@ source "$(dirname "$0")/lib/timvisher_git.bash" || exit 1
 # Tests for timvisher_git functions that need no real repository. git
 # is mocked with no passthrough: a test answers the git calls its unit
 # makes, and any other call fails the suite. Tests of real repository
-# state live in timvisher_git_integration.
+# state live in bash/tests/integration/timvisher_git.
 
 source_timvisher_git
 
