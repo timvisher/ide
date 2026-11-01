@@ -34,8 +34,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
        timvisher_emacs agent-shell ls [--format json|table] [--local] [--refresh]
        timvisher_emacs agent-shell peers [--format json|table]
-       timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
-       timvisher_emacs agent-shell resume --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>] <session-id>
+       timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--cwd <dir>] [--timeout <seconds>]
+       timvisher_emacs agent-shell resume --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--cwd <dir>] [--timeout <seconds>] <session-id>
        timvisher_emacs agent-shell get-server <session>
        timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file|->
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] <session>
@@ -57,10 +57,12 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   agent-shell start       start a new agent-shell (claude by default) in the Emacs with that
                           pid, submit the prompt file once it is ready, wait for its session,
                           and print it as JSON with the name and ref to message it by; for
-                          an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
+                          an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid;
+                          --cwd starts it in that directory instead of the Emacs's
   agent-shell resume      like start, but the new agent-shell resumes <session-id> (its
                           full id) instead of starting a new session; the agent must be
-                          able to find that session from that Emacs's directory
+                          able to find that session from the shell's directory, which is
+                          that Emacs's unless --cwd names another
   agent-shell get-server  print, as JSON, the Emacs server hosting that session's agent-shell
   agent-shell send        queue the file's text in that agent-shell, or submit it if the
                           shell is idle with nothing typed at its prompt; prints queued or
@@ -969,7 +971,7 @@ timvisher_emacs__ref_for() {
 }
 
 timvisher_emacs__agent_shell_start() {
-  local emacs_pid='' agent=claude prompt_file='' timeout=120 resume_id='' kind=new
+  local emacs_pid='' agent=claude prompt_file='' timeout=120 resume_id='' kind=new cwd=''
 
   while (( 0 < $# ))
   do
@@ -994,6 +996,10 @@ timvisher_emacs__agent_shell_start() {
       --resume-session-id)
         resume_id=${2-}
         kind=resumed
+        shift 2 || { usage; return 2; }
+        ;;
+      --cwd)
+        cwd=${2-}
         shift 2 || { usage; return 2; }
         ;;
       *)
@@ -1037,9 +1043,24 @@ timvisher_emacs__agent_shell_start() {
   local resume_arg=nil
   [[ -n $resume_id ]] && resume_arg=$(timvisher_emacs__elisp_string "$resume_id")
 
+  local cwd_arg=nil
+  if [[ -n $cwd ]]
+  then
+    if [[ ! -d $cwd ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_no_such_directory \
+        --message "'${cwd}' is not a directory." \
+        --suggestion "Pass the directory the shell should work in, such as the session's worktree"
+      return 1
+    fi
+    cwd=$(cd -- "$cwd" && pwd -P) || return 1
+    cwd_arg=$(timvisher_emacs__elisp_string "$cwd")
+  fi
+
   local status
   status=$(timvisher_emacs__eval_value 20 "$emacs_pid" "$socket" \
-    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg $resume_arg)")") || return 1
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg $resume_arg $cwd_arg)")") || return 1
 
   local buffer buffer_arg
   buffer=$(jq -r .buffer <<< "$status") || return 1
@@ -1104,7 +1125,7 @@ timvisher_emacs__agent_shell_resume() {
   while (( 0 < $# ))
   do
     case $1 in
-      --emacs|--agent|--prompt-file|--timeout)
+      --emacs|--agent|--prompt-file|--timeout|--cwd)
         (( 2 <= $# )) || { usage; return 2; }
         args+=("$1" "$2")
         shift 2

@@ -305,7 +305,7 @@ start_emacs tvshell "(progn
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
   (defun agent-shell-status (&rest _) (if (shell-maker-busy) 'busy 'ready))
   (defun agent-shell--start (&rest args)
-    (append-to-file (format \"start-args %S\n\" args) nil \"$send_log\")
+    (append-to-file (format \"start-args %S dir %S\n\" args default-directory) nil \"$send_log\")
     (let* ((resume (plist-get args :session-id))
            (new (get-buffer-create (if resume \"shell-resumed\" \"shell-new\"))))
       (push (cons new (list (cons :session (list (cons :id (or resume \"new-0000\")))))) tv-states)
@@ -500,6 +500,19 @@ check 'agent-shell resume: passes the session id to agent-shell--start' \
       grep -q ':session-id "ae2b057e-0000-resume"' "$send_log"
 check 'agent-shell resume: submits the prompt file to the resumed shell' \
       grep -q 'carry on\.' "$send_log"
+
+mkdir -p "$tmpdir/proj" || exit 1
+real_proj=$(cd "$tmpdir/proj" && pwd -P)
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell resume --emacs "$shell_pid" --cwd "$tmpdir/proj" ae2b057e-0000-resume
+rc=$?
+check 'agent-shell resume --cwd: the shell starts in that directory' \
+      eval "(( rc == 0 )) && grep -qF 'dir \"$real_proj/\"' '$send_log'"
+
+emacs_tool agent-shell resume --emacs "$shell_pid" --cwd "$tmpdir/no-such-dir" ae2b057e-0000-resume
+rc=$?
+check 'agent-shell resume --cwd, not a directory: exits 1 with timvisher_emacs_no_such_directory' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_directory\""'
 
 emacs_tool agent-shell resume --emacs "$shell_pid" 'not an id!'
 rc=$?
