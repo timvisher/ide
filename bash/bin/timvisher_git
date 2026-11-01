@@ -636,6 +636,7 @@ die_if_trunk_cached_under_alias_org() {
 
 maybe_execute_hook() {
   local org=$1 repo=$2 hook=$3
+  shift 3
 
   [[ -n $org ]] || die 'org is unset'
   [[ -n $repo ]] || die 'repo is unset'
@@ -652,10 +653,24 @@ maybe_execute_hook() {
       then
         warn "hooks: ${org}/${repo}/${hook} absent; running alias org ${candidate}/${repo}/${hook}"
       fi
-      "$full_hook" >&2
+      "$full_hook" "$@" >&2
       return 0
     fi
   done < <(hook_org_candidates "$org")
+}
+
+run_pre_remove_hook() {
+  local trunk=$1 wt=$2 rel
+
+  rel=${trunk#"${repo_trunks_dir}"/}
+  if [[ $rel == "$trunk" || $rel != */* || $rel == */*/* ]]
+  then
+    warn "pre-remove-branch-dir: trunk '%s' is not at %s/<org>/<repo>; skipping hook" \
+      "$trunk" "$repo_trunks_dir"
+    return 0
+  fi
+
+  maybe_execute_hook "${rel%/*}" "${rel#*/}" pre-remove-branch-dir "$wt"
 }
 
 # Die if a `/`-separated path or shorthand contains `.git` or `_git`
@@ -723,6 +738,7 @@ sweep_bogus_worktrees_in_cache() {
     [[ -n $wt_path ]] || continue
     info "sweep_bogus_worktrees_in_cache: removing bogus worktree '%s' from cache '%s'" \
       "$wt_path" "$cache_dir"
+    run_pre_remove_hook "$cache_dir" "$wt_path"
     command git -C "$cache_dir" worktree remove --force "$wt_path" >&2 2>/dev/null ||
       command git -C "$cache_dir" worktree prune >&2 2>/dev/null || true
   # Pattern requires `/` before the `_git`/`.git` component because
@@ -1655,6 +1671,7 @@ ensure_worktree() {
     # attempt, or not a valid git worktree).  Clean it up so we can
     # start fresh.
     warn "Removing broken PR worktree at '${branch_dir_abs}'"
+    run_pre_remove_hook "$trunk_cache" "$branch_dir_abs"
     command git -C "${trunk_cache}" worktree remove --force "$branch_dir_abs" >&2 2>/dev/null || true
     rm -rf "$branch_dir_abs" 2>/dev/null || true
     branch_dir_exists=0
@@ -2451,6 +2468,30 @@ Note .branch is the GIT branch name while .branchPath is derived from
 the worktree's position on disk.  They coincide across worktrees this
 tool creates, because the layout mirrors branch names, but a worktree
 can be checked out to a different branch.
+
+hooks
+-----
+
+Per-repo hooks live at
+
+  ${config_dir}/bash/bin/timvisher_git_hooks/<org>/<repo>/<hook>
+
+and run when executable, falling through to an alias org of <org> when
+<org> has none.  Their stdout goes to stderr, and a failing hook never
+fails the operation that ran it.
+
+  post-cache                        After the trunk is first cached.
+  post-initial-branch-dir-creation  Once, in a new worktree before it
+                                    moves into place.  Slow maintenance
+                                    (gc, commit-graph) goes here.
+  post-make-branch-dir              Every time clone produces a worktree.
+  repo-config                       Idempotent repo config; see
+                                    reconcile-repo-config.
+  pre-remove-branch-dir <path>      Before any worktree removal (worktree
+                                    gc, sweep-bogus, a broken PR worktree
+                                    being rebuilt), with the worktree's
+                                    absolute path.  For per-worktree
+                                    state that lives outside the checkout.
 
 sync-trunk
 ----------
@@ -3981,6 +4022,7 @@ worktree_gc() {
       info "Archived %d file(s) from %s" "${archive_counts[i]}" "${archive_labels[i]}"
     fi
     info "Removing %s ..." "$wt"
+    run_pre_remove_hook "$trunk" "$wt"
     if git -C "$trunk" worktree remove --force "$wt"
     then
       info "  done"
