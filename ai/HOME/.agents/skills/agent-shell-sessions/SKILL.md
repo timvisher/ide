@@ -90,8 +90,9 @@ whatever Tim is typing along with your message.
   ```
 
   It takes the full session id, and prints the resumed shell's row as
-  start does. The agent must find the session from that Emacs's
-  directory. First check `agent-shell ls --local` for a shell that
+  start does. The agent must find the session from the shell's
+  directory: pass `--cwd <dir>` (the session's worktree) when that
+  Emacs works somewhere else. First check `agent-shell ls --local` for a shell that
   already has that session id; resuming it again opens a second shell
   on the same session.
 
