@@ -304,9 +304,11 @@ start_emacs tvshell "(progn
   (defun agent-shell--state () (alist-get (current-buffer) tv-states))
   (defun shell-maker-busy () (file-exists-p \"$busy_flag\"))
   (defun agent-shell-status (&rest _) (if (shell-maker-busy) 'busy 'ready))
-  (defun agent-shell--start (&rest _)
-    (let ((new (get-buffer-create \"shell-new\")))
-      (push (cons new (list (cons :session (list (cons :id \"new-0000\"))))) tv-states)
+  (defun agent-shell--start (&rest args)
+    (append-to-file (format \"start-args %S\n\" args) nil \"$send_log\")
+    (let* ((resume (plist-get args :session-id))
+           (new (get-buffer-create (if resume \"shell-resumed\" \"shell-new\"))))
+      (push (cons new (list (cons :session (list (cons :id (or resume \"new-0000\")))))) tv-states)
       new))
   (defun agent-shell-subscribe-to (&rest args)
     (when (eq 'prompt-ready (plist-get args :event))
@@ -477,6 +479,37 @@ check 'agent-shell start: starts a claude shell and prints its session, name and
       eval "(( rc == 0 )) && [[ \$(field '[.agent, .buffer, .session_id, .name, .server_name] | @tsv') == 'claude	shell-new	new-0000	tvnew-3c	tvshell' ]] && [[ \$(field .ref) == $new_ref* ]]"
 check 'agent-shell start: submits the prompt file to the new shell' \
       grep -q 'Start on the docs\.' "$send_log"
+
+check 'agent-shell start: does not pass a session id to agent-shell--start' \
+      eval "grep '^start-args' '$send_log' | tail -1 | grep -qv ':session-id'"
+
+sleep 300 &
+resumed_pid=$!
+other_pids+=("$resumed_pid")
+resumed_sock=$tmpdir/socks/$resumed_pid.sock
+printf '{"pid": %s, "sessionId": "ae2b057e-0000-resume", "name": "tvresumed-5e", "messagingSocketPath": "%s"}\n' \
+       "$resumed_pid" "$resumed_sock" > "$tmpdir/claude/sessions/$resumed_pid.json"
+resumed_ref=$(printf 'session:%s' "$resumed_sock" | shasum -a 256 | cut -c1-6)
+printf 'From the test agent (session t)\n\nYou were handed off; carry on.\n' > "$tmpdir/resume-prompt"
+: > "$send_log"
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell resume --emacs "$shell_pid" --prompt-file "$tmpdir/resume-prompt" ae2b057e-0000-resume
+rc=$?
+check 'agent-shell resume: resumes that session and prints its session, name and ref' \
+      eval "(( rc == 0 )) && [[ \$(field '[.agent, .buffer, .session_id, .name, .server_name] | @tsv') == 'claude	shell-resumed	ae2b057e-0000-resume	tvresumed-5e	tvshell' ]] && [[ \$(field .ref) == $resumed_ref* ]]"
+check 'agent-shell resume: passes the session id to agent-shell--start' \
+      grep -q ':session-id "ae2b057e-0000-resume"' "$send_log"
+check 'agent-shell resume: submits the prompt file to the resumed shell' \
+      grep -q 'carry on\.' "$send_log"
+
+emacs_tool agent-shell resume --emacs "$shell_pid" 'not an id!'
+rc=$?
+check 'agent-shell resume, malformed session id: exits 2 with timvisher_emacs_bad_session_id' \
+      eval '(( rc == 2 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_bad_session_id\""'
+
+emacs_tool agent-shell resume --emacs "$shell_pid"
+rc=$?
+check 'agent-shell resume without a session id: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
 
 emacs_tool agent-shell start --emacs "$shell_pid" --agent gemini
 rc=$?

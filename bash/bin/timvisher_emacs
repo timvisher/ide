@@ -35,6 +35,7 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs agent-shell ls [--format json|table] [--local] [--refresh]
        timvisher_emacs agent-shell peers [--format json|table]
        timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
+       timvisher_emacs agent-shell resume --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>] <session-id>
        timvisher_emacs agent-shell get-server <session>
        timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file|->
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] <session>
@@ -57,6 +58,9 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           pid, submit the prompt file once it is ready, wait for its session,
                           and print it as JSON with the name and ref to message it by; for
                           an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
+  agent-shell resume      like start, but the new agent-shell resumes <session-id> (its
+                          full id) instead of starting a new session; the agent must be
+                          able to find that session from that Emacs's directory
   agent-shell get-server  print, as JSON, the Emacs server hosting that session's agent-shell
   agent-shell send        queue the file's text in that agent-shell, or submit it if the
                           shell is idle with nothing typed at its prompt; prints queued or
@@ -965,7 +969,7 @@ timvisher_emacs__ref_for() {
 }
 
 timvisher_emacs__agent_shell_start() {
-  local emacs_pid='' agent=claude prompt_file='' timeout=120
+  local emacs_pid='' agent=claude prompt_file='' timeout=120 resume_id='' kind=new
 
   while (( 0 < $# ))
   do
@@ -986,6 +990,11 @@ timvisher_emacs__agent_shell_start() {
         timeout=${2-}
         [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
         shift 2
+        ;;
+      --resume-session-id)
+        resume_id=${2-}
+        kind=resumed
+        shift 2 || { usage; return 2; }
         ;;
       *)
         usage
@@ -1025,9 +1034,12 @@ timvisher_emacs__agent_shell_start() {
   local socket
   socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
 
+  local resume_arg=nil
+  [[ -n $resume_id ]] && resume_arg=$(timvisher_emacs__elisp_string "$resume_id")
+
   local status
   status=$(timvisher_emacs__eval_value 20 "$emacs_pid" "$socket" \
-    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg)")") || return 1
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg $resume_arg)")") || return 1
 
   local buffer buffer_arg
   buffer=$(jq -r .buffer <<< "$status") || return 1
@@ -1049,12 +1061,12 @@ timvisher_emacs__agent_shell_start() {
     then
       aictl_error \
         --code timvisher_emacs_start_failed \
-        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} went away before opening a session." \
+        --message "The ${kind} ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} went away before opening a session." \
         --suggestion "Look in that Emacs's *Messages* and the agent's stderr buffer for why"
     else
       aictl_error \
         --code timvisher_emacs_start_pending \
-        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} had no session after ${timeout}s; it may still open one." \
+        --message "The ${kind} ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} had no session after ${timeout}s; it may still open one." \
         --reason "The prompt is submitted when the shell is ready, whether or not this command is waiting." \
         --suggestion "Check on it: timvisher_emacs server eval ${emacs_pid} '(timvisher-agent-shell-start-status ${buffer_arg})'"
     fi
@@ -1083,6 +1095,43 @@ timvisher_emacs__agent_shell_start() {
       socket: $socket, buffer: $buffer, agent: $agent, session_id: $session_id,
       name: (if $name == "" then null else $name end),
       ref: (if $ref == "" then null else $ref end)}'
+}
+
+timvisher_emacs__agent_shell_resume() {
+  local -a args=()
+  local session_id=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --emacs|--agent|--prompt-file|--timeout)
+        (( 2 <= $# )) || { usage; return 2; }
+        args+=("$1" "$2")
+        shift 2
+        ;;
+      -*)
+        usage
+        return 2
+        ;;
+      *)
+        [[ -z $session_id ]] || { usage; return 2; }
+        session_id=$1
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n $session_id ]] || { usage; return 2; }
+  if [[ ! $session_id =~ ^[A-Za-z0-9][A-Za-z0-9-]{7,63}$ ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_bad_session_id \
+      --message "'${session_id}' is not a session id." \
+      --suggestion "Pass the full session id, as in the session's .jsonl file name or ListAgents"
+    return 2
+  fi
+
+  timvisher_emacs__agent_shell_start "${args[@]}" --resume-session-id "$session_id"
 }
 
 timvisher_emacs__kill_each() {
@@ -1308,6 +1357,11 @@ case ${1-} in
       start)
         shift 2
         timvisher_emacs__agent_shell_start "$@"
+        exit
+        ;;
+      resume)
+        shift 2
+        timvisher_emacs__agent_shell_resume "$@"
         exit
         ;;
       get-server)
