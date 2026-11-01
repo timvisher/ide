@@ -901,6 +901,27 @@ the secret references cannot be resolved."
         (dolist (elc (directory-files p t "\\.elc\\'"))
           (delete-file elc)))))
 
+(defun timvisher-agent-shell-mcp-servers ()
+  "Return the MCP servers agent-shell offers to every agent.
+
+Homebrew's `brew mcp-server' is found with `executable-find', so it
+resolves to /opt/homebrew on macOS and /home/linuxbrew/.linuxbrew on
+Linux, and is left out where there is no brew.  The screencap server is
+included only when its executable exists."
+  `(,@(let ((brew (executable-find "brew")))
+        (when brew
+          `(((name . "homebrew")
+             (command . ,brew)
+             (args . ("mcp-server"))
+             (env . ())))))
+    ,@(let ((screencap (expand-file-name "~/.local/bin/macos-screencap-mcp")))
+        (when (file-executable-p screencap)
+          `(((name . "screencap")
+             (command . ,screencap)
+             (args . ())
+             (env . (((name . "SCREENCAP_OUTPUT_DIR")
+                      (value . ,(expand-file-name "~/Downloads")))))))))))
+
 (use-package agent-shell
   :ensure t
   :defer t
@@ -918,18 +939,7 @@ the secret references cannot be resolved."
   (agent-shell-preferred-agent-config 'claude-code)
   (agent-shell-file-completion-enabled nil)
   :init
-  (setq agent-shell-mcp-servers
-        `(((name . "homebrew")
-           (command . "/opt/homebrew/bin/brew")
-           (args . ("mcp-server"))
-           (env . ()))
-          ,@(let ((screencap (expand-file-name "~/.local/bin/macos-screencap-mcp")))
-              (when (file-executable-p screencap)
-                `(((name . "screencap")
-                   (command . ,screencap)
-                   (args . ())
-                   (env . (((name . "SCREENCAP_OUTPUT_DIR")
-                            (value . ,(expand-file-name "~/Downloads")))))))))))
+  (setq agent-shell-mcp-servers (timvisher-agent-shell-mcp-servers))
   :config
   (setq acp-logging-enabled t)
   (setq agent-shell-logging-enabled t)
