@@ -81,6 +81,19 @@ whatever Tim is typing along with your message.
   Do not call agent-shell's start commands through emacsclient
   instead: they paste the current line of whatever buffer Tim has open
   into the new prompt.
+- Resume an existing session (one copied in by a handoff, say) in a
+  given Emacs, with its first prompt:
+
+  ```bash
+  timvisher_emacs agent-shell resume --emacs <pid> \
+    --prompt-file /tmp/x.resume-<id> <session-id>
+  ```
+
+  It takes the full session id, and prints the resumed shell's row as
+  start does. The agent must find the session from that Emacs's
+  directory. First check `agent-shell ls --local` for a shell that
+  already has that session id; resuming it again opens a second shell
+  on the same session.
 
 ## Wedged sessions
 
