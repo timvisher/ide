@@ -10,7 +10,8 @@
 ;;     '(timvisher-agent-shell-start "claude" "/abs/prompt-file")'
 ;;
 ;; A third argument, a session id, resumes that session instead of
-;; starting a new one.
+;; starting a new one, and a fourth, a directory, starts the shell there
+;; instead of in this Emacs's directory.
 ;;
 ;; The shell works in this Emacs's `agent-shell-cwd-function' directory,
 ;; the worktree for an ntmux3 Emacs.  Poll
@@ -43,11 +44,12 @@ agent has opened its session."
                                  (map-nested-elt (agent-shell--state) '(:session :id))))
                           :null))))))
 
-(defun timvisher-agent-shell-start (agent &optional prompt-file resume-session-id)
+(defun timvisher-agent-shell-start (agent &optional prompt-file resume-session-id cwd)
   "Start a new AGENT agent-shell, submitting PROMPT-FILE's contents when ready.
 
 AGENT is \"claude\" or \"codex\".  With RESUME-SESSION-ID, the shell
-resumes that session instead of starting a new one.  The shell starts
+resumes that session instead of starting a new one.  With CWD, the
+shell works in that directory instead of this Emacs's.  The shell starts
 without taking focus, and the prompt, trailing whitespace trimmed, is
 submitted once the shell is ready.  Return
 `timvisher-agent-shell-start-status' for the new shell."
@@ -64,6 +66,7 @@ submitted once the shell is ready.  Return
          ;; agent-shell--start rather than the agent's start command: the
          ;; commands display and focus the new shell, which would pull it
          ;; into the frame Tim is working in.
+         (default-directory (if cwd (file-name-as-directory cwd) default-directory))
          (buffer (apply #'agent-shell--start
                         :config config
                         :session-strategy 'new

@@ -66,6 +66,20 @@ arguments), `shell' (the buffer the stubbed start returns) and
                          inserted)))
       (delete-file prompt))))
 
+(ert-deftest test-timvisher-agent-shell-start-in-a-given-directory ()
+  "A directory makes the shell start there; without one it starts here."
+  (let ((dir (make-temp-file "tvass" t))
+        (here default-directory)
+        (seen nil))
+    (unwind-protect
+        (test-timvisher-agent-shell-start--with-stubs
+          (cl-letf (((symbol-function 'agent-shell--start)
+                     (lambda (&rest _) (push default-directory seen) shell)))
+            (timvisher-agent-shell-start "claude" nil "some-session-id" dir)
+            (timvisher-agent-shell-start "claude"))
+          (should (equal (list here (file-name-as-directory dir)) seen)))
+      (delete-directory dir))))
+
 (ert-deftest test-timvisher-agent-shell-start-codex-without-prompt ()
   "Codex starts with its own config, and no prompt means nothing inserted."
   (test-timvisher-agent-shell-start--with-stubs
