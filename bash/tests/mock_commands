@@ -138,6 +138,10 @@ mock_respond git --stdout via-prefix -- --version
 check 'mock_brew_prefix routes $(brew --prefix)/bin to the mocks' via-prefix \
   "$("$(brew --prefix)/bin/git" --version)"
 
+# Callers that resolve a command with realpath still reach it by name.
+check 'a mock reached through realpath answers as itself' via-prefix \
+  "$("$(realpath "$TIMVISHER_MOCK_DIR/bin/git")" --version)"
+
 # mock_real looks past the mocks.
 real=$(mock_real git)
 if [[ -n $real && $real != "$TIMVISHER_MOCK_DIR"/* && -x $real ]]

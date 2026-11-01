@@ -54,9 +54,12 @@ mock_command() {
   for name in "$@"
   do
     mkdir -p "$TIMVISHER_MOCK_DIR/rules/$name" || return 1
-    if [[ ! -L $TIMVISHER_MOCK_DIR/bin/$name ]]
+    # A copy, not a link: callers that resolve a command with realpath
+    # (the git wrapper finds the next git that way) must still reach
+    # the stub by the mocked name.
+    if [[ ! -e $TIMVISHER_MOCK_DIR/bin/$name ]]
     then
-      ln -s "$_mock_lib_dir/mock_command" "$TIMVISHER_MOCK_DIR/bin/$name" || return 1
+      /bin/cp "$_mock_lib_dir/mock_command" "$TIMVISHER_MOCK_DIR/bin/$name" || return 1
     fi
   done
 }
