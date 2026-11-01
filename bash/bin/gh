@@ -348,8 +348,20 @@ gh_account__from_remotes() {
   gh_account__source="the cwd's git remotes"
 }
 
+# Print the gh account configured for owner $1, or nothing.
+gh_account__account_for() {
+  local config_dir account=''
+  config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/python/bin/timvisher_gh.config}"
+  if [[ -r ${config_dir}/orgs/$1/account ]]
+  then
+    account=$(< "${config_dir}/orgs/$1/account")
+    account=${account//[[:space:]]/}
+  fi
+  printf '%s' "$account"
+}
+
 gh_account__select() {
-  local account token config_dir
+  local account token
 
   gh_account__argv=(${gh_args__pre[@]+"${gh_args__pre[@]}"} ${gh_args__command:+"$gh_args__command"} ${gh_args__rest[@]+"${gh_args__rest[@]}"})
   gh_account__owner=''
@@ -415,13 +427,7 @@ gh_account__select() {
 
   gh_account__note_mismatches
 
-  config_dir="${TIMVISHER_GH_CONFIG_DIR:-${HOME}/.config/timvisher/ide/python/bin/timvisher_gh.config}"
-  account=''
-  if [[ -r ${config_dir}/orgs/${gh_account__owner}/account ]]
-  then
-    account=$(< "${config_dir}/orgs/${gh_account__owner}/account")
-    account=${account//[[:space:]]/}
-  fi
+  account=$(gh_account__account_for "$gh_account__owner")
   if [[ -z $account ]]
   then
     aictl_listening &&
@@ -450,6 +456,53 @@ gh_account__select() {
       --doc "$gh_account__doc"
   return 0
 }
+
+# git credential helper: 'gh auth git-credential <operation>', with git's
+# request on stdin. gh answers for its active account whatever the repo,
+# but with credential.https://github.com.useHttpPath=true git sends
+# path=OWNER/REPO.git, so a 'get' is answered with the token of the
+# account configured for OWNER. Requests the shim can't map (no path, no
+# account for the owner, a token already in the environment, other
+# operations) go to gh unchanged.
+gh_credential__run() {
+  local operation=${gh_args__rest[1]-} line host='' owner='' account token
+  local -a request=()
+
+  while IFS= read -r line && [[ -n $line ]]
+  do
+    request+=("$line")
+    case $line in
+      host=*)
+        host=${line#host=}
+        ;;
+      path=*)
+        owner=${line#path=}
+        owner=${owner%%/*}
+        ;;
+    esac
+  done
+
+  if [[ $operation == get && $host == github.com && -z ${GH_TOKEN-} && -z ${GITHUB_TOKEN-} ]] &&
+       gh_account__valid_owner "$owner"
+  then
+    account=$(gh_account__account_for "$owner")
+    if [[ -n $account ]] &&
+         token=$("$gh_account__real_gh" auth token --hostname github.com --user "$account" 2>/dev/null) &&
+         [[ -n $token ]]
+    then
+      printf 'protocol=https\nhost=github.com\nusername=%s\npassword=%s\n' "$account" "$token"
+      exit 0
+    fi
+  fi
+
+  exec "$gh_account__real_gh" ${gh_args__pre[@]+"${gh_args__pre[@]}"} "$gh_args__command" ${gh_args__rest[@]+"${gh_args__rest[@]}"} \
+    < <(printf '%s\n' ${request[@]+"${request[@]}"}; printf '\n')
+}
+
+if [[ $gh_args__command == auth && ${gh_args__rest[0]-} == git-credential ]]
+then
+  gh_credential__run
+fi
 
 gh_account__select
 

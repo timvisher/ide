@@ -29,6 +29,11 @@ then
   echo "tok-${user}"
   exit 0
 fi
+if [[ $1 == auth && $2 == git-credential ]]
+then
+  echo "real-gh git-credential $3 GH_TOKEN=${GH_TOKEN-} stdin=$(paste -sd , -)"
+  exit 0
+fi
 if [[ -n ${MOCK_ARGV-} ]]
 then
   printf '%s\0' "$@" > "$MOCK_ARGV"
@@ -344,6 +349,62 @@ then
 else
   fail "human deferred; rc=$rc err='$err'"
 fi
+
+# --- gh auth git-credential: git's credential helper ---
+# run_cred <stdin> <operation>: the shim as git runs a helper.
+run_cred() {
+  local request=$1
+  shift
+  out=$(
+    cd "$tmpdir/norepo" &&
+      printf '%s' "$request" |
+      env -u GH_TOKEN -u GITHUB_TOKEN -u GH_REPO -u TIMVISHER_AGENT \
+        TIMVISHER_AICTL_LOG="$tmpdir/aictl.jsonl" \
+        PATH="$tmpdir/mockbin:$PATH" \
+        TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
+        ${extra_env[@]+"${extra_env[@]}"} \
+        "$script" auth git-credential "$@" 2>"$tmpdir/err"
+  )
+  rc=$?
+  err=$(< "$tmpdir/err")
+}
+
+expect_cred() {
+  local label=$1 want=$2
+  run_test
+  if (( rc == 0 )) && [[ $out == "$want" ]]
+  then
+    pass "$label"
+  else
+    fail "$label; rc=$rc out='$out' err='$err'"
+  fi
+}
+
+run_cred $'protocol=https\nhost=github.com\npath=ddoghq/dd-source.git\n\n' get
+expect_cred "git-credential get answers with the account mapped to the path's owner" \
+  $'protocol=https\nhost=github.com\nusername=acct-ddoghq\npassword=tok-acct-ddoghq'
+
+run_cred $'protocol=https\nhost=github.com\npath=DataDog/appgate.git\n\n' get
+expect_cred "git-credential get picks a different account for a different owner" \
+  $'protocol=https\nhost=github.com\nusername=acct-DataDog\npassword=tok-acct-DataDog'
+
+run_cred $'protocol=https\nhost=github.com\n\n' get
+expect_cred "git-credential get without a path (no useHttpPath) goes to gh unchanged" \
+  "real-gh git-credential get GH_TOKEN= stdin=protocol=https,host=github.com,"
+
+run_cred $'protocol=https\nhost=github.com\npath=unmapped/repo.git\n\n' get
+expect_cred "git-credential get for an owner with no account goes to gh" \
+  "real-gh git-credential get GH_TOKEN= stdin=protocol=https,host=github.com,path=unmapped/repo.git,"
+
+run_cred $'protocol=https\nhost=github.com\npath=ddoghq/dd-source.git\nusername=x\npassword=y\n\n' store
+expect_cred "git-credential store goes to gh" \
+  "real-gh git-credential store GH_TOKEN= stdin=protocol=https,host=github.com,path=ddoghq/dd-source.git,username=x,password=y,"
+
+extra_env=(GH_TOKEN=caller)
+run_cred $'protocol=https\nhost=github.com\npath=ddoghq/dd-source.git\n\n' get
+extra_env=()
+expect_cred "git-credential get defers to a GH_TOKEN already in the environment" \
+  "real-gh git-credential get GH_TOKEN=caller stdin=protocol=https,host=github.com,path=ddoghq/dd-source.git,"
 
 # --- the real gh is never the shim itself ---
 # A brew whose prefix leads back to the shim (a workspace's stand-in brew)
