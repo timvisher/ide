@@ -61,15 +61,22 @@ fi
 
 info 'Found %d managed block(s) in '%s'' "${#blocks[@]}" "$bashrc"
 
-# Write blocks to system-extensions
+# Write blocks to system-extensions. The blocks are the laptop's Ansible
+# and SCFW provisioning, written for macOS (/opt/homebrew, pyenv, rbenv,
+# ...), so they run only there. They stay verbatim inside the gate, so
+# re-running this after an Ansible or SCFW update loses nothing.
 {
     printf '# Managed blocks extracted from bashrc by extract_managed_blocks\n'
     printf '# Re-run ~/bin/extract_managed_blocks after Ansible or SCFW updates\n'
+    printf '# They are the macOS laptop'"'"'s provisioning, so they run only on macOS.\n'
     printf '\n'
+    # shellcheck disable=SC2016 # the gate is written literally
+    printf 'if [[ $(uname) == Darwin ]]\nthen\n'
     for block in "${blocks[@]}"
     do
         printf '%s\n\n' "$block"
     done
+    printf 'fi\n'
 } > "$target_file"
 
 info 'Wrote managed blocks to '%s'' "$target_file"

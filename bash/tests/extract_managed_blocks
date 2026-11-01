@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # bash -c scripts expand their own args
+
+# Tests for bash/bin/extract_managed_blocks: the extracted blocks are the
+# macOS laptop's provisioning, kept verbatim inside a Darwin gate.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+core="$(cd "$(dirname "$0")/../.." && pwd -P)"
+# shellcheck source=lib/timvisher_tests.bash
+source "$core/bash/tests/lib/timvisher_tests.bash" || exit 1
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+
+# A scratch repo holding the extractor and a bashrc with two managed blocks.
+repo=$t/repo
+home=$t/home
+mkdir -p "$repo/bash/bin" "$home/.config/timvisher/ide/bash/functions" "$t/fakebin"
+cp "$core/bash/bin/extract_managed_blocks" "$repo/bash/bin/"
+ln -s "$core/bash/functions" "$home/.functions"
+cat > "$repo/bash/bashrc" <<'RC'
+echo before >/dev/null
+# BEGIN ANSIBLE MANAGED BLOCK
+export EMB_ANSIBLE=1
+eval "$(/opt/homebrew/bin/brew shellenv)"
+# END ANSIBLE MANAGED BLOCK
+
+# BEGIN SCFW MANAGED BLOCK
+export EMB_SCFW=1
+# END SCFW MANAGED BLOCK
+echo after >/dev/null
+RC
+if ! git -C "$repo" init -q
+then
+  echo 'repo setup failed' >&2
+  exit 1
+fi
+
+timvisher_tests_with_home "$home" bash "$repo/bash/bin/extract_managed_blocks" >/dev/null 2>&1
+rc=$?
+out=$home/.config/timvisher/ide/bash/functions/managed-blocks.bash
+
+run_test
+if (( rc == 0 )) && [[ -f $out ]] &&
+   grep -qx 'if \[\[ \$(uname) == Darwin \]\]' "$out" && [[ $(tail -n 1 "$out") == 'fi' ]] &&
+   grep -qxF 'eval "$(/opt/homebrew/bin/brew shellenv)"' "$out" &&
+   grep -qx 'export EMB_SCFW=1' "$out"
+then
+  pass "the blocks are written verbatim inside a Darwin gate"
+else
+  fail "extracted file: rc=$rc $(cat "$out" 2>&1)"
+fi
+
+run_test
+if ! grep -q 'MANAGED BLOCK' "$repo/bash/bashrc" && grep -q before "$repo/bash/bashrc" && grep -q after "$repo/bash/bashrc"
+then
+  pass "the blocks are removed from bashrc, the rest kept"
+else
+  fail "bashrc after extraction: $(cat "$repo/bash/bashrc")"
+fi
+
+as_os() {
+  printf '#!/bin/sh\necho %s\n' "$1" > "$t/fakebin/uname"
+  chmod +x "$t/fakebin/uname"
+  env -i HOME="$home" PATH="$t/fakebin:/usr/bin:/bin" \
+    "$BASH" --noprofile --norc -c 'source "$1"; printf "%s|%s" "${EMB_ANSIBLE-}" "${EMB_SCFW-}"' _ "$out" 2>"$t/err"
+}
+
+run_test
+got=$(as_os Linux)
+if [[ $got == '|' && ! -s $t/err ]]
+then
+  pass "off macOS the blocks don't run: nothing set, nothing printed"
+else
+  fail "Linux: got '$got' stderr '$(cat "$t/err")'"
+fi
+
+run_test
+got=$(as_os Darwin)
+if [[ $got == '1|1' ]]
+then
+  pass "on macOS the blocks run"
+else
+  fail "Darwin: got '$got'"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))
