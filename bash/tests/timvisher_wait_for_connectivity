@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+# Tests for timvisher_wait_for_connectivity's connection probe: BSD nc
+# (macOS) takes -G for the connect timeout, Linux nc only -w.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+script="$(cd "$(dirname "$0")/.." && pwd -P)/bin/timvisher_wait_for_connectivity"
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+
+mkdir -p "$t/bin"
+# nc that logs its arguments and succeeds when NC_RC says so; a BSD-only
+# flag fails the way netcat-openbsd does on Linux.
+cat > "$t/bin/nc" <<'NC'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NC_LOG"
+for arg in "$@"
+do
+  if [[ $arg == -[!-]*G* && $UNAME == Linux ]]
+  then
+    echo "nc: invalid option -- 'G'" >&2
+    exit 1
+  fi
+done
+exit "${NC_RC:-0}"
+NC
+cat > "$t/bin/uname" <<'UNAME'
+#!/usr/bin/env bash
+echo "$UNAME"
+UNAME
+chmod +x "$t/bin/nc" "$t/bin/uname"
+
+run_wait() {
+  local uname=$1
+  shift
+  : > "$t/nc.log"
+  SECONDS=0
+  env UNAME="$uname" NC_LOG="$t/nc.log" PATH="$t/bin:$PATH" TIMVISHER_AGENT=1 \
+    "$script" "$@" >/dev/null 2>&1
+  rc=$?
+  elapsed=$SECONDS
+  nc_args=$(head -n 1 "$t/nc.log")
+}
+
+run_test
+run_wait Linux example.com 443 5
+if (( rc == 0 && elapsed < 3 )) && [[ $nc_args == '-zv -w1 example.com 443' ]]
+then
+  pass "Linux: nc gets -w and the wait returns at once"
+else
+  fail "Linux: rc=$rc after ${elapsed}s, nc args '$nc_args'"
+fi
+
+run_test
+run_wait Darwin example.com 443 5
+if (( rc == 0 )) && [[ $nc_args == '-zvG1 example.com 443' ]]
+then
+  pass "macOS: nc gets -G as before"
+else
+  fail "macOS: rc=$rc, nc args '$nc_args'"
+fi
+
+run_test
+run_wait Linux -G 3 example.com 8443 5
+if (( rc == 0 )) && [[ $nc_args == '-zv -w3 example.com 8443' ]]
+then
+  pass "Linux: -G sets the -w timeout"
+else
+  fail "Linux -G 3: rc=$rc, nc args '$nc_args'"
+fi
+
+run_test
+NC_RC=1 run_wait Linux example.com 443 1
+if (( rc == 1 && elapsed < 5 ))
+then
+  pass "an unreachable host still times out"
+else
+  fail "unreachable: rc=$rc after ${elapsed}s"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))
