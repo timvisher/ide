@@ -40,14 +40,26 @@ when you named the Emacs yourself.
 `send --emacs <pid>` names the host outright and skips resolution. Use
 it when resolution refuses and `ls` can show you which Emacs actually
 holds the shell -- that is the supported way through, not a
-hand-built `emacsclient --eval`.
+hand-built `emacsclient --eval`. It names an Emacs on this host, so
+it does not combine with a `<peer>:<session>` address; on a peer, run
+the send there.
+
+A session on another host (a peer, such as a workspace or the laptop)
+is `<peer>:<session>`, for example `timvisher-ide:cfctl-3a`. A bare
+name that no session here has is looked up on the peers, and resolves
+when exactly one peer has it; a local session always wins. Peers are
+the files in `~/.config/timvisher/agent-shell/peers.d/`;
+`timvisher_emacs agent-shell peers` lists them and whether each
+answers.
 
 ## Sending a message
 
 1. Write the message to a file outside any worktree (`/tmp/x.<name>`)
    so writing it takes no worktree lock.
 2. Start it with a `From the <who> agent (session <name or id>)` line.
-   Text you send shows up as though Tim typed it.
+   Text you send shows up as though Tim typed it. Sending to another
+   host, name your session as that host can reach it:
+   `(session <your peer name>:<name>)`.
 3. Send it:
 
    ```bash
@@ -56,7 +68,11 @@ hand-built `emacsclient --eval`.
 
 It prints `submitted` when the shell was idle, or `queued` when it
 was busy or Tim had something half-typed at its prompt. Queued
-messages run after the current or next turn ends. Do not build your
+messages run after the current or next turn ends. To a peer it can
+also print `duplicate` (that message was already delivered) or
+`deferred`: the peer is unreachable and the message waits in an outbox
+until it reconnects. `deferred` is not delivered yet; do not treat it
+as `queued`. Do not build your
 own `emacsclient --eval` to insert and submit text: that sends
 whatever Tim is typing along with your message.
 
@@ -65,9 +81,15 @@ whatever Tim is typing along with your message.
 - `timvisher_emacs agent-shell ls` lists every agent-shell in every live
   Emacs with its name, ref, status, queued prompts, buffer and
   directory, and a `blocked` session's pending permission prompt
-  title: JSON when you run it (no terminal), a table for Tim.
+  title: JSON when you run it (no terminal), a table for Tim. With
+  peers configured it lists theirs too: each row has `host` (null
+  here) and `address` (what to pass to `send`), under
+  `schema_version` 2. Peer listings are cached for 30s (`--refresh`
+  skips the cache). `--local` lists only this host, exactly as before;
+  use it whenever you look for a session here, such as your own row.
 - `timvisher_emacs agent-shell get-server <session>` prints the Emacs
-  pid and server socket hosting a session, as JSON.
+  pid and server socket hosting a session, as JSON. It, `is-wedged`
+  and `recover` work only on this host's sessions.
 - Both probe every live Emacs, and an Emacs busy running Lisp cannot
   answer until it yields. `ls` reports one that does not answer within
   `--timeout` (default 60 seconds) under `.unreachable` and leaves
@@ -76,7 +98,10 @@ whatever Tim is typing along with your message.
   happens, so you can tell a complete roster from a partial one
   without knowing the field exists: 0 every server answered, 3 listed
   but incomplete, 1 failed, 2 usage. A missing session is only missing
-  if `ls` exited 0. `get-server` says
+  if `ls` exited 0. With peers, `.unreachable` also carries the
+  Emacsen a peer could not reach, with that peer as `host`, and they
+  count toward exit 3 too; an unreachable peer itself is in `.peers`.
+  `get-server` says
   `timvisher_emacs_session_scan_unreachable` rather than
   `timvisher_emacs_no_such_session` when a busy Emacs could have been
   hosting the shell it was looking for. Every Emacs is probed at once,
