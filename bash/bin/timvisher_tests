@@ -263,6 +263,17 @@ new_home() {
   /bin/cp -R "$template" "$home" || return 1
   mkdir -p "$home/.local/state/timvisher_tests/hooks" \
            "$home/.local/state/timvisher/wrappers/git" || return 1
+  # GIT_CONFIG_* points core.hooksPath at the empty hooks dir, but git
+  # drops those variables for the receiving side of a push to a local
+  # repo, which then reads the global config and runs whatever hooks it
+  # names (system-extensions' Datadog hooks scan for secrets, seconds
+  # per push). ~/.gitconfig is read after the XDG config, so it wins.
+  # Never write through a link into a real file.
+  if [[ ! -e $home/.gitconfig && ! -L $home/.gitconfig ]]
+  then
+    printf '[core]\n\thooksPath = %s\n' "$home/.local/state/timvisher_tests/hooks" \
+      > "$home/.gitconfig" || return 1
+  fi
 }
 
 home_env() {
