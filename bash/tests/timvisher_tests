@@ -288,6 +288,8 @@ class Fixture(unittest.TestCase):
             self.assertEqual(os.path.join(home, ".config"), os.environ["XDG_CONFIG_HOME"])
             self.assertEqual(os.path.join(home, "git"), os.environ["TIMVISHER_GIT_HOME"])
             self.assertTrue(os.path.islink(os.path.join(home, "git", "ide")))
+            with open(os.path.join(home, ".gitconfig")) as f:
+                self.assertIn(f"hooksPath = {home}/", f.read())
         self.assertEqual(outer, os.environ["HOME"])
         self.assertFalse(os.path.exists(home))
 
