@@ -6,7 +6,7 @@
 # Covers alias resolution: file-level aliases (which beat all other
 # rules), ~/git/ prefix, directory-level aliases (exact match and
 # subpath suffix), $HOME-relative fallback, symlink canonicalization
-# of input and alias keys, and bare-filename inputs.
+# of input and alias keys, bare-filename inputs, and ~/git as a symlink.
 
 failures=0
 tests=0
@@ -25,6 +25,7 @@ run_test() {
 }
 
 tests_dir="$(cd "$(dirname "$0")" && pwd)" || exit 1
+source "${tests_dir}/lib/timvisher_tests.bash" || exit 1
 funcs_dir="$(cd "${tests_dir}/../functions" && pwd)" || exit 1
 
 tmpdir=
@@ -198,6 +199,51 @@ mkdir -p "${tmpdir}/outside/elsewhere"
 assert_eq "resolver: out-of-\$HOME path falls back to basename" \
   "elsewhere" \
   "$(run_resolve "${tmpdir}/outside/elsewhere")"
+
+# --- ~/git as a symlink to another volume ---
+sym_home="${tmpdir}/sym-home"
+sym_vol_git="${tmpdir}/Volumes/Dev/git"
+mkdir -p "$sym_home" "${sym_vol_git}/timvisher/ide/main" || {
+  echo "FAIL: setup symlinked ~/git" >&2
+  exit 1
+}
+ln -s "$sym_vol_git" "${sym_home}/git" || {
+  echo "FAIL: setup symlinked ~/git ln" >&2
+  exit 1
+}
+
+run_sym() {
+  local fn=$1
+  shift
+  # shellcheck disable=SC2016
+  timvisher_tests_with_home "$sym_home" bash -c '
+    shopt -s extglob
+    source "$1/tmux.bash"
+    fn=$2
+    shift 2
+    "$fn" "$@"
+  ' _ "$funcs_dir" "$fn" "$@"
+}
+
+run_test
+assert_eq "symlinked ~/git: path through the symlink" \
+  "timvisher/ide/main" \
+  "$(run_sym ntmux3__session_name_from_path "${sym_home}/git/timvisher/ide/main")"
+
+run_test
+assert_eq "symlinked ~/git: resolved volume path" \
+  "timvisher/ide/main" \
+  "$(run_sym ntmux3__session_name_from_path "${sym_vol_git}/timvisher/ide/main")"
+
+run_test
+assert_eq "symlinked ~/git: resolver keeps the ~/git-relative name" \
+  "timvisher/ide/main" \
+  "$(run_sym ntmux3__resolve_session_name "${sym_vol_git}/timvisher/ide/main")"
+
+run_test
+assert_eq "symlinked ~/git: git root resolves to the volume" \
+  "$(cd "$sym_vol_git" && pwd -P)" \
+  "$(run_sym ntmux3__git_root_real)"
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
