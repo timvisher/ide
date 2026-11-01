@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hourly: renders arrive at a few hundred a day, so an hour of growth
+  is well under a GB and the run itself only lists one directory.
+
+  __HOME__ is substituted with the real home directory by the deployer
+  (LaunchAgents/bin/start); launchd does not expand ~ in path values.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.twonegatives.wallpaper-cache-trim</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/bin/timvisher_wallpaper_cache_trim</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>__HOME__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>3600</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/timvisher_wallpaper_cache_trim.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/timvisher_wallpaper_cache_trim.log</string>
+</dict>
+</plist>
