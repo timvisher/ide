@@ -178,6 +178,13 @@ suite() {
 suite "$fcore/bash/tests/pass" <<'SUITE'
 echo 'PASS: fine'
 SUITE
+mkdir -p "$fcore/bash/tests/integration" "$fover/bash/tests/integration" || exit 1
+suite "$fcore/bash/tests/integration/real" <<'SUITE'
+echo 'PASS: against the real thing'
+SUITE
+suite "$fover/bash/tests/integration/overlay_real" <<'SUITE'
+echo 'PASS: overlay against the real thing'
+SUITE
 suite "$fcore/bash/tests/fail" <<'SUITE'
 echo 'FAIL: broken thing'
 exit 1
@@ -393,6 +400,21 @@ check 'the template build runs a timvisher_uv stub, not the real one' \
 check 'the timvisher_uv stub succeeds' test "$(cat "$tmpdir/install_uv.rc")" = 0
 check 'the run directory is removed' \
       test -z "$(/usr/bin/find "$tmpdir/runtmp" -mindepth 1 -maxdepth 1)"
+check 'a default run skips the integration suites' \
+      absent '/bash/tests/integration/' "$results"
+
+run_fixture --integration
+check '--integration runs the integration suites' \
+      has_result 'test: ide/bash/tests/integration/real pass'
+check "--integration runs the overlay's integration suites" \
+      has_result 'test: system-extensions/bash/tests/integration/overlay_real pass'
+check '--integration still runs the other suites' \
+      has_result 'test: ide/bash/tests/pass pass'
+
+run_fixture --suite bash/tests/integration/real
+rc=$?
+check 'an integration suite named with --suite runs without --integration' \
+      eval '(( rc == 0 )) && has_result "test: ide/bash/tests/integration/real pass"'
 
 run_fixture --suite bash/tests/pass --suite "$fover/bash/tests/overlay_pass"
 rc=$?
