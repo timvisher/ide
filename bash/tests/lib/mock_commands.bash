@@ -30,6 +30,7 @@
 
 _mock_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
 _mock_seq=0
+_mock_stub=$(< "$_mock_lib_dir/mock_command") || return 1
 
 # Create the mock dir and put its bin first on PATH. Also links
 # $TIMVISHER_MOCK_DIR/prefix/bin to that bin, for units that run
@@ -56,10 +57,14 @@ mock_command() {
     mkdir -p "$TIMVISHER_MOCK_DIR/rules/$name" || return 1
     # A copy, not a link: callers that resolve a command with realpath
     # (the git wrapper finds the next git that way) must still reach
-    # the stub by the mocked name.
+    # the stub by the mocked name. It runs under this suite's bash, not
+    # whichever bash a caller's PATH finds first (macOS's /bin/bash is
+    # 3.2).
     if [[ ! -e $TIMVISHER_MOCK_DIR/bin/$name ]]
     then
-      /bin/cp "$_mock_lib_dir/mock_command" "$TIMVISHER_MOCK_DIR/bin/$name" || return 1
+      printf '#!%s\n%s\n' "$BASH" "${_mock_stub#*$'\n'}" > "$TIMVISHER_MOCK_DIR/bin/$name" &&
+        chmod +x "$TIMVISHER_MOCK_DIR/bin/$name" ||
+        return 1
     fi
   done
 }
