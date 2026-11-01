@@ -124,7 +124,8 @@ mock_respond() {
 }
 
 # Forget the rules (all commands, or the named ones) and the record of
-# calls, so the next test starts clean. The stubs and passthroughs stay.
+# calls, so the next test starts clean. The stubs and passthroughs stay,
+# and so do unexpected calls, until mock_finish reports them.
 mock_reset() {
   local name
   if (( 0 == $# ))
@@ -137,7 +138,6 @@ mock_reset() {
     done
   fi
   : > "$TIMVISHER_MOCK_DIR/calls"
-  : > "$TIMVISHER_MOCK_DIR/unexpected"
 }
 
 # Print the recorded calls, all or those to <name>, one per line as
@@ -193,8 +193,9 @@ mock_unexpected() {
 }
 
 # Report each unexpected call as a FAIL: line on stderr, the way suites
-# report failures, and fail if there were any. Run it at the end of a
-# suite, or after a test that must not reach past its rules.
+# report failures, forget them, and fail if there were any. Run it at
+# the end of a suite, or after a test that must not reach past its
+# rules.
 mock_finish() {
   local line unexpected=0
   while IFS= read -r line
@@ -202,6 +203,7 @@ mock_finish() {
     printf 'FAIL: mock: unexpected call: %s\n' "$line" >&2
     unexpected=1
   done < "$TIMVISHER_MOCK_DIR/unexpected"
+  : > "$TIMVISHER_MOCK_DIR/unexpected"
   (( 0 == unexpected ))
 }
 
