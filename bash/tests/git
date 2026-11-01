@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 
 # Tests for git wrapper
 
@@ -37,52 +39,48 @@ tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 
-# Create a mock brew prefix with git inside it
-mkdir -p "$tmpdir/prefix/bin" || exit 1
-cat > "$tmpdir/prefix/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-echo "real-git $*"
-[[ -z ${TEST_PRINT_TRACE2-} ]] || echo "trace2=${GIT_TRACE2_EVENT-unset}"
-MOCK
-chmod +x "$tmpdir/prefix/bin/git"
+# The real git behind the wrapper is a mock. By default it echoes its
+# argv, so tests see what the wrapper passed through. brew --prefix
+# points at the mocks too, for wrappers that still shell out to it.
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_brew_prefix
 
-mkdir -p "$tmpdir/mockbin" || exit 1
-cat > "$tmpdir/mockbin/brew" <<MOCK
-#!/usr/bin/env bash
-echo "$tmpdir/prefix"
-MOCK
-chmod +x "$tmpdir/mockbin/brew"
+git_echoes() {
+  mock_reset git
+  mock_passthrough git ''
+  # shellcheck disable=SC2016
+  mock_respond git --run '
+    echo "real-git $*"
+    [[ -z ${TEST_PRINT_TRACE2-} ]] || echo "trace2=${GIT_TRACE2_EVENT-unset}"' -- ...
+}
+git_echoes
 
 # Mock ps: lets tests assert behavior based on simulated parent command
-# (dolt/bd/etc.).  When TEST_PARENT_CMD is set and the wrapper is asking
-# for the parent's comm, return it; otherwise fall through to real ps.
-cat > "$tmpdir/mockbin/ps" <<'MOCK'
-#!/usr/bin/env bash
-if [[ -n ${TEST_PARENT_CMD:-} && "$*" == *"-o comm="* ]]
-then
-  echo "$TEST_PARENT_CMD"
-  exit 0
-fi
-exec /bin/ps "$@"
-MOCK
-chmod +x "$tmpdir/mockbin/ps"
+# (dolt/bd/etc.). When TEST_PARENT_CMD is set and the wrapper is asking
+# for its parent's comm, answer with it; otherwise pass through to the
+# real ps (the ancestor walk reads the real process table).
+mock_passthrough ps /bin/ps
+# shellcheck disable=SC2016
+mock_respond ps --run '
+  [[ -n ${TEST_PARENT_CMD:-} ]] || exec /bin/ps "$@"
+  echo "$TEST_PARENT_CMD"' -- -p '*' -o comm=
 
 # resolve_next_git walks PATH, finds itself, returns the next entry.
 # We need:
 #   1. A PATH entry for the wrapper itself (so "self" is found).
-#   2. The mock git immediately after (so it becomes "next").
+#   2. The mocks immediately after (so the mock git becomes "next").
 # We cannot reuse $PATH because the user's $PATH already contains a path
 # to the wrapper followed by real git — which would shadow the mock. So
 # we construct a minimal PATH:
 #   - selflink/ → symlink to the wrapper under test
-#   - prefix/bin/ → mock git
-#   - $tmpdir/mockbin → mock `brew` for wrappers that still shell out to it
+#   - the mocks: git, ps, brew
 #   - $sys_path → bash builtins (`realpath`, `mktemp`, etc.) but NOT
 #     another git binary ahead of the mock
 mkdir -p "$tmpdir/selflink" || exit 1
 ln -s "$script" "$tmpdir/selflink/git"
 
-test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:$sys_path"
+test_path="$tmpdir/selflink:$TIMVISHER_MOCK_DIR/bin:$sys_path"
 
 run_wrapper() {
   PATH="$test_path" \
@@ -257,19 +255,10 @@ fi
 # draft PR push grant allow-path
 # ---------------------------------------------------------------------------
 
-mkdir -p "$tmpdir/grantprefix/bin" "$tmpdir/grantselflink" "$tmpdir/fakegrant-bin" || exit 1
-cat > "$tmpdir/grantprefix/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-if [[ $1 == symbolic-ref ]]
-then
-  echo refs/remotes/origin/trunk
-  exit 0
-fi
-echo "real-git $*"
-MOCK
-chmod +x "$tmpdir/grantprefix/bin/git"
-ln -s "$script" "$tmpdir/grantselflink/git"
-grant_path="$tmpdir/grantselflink:$tmpdir/grantprefix/bin:$tmpdir/mockbin:$sys_path"
+mkdir -p "$tmpdir/fakegrant-bin" || exit 1
+# The wrapper resolves the default branch to refuse pushing it.
+mock_respond git --stdout refs/remotes/origin/trunk -- symbolic-ref ...
+grant_path=$test_path
 for faketool in timvisher_gh timvisher_git
 do
   cat > "$tmpdir/fakegrant-bin/$faketool" <<'FAKE_TOOL'
@@ -418,6 +407,8 @@ else
   fail "passes through all args: got '${result}'"
 fi
 
+git_echoes
+
 # ---------------------------------------------------------------------------
 # Agent invocation log routing
 #
@@ -516,7 +507,7 @@ fi
 # ("$BASH"), so 'bash' isn't resolved through nojq_path and macOS's 3.2
 # /bin/bash isn't used.
 run_test
-nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
+nojq_path="$tmpdir/selflink:$TIMVISHER_MOCK_DIR/bin:/bin"
 log_state="$tmpdir/xdg-state-nojq"
 rm -rf "$log_state"
 TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
@@ -939,28 +930,28 @@ fi
 # Upstream guard integration tests (using real git repos)
 # ---------------------------------------------------------------------------
 
-# The real git, past every wrapper checkout on PATH (the installed ide's
-# ~/bin/git, say), not just this one.
-real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$script") ||
-  { echo "No real git found" >&2; exit 1; }
+# For upstream guard tests, the wrapper needs real repository state (not
+# the echo mock) because it calls rev-parse/config internally. A second
+# mock dir, whose git passes straight through to the real git, sits
+# behind the wrapper on a parallel PATH.
+real_mock_dir=$(
+  mock_init &&
+    mock_passthrough git "$real_git" &&
+    mock_passthrough ps /bin/ps &&
+    printf '%s\n' "$TIMVISHER_MOCK_DIR"
+) || { echo "cannot create the real-git mock dir" >&2; exit 1; }
 
-# For upstream guard tests, the wrapper needs the real git binary (not the
-# echo mock) because it calls rev-parse/config internally. Build a parallel
-# PATH that points at real git instead of the echo mock.
-mkdir -p "$tmpdir/real-prefix/bin" || exit 1
-ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
-
-test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:$sys_path"
+test_path_real_git="$tmpdir/selflink:$real_mock_dir/bin:$sys_path"
 
 run_wrapper_real_git() {
   TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
-  PATH="$test_path_real_git" \
+  TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
 run_wrapper_real_git_agent() {
   TIMVISHER_AGENT=true \
-  PATH="$test_path_real_git" \
+  TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
 }
 
@@ -1158,7 +1149,7 @@ sf_setup() {
 sf_fetch() {
   ( cd "$sf_work" && \
     TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
-    PATH="$test_path_real_git" \
+    TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
     bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch" 2>&1 ) || true
 }
 
@@ -1611,6 +1602,8 @@ then
 else
   fail "git wrapper without aictl.bash: rc=$rc got '${result}'"
 fi
+
+mock_finish || (( failures += 1 ))
 
 echo "Results: $((tests - failures))/${tests} passed"
 
