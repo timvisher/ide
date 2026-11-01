@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+
+# Query the tool logs written through bash/functions/tool_log.bash.
+
+# shellcheck source=/dev/null
+shopt -s extglob
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=../functions/tool_log.bash
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash" ||
+  die "Unable to source tool_log.bash"
+
+show_help() {
+  cat <<'HELP'
+Usage: timvisher_tool_log [--tool TOOL]... [--caller WHO] [--since WHEN]
+                              [--until WHEN] [--json]
+       timvisher_tool_log --path
+
+Print the logged invocations of wrapped tools, oldest first.
+
+  --tool TOOL    only this tool's log (repeatable; default: every log)
+  --caller WHO   only calls whose caller name (e.g. cfctl-25), session id
+                 prefix, or kind (claude, codex, human) is WHO
+  --since WHEN   only calls at or after WHEN: 30m, 2h, 3d, or an ISO 8601
+                 UTC time such as 2026-11-01T12:00
+  --until WHEN   only calls before WHEN, same forms
+  --json         print the matching JSON lines instead of a table
+  --path         print the log directory and exit
+
+Example: who created workspaces today?
+  timvisher_tool_log --tool workspaces --since 1d | grep ' create '
+HELP
+}
+
+usage() {
+  show_help >&2
+}
+
+# Seconds since the epoch for a WHEN argument.
+when_epoch() {
+  local when=$1 n
+  if [[ $when =~ ^([0-9]+)([smhd])$ ]]
+  then
+    n=${BASH_REMATCH[1]}
+    case ${BASH_REMATCH[2]} in
+      s) ;;
+      m) (( n *= 60 )) ;;
+      h) (( n *= 3600 )) ;;
+      d) (( n *= 86400 )) ;;
+    esac
+    printf '%s\n' "$(( EPOCHSECONDS - n ))"
+    return 0
+  fi
+  jq -nr --arg w "$when" '
+    ($w | if test("T") then . else . + "T00:00" end
+        | if test("Z$") then . else . + "Z" end
+        | if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end
+        | sub("\\.[0-9]+Z$"; "Z")
+        | fromdateiso8601)' 2>/dev/null
+}
+
+tools=()
+caller=''
+since=''
+until=''
+json=false
+
+while (( 0 < $# ))
+do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --path)
+      timvisher_tool_log_dir
+      exit 0
+      ;;
+    --tool|--caller|--since|--until)
+      if [[ -z ${2-} ]]
+      then
+        error '%s needs a value' "$1"
+        usage
+        exit 1
+      fi
+      case $1 in
+        --tool) tools+=("$2") ;;
+        --caller) caller=$2 ;;
+        --since) since=$(when_epoch "$2") || since='' ;;
+        --until) until=$(when_epoch "$2") || until='' ;;
+      esac
+      if [[ $1 == --since && -z $since ]] || [[ $1 == --until && -z $until ]]
+      then
+        error "Can't read a time from '%s'" "$2"
+        exit 1
+      fi
+      shift 2
+      ;;
+    --json)
+      json=true
+      shift
+      ;;
+    *)
+      error "Unknown argument '%s'" "$1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+dir=$(timvisher_tool_log_dir)
+files=()
+if (( 0 < ${#tools[@]} ))
+then
+  for tool in "${tools[@]}"
+  do
+    for file in "$dir/$tool".jsonl "$dir/$tool".jsonl.+([0-9]).gz
+    do
+      [[ -r $file ]] && files+=("$file")
+    done
+  done
+else
+  for file in "$dir"/*.jsonl "$dir"/*.jsonl.+([0-9]).gz
+  do
+    [[ -r $file ]] && files+=("$file")
+  done
+fi
+
+(( 0 < ${#files[@]} )) || exit 0
+
+# Rotated generations are gzipped; read every file as one stream.
+lines() {
+  local file
+  for file in "${files[@]}"
+  do
+    if [[ $file == *.gz ]]
+    then
+      gzip -dc -- "$file"
+    else
+      cat -- "$file"
+    fi
+  done
+}
+
+# shellcheck disable=SC2016 # jq variables, not shell
+filter='
+  select(($since == "" or ($since | tonumber) <= .epoch)
+         and ($until == "" or .epoch < ($until | tonumber))
+         and ($caller == ""
+              or .caller.name == $caller
+              or .caller.kind == $caller
+              or ((.caller.session_id // "") | startswith($caller))))'
+
+if [[ $json == true ]]
+then
+  lines | jq -c --arg since "$since" --arg until "$until" --arg caller "$caller" \
+    "$filter" | jq -sc 'sort_by(.epoch)[]'
+else
+  lines | jq -c --arg since "$since" --arg until "$until" --arg caller "$caller" \
+    "$filter" |
+    jq -sr 'sort_by(.epoch)[]
+      | [ .ts,
+          .host,
+          .tool,
+          (if .caller.kind == "claude" then ((.caller.name // "") | if . == "" then null else . end) // (.caller.session_id // "")[0:8]
+           elif .caller.kind == "codex" then "codex:\(.caller.pid)"
+           else "human:\(.caller.tty)" end),
+          "rc=\(.rc)",
+          "\(.duration_ms)ms",
+          (.argv | join(" "))
+        ] | join("  ")'
+fi
