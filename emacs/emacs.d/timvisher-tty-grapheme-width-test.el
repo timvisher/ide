@@ -124,8 +124,11 @@ FUNC is the composition rule's function, `font-shape-gstring' if nil."
           (should (equal (append flag-rules (list rule))
                          (aref composition-function-table #x1F3F3)))
           (should (member (timvisher-tty-grapheme-width--presentation-rule
-                           #x26A0)
-                          (aref composition-function-table #x26A0)))
+                           #x1F575)
+                          (aref composition-function-table #x1F575)))
+          (should-not (member (timvisher-tty-grapheme-width--presentation-rule
+                               #x26A0)
+                              (aref composition-function-table #x26A0)))
           (should-not (aref composition-function-table ?\s))
           (timvisher-tty-emoji-presentation-mode -1)
           (should (equal flag-rules

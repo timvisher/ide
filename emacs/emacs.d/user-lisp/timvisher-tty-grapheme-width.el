@@ -14,27 +14,22 @@
 ;; of those sequences 2 columns wide.  Graphic frames are untouched.
 ;;
 ;; `timvisher-tty-emoji-presentation-mode' additionally shows bare
-;; emoji-capable symbols such as 🏳 or ⚠ as their 2-column emoji
-;; on text terminals, by sending VS16 after them.
+;; symbols that only have color emoji glyphs, such as 🏳, as their
+;; 2-column emoji on text terminals, by sending VS16 after them.
 
 ;;; Code:
 
-;; VS16 bases from Unicode's emoji-variation-sequences.txt that lie in
-;; the blocks Ghostty 1.4 lets a 1-column glyph spill out of (its
-;; is_symbol: Arrows, Dingbats, Emoticons, Miscellaneous Symbols,
-;; Enclosed Alphanumerics and Supplement, Miscellaneous Symbols and
-;; Pictographs, Transport and Map Symbols) and that `char-width' calls 1
-;; column.  ASCII keycap bases and symbols like ™ are left out so
-;; ordinary text never turns into emoji.
+;; VS16 bases in Miscellaneous Symbols and Pictographs and Transport
+;; and Map Symbols that `char-width' calls 1 column.  These exist only
+;; as color emoji glyphs (Ghostty on macOS draws every one from Apple
+;; Color Emoji), so Ghostty squeezes them into one cell or spills them
+;; over the next.  Bases in other blocks, such as ⚠ ❤ ✔ ↔, have
+;; monochrome text glyphs in ordinary fonts and are left as text.
 (defconst timvisher-tty-grapheme-width--emoji-bases
-  (concat "↔↕↖↗↘↙↩↪Ⓜ☀☁☂☃☄☎☑☘☝☠☢☣☦☪☮"
-          "☯☸☹☺♀♂♟♠♣♥♦♨♻♾⚔⚕⚖⚗⚙⚛⚜⚠⚧⚰"
-          "⚱⛈⛏⛑⛓⛩⛰⛱⛴⛷⛸⛹✂✈✉✌✍✏✒✔✖✝✡✳"
-          "✴❄❇❣❤➡🅰🅱🅾🅿🌡🌤🌥🌦🌧🌨🌩🌪🌫🌬🌶🍽🎖🎗"
-          "🎙🎚🎛🎞🎟🏋🏌🏍🏎🏔🏕🏖🏗🏘🏙🏚🏛🏜🏝🏞🏟🏳🏵🏷"
-          "🐿👁📽🕉🕊🕯🕰🕳🕴🕵🕶🕷🕸🕹🖇🖊🖋🖌🖍🖐🖥🖨🖱🖲"
-          "🖼🗂🗃🗄🗑🗒🗓🗜🗝🗞🗡🗣🗨🗯🗳🗺🛋🛍🛎🛏🛠🛡🛢🛣"
-          "🛤🛥🛩🛰🛳")
+  (concat "🌡🌤🌥🌦🌧🌨🌩🌪🌫🌬🌶🍽🎖🎗🎙🎚🎛🎞🎟🏋🏌🏍🏎🏔"
+          "🏕🏖🏗🏘🏙🏚🏛🏜🏝🏞🏟🏳🏵🏷🐿👁📽🕉🕊🕯🕰🕳🕴🕵"
+          "🕶🕷🕸🕹🖇🖊🖋🖌🖍🖐🖥🖨🖱🖲🖼🗂🗃🗄🗑🗒🗓🗜🗝🗞"
+          "🗡🗣🗨🗯🗳🗺🛋🛍🛎🛏🛠🛡🛢🛣🛤🛥🛩🛰🛳")
   "Symbols `timvisher-tty-emoji-presentation-mode' shows as emoji.")
 
 (defun timvisher-tty-grapheme-width--wide-cluster-p (chars)
@@ -122,7 +117,7 @@ the screen."
 
 ;;;###autoload
 (define-minor-mode timvisher-tty-emoji-presentation-mode
-  "Show bare emoji-capable symbols as 2-column emoji on text terminals.
+  "Show bare color-only emoji symbols as 2-column emoji on text terminals.
 Symbols in `timvisher-tty-grapheme-width--emoji-bases' are sent to the
 terminal followed by VS16, as though written with it, unless the text
 already follows them with VS15 or VS16.  Use together with
