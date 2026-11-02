@@ -2,13 +2,11 @@
 
 # Tests for the repo .gitignore negations under ai/HOME/.agents
 
-# git is mocked with a passthrough to the real git, so neither the
-# fixtures nor the unit go through the ~/bin/git wrapper.
+# git is the oracle here, not a unit's dependency, so it is the real
+# git, never the ~/bin/git wrapper on this suite's PATH.
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
-mock_init || { echo "mock_init failed" >&2; exit 1; }
-mock_real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
-mock_passthrough git "$mock_real_git"
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
 
 failures=0
 tests=0
@@ -33,7 +31,7 @@ assert_addable() {
   local label=$2
 
   run_test
-  if git -C "$repo_root" check-ignore -q --no-index "$path"
+  if "$real_git" -C "$repo_root" check-ignore -q --no-index "$path"
   then
     fail "${label}: '${path}' is ignored but must be addable"
   else
@@ -46,7 +44,7 @@ assert_ignored() {
   local label=$2
 
   run_test
-  if git -C "$repo_root" check-ignore -q --no-index "$path"
+  if "$real_git" -C "$repo_root" check-ignore -q --no-index "$path"
   then
     pass "$label"
   else
@@ -75,7 +73,7 @@ assert_ignored ai/HOME/.agents/skills/guides/__pycache__/mod.py \
   'nested __pycache__/ under .agents stays ignored'
 
 run_test
-tracked_count=$(git -C "$repo_root" ls-files ai/HOME/.agents | grep -c .)
+tracked_count=$("$real_git" -C "$repo_root" ls-files ai/HOME/.agents | grep -c .)
 if (( 0 < tracked_count ))
 then
   pass "ai/HOME/.agents has tracked files (${tracked_count})"
@@ -84,7 +82,7 @@ else
 fi
 
 run_test
-if untracked=$(git -C "$repo_root" ls-files --others --exclude-standard ai/HOME/.agents | grep .)
+if untracked=$("$real_git" -C "$repo_root" ls-files --others --exclude-standard ai/HOME/.agents | grep .)
 then
   fail "unexpected untracked files under ai/HOME/.agents: ${untracked}"
 else
