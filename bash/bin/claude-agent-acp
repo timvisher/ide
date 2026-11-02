@@ -7,7 +7,11 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-source ~/git/ide/bash/ai/agents.bash ||
+bin_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
+  die "Couldn't resolve the wrapper's directory"
+
+# shellcheck source=../ai/agents.bash
+source "$bin_dir/../ai/agents.bash" ||
   die "Couldn't source agents.bash"
 
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
@@ -18,4 +22,8 @@ export TIMVISHER_CLAUDE=true
 
 timvisher_anthropic_connectivity_gate
 
-exec op run --no-masking -- node ~/git/timvisher-dd/claude-agent-acp/dev/dist/index.js "$@"
+acp_js=${TIMVISHER_GIT_HOME:-$HOME/git}/timvisher-dd/claude-agent-acp/dev/dist/index.js
+[[ -r $acp_js ]] ||
+  die 'No claude-agent-acp build at "%s"; build timvisher-dd/claude-agent-acp/dev (npm ci && npm run build).' "$acp_js"
+
+timvisher_agent_exec node "$acp_js" "$@"

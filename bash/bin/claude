@@ -7,7 +7,11 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-source ~/git/ide/bash/ai/agents.bash ||
+bin_dir=$(dirname "$(realpath "${BASH_SOURCE[0]}")") ||
+  die "Couldn't resolve the wrapper's directory"
+
+# shellcheck source=../ai/agents.bash
+source "$bin_dir/../ai/agents.bash" ||
   die "Couldn't source agents.bash"
 
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-op://Private/Anthropic API Key/credential}"
@@ -17,6 +21,8 @@ export TIMVISHER_CLAUDE=true
 
 timvisher_anthropic_connectivity_gate
 
-p=$(brew --prefix)
+real_claude=$(timvisher_real_bin claude "${BASH_SOURCE[0]}") ||
+  die 'No claude found besides this wrapper ("%s"); install it with Homebrew or put it on PATH.' "${BASH_SOURCE[0]}"
 
-exec op run --no-masking -- "${p}/bin/claude" "$@"
+timvisher_real_bin_skip_self "${BASH_SOURCE[0]}"
+timvisher_agent_exec "$real_claude" "$@"
