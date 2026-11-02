@@ -1,6 +1,16 @@
 ;;; init.el -*- lexical-binding: t -*-
 (setq startup-time (current-time))
 
+;;; Native-compiled code, the trampolines for advised primitives included,
+;;; goes to the XDG cache, not into this directory: it is a git worktree,
+;;; and test runs require it to stay unchanged. Here rather than in
+;;; early-init.el, which the batch tests' (load "init.el") never reads.
+(when (and (fboundp 'startup-redirect-eln-cache)
+           (native-comp-available-p))
+  (startup-redirect-eln-cache
+   (expand-file-name "emacs/eln-cache/"
+                     (or (getenv "XDG_CACHE_HOME") "~/.cache/"))))
+
 ;;; Silencing via warning-suppress-types would hide every warning of
 ;;; type emacs, and with-eval-after-load runs too late because
 ;;; system-sleep.el enables itself at load time.
