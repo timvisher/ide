@@ -162,6 +162,31 @@ on activateTab(w, tabId)
 	return false
 end activateTab
 
+on frontVisibleWindowIsTitled(theTitle)
+	if theTitle is "" then
+		return false
+	end if
+	
+	set deadline to (current date) + 1
+	repeat
+		set ws to my visibleWindows()
+		if 0 is less than (count of ws) then
+			tell application "System Events" to set frontTitle to name of item 1 of ws
+			-- Not `is`: System Events' title appends the browser and profile.
+			if frontTitle starts with theTitle then
+				return true
+			end if
+		end if
+		if deadline < (current date) then
+			return false
+		end if
+		delay 0.05
+	end repeat
+end frontVisibleWindowIsTitled
+
+-- Not matched to System Events' windows by name or bounds: several of
+-- Google Chrome's windows share both. The tab's window is raised instead,
+-- and kept only if that made it the front window on this Space.
 on focusTabWithUrl(u)
 	if application "Google Chrome" is not running then
 		return false
@@ -171,14 +196,31 @@ on focusTabWithUrl(u)
 	repeat with wRef in ws
 		set w to contents of wRef
 		set tabId to my tabIdWithUrl(w, u, true)
-		if missing value is not tabId and my activateTab(w, tabId) then
-			tell application "Google Chrome"
-				set index of w to 1
-				activate
-				set t to tab id tabId of w
-			end tell
-			my waitForTabToLoad(t)
-			return true
+		if missing value is not tabId then
+			set previousId to missing value
+			try
+				tell application "Google Chrome" to set previousId to id of active tab of w
+			on error m number n
+				if not my isGoneError(n) then error m number n
+			end try
+			if missing value is not previousId and my activateTab(w, tabId) then
+				set tabTitle to ""
+				try
+					tell application "Google Chrome"
+						set index of w to 1
+						set t to tab id tabId of w
+						set tabTitle to title of t
+					end tell
+				on error m number n
+					if not my isGoneError(n) then error m number n
+				end try
+				if my frontVisibleWindowIsTitled(tabTitle) then
+					tell application "Google Chrome" to activate
+					my waitForTabToLoad(t)
+					return true
+				end if
+				my activateTab(w, previousId)
+			end if
 		end if
 	end repeat
 	return false
