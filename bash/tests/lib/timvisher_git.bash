@@ -306,8 +306,12 @@ source_timvisher_git() {
   : > "$ide_config/git_org_aliases"
 
   # Extract function definitions by stripping the final dispatch
-  local body
+  # shellcheck disable=SC2016
+  local body source_ref='${BASH_SOURCE[0]}'
   body=$(sed '/^case \$1 in$/,$ d' "$script")
+  # Eval'd here, ${BASH_SOURCE[0]} would be this file, and the script finds
+  # real_bin.bash and its own bin directory relative to its own path.
+  body=${body//"$source_ref"/"$script"}
   eval "$body"
   # Override SELF_DIR after eval so it's not overwritten by the script
   SELF_DIR="$mock_self_dir"
