@@ -134,6 +134,10 @@ function new_tmux_session {
         # so it costs nothing.
         local -a agent_env_vars=(
             CLAUDECODE
+            CLAUDE_CODE_MESSAGING_SOCKET
+            CLAUDE_CODE_MESSAGING_TOKEN
+            CLAUDE_CODE_SESSION_ID
+            CLAUDE_PID
             TIMVISHER_AGENT
             TIMVISHER_AGENT_NIRMI
             TIMVISHER_AGENT_NIRMI_REASON
