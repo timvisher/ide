@@ -26,6 +26,10 @@ source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 agent_env_vars=(
   CLAUDECODE
+  CLAUDE_CODE_MESSAGING_SOCKET
+  CLAUDE_CODE_MESSAGING_TOKEN
+  CLAUDE_CODE_SESSION_ID
+  CLAUDE_PID
   TIMVISHER_AGENT
   TIMVISHER_AGENT_NIRMI
   TIMVISHER_AGENT_NIRMI_REASON
@@ -91,6 +95,10 @@ start_session() (
   export PATH="${stub_bin}:${PATH}"
   export NEW_TMUX_SESSION_TEST_CANARY=1
   export CLAUDECODE=1
+  export CLAUDE_CODE_MESSAGING_SOCKET=/tmp/x.sock
+  export CLAUDE_CODE_MESSAGING_TOKEN=tok
+  export CLAUDE_CODE_SESSION_ID=sess-test
+  export CLAUDE_PID=$$
   export TIMVISHER_AGENT=1
   export TIMVISHER_AGENT_NIRMI=1
   export TIMVISHER_AGENT_NIRMI_REASON=test
