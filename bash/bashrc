@@ -86,9 +86,6 @@ $	stashes
 EOF
 }
 
-red=$(tput setaf 1)
-bold=$(tput bold)
-reset=$(tput sgr0)
 current_aws_profile() {
   if [[ -n $AWS_PROFILE ]]
   then
