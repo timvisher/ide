@@ -28,6 +28,12 @@ script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   die "cannot resolve script_dir"
 script="${script_dir}/bin/timvisher_git"
 
+# GNU stat first: BSD stat has no -c and fails, while GNU stat -f prints
+# file-system information instead of failing.
+file_mtime() {
+  stat -c '%Y' "$1" 2> /dev/null || /usr/bin/stat -f '%m' "$1"
+}
+
 tmpdir=$(mktemp -d) ||
   die "mktemp failed"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -3049,12 +3055,12 @@ migrate_cache_to_bare_if_needed "$idem_cache" >/dev/null 2>&1
 
 idem_wt_gitdir=$("$test_git" -C "$idem_wt" rev-parse --git-dir 2>/dev/null)
 idem_wt_gitdir=$(cd "$idem_wt" && cd "$idem_wt_gitdir" && pwd -P)
-first_mtime=$(/usr/bin/stat -f '%m' "$idem_wt_gitdir/config.worktree" 2>/dev/null) || first_mtime=""
+first_mtime=$(file_mtime "$idem_wt_gitdir/config.worktree" 2>/dev/null) || first_mtime=""
 
 # Wait one second so a re-write would produce a distinct mtime.
 sleep 1
 migrate_cache_to_bare_if_needed "$idem_cache" >/dev/null 2>&1
-second_mtime=$(/usr/bin/stat -f '%m' "$idem_wt_gitdir/config.worktree" 2>/dev/null) || second_mtime=""
+second_mtime=$(file_mtime "$idem_wt_gitdir/config.worktree" 2>/dev/null) || second_mtime=""
 second_value=$("$test_git" -C "$idem_wt" config --worktree --get core.bare 2>/dev/null) || second_value=""
 
 if [[ -n $first_mtime ]] && [[ $first_mtime == "$second_mtime" ]] && [[ $second_value == false ]]
