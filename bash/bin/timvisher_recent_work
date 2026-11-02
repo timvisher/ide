@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 
-find "${TIMVISHER_GIT_HOME:-${HOME}/git}" -maxdepth 7 -type d -name '.git' -mtime "${1:--1w}" -exec stat --printf='%Y\0%n\0' '{}' \+ |
+# The age is BSD find's -mtime form (a sign, a number, a unit of s, m, h, d
+# or w; days without one). GNU find takes no units, so it becomes -mmin,
+# which both have.
+age=${1:--1w}
+if [[ ! $age =~ ^([+-]?)([0-9]+)([smhdw]?)$ ]]
+then
+  printf 'timvisher_recent_work: bad age %q (want e.g. -1w, -3d, -12h)\n' "$age" >&2
+  exit 2
+fi
+sign=${BASH_REMATCH[1]}
+n=${BASH_REMATCH[2]}
+case ${BASH_REMATCH[3]:-d} in
+  s) minutes=$(( (n + 59) / 60 )) ;;
+  m) minutes=$n ;;
+  h) minutes=$(( n * 60 )) ;;
+  d) minutes=$(( n * 1440 )) ;;
+  w) minutes=$(( n * 10080 )) ;;
+esac
+
+find "${TIMVISHER_GIT_HOME:-${HOME}/git}" -maxdepth 7 -type d -name '.git' -mmin "${sign}${minutes}" -exec stat --printf='%Y\0%n\0' '{}' \+ |
   while read -rd '' timestamp
         read -rd '' name
   do
