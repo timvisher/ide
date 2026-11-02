@@ -296,12 +296,41 @@ timvisher_emacs__eval() {
   timvisher_emacs__emacsclient "$timeout" "$pid" "$socket" "$expression"
 }
 
+# emacsclient's own -w is not a bound everywhere: emacsclient 31 on Linux
+# waits forever on a server that never answers, so this enforces it,
+# with a second of grace, rather than coreutils timeout, which macOS lacks.
+timvisher_emacs__emacsclient_within() {
+  local limit=$1 out pid i rc
+  shift
+  out=$(mktemp "${TMPDIR:-/tmp}/x.timvisher-emacs.XXXXXX") || return 1
+  emacsclient -w "$limit" "$@" > "$out" < /dev/null &
+  pid=$!
+  for (( i = 0; i < (limit + 1) * 10; i += 1 ))
+  do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null
+  then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f -- "$out"
+    echo "emacsclient: no answer within ${limit}s" >&2
+    return 124
+  fi
+  wait "$pid"
+  rc=$?
+  cat -- "$out"
+  rm -f -- "$out"
+  return "$rc"
+}
+
 timvisher_emacs__emacsclient() {
   local timeout=$1 pid=$2 socket=$3 expression=$4
 
   local out err
   err=$(mktemp) || return 1
-  if ! out=$(emacsclient -s "$socket" -w "$timeout" --eval "$expression" 2> "$err")
+  if ! out=$(timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$expression" 2> "$err")
   then
     aictl_error \
       --code timvisher_emacs_eval_failed \
@@ -468,7 +497,7 @@ timvisher_emacs__agent_shell_server() {
   query="(and (fboundp (quote timvisher-agent-shell-send-buffer)) (timvisher-agent-shell-send-buffer $(timvisher_emacs__elisp_string "$session_id")) t)"
   while IFS=$'\t' read -r emacs_pid socket
   do
-    if [[ $(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null) == t ]]
+    if [[ $(timvisher_emacs__emacsclient_within 3 -s "$socket" --eval "$query" 2>/dev/null) == t ]]
     then
       printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
       return 0
@@ -549,7 +578,7 @@ timvisher_emacs__agent_shell_ls_local() {
   unreachable=$(mktemp) || { rm -f -- "$shells"; return 1; }
   while IFS=$'\t' read -r pid socket
   do
-    if ! out=$(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null)
+    if ! out=$(timvisher_emacs__emacsclient_within 3 -s "$socket" --eval "$query" 2>/dev/null)
     then
       jq -n --argjson pid "$pid" --arg socket "$socket" \
         '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket}' >> "$unreachable"
