@@ -761,9 +761,12 @@ retire_merged_worktrees() {
                 local escaped_wt escaped_home_rel
                 escaped_wt=$(printf '%s' "$wt" | sed 's/[&/\]/\\&/g')
                 escaped_home_rel=$(printf '%s' "$wt_home_relative" | sed 's/[&/\]/\\&/g')
-                sed -i '' -e "s|^${escaped_wt}\$|# ${escaped_wt}|" \
+                # -i with an attached suffix is the in-place form GNU and
+                # BSD sed share.
+                sed -i.x.dev-ci-bak -e "s|^${escaped_wt}\$|# ${escaped_wt}|" \
                           -e "s|^${escaped_home_rel}\$|# ${escaped_home_rel}|" \
-                    "$wt_file"
+                    "$wt_file" &&
+                  rm -f -- "$wt_file.x.dev-ci-bak"
 
                 # Remove from tracking.
                 unset 'all_worktrees[$wt]'

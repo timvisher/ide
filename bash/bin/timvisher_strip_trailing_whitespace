@@ -30,5 +30,10 @@ done
 
 if (( 0 < ${#existing_files[@]} ))
 then
-  sed -i '' -E 's/[[:space:]]*$//' "${existing_files[@]}"
+  # -i with an attached suffix is the in-place form GNU and BSD sed share.
+  sed -i.x.strip-bak -E 's/[[:space:]]*$//' "${existing_files[@]}" || exit 1
+  for f in "${existing_files[@]}"
+  do
+    rm -f -- "$f.x.strip-bak"
+  done
 fi
