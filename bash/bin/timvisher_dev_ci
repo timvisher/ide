@@ -167,6 +167,32 @@ read_active_worktrees() {
     done < "$file"
 }
 
+is_remote_worktree() {
+    local entry=$1
+    [[ $entry != /* && $entry == *:* && ${entry%%:*} != */* ]]
+}
+
+# The entry names the remote worktree, not its branch: the branch comes
+# from that worktree's HEAD symref, the same way local entries resolve
+# theirs with rev-parse, so a rebase onto a new branch name there needs no
+# x.active-worktrees edit here.
+fetch_remote_worktree() {
+    local entry=$1
+    local host=${entry%%:*}
+    local symref branch ref
+
+    symref=$(git ls-remote --symref -- "$entry" HEAD) || return 1
+    branch=$(sed -n 's|^ref: refs/heads/\(.*\)\tHEAD$|\1|p' <<< "$symref")
+    if [[ -z $branch ]]
+    then
+        error "integrate: remote worktree '%s' has a detached HEAD" "$entry"
+        return 1
+    fi
+    ref="refs/remotes/${host}/${branch}"
+    git fetch --no-tags -- "$entry" "+HEAD:${ref}" >&2 || return 1
+    printf '%s\n' "$ref"
+}
+
 is_dev_integration_worktree() {
     local path=$1
 
@@ -2264,13 +2290,19 @@ cmd_integrate_local() {
         local wt branch conflicted
         for wt in "${paths[@]}"
         do
-            if [[ ! -e ${wt}/.git ]]
+            if is_remote_worktree "$wt"
             then
-                warn "integrate: active worktree '%s' missing; skipping" "$wt"
-                continue
+                branch=$(fetch_remote_worktree "$wt") ||
+                    die "integrate: cannot fetch remote worktree '%s'" "$wt"
+            else
+                if [[ ! -e ${wt}/.git ]]
+                then
+                    warn "integrate: active worktree '%s' missing; skipping" "$wt"
+                    continue
+                fi
+                branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD) ||
+                    die "integrate: cannot resolve branch for '%s'" "$wt"
             fi
-            branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD) ||
-                die "integrate: cannot resolve branch for '%s'" "$wt"
 
             if git merge --no-edit "$branch"
             then
