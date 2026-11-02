@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034
+
+# Tests for timvisher_dev_ci against real repositories: auto-committing
+# regenerated BUILD.bazel files and resolving their merge conflicts.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script_dir="$(cd "$(dirname "$0")/../.." && pwd)" ||
+  { echo "cannot resolve script_dir" >&2; exit 1; }
+script="${script_dir}/bin/timvisher_dev_ci"
+
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$tmpdir"' EXIT
+
+# shellcheck disable=SC1091
+source "$(dirname "$0")/../lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$real_git"
+
+[[ -n ${TIMVISHER_TESTS_TEMPLATE-} ]] ||
+  { echo "run this suite through timvisher_tests" >&2; exit 1; }
+export TIMVISHER_GIT_HOME="$tmpdir/git"
+ide_config="$XDG_CONFIG_HOME/timvisher/ide"
+if [[ -L $ide_config ]]
+then
+  rm -- "$ide_config" || { echo "cannot unlink '$ide_config'" >&2; exit 1; }
+fi
+mkdir -p "$TIMVISHER_GIT_HOME" "$ide_config" || exit 1
+
+export TIMVISHER_AGENT=1
+unset TIMVISHER_AICTL_LOG
+
+# Load the script's functions by stripping the top-level dispatch.
+eval "$(sed '/^case \${1:-} in$/,$ d' "$script")"
+
+test_git=$real_git
+
+# ---------------------------------------------------------------------------
+# autocommit_build_artifacts: worktrees whose ONLY dirt is BUILD.bazel get
+# auto-committed; genuine work is left for preflight_check_clean.
+# ---------------------------------------------------------------------------
+
+# Init a repo with a committed BUILD.bazel and a committed source file.
+# Hooks disabled so the fixture never reaches out to buildifier/AppGate.
+make_bazel_fixture() {
+  local dir=$1
+  "$test_git" init "$dir" >/dev/null 2>&1
+  "$test_git" -C "$dir" config core.hooksPath /dev/null
+  "$test_git" -C "$dir" config user.email t@t
+  "$test_git" -C "$dir" config user.name t
+  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
+  printf 'package foo\n' > "$dir/foo.go"
+  mkdir -p "$dir/sub"
+  printf 'package sub\n' > "$dir/sub/keep.go"
+  "$test_git" -C "$dir" add -A
+  "$test_git" -C "$dir" commit -q -m init
+}
+
+# only BUILD.bazel dirty -> auto-committed, tree clean
+run_test
+ab_wt="$tmpdir/autocommit_only_build"
+make_bazel_fixture "$ab_wt"
+printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_wt/BUILD.bazel"
+all_worktrees=()
+all_worktrees["$ab_wt"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -z $("$test_git" -C "$ab_wt" status --porcelain) ]] &&
+   [[ $("$test_git" -C "$ab_wt" log -1 --format=%s) == chore\(bazel\)* ]]
+then
+  pass "autocommit_build_artifacts: commits BUILD.bazel-only dirt"
+else
+  fail "autocommit only-build: status='$("$test_git" -C "$ab_wt" status --porcelain)' subj='$("$test_git" -C "$ab_wt" log -1 --format=%s)'"
+fi
+
+# untracked BUILD.bazel in an already-tracked package -> auto-committed
+run_test
+ab_new="$tmpdir/autocommit_untracked_build"
+make_bazel_fixture "$ab_new"
+printf 'srcs = ["keep.go"]\n' > "$ab_new/sub/BUILD.bazel"
+all_worktrees=()
+all_worktrees["$ab_new"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -z $("$test_git" -C "$ab_new" status --porcelain) ]] &&
+   "$test_git" -C "$ab_new" ls-files --error-unmatch sub/BUILD.bazel >/dev/null 2>&1
+then
+  pass "autocommit_build_artifacts: commits untracked BUILD.bazel"
+else
+  fail "autocommit untracked: status='$("$test_git" -C "$ab_new" status --porcelain)'"
+fi
+
+# BUILD.bazel + real source dirty -> nothing committed, left for preflight
+run_test
+ab_mixed="$tmpdir/autocommit_mixed"
+make_bazel_fixture "$ab_mixed"
+ab_head_before=$("$test_git" -C "$ab_mixed" rev-parse HEAD)
+printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_mixed/BUILD.bazel"
+printf 'package foo // edited\n' > "$ab_mixed/foo.go"
+all_worktrees=()
+# shellcheck disable=SC2034
+all_worktrees["$ab_mixed"]=1
+autocommit_build_artifacts >/dev/null 2>&1
+if [[ -n $("$test_git" -C "$ab_mixed" status --porcelain) ]] &&
+   [[ $("$test_git" -C "$ab_mixed" rev-parse HEAD) == "$ab_head_before" ]]
+then
+  pass "autocommit_build_artifacts: leaves mixed dirt for preflight"
+else
+  fail "autocommit mixed: HEAD moved or tree clean unexpectedly"
+fi
+
+# ---------------------------------------------------------------------------
+# resolve_regen_conflicts
+# ---------------------------------------------------------------------------
+
+# Two branches off a shared base that each regenerate the same files, so
+# merging the second conflicts on whatever $1 names.
+make_conflict_fixture() {
+  local dir=$1
+  "$test_git" init -b main "$dir" >/dev/null 2>&1
+  "$test_git" -C "$dir" config core.hooksPath /dev/null
+  "$test_git" -C "$dir" config user.email t@t
+  "$test_git" -C "$dir" config user.name t
+  mkdir -p "$dir/sub"
+  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" add -A
+  "$test_git" -C "$dir" commit -q -m init
+
+  "$test_git" -C "$dir" checkout -q -b feature-a
+  printf 'srcs = ["foo.go", "a.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go", "a.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo // a\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" commit -q -am a
+
+  "$test_git" -C "$dir" checkout -q main
+  "$test_git" -C "$dir" checkout -q -b feature-b
+  printf 'srcs = ["foo.go", "b.go"]\n' > "$dir/BUILD.bazel"
+  printf 'srcs = ["keep.go", "b.go"]\n' > "$dir/sub/BUILD.bazel"
+  printf 'package foo // b\n' > "$dir/foo.go"
+  "$test_git" -C "$dir" commit -q -am b
+}
+
+rc_cwd=$PWD
+
+# Conflicts confined to generated files: resolved, merge concluded, ours kept.
+run_test
+rc_gen="$tmpdir/regen_generated_only"
+make_conflict_fixture "$rc_gen"
+"$test_git" -C "$rc_gen" checkout -q feature-a
+"$test_git" -C "$rc_gen" checkout -q feature-b -- foo.go
+"$test_git" -C "$rc_gen" commit -q -am "take b's foo.go"
+"$test_git" -C "$rc_gen" merge --no-edit feature-b >/dev/null 2>&1
+cd "$rc_gen" || { echo "cannot cd to $rc_gen" >&2; exit 1; }
+rc_conflicts_before=$("$test_git" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
+resolve_regen_conflicts "BUILD.bazel"
+rc_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+if (( rc_rc == 0 )) &&
+   [[ $rc_conflicts_before == "BUILD.bazel sub/BUILD.bazel " ]] &&
+   [[ ! -e $rc_gen/.git/MERGE_HEAD ]] &&
+   [[ -z $("$test_git" -C "$rc_gen" status --porcelain) ]] &&
+   [[ $(cat "$rc_gen/BUILD.bazel") == 'srcs = ["foo.go", "a.go"]' ]] &&
+   [[ $(cat "$rc_gen/sub/BUILD.bazel") == 'srcs = ["keep.go", "a.go"]' ]]
+then
+  pass "resolve_regen_conflicts: generated-only conflict is resolved to ours and the merge concluded"
+else
+  fail "regen generated-only: rc=$rc_rc before='$rc_conflicts_before' merging=$( [[ -e $rc_gen/.git/MERGE_HEAD ]] && echo yes || echo no ) root='$(cat "$rc_gen/BUILD.bazel")' sub='$(cat "$rc_gen/sub/BUILD.bazel")'"
+fi
+
+# A source file in the conflict set: refuse, and touch nothing.
+run_test
+rc_src="$tmpdir/regen_source_conflict"
+make_conflict_fixture "$rc_src"
+"$test_git" -C "$rc_src" checkout -q feature-a
+"$test_git" -C "$rc_src" merge --no-edit feature-b >/dev/null 2>&1
+cd "$rc_src" || { echo "cannot cd to $rc_src" >&2; exit 1; }
+resolve_regen_conflicts "BUILD.bazel"
+rc_src_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+rc_src_still=$("$test_git" -C "$rc_src" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
+if (( rc_src_rc != 0 )) &&
+   [[ -e $rc_src/.git/MERGE_HEAD ]] &&
+   [[ $rc_src_still == "BUILD.bazel foo.go sub/BUILD.bazel " ]]
+then
+  pass "resolve_regen_conflicts: refuses a conflict set containing a source file, resolving nothing"
+else
+  fail "regen source conflict: rc=$rc_src_rc merging=$( [[ -e $rc_src/.git/MERGE_HEAD ]] && echo yes || echo no ) still='$rc_src_still'"
+fi
+
+# No merge in progress at all: nothing to resolve.
+run_test
+rc_none="$tmpdir/regen_no_conflict"
+make_conflict_fixture "$rc_none"
+cd "$rc_none" || { echo "cannot cd to $rc_none" >&2; exit 1; }
+resolve_regen_conflicts "BUILD.bazel"
+rc_none_rc=$?
+cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
+if (( rc_none_rc != 0 ))
+then
+  pass "resolve_regen_conflicts: no conflicted paths is not a resolution"
+else
+  fail "regen no conflict: expected non-zero, got $rc_none_rc"
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+echo
+echo "Tests: $tests, Failures: $failures"
+exit $failures
