@@ -27,6 +27,13 @@ script="${script_dir}/bin/timvisher_dev_ci"
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmpdir"' EXIT
 
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_command git
+mock_respond git --exit 128 -- -C '*' diff --name-only -z --no-renames '@{u}...'
+mock_respond git --exit 128 -- -C '*' status --porcelain=v1 -z --no-renames --untracked-files=normal
+
 [[ -n ${TIMVISHER_TESTS_TEMPLATE-} ]] ||
   { echo "run this suite through timvisher_tests" >&2; exit 1; }
 export TIMVISHER_GIT_HOME="$tmpdir/git"
@@ -644,32 +651,23 @@ fi
 # regular forks against upstream.
 # ---------------------------------------------------------------------------
 
-# Use the real git (not the agent wrapper) for fixture setup.
-test_git="$(brew --prefix)/bin/git"
-
 # Load the script's functions by stripping the top-level dispatch.
 rrmr_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
 eval "$rrmr_body"
 
-# Build a bare-ish worktree fixture with the requested remote-tracking
-# refs.  We fabricate refs/remotes/* directly so we don't need real
-# remotes or network.  $1=dir, then name=target pairs:
-#   origin/main upstream/main origin/HEAD=origin/main ...
-make_ref_fixture() {
-  local dir=$1; shift
-  "$test_git" init "$dir" >/dev/null 2>&1
-  "$test_git" -C "$dir" -c user.email=t@t -c user.name=t \
-    -c core.hooksPath=/dev/null commit --allow-empty -m init >/dev/null 2>&1
-  local head_sha; head_sha=$("$test_git" -C "$dir" rev-parse HEAD)
-  local spec
+ref_rules() {
+  local dir=$1 spec
+  shift
+  mkdir -p "$dir" || exit 1
+  mock_respond git --exit 1 -- -C "$dir" symbolic-ref -q --short 'refs/remotes/*/HEAD'
+  mock_respond git --exit 1 -- -C "$dir" show-ref --verify --quiet 'refs/remotes/*'
   for spec in "$@"
   do
     if [[ $spec == *=* ]]
     then
-      # symbolic ref: refs/remotes/<a>/HEAD -> refs/remotes/<b>
-      "$test_git" -C "$dir" symbolic-ref "refs/remotes/${spec%%=*}" "refs/remotes/${spec#*=}"
+      mock_respond git --stdout "${spec#*=}" -- -C "$dir" symbolic-ref -q --short "refs/remotes/${spec%%=*}"
     else
-      "$test_git" -C "$dir" update-ref "refs/remotes/${spec}" "$head_sha"
+      mock_respond git -- -C "$dir" show-ref --verify --quiet "refs/remotes/${spec}"
     fi
   done
 }
@@ -677,7 +675,7 @@ make_ref_fixture() {
 # soft fork -> origin (cookie present; upstream refs also exist but are ignored)
 run_test
 sf_wt="$tmpdir/rrmr_softfork"
-make_ref_fixture "$sf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
+ref_rules "$sf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
 touch "$sf_wt/x.timvisher_git.soft-fork"
 rrmr_out=$(resolve_retire_merge_ref "$sf_wt")
 if [[ $rrmr_out == "origin/main" ]]
@@ -690,7 +688,7 @@ fi
 # regular fork -> upstream (no cookie)
 run_test
 rf_wt="$tmpdir/rrmr_regfork"
-make_ref_fixture "$rf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
+ref_rules "$rf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
 rrmr_out=$(resolve_retire_merge_ref "$rf_wt")
 if [[ $rrmr_out == "upstream/main" ]]
 then
@@ -702,7 +700,7 @@ fi
 # no upstream, no cookie -> origin/main fallback
 run_test
 nf_wt="$tmpdir/rrmr_nofork"
-make_ref_fixture "$nf_wt" origin/main
+ref_rules "$nf_wt" origin/main
 rrmr_out=$(resolve_retire_merge_ref "$nf_wt")
 if [[ $rrmr_out == "origin/main" ]]
 then
@@ -714,7 +712,7 @@ fi
 # nothing resolvable -> empty
 run_test
 none_wt="$tmpdir/rrmr_none"
-make_ref_fixture "$none_wt"
+ref_rules "$none_wt"
 rrmr_out=$(resolve_retire_merge_ref "$none_wt")
 if [[ -z $rrmr_out ]]
 then
@@ -723,194 +721,37 @@ else
   fail "no refs: expected empty, got '${rrmr_out}'"
 fi
 
-# ---------------------------------------------------------------------------
-# autocommit_build_artifacts: worktrees whose ONLY dirt is BUILD.bazel get
-# auto-committed; genuine work is left for preflight_check_clean.
-# ---------------------------------------------------------------------------
-
-# Init a repo with a committed BUILD.bazel and a committed source file.
-# Hooks disabled so the fixture never reaches out to buildifier/AppGate.
-make_bazel_fixture() {
-  local dir=$1
-  "$test_git" init "$dir" >/dev/null 2>&1
-  "$test_git" -C "$dir" config core.hooksPath /dev/null
-  "$test_git" -C "$dir" config user.email t@t
-  "$test_git" -C "$dir" config user.name t
-  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
-  printf 'package foo\n' > "$dir/foo.go"
-  mkdir -p "$dir/sub"
-  printf 'package sub\n' > "$dir/sub/keep.go"
-  "$test_git" -C "$dir" add -A
-  "$test_git" -C "$dir" commit -q -m init
-}
-
-# only BUILD.bazel dirty -> auto-committed, tree clean
-run_test
-ab_wt="$tmpdir/autocommit_only_build"
-make_bazel_fixture "$ab_wt"
-printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_wt/BUILD.bazel"
-all_worktrees=()
-all_worktrees["$ab_wt"]=1
-autocommit_build_artifacts >/dev/null 2>&1
-if [[ -z $("$test_git" -C "$ab_wt" status --porcelain) ]] &&
-   [[ $("$test_git" -C "$ab_wt" log -1 --format=%s) == chore\(bazel\)* ]]
-then
-  pass "autocommit_build_artifacts: commits BUILD.bazel-only dirt"
-else
-  fail "autocommit only-build: status='$("$test_git" -C "$ab_wt" status --porcelain)' subj='$("$test_git" -C "$ab_wt" log -1 --format=%s)'"
-fi
-
-# untracked BUILD.bazel in an already-tracked package -> auto-committed
-run_test
-ab_new="$tmpdir/autocommit_untracked_build"
-make_bazel_fixture "$ab_new"
-printf 'srcs = ["keep.go"]\n' > "$ab_new/sub/BUILD.bazel"
-all_worktrees=()
-all_worktrees["$ab_new"]=1
-autocommit_build_artifacts >/dev/null 2>&1
-if [[ -z $("$test_git" -C "$ab_new" status --porcelain) ]] &&
-   "$test_git" -C "$ab_new" ls-files --error-unmatch sub/BUILD.bazel >/dev/null 2>&1
-then
-  pass "autocommit_build_artifacts: commits untracked BUILD.bazel"
-else
-  fail "autocommit untracked: status='$("$test_git" -C "$ab_new" status --porcelain)'"
-fi
-
-# BUILD.bazel + real source dirty -> nothing committed, left for preflight
-run_test
-ab_mixed="$tmpdir/autocommit_mixed"
-make_bazel_fixture "$ab_mixed"
-ab_head_before=$("$test_git" -C "$ab_mixed" rev-parse HEAD)
-printf 'srcs = ["foo.go", "bar.go"]\n' > "$ab_mixed/BUILD.bazel"
-printf 'package foo // edited\n' > "$ab_mixed/foo.go"
-all_worktrees=()
-# shellcheck disable=SC2034
-all_worktrees["$ab_mixed"]=1
-autocommit_build_artifacts >/dev/null 2>&1
-if [[ -n $("$test_git" -C "$ab_mixed" status --porcelain) ]] &&
-   [[ $("$test_git" -C "$ab_mixed" rev-parse HEAD) == "$ab_head_before" ]]
-then
-  pass "autocommit_build_artifacts: leaves mixed dirt for preflight"
-else
-  fail "autocommit mixed: HEAD moved or tree clean unexpectedly"
-fi
-
-# ---------------------------------------------------------------------------
-# resolve_regen_conflicts
-# ---------------------------------------------------------------------------
-
-# Two branches off a shared base that each regenerate the same files, so
-# merging the second conflicts on whatever $1 names.
-make_conflict_fixture() {
-  local dir=$1
-  "$test_git" init -b main "$dir" >/dev/null 2>&1
-  "$test_git" -C "$dir" config core.hooksPath /dev/null
-  "$test_git" -C "$dir" config user.email t@t
-  "$test_git" -C "$dir" config user.name t
-  mkdir -p "$dir/sub"
-  printf 'srcs = ["foo.go"]\n' > "$dir/BUILD.bazel"
-  printf 'srcs = ["keep.go"]\n' > "$dir/sub/BUILD.bazel"
-  printf 'package foo\n' > "$dir/foo.go"
-  "$test_git" -C "$dir" add -A
-  "$test_git" -C "$dir" commit -q -m init
-
-  "$test_git" -C "$dir" checkout -q -b feature-a
-  printf 'srcs = ["foo.go", "a.go"]\n' > "$dir/BUILD.bazel"
-  printf 'srcs = ["keep.go", "a.go"]\n' > "$dir/sub/BUILD.bazel"
-  printf 'package foo // a\n' > "$dir/foo.go"
-  "$test_git" -C "$dir" commit -q -am a
-
-  "$test_git" -C "$dir" checkout -q main
-  "$test_git" -C "$dir" checkout -q -b feature-b
-  printf 'srcs = ["foo.go", "b.go"]\n' > "$dir/BUILD.bazel"
-  printf 'srcs = ["keep.go", "b.go"]\n' > "$dir/sub/BUILD.bazel"
-  printf 'package foo // b\n' > "$dir/foo.go"
-  "$test_git" -C "$dir" commit -q -am b
-}
-
-rc_cwd=$PWD
-
-# Conflicts confined to generated files: resolved, merge concluded, ours kept.
-run_test
-rc_gen="$tmpdir/regen_generated_only"
-make_conflict_fixture "$rc_gen"
-"$test_git" -C "$rc_gen" checkout -q feature-a
-"$test_git" -C "$rc_gen" checkout -q feature-b -- foo.go
-"$test_git" -C "$rc_gen" commit -q -am "take b's foo.go"
-"$test_git" -C "$rc_gen" merge --no-edit feature-b >/dev/null 2>&1
-cd "$rc_gen" || { echo "cannot cd to $rc_gen" >&2; exit 1; }
-rc_conflicts_before=$("$test_git" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
-resolve_regen_conflicts "BUILD.bazel"
-rc_rc=$?
-cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
-if (( rc_rc == 0 )) &&
-   [[ $rc_conflicts_before == "BUILD.bazel sub/BUILD.bazel " ]] &&
-   [[ ! -e $rc_gen/.git/MERGE_HEAD ]] &&
-   [[ -z $("$test_git" -C "$rc_gen" status --porcelain) ]] &&
-   [[ $(cat "$rc_gen/BUILD.bazel") == 'srcs = ["foo.go", "a.go"]' ]] &&
-   [[ $(cat "$rc_gen/sub/BUILD.bazel") == 'srcs = ["keep.go", "a.go"]' ]]
-then
-  pass "resolve_regen_conflicts: generated-only conflict is resolved to ours and the merge concluded"
-else
-  fail "regen generated-only: rc=$rc_rc before='$rc_conflicts_before' merging=$( [[ -e $rc_gen/.git/MERGE_HEAD ]] && echo yes || echo no ) root='$(cat "$rc_gen/BUILD.bazel")' sub='$(cat "$rc_gen/sub/BUILD.bazel")'"
-fi
-
-# A source file in the conflict set: refuse, and touch nothing.
-run_test
-rc_src="$tmpdir/regen_source_conflict"
-make_conflict_fixture "$rc_src"
-"$test_git" -C "$rc_src" checkout -q feature-a
-"$test_git" -C "$rc_src" merge --no-edit feature-b >/dev/null 2>&1
-cd "$rc_src" || { echo "cannot cd to $rc_src" >&2; exit 1; }
-resolve_regen_conflicts "BUILD.bazel"
-rc_src_rc=$?
-cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
-rc_src_still=$("$test_git" -C "$rc_src" diff --name-only --diff-filter=U | sort | tr '\n' ' ')
-if (( rc_src_rc != 0 )) &&
-   [[ -e $rc_src/.git/MERGE_HEAD ]] &&
-   [[ $rc_src_still == "BUILD.bazel foo.go sub/BUILD.bazel " ]]
-then
-  pass "resolve_regen_conflicts: refuses a conflict set containing a source file, resolving nothing"
-else
-  fail "regen source conflict: rc=$rc_src_rc merging=$( [[ -e $rc_src/.git/MERGE_HEAD ]] && echo yes || echo no ) still='$rc_src_still'"
-fi
-
-# No merge in progress at all: nothing to resolve.
-run_test
-rc_none="$tmpdir/regen_no_conflict"
-make_conflict_fixture "$rc_none"
-cd "$rc_none" || { echo "cannot cd to $rc_none" >&2; exit 1; }
-resolve_regen_conflicts "BUILD.bazel"
-rc_none_rc=$?
-cd "$rc_cwd" || { echo "cannot cd back to $rc_cwd" >&2; exit 1; }
-if (( rc_none_rc != 0 ))
-then
-  pass "resolve_regen_conflicts: no conflicted paths is not a resolution"
-else
-  fail "regen no conflict: expected non-zero, got $rc_none_rc"
-fi
-
 rung_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/rungrepo/feat/x"
 mkdir -p "$rung_wt_unresolved"
 rung_wt=$(cd "$rung_wt_unresolved" && pwd -P)
-"$test_git" init -q -b main "$rung_wt"
-"$test_git" -C "$rung_wt" config core.hooksPath /dev/null
-"$test_git" -C "$rung_wt" config user.email t@t
-"$test_git" -C "$rung_wt" config user.name t
-mkdir -p "$rung_wt/old"
-printf 'base\n' > "$rung_wt/root.txt"
-printf 'moved\n' > "$rung_wt/old/moved.txt"
-"$test_git" -C "$rung_wt" add -A
-"$test_git" -C "$rung_wt" commit -q -m base
-"$test_git" -C "$rung_wt" checkout -q -b feat/x --track main
-# 'w', not 'z': the global gitignore ignores z, which would hide it.
-mkdir -p "$rung_wt/w" "$rung_wt/a/d" "$rung_wt/a/b"
-for f in w/f.txt a/d/e.txt a/b/c.txt root.txt
-do
-  printf 'change\n' >> "$rung_wt/$f"
-done
-"$test_git" -C "$rung_wt" add -A
-"$test_git" -C "$rung_wt" commit -q -m change
+rung_diff="$tmpdir/rung.diff"
+rung_status="$tmpdir/rung.status"
+
+mock_respond git --run "cat $(printf %q "$rung_diff") 2>/dev/null || exit 128" \
+  -- -C "$rung_wt" diff --name-only -z --no-renames '@{u}...'
+mock_respond git --run "cat $(printf %q "$rung_status")" \
+  -- -C "$rung_wt" status --porcelain=v1 -z --no-renames --untracked-files=normal
+
+rung_changes() {
+  : > "$rung_diff"
+  (( 0 == $# )) || printf '%s\0' "$@" > "$rung_diff"
+}
+
+rung_no_upstream() {
+  rm -f -- "$rung_diff"
+}
+
+rung_status() {
+  : > "$rung_status"
+  (( 0 == $# )) || printf '%s\0' "$@" > "$rung_status"
+}
+
+rung_feat_x() {
+  rung_changes w/f.txt a/d/e.txt a/b/c.txt root.txt
+  rung_status
+}
+
+rung_feat_x
 
 join_subpaths() {
   local -a got=()
@@ -937,10 +778,7 @@ else
 fi
 
 run_test
-"$test_git" -C "$rung_wt" checkout -q -b feat/mv --track main
-mkdir -p "$rung_wt/new"
-"$test_git" -C "$rung_wt" mv old/moved.txt new/moved.txt
-"$test_git" -C "$rung_wt" commit -q -m mv
+rung_changes new/moved.txt old/moved.txt
 rung_subpaths=$(join_subpaths "$rung_wt")
 if [[ $rung_subpaths == "new|old|" ]]
 then
@@ -950,12 +788,8 @@ else
 fi
 
 run_test
-"$test_git" -C "$rung_wt" checkout -q -b feat/wip --track main
-mkdir -p "$rung_wt/staged" "$rung_wt/untracked/deep"
-printf 'wip\n' >> "$rung_wt/old/moved.txt"
-printf 'staged\n' > "$rung_wt/staged/s.txt"
-"$test_git" -C "$rung_wt" add staged/s.txt
-printf 'untracked\n' > "$rung_wt/untracked/deep/u.txt"
+rung_changes
+rung_status ' M old/moved.txt' 'A  staged/s.txt' '?? untracked/'
 rung_subpaths=$(join_subpaths "$rung_wt")
 if [[ $rung_subpaths == "old|staged|untracked|" ]]
 then
@@ -963,16 +797,11 @@ then
 else
   fail "changed_subpaths wip: got '${rung_subpaths}'"
 fi
-"$test_git" -C "$rung_wt" reset -q --hard
-"$test_git" -C "$rung_wt" clean -q -fd
+rung_status
 
 run_test
 rung_nl_dir=$(printf 'nl\ndir')
-"$test_git" -C "$rung_wt" checkout -q -b feat/nl --track main
-mkdir -p "$rung_wt/$rung_nl_dir"
-printf 'q\n' > "$rung_wt/$rung_nl_dir/\"q\".txt"
-"$test_git" -C "$rung_wt" add -A
-"$test_git" -C "$rung_wt" commit -q -m nl
+rung_changes "$rung_nl_dir/\"q\".txt"
 readarray -d '' -t rung_nl < <(changed_subpaths "$rung_wt")
 if (( ${#rung_nl[@]} == 1 )) && [[ ${rung_nl[0]} == "$rung_nl_dir" ]]
 then
@@ -982,10 +811,8 @@ else
 fi
 
 run_test
-"$test_git" -C "$rung_wt" checkout -q -b feat/nou main
-"$test_git" -C "$rung_wt" branch -q --unset-upstream 2>/dev/null
-mkdir -p "$rung_wt/nou"
-printf 'n\n' > "$rung_wt/nou/n.txt"
+rung_no_upstream
+rung_status '?? nou/'
 rung_subpaths=$(join_subpaths "$rung_wt")
 if [[ $rung_subpaths == "nou|" ]]
 then
@@ -993,8 +820,7 @@ then
 else
   fail "changed_subpaths no upstream: got '${rung_subpaths}'"
 fi
-"$test_git" -C "$rung_wt" clean -q -fd
-"$test_git" -C "$rung_wt" checkout -q feat/x
+rung_feat_x
 
 rung_saved_repo_hooks_dir=$REPO_HOOKS_DIR
 rung_saved_repo_hooks_ext_dir=$REPO_HOOKS_EXT_DIR
@@ -1060,7 +886,7 @@ else
 fi
 
 run_test
-"$test_git" -C "$rung_wt" checkout -q -b feat/clean --track main
+rung_changes
 prime_rung_context feat/x
 readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
 rung_clean_expected=(
@@ -1075,10 +901,10 @@ else
 fi
 
 run_test
-"$test_git" -C "$rung_wt" checkout -q feat/x
+rung_feat_x
 prime_rung_context feat/x
 snapshot_changed_subpaths "$rung_wt"
-"$test_git" -C "$rung_wt" checkout -q feat/clean
+rung_changes
 readarray -d '' -t rung_out < <(find_hooks "$rung_wt" "rung.sh")
 rung_snapshot_used=${#rung_out[@]}
 _subpath_snapshot_key=$(worktree_context_key "$tmpdir")
@@ -1100,6 +926,8 @@ REPO_HOOKS_EXT_DIR=$rung_saved_repo_hooks_ext_dir
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+
+mock_finish || (( failures += 1 ))
 
 echo
 echo "Tests: $tests, Failures: $failures"

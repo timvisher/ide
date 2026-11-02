@@ -3,6 +3,12 @@
 # Tests for timvisher_bd_topics.
 # Currently covers the `resolve` subcommand.
 
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_command git
+mock_git_toplevel
+
 failures=0
 tests=0
 
@@ -245,7 +251,7 @@ fi
 run_test
 mkdir -p "$tmpdir/topics/Incidents/100/.beads" || exit 1
 : > "$tmpdir/topics/Incidents/100/.beads/beads.db"
-git -C "$tmpdir/topics" init -q 2>/dev/null
+mkdir -p "$tmpdir/topics"/.git
 mkdir -p "$tmpdir/topics/.timvisher_bd_topics" || exit 1
 printf 'wrong/topic\n' > "$tmpdir/topics/.timvisher_bd_topics/topic.txt"
 result=$(cd "$tmpdir/topics/Incidents/100" && run_cli current 2>&1)
@@ -318,7 +324,7 @@ fi
 # root, not the topic dir.
 run_test
 mkdir -p "$tmpdir/code/sub" "$tmpdir/code/.timvisher_bd_topics"
-git -C "$tmpdir/code" init -q 2>/dev/null
+mkdir -p "$tmpdir/code"/.git
 printf 'Incidents/100\n' > "$tmpdir/code/.timvisher_bd_topics/topic.txt"
 code_real=$(cd "$tmpdir/code" && pwd -P)
 result=$(cd "$tmpdir/code/sub" && run_cli root 2>/dev/null)
@@ -409,7 +415,7 @@ run_test
 mkdir -p "$tmpdir/topics/sym-a/.beads" "$tmpdir/topics/sym-b/.beads" \
   "$tmpdir/DevVolume/repo/.timvisher_bd_topics" "$tmpdir/DevVolume/repo/.beads" || exit 1
 ln -s "$tmpdir/DevVolume" "$tmpdir/symgit" || exit 1
-git -C "$tmpdir/DevVolume/repo" init -q 2>/dev/null
+mkdir -p "$tmpdir/DevVolume/repo"/.git
 printf 'sym-a\n' > "$tmpdir/DevVolume/repo/.timvisher_bd_topics/topic.txt"
 printf '%s\n' "$topics_real/sym-a/.beads" > "$tmpdir/DevVolume/repo/.beads/redirect"
 mkdir -p "$tmpdir/topics/sym-a/.timvisher_bd_topics" || exit 1
@@ -427,6 +433,8 @@ else
 fi
 
 echo ""
+mock_finish || (( failures += 1 ))
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))

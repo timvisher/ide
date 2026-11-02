@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+
+# The stub behind every mocked command. mock_commands.bash copies it to
+# $TIMVISHER_MOCK_DIR/bin/<name>, with the suite's bash as its
+# interpreter, so the name it was called by is the command being
+# mocked. It records the call, then answers from the
+# newest rule whose patterns match the arguments, else hands the call
+# to the command's passthrough, else reports it as unexpected.
+#
+# Keep this cheap: it runs in place of every mocked call, so it sources
+# nothing and forks nothing on the common path.
+
+name=${0##*/}
+dir=${TIMVISHER_MOCK_DIR-}
+
+if [[ -z $dir || ! -d $dir ]]
+then
+  printf 'mock: %s called without a TIMVISHER_MOCK_DIR\n' "$name" >&2
+  exit 127
+fi
+
+printf -v call '%q ' "$name" "$@"
+printf '%s\n' "${call% }" >> "$dir/calls"
+
+# Each argument is matched against its pattern as a glob; a final '...'
+# matches whatever arguments remain, including none.
+_mock_matches() {
+  local -n _patterns=$1
+  shift
+  local -a args=("$@")
+  local i
+  for i in "${!_patterns[@]}"
+  do
+    if [[ ${_patterns[i]} == ... ]] && (( i == ${#_patterns[@]} - 1 ))
+    then
+      return 0
+    fi
+    (( i < ${#args[@]} )) || return 1
+    # shellcheck disable=SC2053
+    [[ ${args[i]} == ${_patterns[i]} ]] || return 1
+  done
+  (( ${#_patterns[@]} == ${#args[@]} ))
+}
+
+# A rule that may answer only so many calls claims one of its slots
+# with mkdir, which is atomic, so tools that run git in the background
+# can't both take the last one.
+_mock_claim() {
+  local rule=$1 times=$2 slot
+  [[ -n $times ]] || return 0
+  for (( slot = 1; slot <= times; slot += 1 ))
+  do
+    if mkdir -- "$rule.hits.$slot" 2>/dev/null
+    then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_mock_answer() {
+  # Rule files are written by mock_respond with declare -p.
+  # shellcheck disable=SC2034
+  local rule_patterns=() rule_stdout='' rule_stderr='' rule_exit=0 rule_times='' rule_run=''
+  local rule rules=("$dir/rules/$name"/*.rule)
+  local i
+  for (( i = ${#rules[@]} - 1; 0 <= i; i -= 1 ))
+  do
+    rule=${rules[i]}
+    [[ -f $rule ]] || continue
+    # shellcheck disable=SC1090
+    source "$rule" || continue
+    _mock_matches rule_patterns "$@" || continue
+    _mock_claim "$rule" "$rule_times" || continue
+    if [[ -n $rule_run ]]
+    then
+      # shellcheck disable=SC1090
+      source "$rule.run"
+      exit
+    fi
+    [[ -z $rule_stdout ]] || printf '%s\n' "$rule_stdout"
+    [[ -z $rule_stderr ]] || printf '%s\n' "$rule_stderr" >&2
+    exit "$rule_exit"
+  done
+}
+
+_mock_answer "$@"
+
+passthrough=
+if [[ -f $dir/passthrough/$name ]]
+then
+  passthrough=$(< "$dir/passthrough/$name")
+fi
+if [[ -n $passthrough ]]
+then
+  exec "$passthrough" "$@"
+fi
+
+printf '%s\n' "${call% }" >> "$dir/unexpected"
+printf 'mock: unexpected call: %s\n' "${call% }" >&2
+exit 127

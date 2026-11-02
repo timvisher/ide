@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/../lib/mock_commands.bash" || exit 1
+
+# Integration tests for the git wrapper: the guards that read real
+# repository state (upstream tracking, @{u}) and selective fetch's
+# refspec scrub against a real remote. The git behind the wrapper is a
+# mock that passes straight through to the real git. The wrapper's
+# other tests, against a mocked git, are in bash/tests/git.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  ((failures++)) || true
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  ((tests++)) || true
+}
+
+script="$(cd "$(dirname "$0")/../.." && pwd)/bin/git"
+funcs_dir="$(cd "$(dirname "$0")/../../functions" && pwd)" || exit 1
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+mock_passthrough git "$real_git"
+mock_passthrough ps /bin/ps
+real_mock_dir=$TIMVISHER_MOCK_DIR
+
+# The wrapper first, so resolve_next_git picks the mock behind it.
+mkdir -p "$tmpdir/selflink" || exit 1
+ln -s "$script" "$tmpdir/selflink/git"
+test_path_real_git="$tmpdir/selflink:$TIMVISHER_MOCK_DIR/bin:/opt/homebrew/bin:/usr/bin:/bin"
+
+# ---------------------------------------------------------------------------
+# Upstream guard integration tests (using real git repos)
+# ---------------------------------------------------------------------------
+
+
+run_wrapper_real_git() {
+  TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
+  TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+run_wrapper_real_git_agent() {
+  TIMVISHER_AGENT=true \
+  TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
+  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
+}
+
+# Helper: create a minimal repo with a branch tracking a remote
+setup_tracking_repo() {
+  local repo_dir=$1 branch_name=$2
+
+  "$real_git" -C "$tmpdir" init --bare "remote-${branch_name}.git" >/dev/null 2>&1
+  "$real_git" -C "$tmpdir" clone "remote-${branch_name}.git" "$repo_dir" >/dev/null 2>&1
+  "$real_git" -C "${tmpdir}/${repo_dir}" commit --allow-empty -m "init" >/dev/null 2>&1
+  "$real_git" -C "${tmpdir}/${repo_dir}" push origin HEAD >/dev/null 2>&1
+  if [[ $branch_name != main ]]
+  then
+    "$real_git" -C "${tmpdir}/${repo_dir}" checkout -b "$branch_name" >/dev/null 2>&1
+    "$real_git" -C "${tmpdir}/${repo_dir}" push -u origin "$branch_name" >/dev/null 2>&1
+  fi
+}
+
+# Test 8: upstream guard fires when tracking is dropped (pre-check)
+run_test
+setup_tracking_repo "guard-pre-test" "feature"
+# Create cookie to indicate tracking was previously observed
+touch "${tmpdir}/guard-pre-test/x.upstream-configured"
+# Strip tracking to simulate the broken state
+"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.remote
+"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.merge
+
+result=$(cd "${tmpdir}/guard-pre-test" && run_wrapper_real_git status 2>&1 || true)
+if [[ $result == *"UPSTREAM TRACKING DROPPED"* ]]
+then
+  pass "upstream guard fires when tracking is dropped"
+else
+  fail "upstream guard should fire when tracking dropped: got '${result}'"
+fi
+
+# Test 9: upstream guard uses -C target, not CWD
+run_test
+setup_tracking_repo "guard-C-target" "mybranch"
+# Create a second repo with detached HEAD (like a cache)
+"$real_git" -C "$tmpdir" init "detached-cache" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/detached-cache" commit --allow-empty -m "init" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/detached-cache" checkout --detach HEAD >/dev/null 2>&1
+
+# Make guard-C-target have broken tracking (cookie + no remote)
+touch "${tmpdir}/guard-C-target/x.upstream-configured"
+"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.remote
+"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.merge
+
+# Run git -C <detached-cache> status FROM the broken worktree dir.
+# With the fix, the guard should check the detached cache (and skip),
+# NOT the CWD (which is broken).
+result=$(cd "${tmpdir}/guard-C-target" && run_wrapper_real_git "-C '${tmpdir}/detached-cache' status" 2>&1 || true)
+if [[ $result != *"UPSTREAM TRACKING DROPPED"* ]]
+then
+  pass "upstream guard uses -C target, not CWD"
+else
+  fail "upstream guard should not fire for -C target with detached HEAD: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# @{u} resolve guard tests (agent must have upstream configured)
+# ---------------------------------------------------------------------------
+
+# Test: blocks 'git log @{u}..HEAD' when upstream is not configured
+run_test
+# Create a repo with no upstream
+"$real_git" -C "$tmpdir" init "no-upstream" >/dev/null 2>&1
+"$real_git" -C "${tmpdir}/no-upstream" commit --allow-empty -m "init" >/dev/null 2>&1
+
+result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
+if [[ $result == *'"code":"git_upstream_not_configured"'* ]]
+then
+  pass "blocks 'git log @{u}..HEAD' when no upstream"
+else
+  fail "blocks @{u} without upstream: got '${result}'"
+fi
+
+# Test: allows 'git log @{u}..HEAD' when upstream is configured
+run_test
+setup_tracking_repo "has-upstream" "feature2"
+
+result=$(cd "${tmpdir}/has-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
+if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
+then
+  pass "allows 'git log @{u}..HEAD' when upstream exists"
+else
+  fail "should allow @{u} with upstream: got '${result}'"
+fi
+
+# Test: blocks 'git diff @{upstream}...HEAD' when no upstream (long form)
+run_test
+result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "diff '@{upstream}...HEAD'" || true)
+if [[ $result == *'"code":"git_upstream_not_configured"'* ]]
+then
+  pass "blocks @{upstream} long form when no upstream"
+else
+  fail "blocks @{upstream} long form: got '${result}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Selective-fetch: scrub_dead_refspecs drops dead explicit refspecs
+# ---------------------------------------------------------------------------
+
+# Build a selective-fetch repo. The origin URL parses to testorg/testrepo (so
+# selective fetch enables and the marker is found) but resolves to a local
+# bare remote via insteadOf. HOME is sandboxed so the enable marker is read
+# from our tree, not the real ~/.config.
+sf_setup() {
+  local name=$1
+  sf_home="$tmpdir/sf-$name/home"
+  sf_remote="$tmpdir/sf-$name/remote.git"
+  sf_work="$tmpdir/sf-$name/work"
+  mkdir -p "$sf_home" || true
+
+  # The wrapper sources ~/.functions/*.bash; with HOME sandboxed, point it at
+  # the real ones so the script can load.
+  ln -sf "$HOME/.functions" "$sf_home/.functions" || true
+
+  "$real_git" init --bare "$sf_remote" >/dev/null 2>&1 || true
+  "$real_git" clone "$sf_remote" "$sf_work" >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" commit --allow-empty -m init >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/keepme >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" fetch origin >/dev/null 2>&1 || true
+  "$real_git" -C "$sf_work" remote set-head origin main >/dev/null 2>&1 || true
+
+  # Parse-able remote URL, rewritten to the local bare repo.
+  "$real_git" -C "$sf_work" remote set-url origin "git@github.com:testorg/testrepo.git" || true
+  "$real_git" -C "$sf_work" config --add "url.${sf_remote}.insteadOf" "git@github.com:testorg/testrepo.git" || true
+
+  # selective-fetch marker under the HOME-relative config dir.
+  mkdir -p "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo" || true
+  touch "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo/enable-selective-fetch" || true
+}
+
+# Run the wrapper's fetch with real git and a sandboxed HOME.
+sf_fetch() {
+  ( cd "$sf_work" && \
+    TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
+    TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
+    bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch" 2>&1 ) || true
+}
+
+# Test: drops a dead explicit refspec, keeps live explicit + wildcard, and the
+# fetch succeeds (no "couldn't find remote ref").
+run_test
+sf_setup scrub
+"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/keepme:refs/remotes/origin/keepme" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch:refs/remotes/origin/deadbranch" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/team/*:refs/remotes/origin/team/*" || true
+sf_out=$(sf_fetch)
+sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
+if [[ $sf_specs != *deadbranch* ]] \
+   && [[ $sf_specs == *"refs/heads/keepme:"* ]] \
+   && [[ $sf_specs == *"refs/heads/main:"* ]] \
+   && [[ $sf_specs == *"refs/heads/team/*:"* ]] \
+   && [[ $sf_out != *"couldn't find remote ref"* ]]
+then
+  pass "scrub: drops dead explicit refspec, keeps live + wildcard, fetch succeeds"
+else
+  fail "scrub: specs='${sf_specs}' out='${sf_out}'"
+fi
+
+# Test: an unreachable remote preserves all refspecs (no false-positive removal).
+run_test
+sf_setup guard
+"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
+"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch2:refs/remotes/origin/deadbranch2" || true
+# Break the remote: repoint insteadOf at a nonexistent bare repo so ls-remote fails.
+"$real_git" -C "$sf_work" config --unset-all "url.${sf_remote}.insteadOf" 2>/dev/null || true
+"$real_git" -C "$sf_work" config --add "url.${tmpdir}/sf-guard/missing.git.insteadOf" "git@github.com:testorg/testrepo.git" || true
+sf_out=$(sf_fetch)
+sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
+if [[ $sf_specs == *deadbranch2* ]]
+then
+  pass "scrub: unreachable remote preserves refspecs (no false-positive removal)"
+else
+  fail "scrub guard: deadbranch2 should survive an unreachable remote: specs='${sf_specs}' out='${sf_out}'"
+fi
+
+
+mock_finish || (( failures += 1 ))
+
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

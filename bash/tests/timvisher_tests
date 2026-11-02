@@ -20,6 +20,12 @@ check() {
 core=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
 script="$core/bash/bin/timvisher_tests"
 
+# Fixtures are built with the real git, not the ~/bin/git wrapper on
+# this suite's PATH.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+real_git=$(mock_real git) || { echo 'no real git on the base PATH' >&2; exit 1; }
+
 tmpdir=''
 trap '[[ -z $tmpdir ]] || { chflags -R nouchg "$tmpdir" 2>/dev/null; rm -rf -- "$tmpdir"; }' EXIT
 tmpdir=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
@@ -28,7 +34,7 @@ tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
 overlay="$tmpdir/overlay"
 mkdir -p "$overlay/ai/HOME/.agents/skills/overlay-skill" || exit 1
 printf 'test\n' > "$overlay/ai/HOME/.agents/skills/overlay-skill/SKILL.md"
-git -C "$overlay" init -q || exit 1
+"$real_git" -C "$overlay" init -q || exit 1
 
 caller_home="$tmpdir/caller"
 mkdir -p "$caller_home/.config/timvisher" || exit 1
@@ -63,6 +69,7 @@ out=$(shell_in --overlay "$overlay" --shell bash -c '
   printf "token=%s\n" "${GH_TOKEN-unset}"
   printf "probe=%s\n" "${TIMVISHER_TESTS_PROBE-unset}"
   printf "hooks=%s\n" "$(git config core.hooksPath)"
+  printf "receive_hooks=%s\n" "$(env -u GIT_CONFIG_COUNT git config core.hooksPath)"
   printf "trace2=%s\n" "$(git config trace2.eventTarget)"
   printf "author=%s\n" "$(git var GIT_AUTHOR_IDENT | cut -d" " -f1)"
   printf "pwd=%s\n" "$(pwd -P)"
@@ -97,6 +104,8 @@ check 'GH_TOKEN is not passed' test "$(field token)" = unset
 check 'other caller variables are not passed' test "$(field probe)" = unset
 check 'core.hooksPath is an empty directory in HOME' \
       eval '[[ $(field hooks) == "$home"/* ]]'
+check 'core.hooksPath stays in HOME without the GIT_CONFIG_* overrides' \
+      eval '[[ $(field receive_hooks) == "$home"/* ]]'
 check 'trace2 goes to the git wrapper state in HOME' \
       test "$(field trace2)" = "$home/.local/state/timvisher/wrappers/git/trace2.jsonl"
 check 'git has a test identity' test "$(field author)" = Test
@@ -107,6 +116,11 @@ fresh=$(shell_in --overlay "$overlay" --shell bash -c '
   source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
   (timvisher_tests_fresh_home && printf %s "$HOME")')
 check 'a fresh HOME made under --shell is made' test -n "$fresh"
+fresh_hooks=$(shell_in --overlay "$overlay" --shell bash -c '
+  source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
+  (timvisher_tests_fresh_home && env -u GIT_CONFIG_COUNT git config core.hooksPath)')
+check 'a fresh HOME keeps core.hooksPath out of the global config' \
+      eval '[[ $fresh_hooks == */fresh_home.*/home/* ]]'
 check 'a fresh HOME made under --shell is removed afterwards' test ! -e "$fresh"
 
 second=$(shell_in --overlay "$overlay" --shell bash -c 'printf %s "$HOME"')
@@ -163,6 +177,13 @@ suite() {
 
 suite "$fcore/bash/tests/pass" <<'SUITE'
 echo 'PASS: fine'
+SUITE
+mkdir -p "$fcore/bash/tests/integration" "$fover/bash/tests/integration" || exit 1
+suite "$fcore/bash/tests/integration/real" <<'SUITE'
+echo 'PASS: against the real thing'
+SUITE
+suite "$fover/bash/tests/integration/overlay_real" <<'SUITE'
+echo 'PASS: overlay against the real thing'
 SUITE
 suite "$fcore/bash/tests/fail" <<'SUITE'
 echo 'FAIL: broken thing'
@@ -274,6 +295,8 @@ class Fixture(unittest.TestCase):
             self.assertEqual(os.path.join(home, ".config"), os.environ["XDG_CONFIG_HOME"])
             self.assertEqual(os.path.join(home, "git"), os.environ["TIMVISHER_GIT_HOME"])
             self.assertTrue(os.path.islink(os.path.join(home, "git", "ide")))
+            with open(os.path.join(home, ".gitconfig")) as f:
+                self.assertIn(f"hooksPath = {home}/", f.read())
         self.assertEqual(outer, os.environ["HOME"])
         self.assertFalse(os.path.exists(home))
 
@@ -288,9 +311,9 @@ printf '__pycache__/\n' > "$fcore/.gitignore"
 
 for root in "$fcore" "$fover"
 do
-  git -C "$root" init -q &&
-    git -C "$root" add -A &&
-    git -C "$root" -c commit.gpgsign=false commit -q -m fixture ||
+  "$real_git" -C "$root" init -q &&
+    "$real_git" -C "$root" add -A &&
+    "$real_git" -C "$root" -c commit.gpgsign=false commit -q -m fixture ||
     exit 1
 done
 
@@ -377,6 +400,21 @@ check 'the template build runs a timvisher_uv stub, not the real one' \
 check 'the timvisher_uv stub succeeds' test "$(cat "$tmpdir/install_uv.rc")" = 0
 check 'the run directory is removed' \
       test -z "$(/usr/bin/find "$tmpdir/runtmp" -mindepth 1 -maxdepth 1)"
+check 'a default run skips the integration suites' \
+      absent '/bash/tests/integration/' "$results"
+
+run_fixture --integration
+check '--integration runs the integration suites' \
+      has_result 'test: ide/bash/tests/integration/real pass'
+check "--integration runs the overlay's integration suites" \
+      has_result 'test: system-extensions/bash/tests/integration/overlay_real pass'
+check '--integration still runs the other suites' \
+      has_result 'test: ide/bash/tests/pass pass'
+
+run_fixture --suite bash/tests/integration/real
+rc=$?
+check 'an integration suite named with --suite runs without --integration' \
+      eval '(( rc == 0 )) && has_result "test: ide/bash/tests/integration/real pass"'
 
 run_fixture --suite bash/tests/pass --suite "$fover/bash/tests/overlay_pass"
 rc=$?
@@ -387,6 +425,46 @@ check '--suite takes a path in the other root' \
 check '--suite runs only those suites' \
       eval '[[ $(grep -cE " (pass|fail)\$" "$results") == 2 ]]'
 check 'an unchanged tree reuses the template' test "$(wc -l < "$tmpdir/installs")" = 1
+
+runs="$caller_home/.local/state/timvisher_tests/runs"
+kept=$(sed -n 's/^run: \(.*\) (peak load average [0-9.]*)$/\1/p' "$tmpdir/out")
+check 'the last line names the kept run and its peak load average' \
+      eval '[[ $(tail -n 1 "$tmpdir/out") == "run: $kept (peak load average "* ]]'
+check 'the run is kept under the caller state dir' \
+      eval '[[ $kept == "$runs"/* && -d $kept ]]'
+check 'the kept joblog has a line per suite' \
+      eval '[[ $(tail -n +2 "$kept/joblog" | wc -l | tr -d " ") == 2 ]]'
+check "the kept joblog names each suite" \
+      grep -q 'run_suite [0-9]* ide/bash/tests/pass$' "$kept/joblog"
+check 'the kept log has the suite output' \
+      grep -q '^ide/bash/tests/pass	PASS: fine' "$kept/log"
+check 'the kept loadavg has samples' \
+      eval '[[ $(head -n 1 "$kept/loadavg") =~ ^[0-9]+\ [0-9.]+\ [0-9.]+\ [0-9.]+$ ]]'
+check 'the kept run records the core and overlay' \
+      eval 'grep -q "^core: $fcore " "$kept/run" && grep -q "^overlay: $fover " "$kept/run"'
+half=$(( $(getconf _NPROCESSORS_ONLN) / 2 ))
+(( 1 <= half )) || half=1
+check 'jobs defaults to half the online CPUs' grep -qx "jobs: $half" "$kept/run"
+
+run_fixture --jobs 1 --suite bash/tests/pass
+rc=$?
+check 'a --jobs run passes' test "$rc" = 0
+check '--jobs is recorded' \
+      eval 'grep -qx "jobs: 1" "$(sed -n "s/^run: \(.*\) (peak.*/\1/p" "$tmpdir/out")/run"'
+
+run_fixture --jobs 0 --suite bash/tests/pass
+rc=$?
+check '--jobs 0 is refused' test "$rc" = 1
+
+for i in {1..101}
+do
+  mkdir -p "$runs/19700101T000000Z-$i"
+done
+run_fixture --suite bash/tests/pass
+check 'only the newest 100 runs are kept' \
+      eval '[[ $(/usr/bin/find "$runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d " ") == 100 ]]'
+check 'the newest run is among them' \
+      test -d "$(sed -n 's/^run: \(.*\) (peak.*/\1/p' "$tmpdir/out")"
 
 suite "$fcore/bash/tests/dirty" <<'SUITE'
 touch dirty-file
@@ -412,8 +490,8 @@ check 'the removed file is named' \
       eval 'grep -q "^test: ide/bash/tests/discard FAIL: .*precious" "$results"'
 
 printf 'tracked\n' > "$fcore/tracked" &&
-  git -C "$fcore" add tracked &&
-  git -C "$fcore" -c commit.gpgsign=false commit -q -m tracked &&
+  "$real_git" -C "$fcore" add tracked &&
+  "$real_git" -C "$fcore" -c commit.gpgsign=false commit -q -m tracked &&
   printf 'my edit\n' > "$fcore/tracked" || exit 1
 suite "$fcore/bash/tests/overwrite" <<'SUITE'
 printf 'clobbered\n' > tracked
@@ -449,17 +527,17 @@ rc=$?
 check 'a non-numeric --timeout is a usage error' test "$rc" != 0
 
 pair_trunk="$tmpdir/pair-trunk"
-pair_branch=$(git -C "$fcore" symbolic-ref --short HEAD) || exit 1
+pair_branch=$("$real_git" -C "$fcore" symbolic-ref --short HEAD) || exit 1
 mkdir -p "$pair_trunk" &&
-  git -C "$pair_trunk" init -q -b pair-trunk &&
-  git -C "$pair_trunk" -c commit.gpgsign=false commit -q --allow-empty -m trunk &&
-  git -C "$pair_trunk" worktree add -q -b "$pair_branch" "$tmpdir/pair-branch" ||
+  "$real_git" -C "$pair_trunk" init -q -b pair-trunk &&
+  "$real_git" -C "$pair_trunk" -c commit.gpgsign=false commit -q --allow-empty -m trunk &&
+  "$real_git" -C "$pair_trunk" worktree add -q -b "$pair_branch" "$tmpdir/pair-branch" ||
   exit 1
 ln -sfn "$pair_trunk" "$caller_home/.config/timvisher/ide" || exit 1
 paired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
 check 'the overlay defaults to its worktree on the current branch' \
       test "$paired" = "$tmpdir/pair-branch"
-git -C "$pair_trunk" worktree remove -f "$tmpdir/pair-branch" || exit 1
+"$real_git" -C "$pair_trunk" worktree remove -f "$tmpdir/pair-branch" || exit 1
 unpaired=$(cd "$fcore" && as_caller "$script" --shell bash -c 'cd ~/.config/timvisher/ide && pwd -P' 2>/dev/null)
 check 'the overlay falls back to its trunk without a worktree on the branch' \
       test "$unpaired" = "$pair_trunk"
