@@ -227,9 +227,9 @@ mock_real() {
 }
 
 # Answer 'git [-C <dir>] rev-parse --show-toplevel' the way git does for
-# repositories marked by a .git directory (mkdir <repo>/.git): the
-# nearest ancestor of <dir>, or of the current directory, holding one,
-# or exit 128.
+# repositories marked by a .git entry (mkdir <repo>/.git in a fixture; a
+# real checkout or worktree already has one): the nearest ancestor of
+# <dir>, or of the current directory, holding one, or exit 128.
 mock_git_toplevel() {
   # shellcheck disable=SC2016
   local code='
@@ -238,7 +238,7 @@ mock_git_toplevel() {
     dir=$(cd "$dir" 2>/dev/null && pwd -P) || exit 128
     while [[ -n $dir ]]
     do
-      if [[ -d $dir/.git ]]
+      if [[ -e $dir/.git ]]
       then
         printf "%s\n" "$dir"
         exit 0

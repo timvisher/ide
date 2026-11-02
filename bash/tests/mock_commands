@@ -165,6 +165,9 @@ check 'mock_git_toplevel takes -C' "$top/repo" \
   "$(git -C "$top/repo/sub" rev-parse --show-toplevel)"
 git -C "$top/elsewhere" rev-parse --show-toplevel >/dev/null 2>&1
 check 'mock_git_toplevel exits 128 outside a marked repo' 128 "$?"
+mkdir -p "$top/worktree/sub" && : > "$top/worktree/.git"
+check 'mock_git_toplevel takes a worktree .git file as a marker' "$top/worktree" \
+  "$(git -C "$top/worktree/sub" rev-parse --show-toplevel)"
 git -C "$top/missing" rev-parse --show-toplevel >/dev/null 2>&1
 check 'mock_git_toplevel exits 128 for a missing directory' 128 "$?"
 rm -rf -- "$top"
