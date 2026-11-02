@@ -257,6 +257,18 @@ else
   fail "TIMVISHER_BD_REMOTE naming nothing runnable: expected 'fake-bd list', got '${out}'"
 fi
 
+# --- no BD_BINARY: Homebrew's bd under HOMEBREW_PREFIX (Linux Homebrew) ---
+mkdir -p "$tmpdir/brew-prefix/bin"
+cp "$tmpdir/fake-bd" "$tmpdir/brew-prefix/bin/bd"
+run_test
+out=$(cd "$tmpdir" && env -u BD_BINARY -u TIMVISHER_BD_REMOTE HOMEBREW_PREFIX="$tmpdir/brew-prefix" "$script" list)
+if [[ $out == "fake-bd list" ]]
+then
+  pass "no BD_BINARY: runs \$HOMEBREW_PREFIX/bin/bd"
+else
+  fail "no BD_BINARY: expected 'fake-bd list' from \$HOMEBREW_PREFIX/bin/bd, got '${out}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
