@@ -1354,13 +1354,82 @@ result=$(HOME="$noaictl_home" \
   XDG_DATA_HOME="$noaictl_home/.local/share" \
   XDG_STATE_HOME="$noaictl_home/.local/state" \
   XDG_CACHE_HOME="$noaictl_home/.cache" \
-  PATH="$test_path" "$script" status 2>&1) || rc=$?
+  PATH="$test_path" "$script" push 2>&1) || rc=$?
 if (( rc == 1 )) && [[ $result == *'Unable to source aictl functions'* && $result != *real-git* ]]
 then
   pass "git wrapper stops loudly without aictl.bash"
 else
   fail "git wrapper without aictl.bash: rc=$rc got '${result}'"
 fi
+
+git_calls() {
+  local agent=$1
+  shift
+  git_echoes
+  TIMVISHER_AGENT=$agent PATH="$test_path" "$script" "$@" >/dev/null 2>&1
+  mock_call_count git
+}
+
+for cmd in 'ls-files' 'rev-parse --show-toplevel' '--version' '-C . cat-file -t HEAD' \
+           'config --get user.name' 'config user.name' 'config --file x --get-regexp a b' \
+           'config get user.name' 'config --list' 'remote' 'remote -v' \
+           'remote get-url origin' 'remote get-url --push origin' 'rev-list HEAD' \
+           'for-each-ref' 'symbolic-ref --short HEAD' 'diff-tree HEAD'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls '' $cmd)
+  if [[ $calls == 1 ]]
+  then
+    pass "read-only 'git $cmd' reaches git once"
+  else
+    fail "read-only 'git $cmd': $calls git calls"
+  fi
+done
+
+for cmd in 'ls-files' 'rev-parse HEAD' 'config --get user.name' 'remote get-url origin'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls true $cmd)
+  if [[ $calls == 1 ]]
+  then
+    pass "read-only 'git $cmd' reaches git once under an agent"
+  else
+    fail "read-only 'git $cmd' under an agent: $calls git calls"
+  fi
+done
+
+for cmd in 'config user.name x' 'config --unset user.name' 'config --add a.b c' \
+           'config set a.b c' 'config edit' 'config --get a.b --unset' \
+           'remote remove origin' 'remote set-url origin x' 'remote add o x' \
+           'commit -m x' 'checkout main' 'fetch' 'st' 'status' 'log' 'diff' 'show'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls '' $cmd)
+  if (( 1 < calls ))
+  then
+    pass "'git $cmd' takes the full path"
+  else
+    fail "'git $cmd' took the fast path: $calls git calls"
+  fi
+done
+
+for cmd in 'log a b' 'diff main..HEAD' 'rev-list a b'
+do
+  run_test
+  # shellcheck disable=SC2086
+  result=$(TIMVISHER_AGENT=true PATH="$test_path" "$script" $cmd 2>&1)
+  if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+  then
+    pass "'git $cmd' is still range-guarded under an agent"
+  else
+    fail "'git $cmd' under an agent: got '${result}'"
+  fi
+done
+
+git_echoes
 
 mock_finish || (( failures += 1 ))
 
