@@ -1168,7 +1168,11 @@ sf_out=$( cd "$sf_new" && \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch --prune origin" 2>&1 ) || true
 sf_specs=$("$real_git" -C "$sf_new" config --get-all remote.origin.fetch 2>/dev/null || true)
 sf_refs=$("$real_git" -C "$sf_new" for-each-ref --format='%(refname)' refs/remotes 2>/dev/null || true)
-if [[ $sf_specs == "+refs/heads/main:refs/remotes/origin/main" ]] \
+# The core's default-refspec-extras (found through TIMVISHER_GIT_HOME, which
+# the test runner sets) may add curated specs such as timvisher/*, so the
+# check is for main and against the catch-all, not for an exact list.
+if [[ $'\n'$sf_specs$'\n' == *$'\n'"+refs/heads/main:refs/remotes/origin/main"$'\n'* ]] \
+   && [[ $sf_specs != *"+refs/heads/*:refs/remotes/origin/*"* ]] \
    && [[ $sf_refs == *refs/remotes/origin/main* ]] \
    && [[ $sf_refs != *keepme* ]] \
    && [[ $("$real_git" -C "$sf_new" config remote.origin.tagOpt 2>/dev/null) == --no-tags ]]
