@@ -61,11 +61,10 @@ mkdir -p "${stub_bin}" || { echo "FAIL: setup mkdir bin" >&2; exit 1; }
 # uses, which would make every `git` call in ntmux3 fail and corrupt the
 # routing decision.  Symlinking the real binary into the (PATH-leading)
 # stub bin sidesteps the wrapper entirely and decouples the test from it.
-real_git=
-for g in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
-  [[ -x $g ]] && { real_git=$g; break; }
-done
-[[ -n $real_git ]] || { echo "FAIL: no real git found" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "${funcs_dir}/real_bin.bash" || { echo "FAIL: setup source real_bin.bash" >&2; exit 1; }
+real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "${funcs_dir}/../bin/git") ||
+  { echo "FAIL: no real git found" >&2; exit 1; }
 ln -s "${real_git}" "${stub_bin}/git" || { echo "FAIL: setup git symlink" >&2; exit 1; }
 
 # ntmux3 consults `timvisher_bd_topics resolve` for absolute targets to

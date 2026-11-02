@@ -21,6 +21,18 @@ run_test() {
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/git"
 funcs_dir="$(cd "$(dirname "$0")/../functions" && pwd)" || exit 1
 
+# shellcheck source=/dev/null
+source "${funcs_dir}/real_bin.bash" || { echo "Unable to source real_bin.bash" >&2; exit 1; }
+
+# The tools the wrapper needs (realpath, mktemp, jq, ...): Homebrew's bin
+# when there is a Homebrew (macOS's /usr/bin lacks some), then the system's.
+brew_bin=
+if command -v brew > /dev/null 2>&1 && brew_prefix=$(brew --prefix 2> /dev/null) && [[ -n $brew_prefix ]]
+then
+  brew_bin=$brew_prefix/bin
+fi
+sys_path="${brew_bin:+$brew_bin:}/usr/bin:/bin"
+
 tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
@@ -65,12 +77,12 @@ chmod +x "$tmpdir/mockbin/ps"
 #   - selflink/ → symlink to the wrapper under test
 #   - prefix/bin/ → mock git
 #   - $tmpdir/mockbin → mock `brew` for wrappers that still shell out to it
-#   - /opt/homebrew/bin:/usr/bin:/bin → bash builtins (`realpath`, `mktemp`,
-#     etc.) but NOT another git binary ahead of the mock
+#   - $sys_path → bash builtins (`realpath`, `mktemp`, etc.) but NOT
+#     another git binary ahead of the mock
 mkdir -p "$tmpdir/selflink" || exit 1
 ln -s "$script" "$tmpdir/selflink/git"
 
-test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
+test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:$sys_path"
 
 run_wrapper() {
   PATH="$test_path" \
@@ -257,7 +269,7 @@ echo "real-git $*"
 MOCK
 chmod +x "$tmpdir/grantprefix/bin/git"
 ln -s "$script" "$tmpdir/grantselflink/git"
-grant_path="$tmpdir/grantselflink:$tmpdir/grantprefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
+grant_path="$tmpdir/grantselflink:$tmpdir/grantprefix/bin:$tmpdir/mockbin:$sys_path"
 for faketool in timvisher_gh timvisher_git
 do
   cat > "$tmpdir/fakegrant-bin/$faketool" <<'FAKE_TOOL'
@@ -500,15 +512,16 @@ else
 fi
 
 # Test: logging does not depend on jq. Strip jq's locations from PATH; keep
-# /bin so bash/ps are resolvable. Use /bin/bash with an absolute path so the
-# env-var-prefix on bash doesn't try to resolve 'bash' through nojq_path.
+# /bin so ps is resolvable. Run this test's own bash by absolute path
+# ("$BASH"), so 'bash' isn't resolved through nojq_path and macOS's 3.2
+# /bin/bash isn't used.
 run_test
 nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
 log_state="$tmpdir/xdg-state-nojq"
 rm -rf "$log_state"
 TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" \
   PATH="$nojq_path" \
-  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" >/dev/null 2>&1
+  "$BASH" -c "source '${funcs_dir}/logging.bash'; '$BASH' '$script' status" >/dev/null 2>&1
 log_file="$log_state/timvisher/wrappers/git/log.jsonl"
 if [[ -f $log_file ]] && grep -q '"argv":\["status"\]' "$log_file"
 then
@@ -520,7 +533,7 @@ fi
 # Test: no stderr leak under a dolt/bd parent even with jq absent.
 run_test
 stderr=$(TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt PATH="$nojq_path" \
-  /opt/homebrew/bin/bash -c "source '${funcs_dir}/logging.bash'; /opt/homebrew/bin/bash '$script' status" 2>&1 >/dev/null)
+  "$BASH" -c "source '${funcs_dir}/logging.bash'; '$BASH' '$script' status" 2>&1 >/dev/null)
 if [[ $stderr == *'"argv":'* ]]
 then
   fail "expected no agent log on stderr when parent=dolt without jq, got '${stderr}'"
@@ -891,7 +904,10 @@ fi
 # Upstream guard integration tests (using real git repos)
 # ---------------------------------------------------------------------------
 
-real_git=/opt/homebrew/bin/git
+# The real git, past every wrapper checkout on PATH (the installed ide's
+# ~/bin/git, say), not just this one.
+real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$script") ||
+  { echo "No real git found" >&2; exit 1; }
 
 # For upstream guard tests, the wrapper needs the real git binary (not the
 # echo mock) because it calls rev-parse/config internally. Build a parallel
@@ -899,7 +915,7 @@ real_git=/opt/homebrew/bin/git
 mkdir -p "$tmpdir/real-prefix/bin" || exit 1
 ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
 
-test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:/opt/homebrew/bin:/usr/bin:/bin"
+test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:$sys_path"
 
 run_wrapper_real_git() {
   TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
