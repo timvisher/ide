@@ -64,7 +64,7 @@ rotate_one() {
   # can't read is an error, not "small enough".
   if ! size=$(stat -c %s "$f" 2>/dev/null) && ! size=$(stat -f %z "$f" 2>/dev/null)
   then
-    warn 'rotate: could not read the size of ‘%s’' "$f"
+    warn "rotate: could not read the size of '%s'" "$f"
     return 1
   fi
   if (( size < max_bytes ))
@@ -95,7 +95,7 @@ rotate_one() {
   then
     if ! cp "$f" "${f}.1"
     then
-      warn 'rotate: could not copy ‘%s’' "$f"
+      warn "rotate: could not copy '%s'" "$f"
       return 1
     fi
     : > "$f"
@@ -106,13 +106,13 @@ rotate_one() {
     # see the path missing rather than empty.
     : > "$f"
   else
-    warn 'rotate: could not rename ‘%s’' "$f"
+    warn "rotate: could not rename '%s'" "$f"
     return 1
   fi
 
   nice -n 19 gzip -f "${f}.1" ||
     {
-      warn 'rotate: could not gzip ‘%s.1’' "$f"
+      warn "rotate: could not gzip '%s.1'" "$f"
       return 1
     }
 
