@@ -106,6 +106,13 @@ on openTabWithUrl(u)
 	tell script (my currentBrowser()) to openTabWithUrl(u)
 end openTabWithUrl
 
+on makeOrReuseVisibleTab(u)
+	if my focusTabWithUrl(u) then return "focused"
+	my activateOrMakeNewWindow()
+	if my openTabWithUrl(u) then return "opened"
+	return "untracked"
+end makeOrReuseVisibleTab
+
 -- getTabWithUrl("https://www.youtube.com/@PogoMusic")
 
 on closeTabWithUrl(u)
