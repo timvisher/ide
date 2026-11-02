@@ -1030,7 +1030,10 @@ fi
 
 # Use the real git binary directly to avoid the agent-safety wrapper
 # (~/bin/git) which requires Co-authored-by trailers on commits.
-test_git="$(brew --prefix)/bin/git"
+# shellcheck source=/dev/null
+source "${script_dir}/functions/real_bin.bash" || { echo "Unable to source real_bin.bash" >&2; exit 1; }
+test_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "${script_dir}/bin/git") ||
+  { echo "No real git found" >&2; exit 1; }
 
 # Create a source repo to serve as the remote
 source_repo="$tmpdir/remote"

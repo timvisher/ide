@@ -79,3 +79,19 @@ timvisher_real_bin() {
   done
   return 1
 }
+
+# timvisher_real_bin_script_dirs <name> prints, ':'-separated for
+# TIMVISHER_REAL_BIN_SKIP, the directory of every <name> on PATH that is a
+# script (starts with '#!'). A real git, bash or gh is a binary, so this
+# names every wrapper checkout on PATH, including ones the caller isn't, such
+# as the installed ide's ~/bin/git seen from a worktree's tests.
+timvisher_real_bin_script_dirs() {
+  local name=$1 candidate dirs=
+  while IFS= read -r candidate
+  do
+    [[ $(head -c 2 -- "$candidate" 2> /dev/null) == '#!' ]] || continue
+    candidate=$(realpath -- "$candidate" 2> /dev/null) || continue
+    dirs+=${dirs:+:}${candidate%/*}
+  done < <(type -ap "$name")
+  printf '%s\n' "$dirs"
+}

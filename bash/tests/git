@@ -904,17 +904,9 @@ fi
 # Upstream guard integration tests (using real git repos)
 # ---------------------------------------------------------------------------
 
-# The real git: timvisher_real_bin, past every wrapper. A git on PATH that is
-# a script is some checkout's wrapper (the installed ide's ~/bin/git, say),
-# so its directory is skipped as well as this one's.
-real_git_skip=
-while IFS= read -r candidate
-do
-  [[ $(head -c 2 -- "$candidate" 2> /dev/null) == '#!' ]] || continue
-  candidate=$(realpath -- "$candidate") || continue
-  real_git_skip+=${real_git_skip:+:}${candidate%/*}
-done < <(type -ap git)
-real_git=$(TIMVISHER_REAL_BIN_SKIP=$real_git_skip timvisher_real_bin git "$script") ||
+# The real git, past every wrapper checkout on PATH (the installed ide's
+# ~/bin/git, say), not just this one.
+real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$script") ||
   { echo "No real git found" >&2; exit 1; }
 
 # For upstream guard tests, the wrapper needs the real git binary (not the
