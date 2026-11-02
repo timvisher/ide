@@ -35,9 +35,12 @@ def fresh_home():
 
 
 def _remove_tree(root):
-    for parent, dirs, files in os.walk(root):
-        for name in dirs + files:
-            path = os.path.join(parent, name)
-            if not os.path.islink(path):
-                os.chflags(path, 0)
+    # Only BSD and macOS have file flags (the template HOME's uchg locks);
+    # Linux has no os.chflags and nothing to clear.
+    if hasattr(os, "chflags"):
+        for parent, dirs, files in os.walk(root):
+            for name in dirs + files:
+                path = os.path.join(parent, name)
+                if not os.path.islink(path):
+                    os.chflags(path, 0)
     shutil.rmtree(root)
