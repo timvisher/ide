@@ -125,14 +125,25 @@ source "$(dirname "${BASH_SOURCE[0]}")/../functions/real_bin.bash" ||
 # A wrapper that runs itself again instead of the real tool is an error
 # the first time it happens. Before exec, the wrapper records
 # "<pid>:<name>" in TIMVISHER_AGENT_WRAPPER_EXEC. The same wrapper started
-# again by that pid (exec kept it) or by its direct child (what 'op run'
-# starts) means the real-binary lookup came back to a wrapper. A nested
-# agent started from a shell, or a different tool, has another parent and
-# runs normally.
+# again by that pid (exec kept it), by its child (what 'op run' starts),
+# or by an op that pid started (what 'op run' starts under the system
+# extensions' op shim) means the real-binary lookup came back to a wrapper.
+# The grandparent counts only when the parent is op: a nested agent started
+# from the real tool's own shell also has that pid as its grandparent, and
+# must run.
 timvisher_agent_exec() {
   local name=${0##*/} exec_pid=${TIMVISHER_AGENT_WRAPPER_EXEC%%:*} exec_name=${TIMVISHER_AGENT_WRAPPER_EXEC#*:}
+  local via_op=''
+  if [[ -n ${TIMVISHER_AGENT_WRAPPER_EXEC-} && $exec_name == "$name" ]]
+  then
+    local parent_comm grandparent
+    parent_comm=$(ps -o comm= -p "$PPID" 2>/dev/null)
+    grandparent=$(ps -o ppid= -p "$PPID" 2>/dev/null)
+    grandparent=${grandparent//[[:space:]]/}
+    [[ ${parent_comm##*/} == op && $exec_pid == "$grandparent" ]] && via_op=1
+  fi
   if [[ -n ${TIMVISHER_AGENT_WRAPPER_EXEC-} && $exec_name == "$name" ]] &&
-       [[ $exec_pid == "$$" || $exec_pid == "$PPID" ]]
+       [[ $exec_pid == "$$" || $exec_pid == "$PPID" || -n $via_op ]]
   then
     die 'agent wrapper: %s ran itself again instead of the real %s (wrapper pid %s, caller pid %s). The real-binary lookup returned a wrapper; check PATH and the install.' "$0" "$name" "$$" "$exec_pid"
   fi

@@ -281,6 +281,31 @@ do
   fi
 done
 
+# Grandchildren: through a process named op (an op shim's 'op run') it's
+# a loop; through a shell (a nested agent the real tool started) it isn't.
+# The trailing ': ' keeps bash -c from exec'ing the wrapper in its place.
+cp "$(command -v bash)" "$wrap_fixture/tools/op"
+run_test
+# shellcheck disable=SC2016 # the inner bash expands $0
+out=$(launch child self codex "$wrap_fixture/tools/op" -c '"$0" z; :' "$wrap_fixture/wrap/codex")
+if [[ $out == *"ran itself again"* && $out != *"real codex args"* ]]
+then
+  pass "codex re-entered through an op the exec'd pid started is an error at once"
+else
+  fail "codex re-entry through op not caught: $out"
+fi
+rm -f "$wrap_fixture/tools/op"
+
+run_test
+# shellcheck disable=SC2016 # the inner bash expands $0
+out=$(launch child self codex bash -c '"$0" z; :' "$wrap_fixture/wrap/codex")
+if [[ $out == *"real codex args=z"* ]]
+then
+  pass "codex started from the real tool's own shell (a nested agent) runs"
+else
+  fail "nested codex from the tool's shell was refused: $out"
+fi
+
 run_test
 out=$(launch child self codex "$wrap_fixture/wrap/claude" z)
 if [[ $out == *"real claude args=z"* ]]
