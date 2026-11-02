@@ -9,6 +9,15 @@
 # real .beads up to the surrounding repo's .beads/redirect — common
 # when the topics root is itself a git repo.
 
+# Where beads live on another machine (a Datadog workspace, whose topics
+# are on the laptop) the shell names a forwarding bd here, rather than
+# shadowing this wrapper earlier on PATH, so every other host pays
+# nothing for it.
+if [[ -n ${TIMVISHER_BD_REMOTE:-} && -x $TIMVISHER_BD_REMOTE ]]
+then
+  exec "$TIMVISHER_BD_REMOTE" "$@"
+fi
+
 beads_dir=""
 should_anchor=0
 
@@ -70,4 +79,4 @@ then
   fi
 fi
 
-exec "${BD_BINARY:-/opt/homebrew/bin/bd}" "$@"
+exec "${BD_BINARY:-${HOMEBREW_PREFIX:-/opt/homebrew}/bin/bd}" "$@"

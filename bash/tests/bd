@@ -223,6 +223,52 @@ else
   fail "expected explicit BEADS_DIR preserved; got '${result}'"
 fi
 
+# --- TIMVISHER_BD_REMOTE: a forwarding bd takes over the whole call ---
+cat > "$tmpdir/remote-bd" <<'MOCK'
+#!/usr/bin/env bash
+echo "remote-bd $*"
+MOCK
+chmod +x "$tmpdir/remote-bd"
+
+run_test
+out=$(cd "$tmpdir" && TIMVISHER_BD_REMOTE="$tmpdir/remote-bd" BD_BINARY="$tmpdir/fake-bd" "$script" list --status open)
+if [[ $out == "remote-bd list --status open" ]]
+then
+  pass "TIMVISHER_BD_REMOTE: runs the named bd with every argument, not the real bd"
+else
+  fail "TIMVISHER_BD_REMOTE: expected 'remote-bd list --status open', got '${out}'"
+fi
+
+run_test
+out=$(cd "$tmpdir" && env -u TIMVISHER_BD_REMOTE BD_BINARY="$tmpdir/fake-bd" "$script" list)
+if [[ $out == "fake-bd list" ]]
+then
+  pass "TIMVISHER_BD_REMOTE unset: the real bd, as before"
+else
+  fail "TIMVISHER_BD_REMOTE unset: expected 'fake-bd list', got '${out}'"
+fi
+
+run_test
+out=$(cd "$tmpdir" && TIMVISHER_BD_REMOTE="$tmpdir/no-such-bd" BD_BINARY="$tmpdir/fake-bd" "$script" list)
+if [[ $out == "fake-bd list" ]]
+then
+  pass "TIMVISHER_BD_REMOTE naming nothing runnable: the real bd"
+else
+  fail "TIMVISHER_BD_REMOTE naming nothing runnable: expected 'fake-bd list', got '${out}'"
+fi
+
+# --- no BD_BINARY: Homebrew's bd under HOMEBREW_PREFIX (Linux Homebrew) ---
+mkdir -p "$tmpdir/brew-prefix/bin"
+cp "$tmpdir/fake-bd" "$tmpdir/brew-prefix/bin/bd"
+run_test
+out=$(cd "$tmpdir" && env -u BD_BINARY -u TIMVISHER_BD_REMOTE HOMEBREW_PREFIX="$tmpdir/brew-prefix" "$script" list)
+if [[ $out == "fake-bd list" ]]
+then
+  pass "no BD_BINARY: runs \$HOMEBREW_PREFIX/bin/bd"
+else
+  fail "no BD_BINARY: expected 'fake-bd list' from \$HOMEBREW_PREFIX/bin/bd, got '${out}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
