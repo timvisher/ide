@@ -30,8 +30,10 @@ Usage: timvisher_browser tabs
   tab js     run a JavaScript expression in the active tab, or in the tab
              with that id; prints its value
   tab close  close the first tab with exactly that URL
-  tab <url>  focus a tab with that URL, or open it through the default URL
-             handler (Finicky) and wait for its tab to load; prints the URL
+  tab <url>  focus a tab with that URL on the current Space, or bring forward
+             a window there (making one if there is none) and open the URL
+             through the default URL handler (Finicky); waits for the tab to
+             load and prints the URL
 
 The browser is the timvisher Browser AppleScript library's currentBrowser().
 EOF
@@ -317,9 +319,7 @@ timvisher_browser__tab() {
 on run argv
 	set u to item 1 of argv
 	tell script "timvisher Browser"
-		if focusTabWithUrl(u) then return "focused" & linefeed & currentBrowser()
-		if openTabWithUrl(u) then return "opened" & linefeed & currentBrowser()
-		return "untracked" & linefeed & currentBrowser()
+		return makeOrReuseVisibleTab(u) & linefeed & currentBrowser()
 	end tell
 end run' "$url") || return 1
 

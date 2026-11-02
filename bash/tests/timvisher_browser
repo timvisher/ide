@@ -46,7 +46,7 @@ case $osa_script in
   *closeTabWithUrl*)
     printf '%s\nVivaldi\n' "${FAKE_CLOSE:-closed}"
     ;;
-  *focusTabWithUrl*)
+  *makeOrReuseVisibleTab*)
     printf '%s\nVivaldi\n' "${FAKE_TAB:-opened}"
     ;;
   *getActiveTabUrl*)
@@ -171,8 +171,8 @@ rc=$?
 check 'tab <url>: exits 0' test "$rc" -eq 0
 check 'tab <url>: prints the URL' test "$(cat "$tmpdir/stdout")" = 'https://github.com/DataDog/x/pull/8'
 check 'tab <url>: hands the URL to the library' grep -qxF 'https://github.com/DataDog/x/pull/8' "$tmpdir/args"
-check 'tab <url>: focuses an existing tab, else opens one and waits for it to load' \
-      eval "grep -q 'focusTabWithUrl' '$tmpdir/script' && grep -q 'openTabWithUrl(u)' '$tmpdir/script'"
+check 'tab <url>: goes through makeOrReuseVisibleTab, never straight to openTabWithUrl' \
+      eval "grep -q 'makeOrReuseVisibleTab(u)' '$tmpdir/script' && ! grep -q 'openTabWithUrl' '$tmpdir/script'"
 
 FAKE_TAB=focused browser tab 'https://github.com/DataDog/x/pull/8'
 rc=$?
