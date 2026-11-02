@@ -19,15 +19,18 @@ run_test() {
 }
 
 core="$(cd "$(dirname "$0")/../.." && pwd -P)"
-reader=$core/bash/bin/timvisher_git_trace2
+reader_bin=$core/bash/bin/timvisher_git_trace2
 
 t=
 trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
 t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
 t=$(cd "$t" && pwd -P) || exit 1
 mkdir -p "$t/state/timvisher/wrappers/git"
-export XDG_STATE_HOME=$t/state
 trace=$t/state/timvisher/wrappers/git/trace2.jsonl
+
+reader() {
+  env XDG_STATE_HOME="$t/state" "$reader_bin" "$@"
+}
 
 now=$(jq -nr 'now | strftime("%Y%m%dT%H%M%S")')
 old_sid=20200101T000000.000001Z-Habc-P0001
@@ -48,7 +51,7 @@ sids() {
 }
 
 run_test
-got=$("$reader" --since 1h | sids)
+got=$(reader --since 1h | sids)
 if [[ $got == "$(printf '%s\n' "$new_sid" "$child_sid" | sort | tr '\n' ' ')" ]]
 then
   pass "--since keeps the events of processes started after it, children by their own start"
@@ -57,7 +60,7 @@ else
 fi
 
 run_test
-got=$("$reader" --event start --event exit | jq -r .event | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+got=$(reader --event start --event exit | jq -r .event | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 if [[ $got == ' 3 exit  3 start ' ]]
 then
   pass "--event keeps only the named kinds"
@@ -66,7 +69,7 @@ else
 fi
 
 run_test
-got=$("$reader" --sid "${new_sid:0:22}" | sids)
+got=$(reader --sid "${new_sid:0:22}" | sids)
 if [[ $got == "$new_sid " ]]
 then
   pass "--sid keeps one process by sid prefix"
@@ -76,7 +79,7 @@ fi
 
 run_test
 bytes=$(( $(tail -n 3 "$trace" | wc -c) + 10 ))
-out=$("$reader" --bytes "$bytes" --since 30d 2>"$t/err")
+out=$(reader --bytes "$bytes" --since 30d 2>"$t/err")
 if [[ $(wc -l <<<"$out") == 3 ]] && jq -e . <<<"$out" >/dev/null &&
    [[ $(sids <<<"$out") == "$child_sid " ]] && grep -q 'raise --bytes' "$t/err"
 then
@@ -86,7 +89,7 @@ else
 fi
 
 run_test
-"$reader" --since 30d >/dev/null 2>"$t/err"
+reader --since 30d >/dev/null 2>"$t/err"
 if [[ ! -s $t/err ]]
 then
   pass "no warning when the whole file fits in --bytes"
@@ -95,14 +98,14 @@ else
 fi
 
 run_test
-help_out=$("$reader" --help 2>/dev/null)
-err_out=$("$reader" --bytes 12Q 2>/dev/null)
+help_out=$(reader --help 2>/dev/null)
+err_out=$(reader --bytes 12Q 2>/dev/null)
 err_rc=$?
-if [[ $help_out == Usage:* && -z $err_out ]] && (( err_rc != 0 )) && [[ $("$reader" --path) == "$trace" ]]
+if [[ $help_out == Usage:* && -z $err_out ]] && (( err_rc != 0 )) && [[ $(reader --path) == "$trace" ]]
 then
   pass "--help on stdout, usage errors only on stderr, --path names the log"
 else
-  fail "help/usage: help='${help_out:0:40}' err='$err_out' rc=$err_rc path=$("$reader" --path)"
+  fail "help/usage: help='${help_out:0:40}' err='$err_out' rc=$err_rc path=$(reader --path)"
 fi
 
 echo
