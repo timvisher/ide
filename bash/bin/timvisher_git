@@ -24,6 +24,23 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+self_real=$(realpath "${BASH_SOURCE[0]}") || self_real=${BASH_SOURCE[0]}
+
+# shellcheck source=/dev/null
+source "${self_real%/*}/../functions/real_bin.bash" ||
+  {
+    echo "Unable to source real_bin functions" >&2
+    exit 1
+  }
+
+# Date arithmetic (-d) needs GNU date: plain date on Linux, Homebrew's gdate
+# on macOS.
+gnu_date='gdate'
+if date --version > /dev/null 2>&1
+then
+  gnu_date='date'
+fi
+
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
@@ -535,7 +552,7 @@ should_auto_fork() {
 # would strip branch.*.remote=upstream from branches in other worktrees.
 safe_remove_upstream() {
   local real_git
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
 
   local branches_tracking_upstream
   branches_tracking_upstream=$("$real_git" config --get-regexp '^branch\..*\.remote$' 2>/dev/null | grep ' upstream$' || true)
@@ -3406,7 +3423,7 @@ is_branch_ish() {
 
 status__all_published() {
   local real_git dirty=0
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
 
   # @{push} must resolve
   if ! "$real_git" rev-parse --verify '@{push}' >/dev/null 2>&1
@@ -3707,19 +3724,19 @@ worktree_gc() {
   done
 
   local cutoff
-  cutoff=$(gdate -d "$cutoff_spec" +%s) ||
+  cutoff=$("$gnu_date" -d "$cutoff_spec" +%s) ||
     die "worktree gc: invalid cutoff '%s'" "$cutoff_spec"
 
-  info "Cutoff: %s (%s) — merge-detection tier" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
+  info "Cutoff: %s (%s) — merge-detection tier" "$("$gnu_date" -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
 
   # Eager tier: worktrees carrying an authoritative merged cookie
   # (dropped by `timvisher_gh pr merge` on confirmed merge) are reaped once
   # the cookie is older than this short cutoff — no detection needed.
   local merged_cutoff
-  merged_cutoff=$(gdate -d "$merged_cutoff_spec" +%s) ||
+  merged_cutoff=$("$gnu_date" -d "$merged_cutoff_spec" +%s) ||
     die "worktree gc: invalid --merged-cutoff '%s'" "$merged_cutoff_spec"
   info "Merged cookie cutoff: %s (%s) — eager reap of worktrees with a merged cookie" \
-    "$(gdate -d "@${merged_cutoff}" '+%Y-%m-%d')" "$merged_cutoff_spec"
+    "$("$gnu_date" -d "@${merged_cutoff}" '+%Y-%m-%d')" "$merged_cutoff_spec"
 
   # Stale sweep: reap worktrees with NO merge evidence (not PR-merged, not
   # an ancestor, no cookie) older than this longest cutoff. Safe because
@@ -3728,11 +3745,11 @@ worktree_gc() {
   # disable with --no-stale.
   local stale_cutoff=0 stale_enabled=0
   if (( ! stale_disabled )); then
-    stale_cutoff=$(gdate -d "$stale_cutoff_spec" +%s) ||
+    stale_cutoff=$("$gnu_date" -d "$stale_cutoff_spec" +%s) ||
       die "worktree gc: invalid --stale-cutoff '%s'" "$stale_cutoff_spec"
     stale_enabled=1
     info "Stale cutoff: %s (%s) — unmerged worktrees older than this are reaped (branch kept)" \
-      "$(gdate -d "@${stale_cutoff}" '+%Y-%m-%d')" "$stale_cutoff_spec"
+      "$("$gnu_date" -d "@${stale_cutoff}" '+%Y-%m-%d')" "$stale_cutoff_spec"
     if (( cutoff < stale_cutoff )); then
       warn "  --stale-cutoff is more recent than --cutoff; stale sweep would reap unmerged worktrees newer than merged ones"
     fi
@@ -3885,7 +3902,7 @@ worktree_gc() {
       read -r pr_state merged_at < <(worktree_gc__pr_state "$wt_path")
       local merged_epoch=0 last_commit_epoch=0
       if [[ $pr_state == merged ]]; then
-        merged_epoch=$(gdate -d "$merged_at" +%s 2>/dev/null) || merged_epoch=0
+        merged_epoch=$("$gnu_date" -d "$merged_at" +%s 2>/dev/null) || merged_epoch=0
         last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null) || last_commit_epoch=0
       fi
       # Work committed after the merge means the worktree was reused, so the
@@ -4314,7 +4331,7 @@ push__base_ref() {
 # agent range guard in ~/bin/git refuses comparing pinned SHAs.
 push__same_content() {
   local base_ref=$1 theirs=$2 ours=$3 real_git theirs_fork ours_fork ours_tree replayed
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
   theirs_fork=$("$real_git" merge-base "$base_ref" "$theirs") &&
     ours_fork=$("$real_git" merge-base "$base_ref" "$ours") &&
     ours_tree=$("$real_git" rev-parse "${ours}^{tree}") ||
@@ -4355,7 +4372,7 @@ push__send() {
 
 push__show_changes() {
   local base_ref=$1 real_git
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
   if [[ -z $base_ref ]]
   then
     warn "push: couldn't find the base branch to show your changes against"
