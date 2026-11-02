@@ -155,6 +155,20 @@ else
   fail "mock_real git: got '$real'"
 fi
 
+mock_reset git
+mock_git_toplevel
+top=$(cd "$(mktemp -d)" && pwd -P) || exit 1
+mkdir -p "$top/repo/.git" "$top/repo/sub/deep" "$top/elsewhere"
+check 'mock_git_toplevel finds the marked repo from inside it' "$top/repo" \
+  "$(cd "$top/repo/sub/deep" && git rev-parse --show-toplevel)"
+check 'mock_git_toplevel takes -C' "$top/repo" \
+  "$(git -C "$top/repo/sub" rev-parse --show-toplevel)"
+git -C "$top/elsewhere" rev-parse --show-toplevel >/dev/null 2>&1
+check 'mock_git_toplevel exits 128 outside a marked repo' 128 "$?"
+git -C "$top/missing" rev-parse --show-toplevel >/dev/null 2>&1
+check 'mock_git_toplevel exits 128 for a missing directory' 128 "$?"
+rm -rf -- "$top"
+
 mock_finish || (( failures += 1 ))
 
 if (( 0 < failures ))

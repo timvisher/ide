@@ -226,6 +226,31 @@ mock_real() {
   PATH=$TIMVISHER_TESTS_BASE_PATH type -P "$name"
 }
 
+# Answer 'git [-C <dir>] rev-parse --show-toplevel' the way git does for
+# repositories marked by a .git directory (mkdir <repo>/.git): the
+# nearest ancestor of <dir>, or of the current directory, holding one,
+# or exit 128.
+mock_git_toplevel() {
+  # shellcheck disable=SC2016
+  local code='
+    dir=.
+    [[ ${1-} != -C ]] || dir=$2
+    dir=$(cd "$dir" 2>/dev/null && pwd -P) || exit 128
+    while [[ -n $dir ]]
+    do
+      if [[ -d $dir/.git ]]
+      then
+        printf "%s\n" "$dir"
+        exit 0
+      fi
+      dir=${dir%/*}
+    done
+    echo "fatal: not a git repository (or any of the parent directories): .git" >&2
+    exit 128'
+  mock_respond git --run "$code" -- rev-parse --show-toplevel &&
+    mock_respond git --run "$code" -- -C '*' rev-parse --show-toplevel
+}
+
 # Make brew --prefix print $TIMVISHER_MOCK_DIR/prefix, whose bin is the
 # mocks' bin.
 mock_brew_prefix() {
