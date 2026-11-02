@@ -2,6 +2,14 @@
 
 # Tests for timvisher_away_status
 
+# It reads the Mac's idle time and console lock state through ioreg and
+# plutil; the fakes below stand in for ioreg, but nothing replaces plutil.
+if [[ $(uname -s) != Darwin ]]
+then
+  printf 'SKIP: timvisher_away_status is macOS-only (ioreg, plutil); this is %s\n' "$(uname -s)"
+  exit 0
+fi
+
 failures=0
 
 fail() {
