@@ -434,6 +434,8 @@ check 'the run is kept under the caller state dir' \
       eval '[[ $kept == "$runs"/* && -d $kept ]]'
 check 'the kept joblog has a line per suite' \
       eval '[[ $(tail -n +2 "$kept/joblog" | wc -l | tr -d " ") == 2 ]]'
+check "the kept joblog names each suite" \
+      grep -q 'run_suite [0-9]* ide/bash/tests/pass$' "$kept/joblog"
 check 'the kept log has the suite output' \
       grep -q '^ide/bash/tests/pass	PASS: fine' "$kept/log"
 check 'the kept loadavg has samples' \

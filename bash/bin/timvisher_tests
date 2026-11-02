@@ -540,6 +540,8 @@ show_log() {
 # own end, not to one snapshot from before the run: a change made and
 # left by one suite then fails that suite and the suites running
 # alongside it, never every suite that finishes later.
+# The label argument goes unused here; it is there so the kept joblog's
+# Command column names the suite.
 run_suite() {
   local i=$1
   local label=${labels[i]} root=${roots[i]} kind=${kinds[i]} target=${targets[i]}
@@ -666,7 +668,7 @@ tee_pid=$!
 
 PARALLEL_SHELL=bash nice -n 10 parallel --keep-order --halt never --timeout "$timeout" \
   --jobs "$jobs" --link --tagstring '{1}' --joblog "$kept/joblog" \
-  "source $(printf '%q' "$run_dir/state.bash") && run_suite {2}" \
+  "source $(printf '%q' "$run_dir/state.bash") && run_suite {2} {1}" \
   ::: "${labels[@]}" ::: "${!labels[@]}" </dev/null >&"$log_fd" 2>&1 {log_fd}>&- &
 parallel_pid=$!
 
