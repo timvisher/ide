@@ -893,7 +893,9 @@ case $cmd in
     config_yaml="$beads_dir/config.yaml"
     if [[ -f $config_yaml ]] && grep -q 'auto-start: false' "$config_yaml"
     then
-      sed -i '' 's/auto-start: false/auto-start: true/' "$config_yaml"
+      # -i with an attached suffix is the in-place form GNU and BSD sed share.
+      sed -i.x.bd-topics-bak 's/auto-start: false/auto-start: true/' "$config_yaml" &&
+        rm -f -- "$config_yaml.x.bd-topics-bak"
     fi
 
     if [[ -n $repo_root ]]
