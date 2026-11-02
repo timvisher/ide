@@ -11,6 +11,10 @@
 #     JSON fragment of more fields (',"k":v' or empty)
 #   timvisher_tool_log_caller
 #     print the caller object below, for wrappers that act on it
+#   timvisher_tool_log_caller_env
+#     for a Claude caller, print the shell-quoted assignments that make
+#     a command run on another host (an ssh'd workspace command) log as
+#     this caller; print nothing otherwise
 #   timvisher_tool_log_json <string>
 #     print <string> as a JSON string literal, for building <extra>
 #   timvisher_tool_log_when_epoch <when>
@@ -25,6 +29,9 @@
 #     CLAUDE_PID names a live process with ~/.claude/sessions/<pid>.json
 #   {"kind":"claude","session_id":"..."}
 #     CLAUDE_CODE_SESSION_ID without a readable session file
+#   {"kind":"claude","session_id":"...","name":"...","forwarded":true}
+#     TIMVISHER_TOOL_LOG_CALLER_SESSION (and _NAME), passed in from the
+#     agent's host, e.g. on an ssh'd workspace command
 #   {"kind":"codex","pid":N}
 #     TIMVISHER_CODEX (set by the codex wrapper)
 #   {"kind":"human","tty":"ttys003"}
@@ -172,6 +179,14 @@ timvisher_tool_log__caller() {
     timvisher_tool_log__caller_out="{\"kind\":\"claude\",\"session_id\":${timvisher_tool_log__json_out}}"
     return
   fi
+  if [[ -n ${TIMVISHER_TOOL_LOG_CALLER_SESSION-} ]]
+  then
+    timvisher_tool_log__json "$TIMVISHER_TOOL_LOG_CALLER_SESSION"
+    session_id=$timvisher_tool_log__json_out
+    timvisher_tool_log__json "${TIMVISHER_TOOL_LOG_CALLER_NAME-}"
+    timvisher_tool_log__caller_out="{\"kind\":\"claude\",\"session_id\":${session_id},\"name\":${timvisher_tool_log__json_out},\"forwarded\":true}"
+    return
+  fi
   if [[ -n ${TIMVISHER_CODEX-} ]]
   then
     pid=${TIMVISHER_AGENT_WRAPPER_EXEC%%:*}
@@ -198,6 +213,16 @@ timvisher_tool_log_caller() {
 timvisher_tool_log_json() {
   timvisher_tool_log__json "$1"
   printf '%s\n' "$timvisher_tool_log__json_out"
+}
+
+timvisher_tool_log_caller_env() {
+  local session_id='' name=''
+  timvisher_tool_log__caller
+  [[ $timvisher_tool_log__caller_out == '{"kind":"claude",'* ]] || return 0
+  [[ $timvisher_tool_log__caller_out =~ \"session_id\":\"([^\"]*)\" ]] && session_id=${BASH_REMATCH[1]}
+  [[ $timvisher_tool_log__caller_out =~ \"name\":\"([^\"]*)\" ]] && name=${BASH_REMATCH[1]}
+  [[ -n $session_id ]] || return 0
+  printf 'TIMVISHER_TOOL_LOG_CALLER_SESSION=%q TIMVISHER_TOOL_LOG_CALLER_NAME=%q\n' "$session_id" "$name"
 }
 
 timvisher_tool_log_write() {

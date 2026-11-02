@@ -8,7 +8,8 @@ from unittest import mock
 
 from timvisher import tool_log
 
-CLEARED = ("CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "TIMVISHER_CODEX", "TIMVISHER_AGENT_WRAPPER_EXEC")
+CLEARED = ("CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "TIMVISHER_CODEX", "TIMVISHER_AGENT_WRAPPER_EXEC",
+           "TIMVISHER_TOOL_LOG_CALLER_SESSION", "TIMVISHER_TOOL_LOG_CALLER_NAME")
 
 
 class ToolLogTest(unittest.TestCase):
@@ -67,6 +68,17 @@ class ToolLogTest(unittest.TestCase):
 
     def test_caller_session_id_only(self):
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-2"}):
+            self.assertEqual(tool_log.caller(), {"kind": "claude", "session_id": "sess-2"})
+
+    def test_caller_forwarded(self):
+        with mock.patch.dict(os.environ, {"TIMVISHER_TOOL_LOG_CALLER_SESSION": "sess-fwd",
+                                          "TIMVISHER_TOOL_LOG_CALLER_NAME": "cfctl-77"}):
+            self.assertEqual(tool_log.caller(), {"kind": "claude", "session_id": "sess-fwd",
+                                                 "name": "cfctl-77", "forwarded": True})
+
+    def test_caller_local_session_wins_over_forwarded(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-2",
+                                          "TIMVISHER_TOOL_LOG_CALLER_SESSION": "sess-fwd"}):
             self.assertEqual(tool_log.caller(), {"kind": "claude", "session_id": "sess-2"})
 
     def test_caller_codex(self):

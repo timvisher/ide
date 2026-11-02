@@ -84,6 +84,13 @@ def caller() -> dict:
             }
     if os.environ.get("CLAUDE_CODE_SESSION_ID"):
         return {"kind": "claude", "session_id": os.environ["CLAUDE_CODE_SESSION_ID"]}
+    if os.environ.get("TIMVISHER_TOOL_LOG_CALLER_SESSION"):
+        return {
+            "kind": "claude",
+            "session_id": os.environ["TIMVISHER_TOOL_LOG_CALLER_SESSION"],
+            "name": os.environ.get("TIMVISHER_TOOL_LOG_CALLER_NAME", ""),
+            "forwarded": True,
+        }
     if os.environ.get("TIMVISHER_CODEX"):
         exec_pid = os.environ.get("TIMVISHER_AGENT_WRAPPER_EXEC", "").split(":", 1)[0]
         return {"kind": "codex", "pid": int(exec_pid) if exec_pid.isdigit() else None}

@@ -52,6 +52,7 @@ logged() {
   done
   shift
   env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_CODEX -u TIMVISHER_AGENT_WRAPPER_EXEC \
+    -u TIMVISHER_TOOL_LOG_CALLER_SESSION -u TIMVISHER_TOOL_LOG_CALLER_NAME \
     ${assigns[@]+"${assigns[@]}"} \
     bash -c 'source "$1"; shift; timvisher_tool_log_run faketool "$@"' _ "$lib" "$t/bin/faketool" "$@"
 }
@@ -120,6 +121,44 @@ then
   pass "a dead CLAUDE_PID falls back to CLAUDE_CODE_SESSION_ID"
 else
   fail "session-id caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+run_test
+logged TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-fwd TIMVISHER_TOOL_LOG_CALLER_NAME=cfctl-77 -- forwarded </dev/null >/dev/null
+if jq -e '.caller == {"kind":"claude","session_id":"sess-fwd","name":"cfctl-77","forwarded":true}' <<<"$(last)" >/dev/null
+then
+  pass "TIMVISHER_TOOL_LOG_CALLER_SESSION names a forwarded Claude caller"
+else
+  fail "forwarded caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+# These two also log as cfctl-99, so keep them out of the log the
+# reader's --caller case counts.
+fwd_log=$t/logs-fwd/faketool.jsonl
+
+run_test
+logged TIMVISHER_TOOL_LOG_DIR="$t/logs-fwd" CLAUDE_PID=$$ TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-fwd -- local-wins </dev/null >/dev/null
+if jq -e '.caller.session_id == "sess-1234" and (.caller | has("forwarded") | not)' <<<"$(tail -n 1 "$fwd_log")" >/dev/null
+then
+  pass "a local Claude caller wins over a forwarded one"
+else
+  fail "local over forwarded: $(tail -n 1 "$fwd_log")"
+fi
+
+run_test
+fwd_env=$(env -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION CLAUDE_PID=$$ \
+  bash -c 'source "$1"; timvisher_tool_log_caller_env' _ "$lib")
+human_env=$(env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION -u TIMVISHER_CODEX \
+  bash -c 'source "$1"; timvisher_tool_log_caller_env' _ "$lib")
+fwd_assigns=()
+eval "fwd_assigns=($fwd_env)"
+logged TIMVISHER_TOOL_LOG_DIR="$t/logs-fwd" "${fwd_assigns[@]}" -- via-ssh </dev/null >/dev/null
+if [[ -z $human_env ]] &&
+   jq -e '.caller == {"kind":"claude","session_id":"sess-1234","name":"cfctl-99","forwarded":true}' <<<"$(tail -n 1 "$fwd_log")" >/dev/null
+then
+  pass "timvisher_tool_log_caller_env carries a Claude caller to another host, and is empty for a human"
+else
+  fail "caller_env: fwd='$fwd_env' human='$human_env' line=$(tail -n 1 "$fwd_log")"
 fi
 
 run_test
