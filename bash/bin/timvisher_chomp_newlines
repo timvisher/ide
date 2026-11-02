@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+# -z needs GNU sed: plain sed on Linux, Homebrew's gsed on macOS.
+gnu_sed='gsed'
+if sed --version > /dev/null 2>&1
+then
+  gnu_sed='sed'
+fi
+
 for f in "$@"
 do
   # Skip files that don't exist (e.g., deleted files)
@@ -8,7 +15,7 @@ do
     continue
   fi
 
-  t=$(gsed -z 's/^\s*//; s/\s*$//' "$f")
+  t=$("$gnu_sed" -z 's/^\s*//; s/\s*$//' "$f")
 
   if [[ -n $t ]]
   then
