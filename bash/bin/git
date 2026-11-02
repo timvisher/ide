@@ -38,23 +38,9 @@ _timvisher_git__json_argv() {
 }
 
 # shellcheck source=/dev/null
-source ~/.functions/logging.bash ||
-  {
-    echo "Unable to source logging functions" >&2
-    exit 1
-  }
-
-# shellcheck source=/dev/null
 source ~/.functions/git.bash ||
   {
     echo "Unable to source git functions" >&2
-    exit 1
-  }
-
-# shellcheck source=/dev/null
-source ~/.functions/aictl.bash ||
-  {
-    echo "Unable to source aictl functions" >&2
     exit 1
   }
 
@@ -235,6 +221,115 @@ elif [[ $_timvisher_git__help == --help ]]
 then
   exec "$real_git" help ${_timvisher_git__help_sub:+"$_timvisher_git__help_sub"}
 fi
+
+# Read-only plumbing goes straight to git, past selective fetch, the
+# reconcile hooks and the upstream guard: none of it can change a
+# refspec or branch.<name>.remote. Porcelain (status, log, diff, show,
+# ...) stays on the full path even when read-only, so the upstream
+# guard's warning about tracking dropped behind the wrapper's back still
+# shows up where a person is looking. It is an allow-list, so an alias
+# or a subcommand not named here takes the full path. rev-list is
+# policed by the agent range guard, so it qualifies only outside an
+# agent.
+_timvisher_git__read_only() {
+  local sub='' skip=false arg n=0 first='' mode=false
+  local -a after=()
+  for arg in "$@"
+  do
+    if [[ $skip == true ]]
+    then
+      skip=false
+      continue
+    fi
+    if [[ -n $sub ]]
+    then
+      after+=("$arg")
+      continue
+    fi
+    case $arg in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env) skip=true ;;
+      -*) ;;
+      *) sub=$arg ;;
+    esac
+  done
+
+  case $sub in
+    ''|version|rev-parse|cat-file|ls-files|ls-tree|for-each-ref|show-ref|\
+    merge-base|name-rev|var|check-ignore|check-attr|check-ref-format|\
+    count-objects|symbolic-ref|diff-tree|diff-index|diff-files)
+      return 0
+      ;;
+    rev-list)
+      [[ -z ${TIMVISHER_AGENT:-} ]]
+      return
+      ;;
+    remote)
+      for arg in "${after[@]}"
+      do
+        case $arg in
+          -*) ;;
+          get-url|show) return 0 ;;
+          *) return 1 ;;
+        esac
+      done
+      return 0
+      ;;
+    config)
+      for arg in "${after[@]}"
+      do
+        if [[ $skip == true ]]
+        then
+          skip=false
+          continue
+        fi
+        case $arg in
+          --unset|--unset-all|--add|--replace-all|--rename-section|--remove-section|-e|--edit)
+            return 1
+            ;;
+          --get|--get-all|--get-regexp|--get-urlmatch|--get-color|--get-colorbool|-l|--list)
+            mode=true
+            ;;
+          -f|--file|--blob|--type|--default|--comment) skip=true ;;
+          -*) ;;
+          *)
+            (( n += 1 ))
+            [[ -n $first ]] || first=$arg
+            ;;
+        esac
+      done
+      case $first in
+        get|list) return 0 ;;
+        set|unset|rename-section|remove-section|edit) return 1 ;;
+      esac
+      [[ $mode == true ]] || (( n <= 1 ))
+      return
+      ;;
+  esac
+  return 1
+}
+
+if _timvisher_git__read_only "$@"
+then
+  _timvisher_git__phase read_only
+  "$real_git" "$@"
+  _timvisher_git__rc=$?
+  _timvisher_git__phase git
+  exit "$_timvisher_git__rc"
+fi
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
 
 # ---------------------------------------------------------------------------
 # Selective-fetch machinery
