@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
 
-# git is mocked with a passthrough to the real git, so neither the
-# fixtures nor the unit go through the ~/bin/git wrapper.
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 mock_init || { echo "mock_init failed" >&2; exit 1; }
-mock_real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
-mock_passthrough git "$mock_real_git"
+mock_command git
+# git remote and git remote get-url read the remotes new_repo and
+# add_remote record in <repo>/.git/x.remotes, one '<name> <url>' a line.
+# shellcheck disable=SC2016
+mock_respond git --run '
+  [[ -f .git/x.remotes ]] || exit 128
+  while read -r name _
+  do
+    printf "%s\n" "$name"
+  done < .git/x.remotes' -- remote
+# shellcheck disable=SC2016
+mock_respond git --run '
+  [[ -f .git/x.remotes ]] || exit 128
+  while read -r name url
+  do
+    if [[ $name == "$3" ]]
+    then
+      printf "%s\n" "$url"
+      exit 0
+    fi
+  done < .git/x.remotes
+  printf "error: No such remote %s\n" "$3" >&2
+  exit 2' -- remote get-url '*'
 
 failures=0
 tests=0
@@ -101,20 +120,21 @@ expect_stop() {
 new_repo() {
   local dir=$1
   shift
-  if ! git init -q "$dir" 2>/dev/null
+  if ! mkdir -p "$dir/.git" || ! : > "$dir/.git/x.remotes"
   then
-    echo "setup failed: git init '$dir'" >&2
+    echo "setup failed: repo '$dir'" >&2
     exit 1
   fi
   while (( 1 < $# ))
   do
-    if ! git -C "$dir" remote add "$1" "$2" 2>/dev/null
-    then
-      echo "setup failed: remote '$1' in '$dir'" >&2
-      exit 1
-    fi
+    add_remote "$dir" "$1" "$2"
     shift 2
   done
+}
+
+add_remote() {
+  printf '%s %s\n' "$2" "$3" >> "$1/.git/x.remotes" ||
+    { echo "setup failed: remote '$2' in '$1'" >&2; exit 1; }
 }
 
 map ddoghq acct-ddoghq
@@ -177,11 +197,11 @@ new_repo "$repo" origin git@github.com:DataDog/dd-source.git
 run_shim "$repo" pr list
 expect "a github.com remote names the owner" \
   "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" "(from the cwd's git remotes)"
-git -C "$repo" remote add upstream https://github.com/DataDog/dd-source.git 2>/dev/null
+add_remote "$repo" upstream https://github.com/DataDog/dd-source.git
 run_shim "$repo" pr list
 expect "remotes naming the same owner agree" \
   "real-gh GH_TOKEN=tok-acct-DataDog GH_REPO= pr list" ""
-git -C "$repo" remote add mine git@github.com:otherorg/dd-source.git 2>/dev/null
+add_remote "$repo" mine git@github.com:otherorg/dd-source.git
 run_shim "$repo" pr list
 expect_stop "remotes naming different owners stop" "name different owners"
 run_shim "$repo" -R ddoghq/dd-source pr list
@@ -195,8 +215,9 @@ expect "a *.github.com SSH alias counts as github.com" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr list" ""
 
 repo3="$tmpdir/repo3"
-new_repo "$repo3" origin work:x
-git -C "$repo3" config url.https://github.com/otherorg/.insteadOf work: 2>/dev/null
+# git remote get-url applies url.insteadOf, so origin work:x under
+# url.https://github.com/otherorg/.insteadOf=work: reads back as this.
+new_repo "$repo3" origin https://github.com/otherorg/x
 run_shim "$repo3" pr list
 expect "a remote rewritten by url.insteadOf counts" \
   "real-gh GH_TOKEN=tok-acct-otherorg GH_REPO= pr list" ""
@@ -352,6 +373,8 @@ then
 else
   fail "human deferred; rc=$rc err='$err'"
 fi
+
+mock_finish || (( failures += 1 ))
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
