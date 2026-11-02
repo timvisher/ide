@@ -1,6 +1,6 @@
 ---
 name: screen-capture
-description: Look at the user's macOS screen — a specific window (on any Space, without switching to it), a region, or whole displays. Uses the screencap MCP server when it is available, otherwise captures all displays with screencapture. Use when the user asks you to look at, see, or read their screen or a window.
+description: Look at the user's macOS screen — a specific window (on any Space, without switching to it), a region, or whole displays. Uses the screencap MCP server when it is available, otherwise captures all displays with screencapture. Use when the user asks you to look at, see, or read their screen or a window, AND on your own, before asking the user, whenever you need to know what one of their apps is showing (a Slack channel's bookmarks, a dashboard, a dialog, a settings page) and no API or CLI you can reach exposes it.
 ---
 
 # Screen capture
@@ -9,6 +9,44 @@ description: Look at the user's macOS screen — a specific window (on any Space
 - The user asks you to look at, see, or read their screen or a window.
 - The user wants visual context shared (window contents, error dialogs,
   rendered output) that isn't easily described in text.
+- **You need to know what one of the user's apps is showing, and no
+  API or CLI you can reach exposes it.** Look at the window yourself
+  before asking the user. See "Look before you ask" below.
+
+## Look before you ask
+
+With the screencap MCP server, one window can be captured silently,
+without switching the user's view, even when it's covered or on
+another Space. So a question about what an app is showing usually
+doesn't need the user:
+
+1. `list_windows` with `app` (e.g. `slack`) to see which windows are
+   open and what their titles say.
+2. If one already shows what you need, `screenshot_window` it and read
+   the answer off the capture.
+
+Example: to find out whether Datadog was mirroring an incident's links
+into its Slack channel, no reachable Slack or Datadog API showed a
+channel's bookmarks. `list_windows` with `app` `slack` showed Slack
+open on the incident channel, and `screenshot_window` showed a
+Bookmarks tab and a pinned Zoom card in the channel header. That's all
+it showed: which links were bookmarked was under the tab, and opening
+it needed the user's OK. When the user looked, the links weren't
+there.
+
+Limits:
+- **Read only what's visible.** A capture shows what's on screen, not
+  what's behind a tab or below the fold. Don't treat a visible control
+  as proof of its contents, and say plainly when the capture can't
+  answer the question.
+- **Capture only.** Clicking, typing or scrolling in the user's windows
+  changes what they're looking at, so ask first. That includes opening
+  a tab to see its contents (e.g. what's under Bookmarks).
+- **Wrong page.** If the window shows a different channel or page,
+  opening the right one also needs the user's OK.
+- **Secrets.** Full-size captures land in `~/Downloads` and can contain
+  secrets (a Zoom passcode, tokens, private messages). Describe what's
+  relevant rather than sharing or attaching the image.
 
 ## Choose a method
 
