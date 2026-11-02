@@ -2,13 +2,11 @@
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
-# git is mocked with a passthrough to the real git, so neither the
-# fixtures nor the unit go through the ~/bin/git wrapper.
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 mock_init || { echo "mock_init failed" >&2; exit 1; }
-mock_real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
-mock_passthrough git "$mock_real_git"
+mock_command git
+mock_git_toplevel
 
 # Tests for the Stop hooks under ai/claude/HOME/.claude/hooks/.
 # Covers positive (should-block) and negative (should-pass) cases for
@@ -215,9 +213,9 @@ assert_passes no-stalling-stop.sh \
 # for the hook invocation.
 
 # Use a sandboxed HOME so tests never touch the user's real lockdir.
-# The repo's git wrapper sources $HOME/.functions/logging.bash, so the
-# test HOME has to expose that path or the wrapper bails before the
-# hook ever sees the input. Symlink the user's real .functions in.
+# timvisher_bd_topics, which the lock hook runs, sources
+# $HOME/.functions/logging.bash, so the test HOME has to expose that
+# path or it bails. Symlink the user's real .functions in.
 wlock_home="$tmpdir/home"
 mkdir -p "$wlock_home/.claude/locks"
 [[ -d $HOME/.functions ]] && ln -sf "$HOME/.functions" "$wlock_home/.functions"
@@ -234,7 +232,7 @@ wlock_init_worktree() {
   local wt=$1
   rm -rf -- "$wt"
   mkdir -p "$wt"
-  git -C "$wt" init -q
+  mkdir -p "$wt"/.git
   touch "$wt/transcript.jsonl"
   ( cd "$wt" && pwd -P )
 }
@@ -502,6 +500,8 @@ else
 fi
 
 echo ""
+mock_finish || (( failures += 1 ))
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))
