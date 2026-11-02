@@ -123,7 +123,7 @@ then
   exit 1
 fi
 
-base_path=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+base_path=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:/opt/homebrew/sbin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # The runner's own git calls bypass ~/bin/git: the wrapper's logging
 # would interleave with suite output and its side effects would run
