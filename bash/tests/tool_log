@@ -198,6 +198,25 @@ else
 fi
 
 run_test
+tailed=$("$reader" --tool faketool --tail 2 --json)
+if [[ $(wc -l <<<"$tailed") == 2 && $(tail -n 1 <<<"$tailed") == "$(last)" ]]
+then
+  pass "reader: --tail N reads the last N lines of the current log and no generations"
+else
+  fail "reader --tail: '$tailed'"
+fi
+
+run_test
+touch -t 202001010000 "$t/logs/faketool.jsonl.1.gz"
+n_skip=$("$reader" --tool faketool --since 1h --json | wc -l)
+if (( n_skip == n_all ))
+then
+  pass "reader: --since skips generations last written before it"
+else
+  fail "reader --since with an old generation: $n_skip lines, want $n_all"
+fi
+
+run_test
 if [[ $("$reader" --path) == "$t/logs" ]] &&
    [[ $(env -u TIMVISHER_TOOL_LOG_DIR HOME=/h XDG_STATE_HOME= bash -c 'source "$1"; timvisher_tool_log_dir' _ "$lib") == \
       "$( [[ $OSTYPE == darwin* ]] && echo /h/Library/Logs/timvisher/tools || echo /h/.local/state/timvisher/logs )" ]]

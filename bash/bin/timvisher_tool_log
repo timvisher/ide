@@ -19,7 +19,7 @@ source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash"
 show_help() {
   cat <<'HELP'
 Usage: timvisher_tool_log [--tool TOOL]... [--caller WHO] [--since WHEN]
-                              [--until WHEN] [--json]
+                              [--until WHEN] [--tail N] [--json]
        timvisher_tool_log --path
 
 Print the logged invocations of wrapped tools, oldest first.
@@ -30,8 +30,12 @@ Print the logged invocations of wrapped tools, oldest first.
   --since WHEN   only calls at or after WHEN: 30m, 2h, 3d, or an ISO 8601
                  UTC time such as 2026-11-01T12:00
   --until WHEN   only calls before WHEN, same forms
+  --tail N       read only the last N lines of each current log, and no
+                 rotated generations
   --json         print the matching JSON lines instead of a table
   --path         print the log directory and exit
+
+With --since, rotated generations last written before WHEN are not read.
 
 Example: who created workspaces today?
   timvisher_tool_log --tool workspaces --since 1d | grep ' create '
@@ -42,33 +46,11 @@ usage() {
   show_help >&2
 }
 
-# Seconds since the epoch for a WHEN argument.
-when_epoch() {
-  local when=$1 n
-  if [[ $when =~ ^([0-9]+)([smhd])$ ]]
-  then
-    n=${BASH_REMATCH[1]}
-    case ${BASH_REMATCH[2]} in
-      s) ;;
-      m) (( n *= 60 )) ;;
-      h) (( n *= 3600 )) ;;
-      d) (( n *= 86400 )) ;;
-    esac
-    printf '%s\n' "$(( EPOCHSECONDS - n ))"
-    return 0
-  fi
-  jq -nr --arg w "$when" '
-    ($w | if test("T") then . else . + "T00:00" end
-        | if test("Z$") then . else . + "Z" end
-        | if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end
-        | sub("\\.[0-9]+Z$"; "Z")
-        | fromdateiso8601)' 2>/dev/null
-}
-
 tools=()
 caller=''
 since=''
 until=''
+tail=''
 json=false
 
 while (( 0 < $# ))
@@ -82,7 +64,7 @@ do
       timvisher_tool_log_dir
       exit 0
       ;;
-    --tool|--caller|--since|--until)
+    --tool|--caller|--since|--until|--tail)
       if [[ -z ${2-} ]]
       then
         error '%s needs a value' "$1"
@@ -92,9 +74,15 @@ do
       case $1 in
         --tool) tools+=("$2") ;;
         --caller) caller=$2 ;;
-        --since) since=$(when_epoch "$2") || since='' ;;
-        --until) until=$(when_epoch "$2") || until='' ;;
+        --since) since=$(timvisher_tool_log_when_epoch "$2") || since='' ;;
+        --until) until=$(timvisher_tool_log_when_epoch "$2") || until='' ;;
+        --tail) tail=$2 ;;
       esac
+      if [[ $1 == --tail && ! $tail =~ ^[1-9][0-9]*$ ]]
+      then
+        error "--tail needs a line count, not '%s'" "$2"
+        exit 1
+      fi
       if [[ $1 == --since && -z $since ]] || [[ $1 == --until && -z $until ]]
       then
         error "Can't read a time from '%s'" "$2"
@@ -114,6 +102,22 @@ do
   esac
 done
 
+mtime() {
+  stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null
+}
+
+# A generation's mtime is the time of its newest line, so one last
+# written before --since holds nothing to print.
+wanted() {
+  local file=$1 m
+  [[ -r $file ]] || return 1
+  [[ $file == *.gz ]] || return 0
+  [[ -z $tail ]] || return 1
+  [[ -n $since ]] || return 0
+  m=$(mtime "$file") || return 0
+  (( since <= m ))
+}
+
 dir=$(timvisher_tool_log_dir)
 files=()
 if (( 0 < ${#tools[@]} ))
@@ -122,13 +126,13 @@ then
   do
     for file in "$dir/$tool".jsonl "$dir/$tool".jsonl.+([0-9]).gz
     do
-      [[ -r $file ]] && files+=("$file")
+      wanted "$file" && files+=("$file")
     done
   done
 else
   for file in "$dir"/*.jsonl "$dir"/*.jsonl.+([0-9]).gz
   do
-    [[ -r $file ]] && files+=("$file")
+    wanted "$file" && files+=("$file")
   done
 fi
 
@@ -142,6 +146,9 @@ lines() {
     if [[ $file == *.gz ]]
     then
       gzip -dc -- "$file"
+    elif [[ -n $tail ]]
+    then
+      tail -n "$tail" -- "$file"
     else
       cat -- "$file"
     fi

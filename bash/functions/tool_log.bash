@@ -13,6 +13,9 @@
 #     print the caller object below, for wrappers that act on it
 #   timvisher_tool_log_json <string>
 #     print <string> as a JSON string literal, for building <extra>
+#   timvisher_tool_log_when_epoch <when>
+#     print the epoch seconds for 30m, 2h, 3d or an ISO 8601 UTC time,
+#     for the readers' --since and --until
 #
 # One JSON line per call goes to <log dir>/<tool>.jsonl: ts (UTC), epoch,
 # tool, real, argv (secrets redacted), cwd, rc, duration_ms, host, and
@@ -46,6 +49,28 @@ timvisher_tool_log_dir() {
   else
     printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/logs"
   fi
+}
+
+timvisher_tool_log_when_epoch() {
+  local when=$1 n
+  if [[ $when =~ ^([0-9]+)([smhd])$ ]]
+  then
+    n=${BASH_REMATCH[1]}
+    case ${BASH_REMATCH[2]} in
+      s) ;;
+      m) (( n *= 60 )) ;;
+      h) (( n *= 3600 )) ;;
+      d) (( n *= 86400 )) ;;
+    esac
+    printf '%s\n' "$(( EPOCHSECONDS - n ))"
+    return 0
+  fi
+  jq -nr --arg w "$when" '
+    ($w | if test("T") then . else . + "T00:00" end
+        | if test("Z$") then . else . + "Z" end
+        | if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end
+        | sub("\\.[0-9]+Z$"; "Z")
+        | fromdateiso8601)' 2>/dev/null
 }
 
 # JSON string literal for $1, in timvisher_tool_log__json_out.
