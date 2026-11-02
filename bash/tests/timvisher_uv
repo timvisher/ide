@@ -450,7 +450,7 @@ rc=$?
 check 'exec: a newer Python or upstream drift alone never stops a run to ask uv' \
       eval "(( rc == 0 )) && test ! -s '$tmpdir/uv.log'"
 
-sed -i '' 's/^# dependencies = \[\]$/# dependencies = ["six"]/' "$echoer"
+sed -i.bak 's/^# dependencies = \[\]$/# dependencies = ["six"]/' "$echoer" && rm -f -- "$echoer.bak"
 : > "$tmpdir/uv.log"
 run_tool "$echoer" </dev/null
 rc=$?
@@ -459,7 +459,7 @@ check "exec: a changed script block rebuilds before running" \
 : > "$tmpdir/uv.log"
 run_tool "$echoer" </dev/null
 check 'exec: after the rebuild the venv is current again' test ! -s "$tmpdir/uv.log"
-sed -i '' 's/^# dependencies = \["six"\]$/# dependencies = []/' "$echoer"
+sed -i.bak 's/^# dependencies = \["six"\]$/# dependencies = []/' "$echoer" && rm -f -- "$echoer.bak"
 run_tool "$echoer" </dev/null
 
 rm "$echoer_venv/bin/python"
