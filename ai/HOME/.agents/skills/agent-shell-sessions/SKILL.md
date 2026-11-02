@@ -19,12 +19,22 @@ from Claude Code's session files, so a Codex session has neither:
 reach it by its full session id. An ambiguous name or short ref fails
 with `timvisher_emacs_ambiguous_session`, listing each match.
 
+A session on another host (a peer, such as a workspace or the laptop)
+is `<peer>:<session>`, for example `timvisher-ide:cfctl-3a`. A bare
+name that no session here has is looked up on the peers, and resolves
+when exactly one peer has it; a local session always wins. Peers are
+the files in `~/.config/timvisher/agent-shell/peers.d/`;
+`timvisher_emacs agent-shell peers` lists them and whether each
+answers.
+
 ## Sending a message
 
 1. Write the message to a file outside any worktree (`/tmp/x.<name>`)
    so writing it takes no worktree lock.
 2. Start it with a `From the <who> agent (session <name or id>)` line.
-   Text you send shows up as though Tim typed it.
+   Text you send shows up as though Tim typed it. Sending to another
+   host, name your session as that host can reach it:
+   `(session <your peer name>:<name>)`.
 3. Send it:
 
    ```bash
@@ -33,7 +43,11 @@ with `timvisher_emacs_ambiguous_session`, listing each match.
 
 It prints `submitted` when the shell was idle, or `queued` when it
 was busy or Tim had something half-typed at its prompt. Queued
-messages run after the current or next turn ends. Do not build your
+messages run after the current or next turn ends. To a peer it can
+also print `duplicate` (that message was already delivered) or
+`deferred`: the peer is unreachable and the message waits in an outbox
+until it reconnects. `deferred` is not delivered yet; do not treat it
+as `queued`. Do not build your
 own `emacsclient --eval` to insert and submit text: that sends
 whatever Tim is typing along with your message.
 
@@ -41,9 +55,15 @@ whatever Tim is typing along with your message.
 
 - `timvisher_emacs agent-shell ls` lists every agent-shell in every live
   Emacs with its name, ref, status, queued prompts, buffer and
-  directory: JSON when you run it (no terminal), a table for Tim.
+  directory: JSON when you run it (no terminal), a table for Tim. With
+  peers configured it lists theirs too: each row has `host` (null
+  here) and `address` (what to pass to `send`), under
+  `schema_version` 2. Peer listings are cached for 30s (`--refresh`
+  skips the cache). `--local` lists only this host, exactly as before;
+  use it whenever you look for a session here, such as your own row.
 - `timvisher_emacs agent-shell get-server <session>` prints the Emacs
-  pid and server socket hosting a session, as JSON.
+  pid and server socket hosting a session, as JSON. It, `is-wedged`
+  and `recover` work only on this host's sessions.
 - `timvisher_emacs server ls` lists every live Emacs server by pid.
 - Start a new agent-shell with a first prompt in a given Emacs:
 
@@ -61,6 +81,20 @@ whatever Tim is typing along with your message.
   Do not call agent-shell's start commands through emacsclient
   instead: they paste the current line of whatever buffer Tim has open
   into the new prompt.
+- Resume an existing session (one copied in by a handoff, say) in a
+  given Emacs, with its first prompt:
+
+  ```bash
+  timvisher_emacs agent-shell resume --emacs <pid> \
+    --prompt-file /tmp/x.resume-<id> <session-id>
+  ```
+
+  It takes the full session id, and prints the resumed shell's row as
+  start does. The agent must find the session from the shell's
+  directory: pass `--cwd <dir>` (the session's worktree) when that
+  Emacs works somewhere else. First check `agent-shell ls --local` for a shell that
+  already has that session id; resuming it again opens a second shell
+  on the same session.
 
 ## Wedged sessions
 
