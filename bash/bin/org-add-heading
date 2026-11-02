@@ -381,6 +381,7 @@ ELISP_EOF
   emacs --batch \
     --eval "(require 'package)" \
     --eval "(package-initialize)" \
+    --eval '(prepare-user-lisp)' \
     --eval '(load "~/.config/emacs/init.el")' \
     --load "$elisp_tmp"
   exit 0
@@ -575,5 +576,6 @@ ELISP_EOF
 emacs --batch \
   --eval "(require 'package)" \
   --eval "(package-initialize)" \
+  --eval '(prepare-user-lisp)' \
   --eval '(load "~/.config/emacs/init.el")' \
   --load "$elisp_tmp"

@@ -36,6 +36,7 @@ When evaluating code without a file, pass lexical binding explicitly:
       --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
       --eval "(require 'package)" \
       --eval "(package-initialize)" \
+      --eval '(prepare-user-lisp)' \
       --eval '(load "~/.config/emacs/init.el")' \
       --eval '(load "/path/to/test-file.el")' \
       --eval '(ert-run-tests-batch-and-exit)'

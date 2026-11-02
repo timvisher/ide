@@ -15,6 +15,7 @@
 #   --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))'
 #   --eval "(require 'package)"
 #   --eval "(package-initialize)"
+#   --eval '(prepare-user-lisp)'
 #   --eval '(load "~/.config/emacs/init.el")'
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P) || exit 1
@@ -45,6 +46,7 @@ do
             --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))'
             --eval "(require 'package)"
             --eval "(package-initialize)"
+            --eval '(prepare-user-lisp)'
             --eval '(load "~/.config/emacs/init.el")'
         )
         break
