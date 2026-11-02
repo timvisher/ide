@@ -12,46 +12,33 @@
 #   "$next" "$@"
 
 # Generic: echo the next PATH executable named $1 after the caller ($2,
-# its own path). Walks PATH in order, dedupes by realpath, finds the entry
-# matching the caller, and returns the one after it. Returns 1 if the caller
-# isn't found or there is no next entry.
+# its own path). Walks PATH in order, dedupes entries that are the same
+# file, finds the entry matching the caller, and returns the one after it.
+# Returns 1 if the caller isn't found or there is no next entry.
+#
+# Same-file checks use [[ -ef ]], not realpath: a realpath fork per PATH
+# entry was most of a wrapped git call's startup.
 resolve_next_on_path() {
-  local cmd="$1"
-  local my_path="$2"
-  my_path=$(realpath "$my_path" 2>/dev/null) || my_path="$2"
+  local cmd=$1 my_path=$2
+  local -a candidates=() _resolve_next__path_entries
+  local dir candidate seen found_self=false
 
-  local -a candidates=()
-  local -A seen=()
-
-  local -a _resolve_next__path_entries
-  local dir candidate resolved
   IFS=: read -ra _resolve_next__path_entries <<< "$PATH"
   for dir in "${_resolve_next__path_entries[@]}"
   do
-    candidate="$dir/$cmd"
-    if [[ -x "$candidate" ]]
-    then
-      resolved=$(realpath "$candidate" 2>/dev/null) || resolved="$candidate"
-      if [[ -z "${seen[$resolved]:-}" ]]
-      then
-        seen[$resolved]=1
-        candidates+=("$resolved")
-      fi
-    fi
-  done
-
-  local found_self=false
-  local path
-  for path in "${candidates[@]}"
-  do
-    if [[ "$path" == "$my_path" ]]
+    candidate=$dir/$cmd
+    [[ -f $candidate && -x $candidate ]] || continue
+    for seen in "${candidates[@]}"
+    do
+      [[ $candidate -ef $seen ]] && continue 2
+    done
+    candidates+=("$candidate")
+    if [[ $candidate -ef $my_path ]]
     then
       found_self=true
-      continue
-    fi
-    if [[ "$found_self" == true ]]
+    elif [[ $found_self == true ]]
     then
-      echo "$path"
+      printf '%s\n' "$candidate"
       return 0
     fi
   done
