@@ -9,6 +9,10 @@
 #   timvisher_tool_log_write <tool> <real> <t0> <rc> <extra> [<arg>...]
 #     log a call that already ran: <t0> is its $EPOCHREALTIME, <extra> a
 #     JSON fragment of more fields (',"k":v' or empty)
+#   timvisher_tool_log_caller
+#     print the caller object below, for wrappers that act on it
+#   timvisher_tool_log_json <string>
+#     print <string> as a JSON string literal, for building <extra>
 #
 # One JSON line per call goes to <log dir>/<tool>.jsonl: ts (UTC), epoch,
 # tool, real, argv (secrets redacted), cwd, rc, duration_ms, host, and
@@ -158,6 +162,16 @@ timvisher_tool_log__caller() {
   fi
   timvisher_tool_log__json "$tty"
   timvisher_tool_log__caller_out="{\"kind\":\"human\",\"tty\":${timvisher_tool_log__json_out}}"
+}
+
+timvisher_tool_log_caller() {
+  timvisher_tool_log__caller
+  printf '%s\n' "$timvisher_tool_log__caller_out"
+}
+
+timvisher_tool_log_json() {
+  timvisher_tool_log__json "$1"
+  printf '%s\n' "$timvisher_tool_log__json_out"
 }
 
 timvisher_tool_log_write() {

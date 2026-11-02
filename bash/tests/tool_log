@@ -145,6 +145,17 @@ else
 fi
 
 run_test
+pub_caller=$(env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID TIMVISHER_CODEX=true TIMVISHER_AGENT_WRAPPER_EXEC=7:codex \
+  bash -c 'source "$1"; timvisher_tool_log_caller' _ "$lib")
+pub_json=$(bash -c 'source "$1"; timvisher_tool_log_json "$2"' _ "$lib" $'a"b\\c\nd')
+if [[ $pub_caller == '{"kind":"codex","pid":7}' && $pub_json == '"a\"b\\c\nd"' ]]
+then
+  pass "timvisher_tool_log_caller and timvisher_tool_log_json print what the log would"
+else
+  fail "public helpers: caller='$pub_caller' json='$pub_json'"
+fi
+
+run_test
 help_out=$("$reader" --help 2>/dev/null)
 err_out=$("$reader" --bogus 2>/dev/null)
 err_rc=$?
