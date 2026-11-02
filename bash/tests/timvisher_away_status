@@ -2,6 +2,14 @@
 
 # Tests for timvisher_away_status
 
+# The fakes below replace ioreg but not plutil, so off macOS there is
+# nothing to run the script against.
+if [[ $(uname -s) != Darwin ]]
+then
+  printf 'SKIP: timvisher_away_status is macOS-only (ioreg, plutil); this is %s\n' "$(uname -s)"
+  exit 0
+fi
+
 failures=0
 
 fail() {
