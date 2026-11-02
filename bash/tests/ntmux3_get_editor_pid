@@ -5,13 +5,11 @@
 # the editor window the way ntmux3 starts one, so the pane-to-Emacs walk
 # runs against real processes.
 
-# git is mocked with a passthrough to the real git, so neither the
-# fixtures nor the unit go through the ~/bin/git wrapper.
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 mock_init || { echo "mock_init failed" >&2; exit 1; }
-mock_real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
-mock_passthrough git "$mock_real_git"
+mock_command git
+mock_git_toplevel
 
 failures=0
 tests=0
@@ -49,7 +47,7 @@ export TMUX_TMPDIR=$t_dir
 
 worktree=$HOME/git/testorg/testrepo/v1.2
 mkdir -p "$worktree/src" || exit 1
-git -C "$worktree" init -q || exit 1
+mkdir -p "$worktree"/.git || exit 1
 
 tmux new-session -d -s testorg/testrepo/v1_2 -n editor bash || exit 1
 tmux send-keys -t '=testorg/testrepo/v1_2:editor' "emacs -Q --batch --eval '(while t (sleep-for 1))'" C-m
@@ -115,6 +113,8 @@ check 'no such session: exits 1 with ntmux3_no_such_session alone on stderr' \
 get_editor_pid one two
 check 'two arguments: usage on stderr, exit 1' \
       eval "(( $? == 1 )) && [[ ! -s \$t_dir/stdout ]] && grep -q get-editor-pid \"\$t_dir/stderr\""
+
+mock_finish || (( failures += 1 ))
 
 echo "${tests} tests, ${failures} failures"
 (( 0 == failures ))
