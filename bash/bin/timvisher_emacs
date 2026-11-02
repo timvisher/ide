@@ -168,7 +168,7 @@ timvisher_emacs__server_sockets() {
       n/*)
         # Linux lsof follows a Unix socket's path with ' type=STREAM'.
         socket=${line#n}
-        socket=${socket% type=*}
+        socket=${socket%% type=*}
         [[ -S $socket ]] && printf '%s\t%s\n' "$pid" "$socket"
         ;;
     esac
