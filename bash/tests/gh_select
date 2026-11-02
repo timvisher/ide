@@ -4,8 +4,6 @@
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 mock_init || { echo "mock_init failed" >&2; exit 1; }
 mock_command git
-# git remote and git remote get-url read the remotes new_repo and
-# add_remote record in <repo>/.git/x.remotes, one '<name> <url>' a line.
 # shellcheck disable=SC2016
 mock_respond git --run '
   [[ -f .git/x.remotes ]] || exit 128

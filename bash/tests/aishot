@@ -40,9 +40,6 @@ mock_command git
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
 trap 'rm -rf "${repo:-}"' EXIT
 
-# What git says about the repo under review: f.txt staged as a new file
-# with one more line unstaged, no commits, no upstream, and every other
-# file in the directory untracked, as in a repo with no ignore rules.
 git_answers() {
   mock_reset git
   mock_respond git --stdout true -- rev-parse --is-inside-work-tree
