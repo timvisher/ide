@@ -436,6 +436,7 @@ self_out=$(
   cd "$tmpdir/norepo" &&
     env -u GH_TOKEN -u GITHUB_TOKEN -u TIMVISHER_AGENT \
       PATH="${script%/*}:$tmpdir/selfbrew:$tmpdir/tools:/usr/bin:/bin" \
+      TIMVISHER_REAL_BIN_SKIP=/usr/bin:/bin \
       TIMVISHER_GH_CONFIG_DIR="$tmpdir/cfg" \
       "$script" --version 2>&1
 )
