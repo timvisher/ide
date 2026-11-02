@@ -37,7 +37,8 @@
 # ${XDG_STATE_HOME:-~/.local/state}/timvisher/logs elsewhere;
 # TIMVISHER_TOOL_LOG_DIR overrides it. A log write that fails warns on
 # stderr and never changes the tool's result. timvisher_tool_log reads
-# the logs; timvisher_wrapper_logs_rotate rotates them.
+# the logs; timvisher_git_trace2 reads the end of git's trace2 log;
+# timvisher_wrapper_logs_rotate rotates them.
 
 timvisher_tool_log_dir() {
   if [[ -n ${TIMVISHER_TOOL_LOG_DIR-} ]]
