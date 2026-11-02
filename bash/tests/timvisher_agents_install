@@ -330,8 +330,17 @@ timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_i
   "$source_dir" 2>/dev/null
 exit_code=$?
 
+# Only chflags uchg (macOS, BSD) keeps the file from being moved; on Linux
+# mode 400 stops writes but not a rename within a writable directory.
+immovable=true
+if command -v chflags &>/dev/null
+then
+  mv "${test_home}/CLAUDE.md" "${test_home}/moved" 2>/dev/null && immovable=false
+else
+  echo "SKIP: resolve: ~/CLAUDE.md can't be moved (needs chflags uchg; none on $(uname -s))"
+fi
 if (( exit_code == 0 )) && is_locked_stub "${test_home}/CLAUDE.md" &&
-   ! mv "${test_home}/CLAUDE.md" "${test_home}/moved" 2>/dev/null &&
+   [[ $immovable == true ]] &&
    ! { echo x > "${test_home}/CLAUDE.md"; } 2>/dev/null
 then
   pass "resolve: creates a locked ~/CLAUDE.md stub"
