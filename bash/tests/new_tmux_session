@@ -26,6 +26,10 @@ source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 agent_env_vars=(
   CLAUDECODE
+  CLAUDE_CODE_MESSAGING_SOCKET
+  CLAUDE_CODE_MESSAGING_TOKEN
+  CLAUDE_CODE_SESSION_ID
+  CLAUDE_PID
   TIMVISHER_AGENT
   TIMVISHER_AGENT_NIRMI
   TIMVISHER_AGENT_NIRMI_REASON
@@ -71,6 +75,14 @@ env > '${pane_env}.tmp' && mv '${pane_env}.tmp' '${pane_env}'
 STUB
 chmod +x "${stub_bin}/emacs"
 
+# Report Linux, the workspace case: new_tmux_session used to stop after
+# creating the session there, leaving the editor window without Emacs.
+cat > "${stub_bin}/uname" <<'STUB'
+#!/usr/bin/env bash
+echo Linux
+STUB
+chmod +x "${stub_bin}/uname"
+
 : > "${t_dir}/aictl.log"
 
 # An empty HOME, not the runner's: the pane's shell would otherwise
@@ -83,6 +95,10 @@ start_session() (
   export PATH="${stub_bin}:${PATH}"
   export NEW_TMUX_SESSION_TEST_CANARY=1
   export CLAUDECODE=1
+  export CLAUDE_CODE_MESSAGING_SOCKET=/tmp/x.sock
+  export CLAUDE_CODE_MESSAGING_TOKEN=tok
+  export CLAUDE_CODE_SESSION_ID=sess-test
+  export CLAUDE_PID=$$
   export TIMVISHER_AGENT=1
   export TIMVISHER_AGENT_NIRMI=1
   export TIMVISHER_AGENT_NIRMI_REASON=test
@@ -99,8 +115,26 @@ start_session() (
 )
 
 timvisher_tests_with_home "$fake_home" start_session >/dev/null 2>&1
+start_rc=$?
 
 global_env=$(env -u TMUX TMUX_TMPDIR="$t_dir" tmux show-environment -g 2>&1)
+
+run_test
+if (( start_rc == 0 ))
+then
+  pass "new_tmux_session succeeds on Linux"
+else
+  fail "new_tmux_session returned ${start_rc} on Linux"
+fi
+
+run_test
+windows=$(env -u TMUX TMUX_TMPDIR="$t_dir" tmux list-windows -t '=agent_env' -F '#{window_name}' 2>&1)
+if [[ $windows == $'editor\nadmin\nservices\ndb\ntests' ]]
+then
+  pass "the session has all of its windows"
+else
+  fail "unexpected windows: '${windows}'"
+fi
 
 run_test
 if grep -qx 'NEW_TMUX_SESSION_TEST_CANARY=1' <<<"$global_env"
