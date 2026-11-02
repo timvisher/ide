@@ -1,6 +1,15 @@
 ;;; init.el -*- lexical-binding: t -*-
 (setq startup-time (current-time))
 
+;;; Not into this directory: it is a git worktree, and test runs fail when
+;;; it changes. Not in early-init.el: the batch tests' (load "init.el")
+;;; never reads it.
+(when (and (fboundp 'startup-redirect-eln-cache)
+           (native-comp-available-p))
+  (startup-redirect-eln-cache
+   (expand-file-name "emacs/eln-cache/"
+                     (or (getenv "XDG_CACHE_HOME") "~/.cache/"))))
+
 ;;; Silencing via warning-suppress-types would hide every warning of
 ;;; type emacs, and with-eval-after-load runs too late because
 ;;; system-sleep.el enables itself at load time.
