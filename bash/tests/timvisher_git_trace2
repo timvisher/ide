@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+# Tests for bash/bin/timvisher_git_trace2.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+core="$(cd "$(dirname "$0")/../.." && pwd -P)"
+reader_bin=$core/bash/bin/timvisher_git_trace2
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+mkdir -p "$t/state/timvisher/wrappers/git"
+trace=$t/state/timvisher/wrappers/git/trace2.jsonl
+
+reader() {
+  env XDG_STATE_HOME="$t/state" "$reader_bin" "$@"
+}
+
+now=$(jq -nr 'now | strftime("%Y%m%dT%H%M%S")')
+old_sid=20200101T000000.000001Z-Habc-P0001
+new_sid=$now.000002Z-Habc-P0002
+child_sid=20200101T000000.000001Z-Habc-P0001/$now.000003Z-Habc-P0003
+
+{
+  for sid in "$old_sid" "$new_sid" "$child_sid"
+  do
+    printf '{"event":"version","sid":"%s","time":"x"}\n' "$sid"
+    printf '{"event":"start","sid":"%s","argv":["git","status"]}\n' "$sid"
+    printf '{"event":"exit","sid":"%s","code":0}\n' "$sid"
+  done
+} > "$trace"
+
+sids() {
+  jq -r .sid | sort -u | tr '\n' ' '
+}
+
+run_test
+got=$(reader --since 1h | sids)
+if [[ $got == "$(printf '%s\n' "$new_sid" "$child_sid" | sort | tr '\n' ' ')" ]]
+then
+  pass "--since keeps the events of processes started after it, children by their own start"
+else
+  fail "--since: '$got'"
+fi
+
+run_test
+got=$(reader --event start --event exit | jq -r .event | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+if [[ $got == ' 3 exit  3 start ' ]]
+then
+  pass "--event keeps only the named kinds"
+else
+  fail "--event: '$got'"
+fi
+
+run_test
+got=$(reader --sid "${new_sid:0:22}" | sids)
+if [[ $got == "$new_sid " ]]
+then
+  pass "--sid keeps one process by sid prefix"
+else
+  fail "--sid: '$got'"
+fi
+
+run_test
+bytes=$(( $(tail -n 3 "$trace" | wc -c) + 10 ))
+out=$(reader --bytes "$bytes" --since 30d 2>"$t/err")
+if [[ $(wc -l <<<"$out") == 3 ]] && jq -e . <<<"$out" >/dev/null &&
+   [[ $(sids <<<"$out") == "$child_sid " ]] && grep -q 'raise --bytes' "$t/err"
+then
+  pass "--bytes reads only the end, drops the partial first line, and warns when --since reaches past it"
+else
+  fail "--bytes: out='$out' err='$(< "$t/err")'"
+fi
+
+run_test
+reader --since 30d >/dev/null 2>"$t/err"
+if [[ ! -s $t/err ]]
+then
+  pass "no warning when the whole file fits in --bytes"
+else
+  fail "unexpected warning: '$(< "$t/err")'"
+fi
+
+run_test
+help_out=$(reader --help 2>/dev/null)
+err_out=$(reader --bytes 12Q 2>/dev/null)
+err_rc=$?
+if [[ $help_out == Usage:* && -z $err_out ]] && (( err_rc != 0 )) && [[ $(reader --path) == "$trace" ]]
+then
+  pass "--help on stdout, usage errors only on stderr, --path names the log"
+else
+  fail "help/usage: help='${help_out:0:40}' err='$err_out' rc=$err_rc path=$(reader --path)"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))

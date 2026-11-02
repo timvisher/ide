@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# Size-based rotation for the git wrapper's JSONL logs.
+# Size-based rotation for the git wrapper's JSONL logs and the shared
+# tool logs (bash/functions/tool_log.bash).
 #
 # trace2.jsonl grows at roughly 500 MB/day under normal use, and
 # log.jsonl is already in the hundreds of MB, so a week of retention is
@@ -59,7 +60,13 @@ rotate_one() {
 
   [[ -f $f ]] || return 0
 
-  size=$(stat -c %s "$f" 2>/dev/null) || return 0
+  # GNU stat, then BSD: launchd's PATH has no coreutils gnubin. A size we
+  # can't read is an error, not "small enough".
+  if ! size=$(stat -c %s "$f" 2>/dev/null) && ! size=$(stat -f %z "$f" 2>/dev/null)
+  then
+    warn "rotate: could not read the size of '%s'" "$f"
+    return 1
+  fi
   if (( size < max_bytes ))
   then
     return 0
@@ -88,7 +95,7 @@ rotate_one() {
   then
     if ! cp "$f" "${f}.1"
     then
-      warn 'rotate: could not copy ‘%s’' "$f"
+      warn "rotate: could not copy '%s'" "$f"
       return 1
     fi
     : > "$f"
@@ -99,13 +106,13 @@ rotate_one() {
     # see the path missing rather than empty.
     : > "$f"
   else
-    warn 'rotate: could not rename ‘%s’' "$f"
+    warn "rotate: could not rename '%s'" "$f"
     return 1
   fi
 
-  gzip -f "${f}.1" ||
+  nice -n 19 gzip -f "${f}.1" ||
     {
-      warn 'rotate: could not gzip ‘%s.1’' "$f"
+      warn "rotate: could not gzip '%s.1'" "$f"
       return 1
     }
 
@@ -118,6 +125,22 @@ for name in log trace2 fsmonitor-samples
 do
   rotate_one "${state_dir}/${name}.jsonl" rename || rc=1
 done
+
+# The shared tool log (bash/functions/tool_log.bash): one <tool>.jsonl per
+# wrapped tool, written the same way, so rename mode.
+# shellcheck source=../functions/tool_log.bash
+if source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash"
+then
+  shopt -s nullglob
+  for f in "$(timvisher_tool_log_dir)"/*.jsonl
+  do
+    rotate_one "$f" rename || rc=1
+  done
+  shopt -u nullglob
+else
+  warn 'rotate: could not source tool_log.bash; tool logs not rotated'
+  rc=1
+fi
 
 # launchd agent logs. Smaller cap: these are sparse by design, so
 # reaching even a few MB means something is logging on every run.

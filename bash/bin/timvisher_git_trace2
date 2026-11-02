@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+# Read the end of the git wrapper's trace2 event log.
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=../functions/tool_log.bash
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash" ||
+  die "Unable to source tool_log.bash"
+
+show_help() {
+  cat <<'HELP'
+Usage: timvisher_git_trace2 [--bytes N] [--since WHEN] [--sid PREFIX]
+                            [--event NAME]...
+       timvisher_git_trace2 --path
+
+Print git trace2 events (JSON lines) from the end of the git wrapper's
+trace2.jsonl, oldest first. Only the last N bytes are ever read, never
+the whole file, nor its rotated generations.
+
+  --bytes N       how much of the end to read: a byte count, or with a
+                  K, M or G suffix (default 64M)
+  --since WHEN    only events at or after WHEN: 30m, 2h, 3d, or an ISO
+                  8601 UTC time such as 2026-11-01T12:00
+  --sid PREFIX    only events of the git processes whose sid starts with
+                  PREFIX
+  --event NAME    only events of this kind: start, exit, region_enter, ...
+                  (repeatable)
+  --path          print the trace2.jsonl path and exit
+
+When --since reaches back past the bytes read, a warning names the
+oldest event that was read; raise --bytes to see further.
+
+Example: the git commands that ran in the last 10 minutes
+  timvisher_git_trace2 --since 10m --event start | jq -c .argv
+HELP
+}
+
+usage() {
+  show_help >&2
+}
+
+trace=${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git/trace2.jsonl
+
+size_of() {
+  stat -c %s -- "$1" 2>/dev/null || stat -f %z -- "$1" 2>/dev/null
+}
+
+bytes=$(( 64 * 1024 * 1024 ))
+since=''
+sid=''
+events=()
+
+while (( 0 < $# ))
+do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --path)
+      printf '%s\n' "$trace"
+      exit 0
+      ;;
+    --bytes|--since|--sid|--event)
+      if [[ -z ${2-} ]]
+      then
+        error '%s needs a value' "$1"
+        usage
+        exit 1
+      fi
+      case $1 in
+        --bytes)
+          if [[ ! $2 =~ ^([1-9][0-9]*)([KMG]?)$ ]]
+          then
+            error "--bytes needs a size such as 4096 or 64M, not '%s'" "$2"
+            exit 1
+          fi
+          bytes=${BASH_REMATCH[1]}
+          case ${BASH_REMATCH[2]} in
+            K) (( bytes *= 1024 )) ;;
+            M) (( bytes *= 1024 * 1024 )) ;;
+            G) (( bytes *= 1024 * 1024 * 1024 )) ;;
+          esac
+          ;;
+        --since)
+          if ! since=$(timvisher_tool_log_when_epoch "$2") || [[ -z $since ]]
+          then
+            error "Can't read a time from '%s'" "$2"
+            exit 1
+          fi
+          ;;
+        --sid) sid=$2 ;;
+        --event) events+=("$2") ;;
+      esac
+      shift 2
+      ;;
+    *)
+      error "Unknown argument '%s'" "$1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+[[ -r $trace ]] || exit 0
+
+if ! size=$(size_of "$trace")
+then
+  die "Could not read the size of '%s'" "$trace"
+fi
+
+# tail -c seeks from the end, so this costs N bytes however large the
+# file is. When it starts mid-file the first line is partial; drop it.
+window() {
+  if (( size <= bytes ))
+  then
+    cat -- "$trace"
+  else
+    tail -c "$bytes" -- "$trace" | tail -n +2
+  fi
+}
+
+events_json=$(printf '%s\n' ${events[@]+"${events[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')
+from=''
+if [[ -n $since ]]
+then
+  from=$(jq -nr --argjson e "$since" '$e | strftime("%Y%m%dT%H%M%S")') ||
+    die "Can't format the time %s" "$since"
+fi
+
+# trace2 puts a time on only a few event kinds, but every sid begins with
+# its process's start time, so filter on that: a process's events go
+# with the time it started.
+started='def started: (.sid // "") | split("/") | last | .[0:15];'
+
+if [[ -n $from ]] && (( bytes < size ))
+then
+  oldest=$(window | head -n 1 | jq -r "$started started")
+  # Not warn: logging.bash hides WARN from agents, the readers who most
+  # need to know the window was cut short.
+  if [[ $from < $oldest ]]
+  then
+    printf 'timvisher_git_trace2: the oldest event read is from %s, after --since; raise --bytes to read further back\n' "$oldest" >&2
+  fi
+fi
+
+# shellcheck disable=SC2016 # jq variables, not shell
+window | jq -c --arg from "$from" --arg sid "$sid" --argjson events "$events_json" "$started"'
+    select(($from == "" or $from <= started)
+           and ($sid == "" or ((.sid // "") | startswith($sid)))
+           and (($events | length) == 0 or (.event as $e | any($events[]; . == $e))))'
