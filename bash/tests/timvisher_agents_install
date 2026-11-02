@@ -541,6 +541,92 @@ else
 fi
 cleanup "$test_home"
 
+# --- Tests: ~/git is a symlink to another directory ---
+setup_symlinked_git_home() {
+  local home
+  home=$(setup_home)
+  mkdir -p "${home}/Dev"
+  mv "${home}/git" "${home}/Dev/git"
+  ln -s "${home}/Dev/git" "${home}/git"
+  mkdir -p "${home}/Dev/git/org/repo/.agents/skills/other-skill"
+  echo "$home"
+}
+
+installed_links() {
+  local home=$1
+  local link
+  for link in "${home}/AGENTS.md" "${home}"/.agents/*/* "${home}"/.claude/* "${home}"/.codex/* "${home}"/.codex/skills/*
+  do
+    [[ -L $link ]] || continue
+    printf '%s -> %s\n' "$link" "$(readlink "$link")"
+  done
+}
+
+links_avoid_resolved_git() {
+  local home=$1
+  local resolved_git=$2
+  local links
+  links=$(installed_links "$home")
+  [[ -n $links ]] || return 1
+  [[ $links != *" -> ${resolved_git}"* && $links != *" -> ${home}/Dev/"* ]]
+}
+
+run_test
+test_home=$(setup_symlinked_git_home)
+resolved_git=$(cd "${test_home}/git" && pwd -P)
+
+timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "${test_home}/git/org/repo" "${test_home}/git/ide/ai/HOME" 2>/dev/null
+exit_code=$?
+
+expected="${test_home}/git/org/repo/.agents/skills/other-skill"
+if (( exit_code == 0 )) &&
+   [[ $(readlink "${test_home}/.agents/skills/other-skill") == "$expected" ]] &&
+   [[ $(readlink "${test_home}/.codex/skills/other-skill") == "$expected" ]] &&
+   links_avoid_resolved_git "$test_home" "$resolved_git"
+then
+  pass "symlinked ~/git: links are written under ~/git"
+else
+  fail "symlinked ~/git: expected links under ${test_home}/git (exit_code=${exit_code}), got:
+$(installed_links "$test_home")"
+fi
+
+before=$(installed_links "$test_home")
+result=$(timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "${test_home}/git/org/repo" "${test_home}/git/ide/ai/HOME" 2>&1)
+exit_code=$?
+
+run_test
+if (( exit_code == 0 )) &&
+   [[ $(installed_links "$test_home") == "$before" ]] &&
+   [[ $result != *"Updated symlink"* ]]
+then
+  pass "symlinked ~/git: a rerun leaves ~/git links alone"
+else
+  fail "symlinked ~/git: expected a rerun to change nothing (exit_code=${exit_code}), output='${result}'"
+fi
+
+rm "${test_home}/.agents/skills/other-skill" "${test_home}/.codex/skills/other-skill" "${test_home}/AGENTS.md"
+ln -s "${resolved_git}/org/repo/.agents/skills/other-skill" "${test_home}/.agents/skills/other-skill"
+ln -s "${test_home}/Dev/git/org/repo/.agents/skills/other-skill" "${test_home}/.codex/skills/other-skill"
+ln -s "${resolved_git}/ide/ai/HOME/AGENTS.md" "${test_home}/AGENTS.md"
+
+timvisher_tests_with_home "$test_home" "${repo_root}/bash/bin/timvisher_agents_install" \
+  "${test_home}/git/org/repo" "${test_home}/git/ide/ai/HOME" 2>/dev/null
+exit_code=$?
+
+run_test
+if (( exit_code == 0 )) &&
+   [[ $(installed_links "$test_home") == "$before" ]] &&
+   links_avoid_resolved_git "$test_home" "$resolved_git"
+then
+  pass "symlinked ~/git: a rerun rewrites resolved links back to ~/git"
+else
+  fail "symlinked ~/git: expected resolved links rewritten to ~/git (exit_code=${exit_code}), got:
+$(installed_links "$test_home")"
+fi
+cleanup "$test_home"
+
 # --- Test: errors when ~/.agents is a symlink ---
 run_test
 test_home=$(mktemp -d "${test_root}/t.XXXXXX")

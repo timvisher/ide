@@ -46,12 +46,17 @@ canon_path() {
 # stable across worktrees — e.g. `~/.config/timvisher/ide/...` rather than
 # `~/git/ddoghq-sandbox/timvisher-ide-datadog-system-extensions/main/...`.
 #
+# ~/git comes last as the catch-all: ~/git may itself be a symlink to
+# wherever the volume holding it is mounted, and links must name ~/git,
+# never that mount point.
+#
 # ORDER MATTERS: prefer_path() returns the FIRST matching prefix. List
-# more-specific prefixes before more-general ones (no overlap today,
-# but if a future entry nested inside another the first match wins).
+# more-specific prefixes before more-general ones: ~/git/ide, and
+# usually ~/.config/timvisher/ide, resolve inside ~/git.
 preferred_prefixes=(
   "${HOME}/.config/timvisher/ide"
   "${HOME}/git/ide"
+  "${HOME}/git"
 )
 
 # Given a path, return the preferred form if its canonical form lies under
