@@ -48,6 +48,31 @@ end makeNewProfile2
 -- The following doesn't work because AppleScript. When a handler uses given you must pass at least one argument using given to get any of the defaults
 -- makeNewProfile2()
 
+-- System Events rather than Chrome's own windows, which include every
+-- Space's: only the windows on this Space can be seen.
+on visibleWindows()
+	if application "Google Chrome" is not running then
+		return {}
+	end if
+	
+	tell application "System Events"
+		return windows of application process "Google Chrome" whose subrole is "AXStandardWindow" and value of attribute "AXMinimized" is false
+	end tell
+end visibleWindows
+
+on activateOrMakeNewWindow()
+	set ws to my visibleWindows()
+	if 0 is (count of ws) then
+		my makeNewProfileWindow("")
+		return
+	end if
+	
+	tell application "System Events" to perform action "AXRaise" of item 1 of ws
+	tell application "Google Chrome" to activate
+end activateOrMakeNewWindow
+
+-- activateOrMakeNewWindow()
+
 on getTabWithUrl(u)
 	if application "Google Chrome" is not running then
 		return missing value

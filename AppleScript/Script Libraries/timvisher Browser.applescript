@@ -90,6 +90,10 @@ end makeNewProfile2
 
 --makeNewProfileWindow("")
 
+on activateOrMakeNewWindow()
+	tell script (my currentBrowser()) to activateOrMakeNewWindow()
+end activateOrMakeNewWindow
+
 on getTabWithUrl(u)
 	tell script (my currentBrowser()) to getTabWithUrl(u)
 end getTabWithUrl
