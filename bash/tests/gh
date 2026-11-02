@@ -54,16 +54,18 @@ cat > "$tmpdir/faketgh-bin/timvisher_gh" <<'FAKE_TGH'
 FAKE_TGH
 chmod +x "$tmpdir/faketgh-bin/timvisher_gh"
 
+# GH_REPO gives the wrapper its target, so these tests don't depend on the
+# cwd's remotes (a checkout cloned from a bundle has no github.com origin).
 run_agent() {
   # Pass args via positional parameters so values with spaces or shell
   # metacharacters survive intact. `bash -c '... "$@"' _ "$@"` binds the
   # first extra arg ($_) to $0 inside the child and the rest to $1, $2, …
-  TIMVISHER_AGENT=true PATH="$test_path" \
+  TIMVISHER_AGENT=true GH_REPO=testorg/testrepo PATH="$test_path" \
     bash -c "source '${funcs_dir}/logging.bash'; '$script' \"\$@\"" _ "$@" 2>&1 || true
 }
 
 run_agent_under_tgh() {
-  TIMVISHER_AGENT=true PATH="$test_path" \
+  TIMVISHER_AGENT=true GH_REPO=testorg/testrepo PATH="$test_path" \
     "$tmpdir/faketgh-bin/timvisher_gh" bash -c \
     "source '${funcs_dir}/logging.bash'; '$script' \"\$@\"" _ "$@" 2>&1 || true
 }
