@@ -22,6 +22,7 @@ fi
 emacs --batch \
   --eval "(require 'package)" \
   --eval "(package-initialize)" \
+  --eval '(prepare-user-lisp)' \
   --eval '(load "~/.config/emacs/init.el")' \
   --eval "(progn
            (require 'org)
