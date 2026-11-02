@@ -29,7 +29,8 @@ timvisher_emacs cleanup --no-dry-run &&
     #
     # Pipeline: list every pane across every tmux session, resolve
     # each pane's fg pgid via ps, dedupe, xargs into a single kill so
-    # kill(2) syscalls fire back-to-back inside one process. Running
+    # kill(2) syscalls fire back-to-back inside one process. -r: GNU xargs
+    # otherwise runs kill once even with no pgids (BSD's accepts -r too). Running
     # this from within a tmux pane will signal that pane too — if you
     # don't want your own shell caught up, don't run the cleanup from
     # inside something you want to keep.
@@ -41,7 +42,7 @@ timvisher_emacs cleanup --no-dry-run &&
           awk 'NF && 0 < $1 {print "-"$1; exit}'
       done |
       sort -u |
-      xargs kill -TERM -- 2>/dev/null || true
+      xargs -r kill -TERM -- 2>/dev/null || true
 
     # Give foreground processes a moment to exit on SIGTERM
     sleep 1
