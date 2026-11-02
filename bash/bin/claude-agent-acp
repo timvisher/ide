@@ -22,4 +22,8 @@ export TIMVISHER_CLAUDE=true
 
 timvisher_anthropic_connectivity_gate
 
-timvisher_agent_exec node ~/git/timvisher-dd/claude-agent-acp/dev/dist/index.js "$@"
+acp_js=${TIMVISHER_GIT_HOME:-$HOME/git}/timvisher-dd/claude-agent-acp/dev/dist/index.js
+[[ -r $acp_js ]] ||
+  die 'No claude-agent-acp build at "%s"; build timvisher-dd/claude-agent-acp/dev (npm ci && npm run build).' "$acp_js"
+
+timvisher_agent_exec node "$acp_js" "$@"

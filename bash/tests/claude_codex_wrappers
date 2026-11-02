@@ -299,6 +299,27 @@ else
   fail "nested codex was refused: $out"
 fi
 
+# claude-agent-acp finds its build under TIMVISHER_GIT_HOME, not a
+# hardcoded ~/git, and says so plainly when it isn't built.
+run_test
+acp_home=$wrap_fixture/githome
+mkdir -p "$acp_home/timvisher-dd/claude-agent-acp/dev/dist"
+printf 'console.log("acp " + process.argv.slice(2).join(" "))\n' > "$acp_home/timvisher-dd/claude-agent-acp/dev/dist/index.js"
+ln -sf "$bin_dir/claude-agent-acp" "$wrap_fixture/wrap/claude-agent-acp"
+node_dir=$(dirname "$(command -v node)")
+acp_out=$(env -u ANTHROPIC_API_KEY -u TIMVISHER_AGENT_WRAPPER_EXEC ANTHROPIC_API_KEY=sk-real TIMVISHER_SKIP_CONNECTIVITY_GATE=1 \
+  TIMVISHER_GIT_HOME="$acp_home" PATH="$wrap_fixture/wrap:$node_dir:$wrap_fixture/tools:/usr/bin:/bin" \
+  "$wrap_fixture/wrap/claude-agent-acp" --x 2>&1)
+missing_out=$(env -u ANTHROPIC_API_KEY -u TIMVISHER_AGENT_WRAPPER_EXEC ANTHROPIC_API_KEY=sk-real TIMVISHER_SKIP_CONNECTIVITY_GATE=1 \
+  TIMVISHER_GIT_HOME="$wrap_fixture/nowhere" PATH="$wrap_fixture/wrap:$node_dir:$wrap_fixture/tools:/usr/bin:/bin" \
+  "$wrap_fixture/wrap/claude-agent-acp" --x 2>&1)
+if [[ $acp_out == *"acp --x"* && $missing_out == *"No claude-agent-acp build at"* ]]
+then
+  pass "claude-agent-acp runs the build under TIMVISHER_GIT_HOME, and names a missing one"
+else
+  fail "claude-agent-acp: built='$acp_out' missing='$missing_out'"
+fi
+
 # Test 12: no wrapper sources the ide through an absolute ~/git path.
 run_test
 # shellcheck disable=SC2088 # literal ~ we grep for
