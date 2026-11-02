@@ -21,6 +21,7 @@ show_help() {
 Usage: timvisher_tool_log [--tool TOOL]... [--caller WHO] [--since WHEN]
                               [--until WHEN] [--tail N] [--json]
        timvisher_tool_log --path
+       timvisher_tool_log --caller-env
 
 Print the logged invocations of wrapped tools, oldest first.
 
@@ -34,11 +35,17 @@ Print the logged invocations of wrapped tools, oldest first.
                  rotated generations
   --json         print the matching JSON lines instead of a table
   --path         print the log directory and exit
+  --caller-env   for a Claude caller, print the shell-quoted assignments
+                 that make a command on another host log as this caller,
+                 and exit; print nothing for anyone else
 
 With --since, rotated generations last written before WHEN are not read.
 
 Example: who created workspaces today?
   timvisher_tool_log --tool workspaces --since 1d | grep ' create '
+
+Example: run a command on a workspace so its calls log as you
+  ssh workspace-<name> "$(timvisher_tool_log --caller-env) bash -ic 'git status'"
 HELP
 }
 
@@ -62,6 +69,10 @@ do
       ;;
     --path)
       timvisher_tool_log_dir
+      exit 0
+      ;;
+    --caller-env)
+      timvisher_tool_log_caller_env
       exit 0
       ;;
     --tool|--caller|--since|--until|--tail)

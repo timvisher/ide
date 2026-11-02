@@ -256,6 +256,15 @@ else
 fi
 
 run_test
+reader_env=$(env -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION CLAUDE_PID=$$ "$reader" --caller-env)
+if [[ $reader_env == "TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-1234 TIMVISHER_TOOL_LOG_CALLER_NAME=cfctl-99" ]]
+then
+  pass "reader: --caller-env prints the caller assignments"
+else
+  fail "reader --caller-env: '$reader_env'"
+fi
+
+run_test
 if [[ $("$reader" --path) == "$t/logs" ]] &&
    [[ $(env -u TIMVISHER_TOOL_LOG_DIR HOME=/h XDG_STATE_HOME= bash -c 'source "$1"; timvisher_tool_log_dir' _ "$lib") == \
       "$( [[ $OSTYPE == darwin* ]] && echo /h/Library/Logs/timvisher/tools || echo /h/.local/state/timvisher/logs )" ]]
