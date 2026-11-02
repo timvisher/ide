@@ -29,6 +29,8 @@
 # rules and adds to the same record.
 
 _mock_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 1
+# shellcheck source=/dev/null
+source "$_mock_lib_dir/../../functions/real_bin.bash" || return 1
 _mock_seq=0
 _mock_stub=$(< "$_mock_lib_dir/mock_command") || return 1
 
@@ -215,15 +217,18 @@ mock_finish() {
   (( 0 == unexpected ))
 }
 
-# Print the path of the real <name>, looked up on the runner's base
-# PATH, which holds neither the mocks nor the IDE's wrappers.
+# Print the path of the real <name>: timvisher_real_bin's answer on the
+# runner's base PATH, which holds neither the mocks nor the IDE's
+# wrappers, skipping any wrapper script found there all the same.
 mock_real() {
-  local name=$1
+  local name=$1 skip
   [[ -n ${TIMVISHER_TESTS_BASE_PATH-} ]] || {
     printf 'mock_real: TIMVISHER_TESTS_BASE_PATH is unset; run the suite through timvisher_tests\n' >&2
     return 1
   }
-  PATH=$TIMVISHER_TESTS_BASE_PATH type -P "$name"
+  skip=$(PATH=$TIMVISHER_TESTS_BASE_PATH timvisher_real_bin_script_dirs "$name")
+  PATH=$TIMVISHER_TESTS_BASE_PATH TIMVISHER_REAL_BIN_SKIP=$skip \
+    timvisher_real_bin "$name" "$_mock_lib_dir/$name"
 }
 
 # Answer 'git [-C <dir>] rev-parse --show-toplevel' the way git does for

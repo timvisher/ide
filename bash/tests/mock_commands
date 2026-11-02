@@ -155,6 +155,17 @@ else
   fail "mock_real git: got '$real'"
 fi
 
+wrapper_dir=$(mktemp -d) || exit 1
+printf '#!/bin/sh\necho wrapper\n' > "$wrapper_dir/git" && chmod +x "$wrapper_dir/git" || exit 1
+real=$(TIMVISHER_TESTS_BASE_PATH="$wrapper_dir:$TIMVISHER_TESTS_BASE_PATH" mock_real git)
+if [[ -n $real && $real != "$wrapper_dir"/* && -x $real ]]
+then
+  pass 'mock_real skips a wrapper script on the base PATH'
+else
+  fail "mock_real git with a wrapper first: got '$real'"
+fi
+rm -rf -- "$wrapper_dir"
+
 mock_reset git
 mock_git_toplevel
 top=$(cd "$(mktemp -d)" && pwd -P) || exit 1
