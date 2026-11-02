@@ -31,7 +31,6 @@ trap 'rm -rf "$tmpdir"' EXIT
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 mock_init || { echo "mock_init failed" >&2; exit 1; }
 mock_command git
-# Outside a repository, which is where the hook tests' worktrees are.
 mock_respond git --exit 128 -- -C '*' diff --name-only -z --no-renames '@{u}...'
 mock_respond git --exit 128 -- -C '*' status --porcelain=v1 -z --no-renames --untracked-files=normal
 
@@ -656,8 +655,6 @@ fi
 rrmr_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
 eval "$rrmr_body"
 
-# ref_rules <dir> [<remote>/main | <remote>/HEAD=<remote>/main]...:
-# what git reports about <dir>'s remote-tracking refs.
 ref_rules() {
   local dir=$1 spec
   shift
@@ -730,9 +727,6 @@ rung_wt=$(cd "$rung_wt_unresolved" && pwd -P)
 rung_diff="$tmpdir/rung.diff"
 rung_status="$tmpdir/rung.status"
 
-# What git reports for $rung_wt: rung_changes sets the paths changed
-# against @{u}, rung_no_upstream makes that diff fail, and rung_status
-# sets the porcelain entries for uncommitted work.
 mock_respond git --run "cat $(printf %q "$rung_diff") 2>/dev/null || exit 128" \
   -- -C "$rung_wt" diff --name-only -z --no-renames '@{u}...'
 mock_respond git --run "cat $(printf %q "$rung_status")" \
