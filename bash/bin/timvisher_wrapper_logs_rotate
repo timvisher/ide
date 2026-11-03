@@ -95,7 +95,7 @@ rotate_one() {
   then
     if ! cp "$f" "${f}.1"
     then
-      warn 'rotate: could not copy ‘%s’' "$f"
+      warn "rotate: could not copy '%s'" "$f"
       return 1
     fi
     : > "$f"
@@ -106,13 +106,13 @@ rotate_one() {
     # see the path missing rather than empty.
     : > "$f"
   else
-    warn 'rotate: could not rename ‘%s’' "$f"
+    warn "rotate: could not rename '%s'" "$f"
     return 1
   fi
 
   gzip -f "${f}.1" ||
     {
-      warn 'rotate: could not gzip ‘%s.1’' "$f"
+      warn "rotate: could not gzip '%s.1'" "$f"
       return 1
     }
 
