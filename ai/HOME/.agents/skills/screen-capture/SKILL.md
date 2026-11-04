@@ -95,6 +95,13 @@ Don't use the recording tools unless the user asks for a recording.
 
 ### Failure modes
 
+- **One timeout, then stop.** If a call fails with "ScreenCaptureKit/replayd
+  did not respond", returns a `fallback` field, or hasn't answered in 30
+  seconds, make no more screencap calls this turn. Don't retry it, don't
+  call another screencap tool, and don't switch to the fallback script.
+  Tell Tim which call timed out and quote the error. replayd is probably
+  wedged, and `killall replayd` restarts it, but only Tim runs that. A
+  `fallback` result's image is fine to use. Report the timeout anyway.
 - "Could not read screen content": the app that launched the server
   lacks Screen Recording permission. For agent-shell that is Emacs.
   Fix it in System Settings → Privacy & Security → Screen & System
