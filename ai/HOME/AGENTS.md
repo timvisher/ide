@@ -208,6 +208,8 @@ The list is not the guide — read the file.
   together or separately — do your own error checking instead, it is
   cleaner and it actually works. `pipefail` scoped to a single pipeline
   is the one exception. _*NEVER*_ `seq`; _*NEVER*_ `mkdir -p` for locks.
+  `pgrep`/`pkill` options go _*before*_ the pattern (BSD stops parsing
+  at it); prefer `kill` on a PID you saved.
   `then`/`do`/`else`/`elif` on their own lines; `trap` registered
   before the resource it cleans up; straight ASCII quotes only.
   wooledge.org is the only trusted source for bash guidance.
