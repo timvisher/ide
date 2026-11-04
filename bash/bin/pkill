@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/aictl.bash ||
+  {
+    echo "Unable to source aictl functions" >&2
+    exit 1
+  }
+
+proc__name=${0##*/}
+proc__real_dir=${TIMVISHER_PROCTOOLS_REAL_DIR:-/usr/bin}
+proc__real=$proc__real_dir/$proc__name
+proc__doc=ai/HOME/.agents/languages/bash.md
+# Agents only, and not lower: Tim's own fsmonitor cleanup legitimately
+# signals ~20 daemons, while the misparsed pkill that prompted this
+# matched ~100.
+proc__default_max_matches=50
+
+if [[ $proc__name != pkill && $proc__name != pgrep ]]
+then
+  printf 'proctools wrapper: unexpected name "%s"\n' "$proc__name" >&2
+  exit 2
+fi
+
+if [[ ! -x $proc__real ]]
+then
+  printf 'proctools wrapper: no "%s" at "%s"\n' "$proc__name" "$proc__real" >&2
+  exit 2
+fi
+
+if [[ $(uname -s) == Darwin ]]
+then
+  proc__value_opts=cdFGgJMNPstUu
+  proc__pkill_only_opts=I
+else
+  proc__value_opts=dFGgPstUu
+  proc__pkill_only_opts=e
+fi
+
+proc__is_signal() {
+  [[ $1 =~ ^-([0-9]+|(SIG)?[A-Z][A-Z0-9]+([+-][0-9]+)?)$ ]]
+}
+
+proc__parse() {
+  local -a args=("$@")
+  local n=${#args[@]} i=0 a j c
+
+  proc__signal=''
+  proc__opts=()
+  proc__patterns=()
+  proc__misplaced=''
+  proc__saw_dashdash=false
+
+  if [[ $proc__name == pkill ]] && (( 0 < n )) && proc__is_signal "${args[0]}"
+  then
+    proc__signal=${args[0]}
+    i=1
+  fi
+
+  while (( i < n ))
+  do
+    a=${args[i]}
+    case $a in
+      --)
+        proc__saw_dashdash=true
+        (( i += 1 ))
+        break
+        ;;
+      --*=*)
+        proc__opts+=("$a")
+        ;;
+      --signal|--ns|--nslist|--pidfile|--runstates|--group|--pgroup|--parent|--session|--terminal|--euid|--uid|--delimiter)
+        proc__opts+=("$a" "${args[i+1]-}")
+        (( i += 1 ))
+        ;;
+      --*)
+        proc__opts+=("$a")
+        ;;
+      -?*)
+        proc__opts+=("$a")
+        for (( j = 1; j < ${#a}; j += 1 ))
+        do
+          c=${a:j:1}
+          if [[ $proc__value_opts == *"$c"* ]]
+          then
+            if (( j == ${#a} - 1 ))
+            then
+              proc__opts+=("${args[i+1]-}")
+              (( i += 1 ))
+            fi
+            break
+          fi
+        done
+        ;;
+      *)
+        break
+        ;;
+    esac
+    (( i += 1 ))
+  done
+
+  proc__patterns=("${args[@]:i}")
+
+  if ! $proc__saw_dashdash
+  then
+    for a in ${proc__patterns[@]+"${proc__patterns[@]}"}
+    do
+      if [[ $a == -* ]]
+      then
+        proc__misplaced=$a
+        return
+      fi
+    done
+  fi
+}
+
+proc__shell_quote_join() {
+  local out='' a
+  for a in "$@"
+  do
+    out+=" $(printf '%q' "$a")"
+  done
+  printf '%s' "${out# }"
+}
+
+proc__refuse_misplaced() {
+  local -a pats=() opts_after=()
+  local a seen_opt=false
+  for a in "${proc__patterns[@]}"
+  do
+    if [[ $a == -* ]]
+    then
+      seen_opt=true
+    fi
+    if $seen_opt
+    then
+      opts_after+=("$a")
+    else
+      pats+=("$a")
+    fi
+  done
+
+  local -a fixed=()
+  [[ -n $proc__signal ]] && fixed+=("$proc__signal")
+  fixed+=(${proc__opts[@]+"${proc__opts[@]}"} "${opts_after[@]}" "${pats[@]}")
+
+  aictl_error \
+    --code proctools_option_after_pattern \
+    --message "$proc__name: '$proc__misplaced' comes after the pattern. BSD $proc__name (macOS) stops reading options at the first pattern, so '$proc__misplaced' and everything after it would be matched as more patterns instead of options. With -f that can match nearly every process you own. Nothing was run." \
+    --doc "$proc__doc" \
+    --suggestion "Put every option before the pattern: $proc__name $(proc__shell_quote_join "${fixed[@]}")" \
+    --suggestion "If a pattern really starts with '-', end the options with '--' first."
+  exit 2
+}
+
+proc__pgrep_opts() {
+  local a stripped i=0 n=${#proc__opts[@]}
+  proc__dry_opts=()
+  while (( i < n ))
+  do
+    a=${proc__opts[i]}
+    case $a in
+      --signal|--signal=*|--echo)
+        [[ $a == --signal ]] && (( i += 1 ))
+        ;;
+      --*)
+        proc__dry_opts+=("$a")
+        ;;
+      -?*)
+        stripped=-${a:1}
+        stripped=${stripped//[$proc__pkill_only_opts]/}
+        stripped=${stripped//q/}
+        if [[ $stripped != - ]]
+        then
+          proc__dry_opts+=("$stripped")
+        fi
+        ;;
+      *)
+        proc__dry_opts+=("$a")
+        ;;
+    esac
+    (( i += 1 ))
+  done
+}
+
+proc__check_breadth() {
+  local max=${TIMVISHER_PKILL_MAX_MATCHES:-$proc__default_max_matches}
+  if [[ ! $max =~ ^[0-9]+$ ]]
+  then
+    aictl_error \
+      --code proctools_bad_max_matches \
+      --message "TIMVISHER_PKILL_MAX_MATCHES must be a whole number, got '$max'. Nothing was run." \
+      --doc "$proc__doc"
+    exit 2
+  fi
+
+  proc__pgrep_opts
+  local -a dashdash=() pids=()
+  local pid
+  if $proc__saw_dashdash
+  then
+    dashdash=(--)
+  fi
+  while read -r pid
+  do
+    [[ $pid == "$$" ]] && continue
+    pids+=("$pid")
+  done < <("$proc__real_dir/pgrep" ${proc__dry_opts[@]+"${proc__dry_opts[@]}"} ${dashdash[@]+"${dashdash[@]}"} ${proc__patterns[@]+"${proc__patterns[@]}"} 2>/dev/null)
+
+  if (( ${#pids[@]} <= max ))
+  then
+    return
+  fi
+
+  local sample
+  sample=$(ps -o pid=,command= -p "$(IFS=,; printf '%s' "${pids[*]:0:10}")" 2>/dev/null | cut -c1-120)
+
+  aictl_error \
+    --code proctools_pkill_too_broad \
+    --message "pkill would signal ${#pids[@]} processes, more than the limit of $max for agents. Nothing was killed. A pattern this broad usually means a misplaced option or an unanchored -f regex. First matches:
+$sample" \
+    --doc "$proc__doc" \
+    --suggestion "Narrow the match: kill the PID you started (kill \"\$pid\"), use -x for an exact name, or anchor the -f regex." \
+    --suggestion "Preview with: pgrep -l $(proc__shell_quote_join ${proc__dry_opts[@]+"${proc__dry_opts[@]}"} ${proc__patterns[@]+"${proc__patterns[@]}"})" \
+    --suggestion "If every match really should die, rerun with TIMVISHER_PKILL_MAX_MATCHES=${#pids[@]}."
+  exit 2
+}
+
+proc__parse "$@"
+
+# Refused everywhere, not just on Darwin: GNU procps permutes options so
+# the same command happens to work on Linux, but it is still the BSD
+# footgun waiting for the next Mac.
+if [[ -n $proc__misplaced ]]
+then
+  proc__refuse_misplaced
+fi
+
+if [[ $proc__name == pkill && -n ${TIMVISHER_AGENT-} ]]
+then
+  proc__check_breadth
+fi
+
+exec "$proc__real" "$@"
