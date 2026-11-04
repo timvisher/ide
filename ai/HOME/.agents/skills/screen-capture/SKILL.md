@@ -95,13 +95,22 @@ Don't use the recording tools unless the user asks for a recording.
 
 ### Failure modes
 
-- **One timeout, then stop.** If a call fails with "ScreenCaptureKit/replayd
-  did not respond", returns a `fallback` field, or hasn't answered in 30
-  seconds, make no more screencap calls this turn. Don't retry it, don't
-  call another screencap tool, and don't switch to the fallback script.
-  Tell Tim which call timed out and quote the error. replayd is probably
-  wedged, and `killall replayd` restarts it, but only Tim runs that. A
-  `fallback` result's image is fine to use. Report the timeout anyway.
+- **A `fallback` result is normal.** The server gives ScreenCaptureKit
+  about 15 seconds, then captures through WindowServer or `screencapture`
+  instead and returns the image with a `fallback` note. Use the image.
+  Mention the fallback once in your reply, and keep going.
+- **One capture at a time.** The server allows one capture at a time
+  across every session, so a call can wait a few seconds behind another
+  agent's. Never fire captures in parallel.
+- **A hard failure or a hang, then stop.** If a call fails with
+  "ScreenCaptureKit/replayd did not respond" and no image, or hasn't
+  answered in 30 seconds, make no more screencap calls this turn. Don't
+  retry, don't call another screencap tool, and don't switch to the
+  fallback script. Tell Tim which call failed and quote the error. A
+  call that never answers means this session runs a server built before
+  2026-11-03 21:00, with no timeout. That server can keep replayd busy
+  until it's ended, so tell Tim. The fix is to restart the session or
+  end that server, never `killall replayd`.
 - "Could not read screen content": the app that launched the server
   lacks Screen Recording permission. For agent-shell that is Emacs.
   Fix it in System Settings → Privacy & Security → Screen & System
