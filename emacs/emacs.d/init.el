@@ -277,6 +277,7 @@ Folds in committed-but-unpublished changes and uncommitted edits in one check."
     (user repo sha)
   "Error unless SHA is accessible at github.com/USER/REPO via authenticated gh."
   (unless (zerop (call-process "gh" nil nil nil
+                               "-R" (format "%s/%s" user repo)
                                "api" "--silent"
                                (format "repos/%s/%s/commits/%s"
                                        user repo sha)))
