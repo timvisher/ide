@@ -859,22 +859,27 @@ function ntmux3__get_editor_pid() {
 function ntmux3__start_agent() {
     local session_name=$1 agent=$2 prompt=$3 deadline=${4:-120}
 
-    local emacs_pid='' socket=''
+    # Probes after-init-time rather than any answer: init starts the
+    # server partway through, and whatever in the rest of init reads
+    # process output (sleep-for, a package fetch) answers a bare t early,
+    # leaving the start's own eval to time out behind the rest of init.
+    local emacs_pid='' ready=''
     SECONDS=0
-    until [[ -n $socket ]] || (( deadline < SECONDS ))
+    until [[ $ready == t ]] || (( deadline < SECONDS ))
     do
+        ready=''
         if emacs_pid=$(ntmux3__get_editor_pid "$session_name" 2>/dev/null)
         then
-            socket=$(timvisher_emacs server socket "$emacs_pid" 2>/dev/null)
+            ready=$(timvisher_emacs server eval --timeout 5 "$emacs_pid" '(and after-init-time t)' 2>/dev/null)
         fi
-        [[ -n $socket ]] || sleep 1
+        [[ $ready == t ]] || sleep 1
     done
 
-    if [[ -z $socket ]]
+    if [[ $ready != t ]]
     then
         aictl_error \
             --code ntmux3_agent_not_started \
-            --message "No Emacs server came up in the editor window of '${session_name}' within ${deadline}s, so no ${agent} agent-shell was started." \
+            --message "The editor Emacs of '${session_name}' did not answer on its server with init finished within ${deadline}s, so no ${agent} agent-shell was started." \
             --suggestion "Start it by hand: timvisher_emacs agent-shell start --emacs \$(ntmux3 get-editor-pid '${session_name}') --agent ${agent}" \
             --doc "ai/HOME/.agents/skills/worktree/SKILL.md"
         return 1
