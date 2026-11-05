@@ -279,6 +279,49 @@ gh_account__owner_in_api_path() {
   esac
 }
 
+gh_account__api_endpoint() {
+  local -a args=("$@")
+  local n=${#args[@]} i=0 a cluster
+  while (( i < n ))
+  do
+    a=${args[i]}
+    case $a in
+      --)
+        (( i + 1 < n )) ||
+          return 1
+        printf '%s\n' "${args[i+1]}"
+        return 0
+        ;;
+      --method|--header|--raw-field|--field|--jq|--template|--input|--preview|--cache|--hostname)
+        (( i += 2 ))
+        continue
+        ;;
+      --*)
+        ;;
+      -?*)
+        cluster=${a#-}
+        while [[ -n $cluster ]]
+        do
+          case ${cluster:0:1} in
+            [XHfFqtp])
+              [[ -z ${cluster:1} ]] &&
+                (( i += 1 ))
+              break
+              ;;
+          esac
+          cluster=${cluster:1}
+        done
+        ;;
+      *)
+        printf '%s\n' "$a"
+        return 0
+        ;;
+    esac
+    (( i += 1 ))
+  done
+  return 1
+}
+
 gh_account__stop() {
   aictl_die \
     --code gh_target_required \
@@ -380,7 +423,7 @@ gh_account__select() {
   fi
 
   if [[ -z $gh_account__owner && $gh_args__command == api ]] &&
-     gh_account__owner=$(gh_account__owner_in_api_path "${gh_args__rest[0]-}")
+     gh_account__owner=$(gh_account__owner_in_api_path "$(gh_account__api_endpoint ${gh_args__rest[@]+"${gh_args__rest[@]}"})")
   then
     gh_account__source='the gh api endpoint'
   fi

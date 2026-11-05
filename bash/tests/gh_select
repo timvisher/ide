@@ -150,6 +150,20 @@ expect_stop "-R longer than OWNER/REPO stops" "should name OWNER or OWNER/REPO"
 run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/pulls
 expect "a gh api endpoint right after api names the owner" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/dd-source/pulls" "(from the gh api endpoint)"
+mixed="$tmpdir/mixed"
+new_repo "$mixed" origin git@github.com:otherorg/x.git archived git@github.com:DataDog/x.git
+for form in "--silent" "-i --paginate" "-X GET" "--method GET" "--method=GET" "-XGET" "-iX GET" "-H Accept:x --jq .sha" "--jq=.sha -t {{.sha}}" "--cache 1h --hostname github.com" "--"
+do
+  read -ra flags <<< "$form"
+  run_shim "$mixed" api "${flags[@]}" repos/ddoghq/dd-source/commits/abc
+  expect "a gh api endpoint after '${form}' names the owner" \
+    "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api ${form} repos/ddoghq/dd-source/commits/abc" "(from the gh api endpoint)"
+done
+run_shim "$tmpdir/norepo" api repos/ddoghq/dd-source/commits/abc --silent
+expect "flags after the gh api endpoint don't hide it" \
+  "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api repos/ddoghq/dd-source/commits/abc --silent" "(from the gh api endpoint)"
+run_shim "$tmpdir/norepo" api --jq repos/otherorg/x user
+expect_stop "a flag value isn't taken for the gh api endpoint" "No target"
 run_shim "$tmpdir/norepo" api user
 expect_stop "gh api with no target stops" "No target"
 run_shim "$tmpdir/norepo" pr view https://github.com/ddoghq/dd-source/pull/1
@@ -197,8 +211,8 @@ run_shim "$repo2" pr view https://github.com/otherorg/x/pull/1
 expect "a URL naming another owner is noted, and the call runs" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= pr view https://github.com/otherorg/x/pull/1" \
   '"code":"gh_target_mismatch"'
-run_shim "$repo2" api --method PATCH /repos/otherorg/x/issues/comments/1
-expect "an api path naming another owner is noted" \
+run_shim "$repo2" -R ddoghq api --method PATCH /repos/otherorg/x/issues/comments/1
+expect "an api path naming another owner than -R is noted" \
   "real-gh GH_TOKEN=tok-acct-ddoghq GH_REPO= api --method PATCH /repos/otherorg/x/issues/comments/1" \
   '"code":"gh_target_mismatch"'
 run_shim "$repo2" pr view https://github.com/ddoghq/x/pull/1
