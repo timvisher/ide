@@ -46,6 +46,16 @@ git -C "$worktree" init -q || exit 1
 tmux new-session -d -s testorg/testrepo/v1_2 -n editor bash || exit 1
 tmux send-keys -t '=testorg/testrepo/v1_2:editor' "emacs -Q --batch --eval '(while t (sleep-for 1))'" C-m
 tmux new-session -d -s no-emacs -n editor bash || exit 1
+
+projects=$HOME/Documents/datadog/projects
+mkdir -p "$projects/AppGate/notes" "$projects/system performance debugging" || exit 1
+git -C "$projects" init -q || exit 1
+for project in AppGate 'system performance debugging'
+do
+  session=$(bash -c 'source "$1" && ntmux3__resolve_session_name "$2"' _ "$funcs_dir/tmux.bash" "$projects/$project") || exit 1
+  tmux new-session -d -s "$session" -n other bash || exit 1
+  tmux link-window -s '=testorg/testrepo/v1_2:editor' -t "=${session}:" || exit 1
+done
 tmux new-session -d -s no-editor -n other bash || exit 1
 
 emacs_pid=
@@ -88,6 +98,31 @@ check 'by a path below the worktree root: finds the worktree'"'"'s session' \
 (cd "$worktree" && get_editor_pid)
 rc=$?
 check 'with no argument: uses the current directory' eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$projects/AppGate"
+rc=$?
+check 'by a session directory inside a repo that is not a worktree: finds its own session, not the repo'"'"'s' \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$projects/system performance debugging"
+rc=$?
+check 'by a session directory with spaces in its name: finds its session' \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$projects/AppGate/notes"
+rc=$?
+check 'by a path below a session directory inside a repo: finds the nearest session' \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+(cd "$projects/AppGate" && get_editor_pid)
+rc=$?
+check 'with no argument inside a repo that is not a worktree: uses the current directory, not the toplevel' \
+      eval '(( rc == 0 )) && stdout_is "$emacs_pid"'
+
+get_editor_pid "$projects"
+rc=$?
+check 'by the repo root with no session of its own: exits 1 with ntmux3_no_such_session' \
+      eval '(( rc == 1 )) && stderr_code ntmux3_no_such_session'
 
 get_editor_pid no-emacs
 rc=$?

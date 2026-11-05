@@ -207,8 +207,9 @@ source ~/.bashrc && timvisher_emacs agent-shell start \
   --agent claude --prompt-file /tmp/x.prompt
 ```
 
-`ntmux3 get-editor-pid` takes a session name or a path in its worktree
-and defaults to the current worktree's. A prompt reaches the new agent
+`ntmux3 get-editor-pid` takes a session name or a path, and defaults
+to the current directory. A path finds the nearest session named after
+it or a directory above it, up to its git toplevel. A prompt reaches the new agent
 as though Tim typed it, so open it with a "From the ... agent (session
 ...)" line.
 
