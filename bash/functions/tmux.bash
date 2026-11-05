@@ -781,23 +781,46 @@ function ntmux3__get_editor_pid() {
         return
     fi
 
-    local target=${1-}
-    if [[ -z $target ]]
-    then
-        target=$(git rev-parse --show-toplevel 2>/dev/null) || target=$PWD
-    fi
+    local target=${1:-$PWD}
 
     local session_name=$target
     if ! tmux has-session -t "=${session_name}" 2>/dev/null
     then
-        local target_dir=$target worktree_root
-        [[ -d $target_dir ]] || target_dir=$(dirname -- "$target")
-        if worktree_root=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)
-        then
-            target=$worktree_root
-        fi
         session_name=$(ntmux3__resolve_session_name "$target" 2>/dev/null)
         session_name=${session_name//./_}
+    fi
+
+    # Not just the git toplevel: a repo that holds many session
+    # directories (the bd topics tree) would collapse them all into one
+    # name.  The nearest directory between the path and its toplevel
+    # with a live session wins.
+    if ! tmux has-session -t "=${session_name}" 2>/dev/null
+    then
+        local target_dir=$target target_real worktree_root
+        [[ -d $target_dir ]] || target_dir=$(dirname -- "$target")
+        target_real=$(cd "$target_dir" 2>/dev/null && pwd -P) || target_real=
+        if [[ -n $target_real ]] &&
+               worktree_root=$(git -C "$target_real" rev-parse --show-toplevel 2>/dev/null)
+        then
+            local -a dirs=()
+            local dir=$target_real candidate
+            while [[ $dir == "$worktree_root"/* ]]
+            do
+                dirs+=("$dir")
+                dir=${dir%/*}
+            done
+            dirs+=("$worktree_root")
+            for dir in "${dirs[@]}"
+            do
+                candidate=$(ntmux3__resolve_session_name "$dir" 2>/dev/null)
+                candidate=${candidate//./_}
+                if tmux has-session -t "=${candidate}" 2>/dev/null
+                then
+                    session_name=$candidate
+                    break
+                fi
+            done
+        fi
     fi
 
     if ! tmux has-session -t "=${session_name}" 2>/dev/null
