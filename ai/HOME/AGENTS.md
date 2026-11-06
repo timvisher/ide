@@ -212,11 +212,6 @@ The list is not the guide — read the file.
   write UTF-8 to a file Script Editor will open. The Edit tool corrupts
   MacRoman and UTF-16 — use sed for those. Prefer pure ASCII.
   Compile-check with `osacompile` after editing.
-- `~/.agents/languages/terraform.md` —
-  _*NEVER*_ hand-create `.terraform.lock.hcl`. Prefer `~>` constraints
-  in root modules and `>=` in shared modules. `default_tags` always configured,
-  even with no taggable resources yet. Recalculate every `../` depth
-  when a root module moves.
 - `~/.agents/languages/emacs-lisp.md` —
   _*ALWAYS*_ put `-*- lexical-binding: t -*-` on the first line of
   every `.el` file, scratch files included. `--batch` has everything a GUI Emacs has except a TTY, so do _*NOT*_
