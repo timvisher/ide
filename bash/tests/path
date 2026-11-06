@@ -150,8 +150,19 @@ ordered() {
     paste -sd'|' -
 }
 
-check 'bashrc puts the overlay bash/bin ahead of ~/bin, ahead of ~/.local/bin' \
-      "$HOME/.config/timvisher/ide/bash/bin|$HOME/bin|$HOME/.local/bin" \
+expected_bin_order() {
+  local -a dirs=()
+  if [[ -d $HOME/.config/timvisher/ide/bash/bin ]]
+  then
+    dirs+=("$HOME/.config/timvisher/ide/bash/bin")
+  fi
+  dirs+=("$HOME/bin" "$HOME/.local/bin")
+  local IFS='|'
+  printf '%s' "${dirs[*]}"
+}
+
+check 'bashrc puts the overlay bash/bin, when it exists, ahead of ~/bin, ahead of ~/.local/bin' \
+      "$(expected_bin_order)" \
       "$("$BASH" -c 'source ~/.bashrc >/dev/null 2>&1; printf "%s" "$PATH"' | ordered)"
 
 echo ""
