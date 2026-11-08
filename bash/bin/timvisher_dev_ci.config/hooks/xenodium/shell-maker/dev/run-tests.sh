@@ -21,18 +21,21 @@ do
 done
 
 echo "--- ert ---"
-test_files=(*-test.el)
+# shell-maker keeps its ERT files in tests/ and names them *-tests.el; the
+# root *-test.el glob matched nothing, so this step printed "skipping" and
+# exited 0 while testing none of its behaviour.
+test_files=(tests/*-tests.el)
 if [[ -e "${test_files[0]}" ]]
 then
   for f in "${test_files[@]}"
   do
     echo "Running $f"
-    emacs --batch -Q -L . \
+    emacs --batch -Q -L . -L tests \
       -l "$f" \
       -f ert-run-tests-batch-and-exit || exit 1
   done
 else
-  echo "No *-test.el files found; skipping."
+  echo "No tests/*-tests.el files found; skipping."
 fi
 
 echo "--- done ---"
