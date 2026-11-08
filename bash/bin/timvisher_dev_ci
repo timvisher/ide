@@ -909,13 +909,10 @@ retire_merged_worktrees() {
 # Session management
 # ---------------------------------------------------------------------------
 
-# Ensure an ntmux3 session exists for a worktree and return its session name.
-ensure_session() {
-    local worktree_path=$1
-
-    # ntmux3 is a shell function loaded via ~/.functions/tmux.bash.
-    # Source it in a subshell so we get it without loading all of .bashrc.
-    # tmux.bash requires extglob for extended glob patterns.
+# ntmux3 is a shell function loaded via ~/.functions/tmux.bash.  Source it in
+# a subshell so we get it without loading all of .bashrc.  tmux.bash requires
+# extglob for extended glob patterns.
+run_ntmux3() {
     (
         shopt -s extglob
         # shellcheck source=/dev/null
@@ -926,8 +923,15 @@ ensure_session() {
                 error "Unable to source tmux.bash"
                 return 1
             }
-        ntmux3 -d "$worktree_path"
-    ) ||
+        ntmux3 "$@"
+    )
+}
+
+# Ensure an ntmux3 session exists for a worktree and return its session name.
+ensure_session() {
+    local worktree_path=$1
+
+    run_ntmux3 -d "$worktree_path" ||
         {
             error "ntmux3 -d failed for '%s'" "$worktree_path"
             return 1
@@ -1601,6 +1605,265 @@ PROMPT_EOF
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Upstream pull branches (soft forks)
+# ---------------------------------------------------------------------------
+
+# A soft fork never merges upstream into its trunk -- see
+# sync_soft_fork_trunks, which only rebases the trunk onto origin/<trunk>.
+# Upstream arrives the same way every other change does: on a feature branch
+# that integrates into dev.  That branch has been produced by hand until now
+# (agent-shell-plus PR #10, from pull-upstream/2026-04-29T10-26-07+0000), so
+# a fork drifts until somebody notices.  Generating it here puts the refresh
+# on the same footing as the rest of the pipeline.
+PULL_UPSTREAM_PREFIX='pull-upstream'
+
+# "<org>/<repo>" for a worktree, from its position under $TIMVISHER_GIT_HOME.
+# ntmux3 addresses worktrees the same way, so the layout is the shared
+# contract rather than something re-derived from the remote.
+worktree_org_repo() {
+    local path=$1
+    local home resolved rel
+
+    home=$(cd "$TIMVISHER_GIT_HOME" && pwd -P) || return 1
+    resolved=$(cd "$path" && pwd -P) || return 1
+
+    rel=${resolved#"${home}/"}
+    [[ $rel != "$resolved" ]] || return 1
+
+    local org=${rel%%/*}
+    local rest=${rel#*/}
+
+    # No second component means this is not <org>/<repo>/... at all.
+    [[ $rest != "$rel" ]] || return 1
+
+    local repo=${rest%%/*}
+
+    [[ -n $org && -n $repo ]] || return 1
+    printf '%s/%s' "$org" "$repo"
+}
+
+# "upstream/<trunk>" for a worktree; empty when it has no upstream remote.
+resolve_upstream_trunk_ref() {
+    local wt=$1
+    local ref
+
+    ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || true
+    if [[ -z $ref ]] && git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null
+    then
+        ref=upstream/main
+    fi
+    printf '%s' "$ref"
+}
+
+# The pull-upstream worktree already registered for a dev branch, if any.
+# Reused rather than opening a fresh one each run, so the worktrees do not
+# pile up; a reused branch simply merges the newer upstream again.
+find_pull_upstream_worktree() {
+    local dev_dir=$1
+    local wt branch
+
+    # A registered path that is no longer a usable worktree still counts as
+    # one, so a broken entry is reported and retried rather than quietly
+    # growing a second pull-upstream branch on every run.
+    while IFS= read -r wt
+    do
+        if [[ -d $wt ]]
+        then
+            branch=$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null) || branch=""
+            if [[ $branch == "${PULL_UPSTREAM_PREFIX}/"* ]]
+            then
+                printf '%s' "$wt"
+                return 0
+            fi
+        fi
+
+        if [[ $wt == *"/${PULL_UPSTREAM_PREFIX}/"* ]]
+        then
+            warn "pull-upstream: '%s' is registered but not a usable worktree" "$wt"
+            printf '%s' "$wt"
+            return 0
+        fi
+    done < <(read_active_worktrees "${dev_dir}/x.active-worktrees")
+
+    return 1
+}
+
+# Append a worktree to a dev branch's active list, in the file and in the
+# discovered graph: discover() has already run by the time this is called.
+register_active_worktree() {
+    local dev_dir=$1
+    local wt=$2
+    local file="${dev_dir}/x.active-worktrees"
+
+    printf '%s\n' "$wt" >> "$file" ||
+        {
+            error "pull-upstream: cannot register '%s' in '%s'" "$wt" "$file"
+            return 1
+        }
+
+    local existing=${dev_branches[$dev_dir]}
+    dev_branches["$dev_dir"]="${existing:+${existing} }${wt}"
+    all_worktrees["$wt"]=1
+}
+
+create_pull_upstream_worktree() {
+    local dev_dir=$1
+    local stamp org_repo branch wt
+
+    org_repo=$(worktree_org_repo "$dev_dir") ||
+        {
+            error "pull-upstream: cannot derive org/repo for '%s'" "$dev_dir"
+            return 1
+        }
+
+    # Matches the stamp the hand-made branches already use.
+    stamp=$(date -u +%Y-%m-%dT%H-%M-%S%z) || return 1
+    branch="${PULL_UPSTREAM_PREFIX}/${stamp}"
+    wt="${TIMVISHER_GIT_HOME}/${org_repo}/${branch}"
+
+    # The second ntmux3 form stacks a new worktree on a branch-ish; the
+    # trunk is the base because the merge has to land somewhere that can
+    # become a PR into it.
+    info "pull-upstream: creating '%s/%s' on the trunk" "$org_repo" "$branch"
+    run_ntmux3 -d "${org_repo}/${branch}" "$2" ||
+        {
+            error "pull-upstream: ntmux3 could not stack '%s/%s'" "$org_repo" "$branch"
+            return 1
+        }
+
+    [[ -d $wt ]] ||
+        {
+            error "pull-upstream: expected worktree '%s' does not exist" "$wt"
+            return 1
+        }
+
+    printf '%s' "$wt"
+}
+
+# Merge upstream into the pull-upstream branch.  A clean merge needs no
+# agent; a conflicted one is exactly the "restore green CI after upstream
+# merge" work, so it gets the same agent-and-status-file treatment the sync
+# phase uses.
+merge_upstream_into() {
+    local wt=$1
+    local upstream_ref=$2
+    local status_file="${wt}/${STATUS_FILENAME}"
+
+    if git -C "$wt" merge --no-edit "$upstream_ref"
+    then
+        info "pull-upstream: merged '%s' into '%s' cleanly" "$upstream_ref" "$wt"
+        return 0
+    fi
+
+    warn "pull-upstream: '%s' conflicts; launching agent" "$upstream_ref"
+
+    local test_instruction="No run-tests.sh is available, so skip testing."
+    local -a hooks=()
+    readarray -d '' -t hooks < <(find_hooks "$wt" "run-tests.sh")
+    if (( 0 < ${#hooks[@]} ))
+    then
+        test_instruction="Then run each of these test hooks in order and make them pass:
+$(printf '%s\n' "${hooks[@]}")"
+    fi
+
+    rm -f "$status_file"
+
+    local prompt_file
+    prompt_file=$(mktemp "${wt}/x.dev-ci-prompt.XXXXXX") ||
+        {
+            error "pull-upstream: cannot create prompt file in '%s'" "$wt"
+            return 1
+        }
+
+    cat > "$prompt_file" <<PROMPT_EOF
+$(agent_session_contract "$status_file")
+
+You are in a worktree at ${wt} whose only job is to carry upstream's
+changes into this fork.
+
+A 'git merge ${upstream_ref}' is in progress and has conflicted. Resolve
+the conflicts, keeping upstream's intent for upstream's code and this
+fork's intent for the fork's own features, and complete the merge.
+
+${test_instruction}
+
+This fork's features must still work after the merge; upstream renaming or
+reworking something it owns means adapting the fork to it, not reverting it.
+
+When the merge is complete and tests pass, write 'pass' to '${status_file}'.
+If you cannot resolve a conflict or fix a test failure, write 'fail' to '${status_file}'.
+
+Work in ${wt}. Do not modify other directories.
+PROMPT_EOF
+
+    if claudeshot "$(< "$prompt_file")"
+    then
+        info "pull-upstream: agent finished"
+    else
+        warn "pull-upstream: agent exited with error"
+    fi
+
+    rm -f "$prompt_file"
+
+    local verdict=fail
+    if [[ -f $status_file ]]
+    then
+        verdict=$(cat "$status_file")
+        rm -f "$status_file"
+    fi
+
+    if [[ $verdict != pass ]]
+    then
+        error "pull-upstream: agent could not land '%s' in '%s'" "$upstream_ref" "$wt"
+        return 1
+    fi
+}
+
+ensure_upstream_pull_worktrees() {
+    local dev_dir
+    for dev_dir in "${!dev_branches[@]}"
+    do
+        # Regular forks already base dev on upstream/<trunk>, so they have
+        # nothing to pull onto a branch.
+        [[ -f ${dev_dir}/x.timvisher_git.soft-fork ]] || continue
+
+        git -C "$dev_dir" fetch --all --quiet 2>/dev/null || true
+
+        local upstream_ref trunk_ref
+        upstream_ref=$(resolve_upstream_trunk_ref "$dev_dir")
+        if [[ -z $upstream_ref ]]
+        then
+            info "pull-upstream: no upstream remote for '%s'; skipping" "$dev_dir"
+            continue
+        fi
+
+        trunk_ref=$(resolve_retire_merge_ref "$dev_dir")
+        if [[ -z $trunk_ref ]]
+        then
+            info "pull-upstream: no trunk ref for '%s'; skipping" "$dev_dir"
+            continue
+        fi
+
+        if git -C "$dev_dir" merge-base --is-ancestor "$upstream_ref" "$trunk_ref" 2>/dev/null
+        then
+            info "pull-upstream: '%s' already contains '%s'" "$trunk_ref" "$upstream_ref"
+            continue
+        fi
+
+        local wt
+        if wt=$(find_pull_upstream_worktree "$dev_dir")
+        then
+            info "pull-upstream: reusing '%s'" "$wt"
+        else
+            wt=$(create_pull_upstream_worktree "$dev_dir" "$trunk_ref") || continue
+            register_active_worktree "$dev_dir" "$wt" || continue
+        fi
+
+        merge_upstream_into "$wt" "$upstream_ref" || continue
+    done
+}
 
 # Sync soft fork trunks: for each unique soft fork repo (detected by the
 # x.timvisher_git.soft-fork cookie), keep its trunk current with
@@ -2540,6 +2803,23 @@ PATHS
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
 
+UPSTREAM PULL BRANCHES
+
+    A soft fork (x.timvisher_git.soft-fork) never merges upstream into its
+    trunk.  Upstream reaches it the way every other change does: on a feature
+    branch that integrates into dev.
+
+    When upstream/<trunk> holds commits the fork's trunk does not, the
+    pipeline stacks 'pull-upstream/<timestamp>' on the trunk, registers it in
+    the dev branch's x.active-worktrees, and merges upstream into it -- with
+    an agent when that conflicts.  The feature sync and the integrate phase
+    then treat it like any other worktree, and retire_merged_worktrees drops
+    it once it lands in origin/<trunk>.
+
+    An existing unmerged pull-upstream branch is reused rather than replaced.
+    Regular forks get none of this: their dev already resets to
+    upstream/<trunk>.
+
 SCRATCH BRANCH
 
     Both integrate paths do their work on a scratch branch named
@@ -2657,6 +2937,11 @@ cmd_run() {
     # feature sync.  No upstream merge, no push, no agent.
     info "Phase 0.5: syncing soft fork trunk branches"
     sync_soft_fork_trunks
+
+    # After the trunk is current with origin, and before the feature sync
+    # that will treat it like any other worktree.
+    info "Phase 0.6: refreshing soft fork upstream pull branches"
+    ensure_upstream_pull_worktrees
 
     autocommit_build_artifacts
     preflight_check_clean

@@ -1197,6 +1197,145 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# pull-upstream: soft forks get upstream on a generated feature branch
+# ---------------------------------------------------------------------------
+
+# A dev worktree under $TIMVISHER_GIT_HOME/<org>/<repo>/dev with fabricated
+# origin/main and upstream/main refs.  $4 soft=yes adds the soft-fork cookie;
+# upstream_ahead=yes puts a commit on upstream/main the trunk lacks.
+make_pull_fixture() {
+  local org=$1 repo=$2 soft=$3 ahead=$4
+  local wt="$TIMVISHER_GIT_HOME/$org/$repo/dev"
+
+  mkdir -p "$wt" || return 1
+  "$test_git" init -q -b main "$wt"
+  "$test_git" -C "$wt" config core.hooksPath /dev/null
+  "$test_git" -C "$wt" config user.email t@t
+  "$test_git" -C "$wt" config user.name t
+  "$test_git" -C "$wt" commit -q --allow-empty -m base
+  local base; base=$("$test_git" -C "$wt" rev-parse HEAD)
+  "$test_git" -C "$wt" update-ref refs/remotes/origin/main "$base"
+  "$test_git" -C "$wt" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
+  if [[ $ahead == yes ]]
+  then
+    "$test_git" -C "$wt" commit -q --allow-empty -m upstream-only
+    "$test_git" -C "$wt" update-ref refs/remotes/upstream/main "$("$test_git" -C "$wt" rev-parse HEAD)"
+    "$test_git" -C "$wt" reset -q --hard "$base"
+  else
+    "$test_git" -C "$wt" update-ref refs/remotes/upstream/main "$base"
+  fi
+  "$test_git" -C "$wt" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
+
+  [[ $soft == yes ]] && touch "$wt/x.timvisher_git.soft-fork"
+  : > "$wt/x.active-worktrees"
+  printf '%s' "$wt"
+}
+
+run_test
+pu_ref_wt=$(make_pull_fixture puorg refwithup yes no)
+pu_noup="$TIMVISHER_GIT_HOME/puorg/noup/dev"
+mkdir -p "$pu_noup"; "$test_git" init -q -b main "$pu_noup"
+if [[ $(resolve_upstream_trunk_ref "$pu_ref_wt") == upstream/main ]] &&
+   [[ -z $(resolve_upstream_trunk_ref "$pu_noup") ]]
+then
+  pass "resolve_upstream_trunk_ref: upstream/main when present, empty when absent"
+else
+  fail "resolve_upstream_trunk_ref: with='$(resolve_upstream_trunk_ref "$pu_ref_wt")' without='$(resolve_upstream_trunk_ref "$pu_noup")'"
+fi
+
+run_test
+if [[ $(worktree_org_repo "$pu_ref_wt") == puorg/refwithup ]]
+then
+  pass "worktree_org_repo: derives <org>/<repo> from the managed layout"
+else
+  fail "worktree_org_repo: got '$(worktree_org_repo "$pu_ref_wt")'"
+fi
+
+# find_pull_upstream_worktree spots a registered worktree on a pull-upstream branch.
+run_test
+pu_find_dev=$(make_pull_fixture puorg findrepo yes yes)
+pu_find_wt="$TIMVISHER_GIT_HOME/puorg/findrepo/pull-upstream/2026-01-01T00-00-00+0000"
+"$test_git" -C "$pu_find_dev" branch -q "pull-upstream/2026-01-01T00-00-00+0000" main
+"$test_git" -C "$pu_find_dev" worktree add -q "$pu_find_wt" "pull-upstream/2026-01-01T00-00-00+0000"
+pu_before_find=$(find_pull_upstream_worktree "$pu_find_dev" && echo found)
+printf '%s\n' "$pu_find_wt" >> "$pu_find_dev/x.active-worktrees"
+if [[ -z $pu_before_find ]] &&
+   [[ $(find_pull_upstream_worktree "$pu_find_dev") == "$pu_find_wt" ]]
+then
+  pass "find_pull_upstream_worktree: finds a registered pull-upstream worktree, nothing before"
+else
+  fail "find_pull_upstream_worktree: before='${pu_before_find}' after='$(find_pull_upstream_worktree "$pu_find_dev")'"
+fi
+
+# Orchestration: skip / create / reuse.  ntmux3 and claudeshot cannot run in
+# the suite, so stand in for the two functions that reach them and record.
+# Recorded through files: create_pull_upstream_worktree is called in a
+# command substitution, so a variable it sets cannot reach this shell.
+pu_log_created="$tmpdir/pu-created"
+pu_log_merged="$tmpdir/pu-merged"
+create_pull_upstream_worktree() {
+  printf '%s\n' "$1" >> "$pu_log_created"
+  local wt="${1%/dev}/pull-upstream/stub"
+  "$test_git" -C "$1" branch -q pull-upstream/stub main
+  "$test_git" -C "$1" worktree add -q "$wt" pull-upstream/stub
+  printf '%s' "$wt"
+}
+merge_upstream_into() { printf '%s|%s\n' "$1" "$2" >> "$pu_log_merged"; }
+
+run_test
+pu_skip=$(make_pull_fixture puorg skiprepo yes no)
+declare -A dev_branches=(["$pu_skip"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]] && [[ ! -s "$pu_skip/x.active-worktrees" ]]
+then
+  pass "ensure_upstream_pull_worktrees: creates nothing when the trunk already has upstream"
+else
+  fail "pull-upstream skip: created='$(cat "$pu_log_created")' active='$(cat "$pu_skip/x.active-worktrees")'"
+fi
+
+run_test
+pu_reg=$(make_pull_fixture puorg regrepo no yes)
+declare -A dev_branches=(["$pu_reg"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]]
+then
+  pass "ensure_upstream_pull_worktrees: leaves a regular fork alone"
+else
+  fail "pull-upstream regular fork: created='$(cat "$pu_log_created")'"
+fi
+
+run_test
+pu_new=$(make_pull_fixture puorg newrepo yes yes)
+declare -A dev_branches=(["$pu_new"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ $(cat "$pu_log_created") == "$pu_new" ]] &&
+   grep -q '|upstream/main$' "$pu_log_merged" &&
+   grep -q 'pull-upstream/stub' "$pu_new/x.active-worktrees"
+then
+  pass "ensure_upstream_pull_worktrees: creates, registers and merges when upstream is ahead"
+else
+  fail "pull-upstream create: created='$(cat "$pu_log_created")' merged='$(cat "$pu_log_merged")' active='$(cat "$pu_new/x.active-worktrees")'"
+fi
+
+run_test
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]] && grep -q '|upstream/main$' "$pu_log_merged" &&
+   (( 1 == $(grep -c 'pull-upstream' "$pu_new/x.active-worktrees") ))
+then
+  pass "ensure_upstream_pull_worktrees: reuses the existing pull-upstream branch"
+else
+  fail "pull-upstream reuse: created='$(cat "$pu_log_created")' merged='$(cat "$pu_log_merged")' count=$(grep -c 'pull-upstream' "$pu_new/x.active-worktrees")"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
