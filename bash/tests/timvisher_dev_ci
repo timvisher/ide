@@ -1470,6 +1470,212 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# verification cache
+# ---------------------------------------------------------------------------
+
+vc_home="$tmpdir/vcstore"
+VERIFIED_STORE="$vc_home"
+
+# A worktree under $TIMVISHER_GIT_HOME with one committed file and a
+# resolvable run-tests hook.
+make_vc_fixture() {
+  local org=$1 repo=$2 body=$3
+  local wt="$TIMVISHER_GIT_HOME/$org/$repo/main"
+  mkdir -p "$wt"
+  "$test_git" init -q -b main "$wt"
+  "$test_git" -C "$wt" config core.hooksPath /dev/null
+  "$test_git" -C "$wt" config user.email t@t
+  "$test_git" -C "$wt" config user.name t
+  printf '%s\n' "$body" > "$wt/f.txt"
+  "$test_git" -C "$wt" add -A
+  "$test_git" -C "$wt" commit -q -m init
+  printf '%s' "$wt"
+}
+
+vc_hook_dir="$REPO_HOOKS_EXT_DIR/vcorg/vcrepo"
+mkdir -p "$vc_hook_dir"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$vc_hook_dir/run-tests.sh"
+chmod +x "$vc_hook_dir/run-tests.sh"   # find_hooks only resolves executable hooks
+
+vc_wt=$(make_vc_fixture vcorg vcrepo original)
+_worktree_context=()
+_worktree_context[$(worktree_context_key "$vc_wt")]=$(
+  jq -n '{timvisher_git: {repo: "vcrepo", branchPath: "main"},
+          timvisher_gh: {me: "vcorg", forkNetwork: {mainOwner: "vcorg"}}}')
+
+# A dirty worktree is not cacheable: HEAD^{tree} would name content the
+# tests did not run against.
+run_test
+vc_tree_clean=$(verifiable_tree "$vc_wt")
+printf 'dirt\n' > "$vc_wt/untracked.txt"
+vc_tree_dirty=$(verifiable_tree "$vc_wt" && echo CACHEABLE)
+rm -f "$vc_wt/untracked.txt"
+if [[ -n $vc_tree_clean ]] && [[ -z $vc_tree_dirty ]]
+then
+  pass "verifiable_tree: a tree when clean, nothing when dirty"
+else
+  fail "verifiable_tree: clean='${vc_tree_clean}' dirty='${vc_tree_dirty}'"
+fi
+
+# The same content under a rewritten history is the same work.
+run_test
+vc_key_before=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+"$test_git" -C "$vc_wt" commit -q --amend -m "same tree, new commit"
+vc_key_after=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+if [[ -n $vc_key_before ]] && [[ $vc_key_before == "$vc_key_after" ]]
+then
+  pass "verification_key: unchanged by a commit that leaves the tree alone"
+else
+  fail "key across amend: before='${vc_key_before}' after='${vc_key_after}'"
+fi
+
+# Editing the hook is different work even though the tree did not move.
+run_test
+printf '#!/usr/bin/env bash\n# edited\nexit 0\n' > "$vc_hook_dir/run-tests.sh"
+chmod +x "$vc_hook_dir/run-tests.sh"
+vc_key_hook=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+if [[ $vc_key_hook != "$vc_key_after" ]]
+then
+  pass "verification_key: changes when the hook content changes"
+else
+  fail "key across hook edit: unchanged '${vc_key_hook}'"
+fi
+
+# A dependency moving underneath an unchanged consumer is different work.
+run_test
+vc_key_dep_a=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests depkey-aaa)")
+vc_key_dep_b=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests depkey-bbb)")
+if [[ $vc_key_dep_a != "$vc_key_dep_b" ]] && [[ $vc_key_dep_a != "$vc_key_hook" ]]
+then
+  pass "verification_key: a dependency key is part of the consumer's key"
+else
+  fail "dep keys: a='${vc_key_dep_a}' b='${vc_key_dep_b}' none='${vc_key_hook}'"
+fi
+
+# No resolvable hook means there is no "what was run" to record.
+run_test
+mv "$vc_hook_dir/run-tests.sh" "$vc_hook_dir/run-tests.sh.off"
+vc_nohook=$(verification_key_inputs "$vc_wt" run-tests && echo CACHEABLE)
+mv "$vc_hook_dir/run-tests.sh.off" "$vc_hook_dir/run-tests.sh"
+if [[ -z $vc_nohook ]]
+then
+  pass "verification_key_inputs: refuses when no hook resolves"
+else
+  fail "no-hook: got '${vc_nohook}'"
+fi
+
+# Record then look up, and confirm layout B put it where it claims.
+run_test
+vc_inputs=$(verification_key_inputs "$vc_wt" run-tests)
+vc_key=$(verification_key "$vc_inputs")
+vc_tree=$(jq -r '.tree' <<<"$vc_inputs")
+verified_record "$vc_wt" run-tests "$vc_inputs" 12
+vc_expect="$vc_home/vcorg/vcrepo/run-tests/$vc_tree/$vc_key/vcorg_vcrepo_run-tests_${vc_key}.json"
+if verified_lookup "$vc_wt" run-tests "$vc_inputs" && [[ -f $vc_expect ]]
+then
+  pass "verified_record/lookup: round-trips at <org>/<repo>/<tool>/<tree>/<key>"
+else
+  fail "record/lookup: hit=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo y || echo n) file=$([[ -f $vc_expect ]] && echo y || echo n)"
+fi
+
+# The entry must be able to explain and re-prove itself.
+run_test
+vc_recomputed=$(verification_key "$(jq -c '.key_inputs' "$vc_expect")")
+if jq -e '.schema == 1 and .result == "pass" and .provenance.commit != ""' "$vc_expect" >/dev/null &&
+   [[ $vc_recomputed == "$vc_key" ]]
+then
+  pass "verified entry: valid JSON whose key_inputs rehash to its own key"
+else
+  fail "entry self-check: recomputed='${vc_recomputed}' key='${vc_key}'"
+fi
+
+# A corrupted entry is a miss, never a green run.
+run_test
+cp "$vc_expect" "$vc_expect.bak"
+printf '{"schema":1,"result":"pass","key":"deadbeef","key_inputs":{}}\n' > "$vc_expect"
+vc_corrupt=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+printf 'not json at all' > "$vc_expect"
+vc_garbage=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+mv "$vc_expect.bak" "$vc_expect"
+if [[ -z $vc_corrupt ]] && [[ -z $vc_garbage ]]
+then
+  pass "verified_lookup: a tampered or unparseable entry is a miss"
+else
+  fail "corrupt handling: tampered='${vc_corrupt}' garbage='${vc_garbage}'"
+fi
+
+# The escape hatch has to work in both directions.
+run_test
+vc_bypass=$(TIMVISHER_DEV_CI_NO_MEMO=1 verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+if [[ -z $vc_bypass ]] && verified_lookup "$vc_wt" run-tests "$vc_inputs"
+then
+  pass "TIMVISHER_DEV_CI_NO_MEMO: bypasses a hit that is otherwise there"
+else
+  fail "no-memo: bypassed='${vc_bypass}'"
+fi
+
+# ls renders an entry, forget removes a scope, and neither can be talked
+# into touching anything outside the store.
+run_test
+vc_ls=$(cmd_verified ls 2>/dev/null)
+if [[ $vc_ls == *"vcorg/vcrepo"* ]] && [[ $vc_ls == *"run-tests"* ]]
+then
+  pass "verified ls: renders a cached entry"
+else
+  fail "verified ls: got '${vc_ls}'"
+fi
+
+run_test
+mkdir -p "$tmpdir/vc-outside"
+printf 'keep me\n' > "$tmpdir/vc-outside/sentinel"
+vc_escape_rc=0
+( cmd_verified forget ../vc-outside ) >/dev/null 2>&1 || vc_escape_rc=$?
+if (( vc_escape_rc != 0 )) && [[ -f $tmpdir/vc-outside/sentinel ]]
+then
+  pass "verified forget: refuses a scope resolving outside the store, and deletes nothing"
+else
+  fail "verified forget escape: rc=${vc_escape_rc} sentinel=$([[ -f $tmpdir/vc-outside/sentinel ]] && echo intact || echo DELETED)"
+fi
+
+run_test
+cmd_verified forget vcorg/vcrepo >/dev/null 2>&1
+if [[ ! -d $vc_home/vcorg/vcrepo ]] &&
+   ! verified_lookup "$vc_wt" run-tests "$vc_inputs"
+then
+  pass "verified forget: drops the scope so the next run re-verifies"
+else
+  fail "verified forget: dir=$([[ -d $vc_home/vcorg/vcrepo ]] && echo present || echo gone) hit=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo y || echo n)"
+fi
+
+# The pipeline resets whatever it is given to @{u}; a feature worktree must
+# not be mistaken for a dev integration branch.
+run_test
+gd_feat="$TIMVISHER_GIT_HOME/gdorg/gdrepo/feature"
+gd_dev="$TIMVISHER_GIT_HOME/gdorg/gdrepo/dev"
+mkdir -p "$gd_feat" "$gd_dev"
+touch "$gd_dev/x.dev-integration-branch"
+gd_feat_rc=0
+( assert_dev_integration_worktrees "$gd_feat" ) >/dev/null 2>&1 || gd_feat_rc=$?
+gd_dev_rc=0
+( assert_dev_integration_worktrees "$gd_dev" ) >/dev/null 2>&1 || gd_dev_rc=$?
+if (( gd_feat_rc != 0 )) && (( gd_dev_rc == 0 ))
+then
+  pass "assert_dev_integration_worktrees: refuses a feature worktree, allows a marked one"
+else
+  fail "integration guard: feature rc=${gd_feat_rc} dev rc=${gd_dev_rc}"
+fi
+
+run_test
+gd_out=$( ( assert_dev_integration_worktrees "$gd_feat" ) 2>&1 )
+if [[ $gd_out == *dev_ci_run_not_integration_worktree* ]] &&
+   [[ $gd_out == *"run-tests -C"* ]]
+then
+  pass "assert_dev_integration_worktrees: names a code and points at run-tests"
+else
+  fail "integration guard message: '${gd_out}'"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

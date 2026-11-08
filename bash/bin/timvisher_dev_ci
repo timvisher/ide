@@ -1613,6 +1613,186 @@ PROMPT_EOF
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Verification cache
+# ---------------------------------------------------------------------------
+
+# A verification result is cached against a content checksum of everything
+# that could change it: the tree under test, the hooks that ran, and the keys
+# of the dependencies those hooks read.  The key is therefore recursive -- a
+# consumer whose own tree never moved is still re-verified when a dependency
+# moves underneath it, which a commit-keyed cache would miss entirely.
+#
+# Tree, not commit: 'reset --hard @{u}', a recreated scratch branch and a
+# rebased pull-upstream branch all churn the sha while the content stands
+# still, and every one of those happens on an ordinary run.
+VERIFIED_SCHEMA=1
+VERIFIED_STORE="${XDG_STATE_HOME:-${HOME}/.local/state}/timvisher/dev_ci/verified"
+
+sha256_stdin() {
+    shasum -a 256 | cut -d' ' -f1
+}
+
+# The tree a worktree would be verified at, or nothing when its working tree
+# is dirty: HEAD^{tree} describes tracked content only, so for a dirty
+# worktree it names something that is not what the tests would run against.
+# Callers treat "no tree" as "not cacheable", never as an error.
+verifiable_tree() {
+    local wt=$1
+
+    [[ -z $(git -C "$wt" status --porcelain 2>/dev/null) ]] || return 1
+    git -C "$wt" rev-parse 'HEAD^{tree}' 2>/dev/null
+}
+
+# The hooks a tool resolves to, as a JSON array of {path, sha256}, in the
+# order they would run.  Hook CONTENT is hashed, not just the path: a hook
+# edited in place is different work, and a cache keyed on the path alone
+# would serve a result the new hook never produced.
+hook_digest_json() {
+    local wt=$1
+    local tool=$2
+    local -a hooks=()
+
+    readarray -d '' -t hooks < <(find_hooks "$wt" "${tool}.sh")
+
+    (( 0 < ${#hooks[@]} )) || return 1
+
+    local h
+    for h in "${hooks[@]}"
+    do
+        printf '%s\n' "$h"
+        sha256_stdin < "$h"
+    done | jq -R . | jq -s 'to_entries
+        | group_by(.key / 2 | floor)
+        | map({path: .[0].value, sha256: .[1].value})'
+}
+
+# The hashed half of a cache entry.  Everything in here changes the key;
+# nothing outside it does.  Dependency keys are included in declared order,
+# so the hash covers the whole graph beneath this worktree.
+verification_key_inputs() {
+    local wt=$1
+    local tool=$2
+    shift 2
+    local tree hooks
+
+    tree=$(verifiable_tree "$wt") || return 1
+    hooks=$(hook_digest_json "$wt" "$tool") || return 1
+
+    local dep_keys='[]'
+    if (( 0 < $# ))
+    then
+        dep_keys=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+    fi
+
+    jq -n --arg tool "$tool" --arg tree "$tree" \
+          --argjson hooks "$hooks" --argjson dep_keys "$dep_keys" \
+          '{tool: $tool, tree: $tree, hooks: $hooks, dependencies: $dep_keys}'
+}
+
+# jq -S -c is the canonical serialization: sorted keys, no whitespace, so the
+# same inputs hash the same way whoever wrote the file.  That is what lets a
+# reader recompute the key from the entry and catch a corrupted one.
+verification_key() {
+    local canonical
+
+    # Without this an empty or unparseable argument hashes to the sha256 of
+    # the empty string -- a perfectly stable key that every caller agrees on
+    # and that means nothing.
+    canonical=$(jq -S -c -e . <<<"$1" 2>/dev/null) || return 1
+    [[ -n $canonical && $canonical != null ]] || return 1
+
+    printf '%s' "$canonical" | sha256_stdin
+}
+
+# Layout B: <org>/<repo>/<tool>/<tree>/<key>/.  The leaf is the full key, so
+# two results for one tree that differ by hook or dependency cannot collide.
+# Everything above the leaf is for browsing and for rm -r at a granularity a
+# human would choose; it is an index, never the identity.
+verified_entry_dir() {
+    local wt=$1 tool=$2 tree=$3 key=$4
+    local org_repo
+
+    org_repo=$(worktree_org_repo "$wt") || return 1
+    printf '%s/%s/%s/%s/%s' "$VERIFIED_STORE" "$org_repo" "$tool" "$tree" "$key"
+}
+
+verified_entry_file() {
+    local wt=$1 tool=$2 tree=$3 key=$4
+    local dir org_repo
+
+    dir=$(verified_entry_dir "$wt" "$tool" "$tree" "$key") || return 1
+    org_repo=$(worktree_org_repo "$wt") || return 1
+    printf '%s/%s_%s_%s.json' "$dir" "${org_repo//\//_}" "$tool" "$key"
+}
+
+# A hit requires the entry to parse, to declare a schema we understand, to
+# record a pass, and to still hash to its own key.  Anything else is a miss:
+# a cache must never turn a corrupt or half-written file into a green run.
+verified_lookup() {
+    local wt=$1 tool=$2 key_inputs=$3
+    local tree key file
+
+    [[ -z ${TIMVISHER_DEV_CI_NO_MEMO-} ]] || return 1
+
+    tree=$(jq -r '.tree' <<<"$key_inputs") || return 1
+    key=$(verification_key "$key_inputs")
+    file=$(verified_entry_file "$wt" "$tool" "$tree" "$key") || return 1
+
+    [[ -f $file ]] || return 1
+
+    jq -e --argjson schema "$VERIFIED_SCHEMA" \
+        '(.schema == $schema) and (.result == "pass") and (.key | type == "string")' \
+        "$file" >/dev/null 2>&1 || return 1
+
+    local recorded recomputed
+    recorded=$(jq -r '.key' "$file")
+    recomputed=$(verification_key "$(jq -c '.key_inputs' "$file")")
+
+    [[ $recorded == "$key" && $recomputed == "$key" ]]
+}
+
+# Written to a temp file in the destination directory and moved into place: a
+# run killed mid-write must not leave a truncated object that parses as a hit.
+verified_record() {
+    local wt=$1 tool=$2 key_inputs=$3 duration_ms=${4:-0}
+    local tree key dir file tmp
+
+    [[ -z ${TIMVISHER_DEV_CI_NO_MEMO-} ]] || return 0
+
+    tree=$(jq -r '.tree' <<<"$key_inputs") || return 1
+    key=$(verification_key "$key_inputs")
+    dir=$(verified_entry_dir "$wt" "$tool" "$tree" "$key") || return 1
+    file=$(verified_entry_file "$wt" "$tool" "$tree" "$key") || return 1
+
+    mkdir -p "$dir" || return 1
+
+    local org_repo branch commit
+    org_repo=$(worktree_org_repo "$wt")
+    branch=$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null)
+    commit=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
+
+    tmp=$(mktemp "${dir}/.entry.XXXXXX") || return 1
+
+    jq -n --argjson schema "$VERIFIED_SCHEMA" \
+          --arg key "$key" \
+          --argjson key_inputs "$key_inputs" \
+          --arg org "${org_repo%%/*}" \
+          --arg repo "${org_repo#*/}" \
+          --arg worktree "$wt" \
+          --arg branch "$branch" \
+          --arg commit "$commit" \
+          --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%S%z)" \
+          --argjson duration_ms "$duration_ms" \
+          '{schema: $schema, result: "pass", key: $key, key_inputs: $key_inputs,
+            provenance: {org: $org, repo: $repo, worktree: $worktree,
+                         branch: $branch, commit: $commit,
+                         verified_at: $verified_at, duration_ms: $duration_ms}}' \
+        > "$tmp" || { rm -f "$tmp"; return 1; }
+
+    mv -f "$tmp" "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Upstream pull branches (soft forks)
 # ---------------------------------------------------------------------------
 
@@ -2855,6 +3035,91 @@ cmd_integrate_local() {
     fi
 }
 
+# Browse and bust the verification cache.  Busting is the operation you reach
+# for when you suspect a flake, so it has to be reachable without composing a
+# jq filter -- the layout exists to make `forget` a path.
+cmd_verified() {
+    local action=${1-}
+    shift 2>/dev/null
+
+    case $action in
+        path)
+            printf '%s\n' "$VERIFIED_STORE"
+            ;;
+        ls)
+            local scope=${1-}
+            local root="${VERIFIED_STORE}${scope:+/$scope}"
+
+            if [[ ! -d $root ]]
+            then
+                info "verified: nothing cached under '%s'" "$root"
+                return 0
+            fi
+
+            local entry
+            while IFS= read -r entry
+            do
+                jq -r '"\(.provenance.org)/\(.provenance.repo)  \(.key_inputs.tool)  tree=\(.key_inputs.tree[0:12])  key=\(.key[0:12])  \(.provenance.verified_at)  deps=\(.key_inputs.dependencies | length)"' \
+                    "$entry" 2>/dev/null ||
+                    warn "verified: unreadable entry '%s'" "$entry"
+            done < <(find "$root" -name '*.json' -type f | sort)
+            ;;
+        forget)
+            local scope=${1-}
+
+            if [[ -z $scope ]]
+            then
+                aictl_die \
+                    --code "dev_ci_verified_forget_needs_scope" \
+                    --message "verified forget needs something to forget" \
+                    --reason "Dropping the whole cache is rarely what is meant, and an empty scope would do exactly that." \
+                    --suggestion "timvisher_dev_ci verified forget <org>/<repo>" \
+                    --suggestion "timvisher_dev_ci verified ls    # see what is cached" \
+                    --suggestion "rm -rf '${VERIFIED_STORE}'      # if the whole cache really is the intent"
+            fi
+
+            local target="${VERIFIED_STORE}/${scope}"
+            local resolved_store resolved_target
+
+            # Resolve both before comparing: '..' in a scope would otherwise
+            # delete whatever it climbed out to.
+            resolved_store=$(cd "$VERIFIED_STORE" 2>/dev/null && pwd -P) ||
+                {
+                    info "verified: no cache at '%s'" "$VERIFIED_STORE"
+                    return 0
+                }
+            resolved_target=$(cd "$target" 2>/dev/null && pwd -P) ||
+                {
+                    info "verified: nothing cached at '%s'" "$target"
+                    return 0
+                }
+
+            if [[ $resolved_target != "$resolved_store"/* ]]
+            then
+                aictl_die \
+                    --code "dev_ci_verified_forget_escapes_store" \
+                    --message "'${scope}' resolves outside the cache" \
+                    --reason "'${resolved_target}' is not under '${resolved_store}'." \
+                    --suggestion "Give a scope relative to the cache root, like <org>/<repo>"
+            fi
+
+            local n
+            n=$(find "$resolved_target" -name '*.json' -type f | wc -l | tr -d ' ')
+            rm -rf -- "$resolved_target" ||
+                die "verified: cannot remove '%s'" "$resolved_target"
+            info "verified: forgot %s entr%s under '%s'" "$n" "$( (( n == 1 )) && printf y || printf ies )" "$scope"
+            ;;
+        *)
+            aictl_die \
+                --code "dev_ci_verified_unknown_action" \
+                --message "Unknown 'verified' action: '${action}'" \
+                --suggestion "timvisher_dev_ci verified ls [<org>[/<repo>]]" \
+                --suggestion "timvisher_dev_ci verified forget <org>[/<repo>]" \
+                --suggestion "timvisher_dev_ci verified path"
+            ;;
+    esac
+}
+
 print_help() {
     cat <<'EOF'
 NAME
@@ -2878,6 +3143,9 @@ SYNOPSIS
     timvisher_dev_ci status [PATH ...]        # show CI status of worktrees
     timvisher_dev_ci clean [PATH ...]         # remove status files
     timvisher_dev_ci worktrees active         # list active worktree paths
+    timvisher_dev_ci verified ls [<org>[/<repo>]]   # browse the verification cache
+    timvisher_dev_ci verified forget <org>[/<repo>] # bust part of it
+    timvisher_dev_ci verified path            # where the cache lives
     timvisher_dev_ci --help|-h|help           # this message
 
 PATHS
@@ -2890,6 +3158,33 @@ PATHS
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
+
+VERIFICATION CACHE
+
+    A verification result is cached against a content checksum of
+    everything that could change it: the tree under test, the content of
+    the hooks that ran, and the keys of the dependencies those hooks read.
+    The key is recursive, so a consumer whose own tree never moved is still
+    re-verified when a dependency moves underneath it.
+
+    Keyed on the tree, not the commit: 'reset --hard @{u}', a recreated
+    scratch branch and a rebased pull-upstream branch all churn the sha
+    while the content stands still.
+
+    Entries live under $XDG_STATE_HOME/timvisher/dev_ci/verified at
+    <org>/<repo>/<tool>/<tree>/<key>/.  The leaf is the full key, so two
+    results for one tree that differ by hook or dependency cannot collide;
+    everything above it is an index for browsing and for 'forget' at a
+    granularity a human would pick.  Never infer validity from a path.
+
+    Each entry is JSON split into key_inputs (hashed) and provenance (not),
+    so it can be re-proved: rehash key_inputs and compare to the filename.
+    An entry that fails that, or is unparseable, or carries an unknown
+    schema, is a miss -- never a green run.
+
+    A dirty worktree is never cached in either direction, since HEAD^{tree}
+    describes tracked content only.  TIMVISHER_DEV_CI_NO_MEMO=1 bypasses
+    the cache entirely.
 
 UPSTREAM PULL BRANCHES
 
@@ -2993,7 +3288,32 @@ ENVIRONMENT
 EOF
 }
 
+# The bare invocation and the path shortcut both reach cmd_run with a path
+# the caller chose rather than one the registry vouched for, and the pipeline
+# resets whatever it is handed to @{u}.  On a feature branch that discards the
+# branch.  cmd_integrate_local has refused this for a while; the full pipeline
+# did not, so running it from the wrong directory silently destroyed work.
+assert_dev_integration_worktrees() {
+    local candidate
+
+    for candidate in "$@"
+    do
+        [[ -d $candidate ]] || continue
+        is_dev_integration_worktree "$candidate" && continue
+
+        aictl_die \
+            --code "dev_ci_run_not_integration_worktree" \
+            --message "run: '${candidate}' is not a dev integration worktree" \
+            --reason "The pipeline resets a dev branch to @{u} and merges its x.active-worktrees. On a feature branch tracking origin/main that reset discards every commit on the branch. '${candidate}' is neither listed in '${DEV_CI_REGISTRY}' nor marked with x.dev-integration-branch." \
+            --suggestion "timvisher_dev_ci run-tests -C '${candidate}'   # test this worktree without touching git state" \
+            --suggestion "Point the run at a dev integration worktree instead" \
+            --suggestion "Or, if '${candidate}' really is one, add it to '${DEV_CI_REGISTRY}' and touch '${candidate}/x.dev-integration-branch'"
+    done
+}
+
 cmd_run() {
+    assert_dev_integration_worktrees "$@"
+
     pull_xenodium_mains
 
     info "Phase 0: upgrading agent tooling"
@@ -3149,6 +3469,11 @@ case ${1:-} in
     integrate)
         shift
         cmd_integrate_local "$@"
+        exit
+        ;;
+    verified)
+        shift
+        cmd_verified "$@"
         exit
         ;;
     worktrees)
