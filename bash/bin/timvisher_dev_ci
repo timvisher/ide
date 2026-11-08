@@ -607,6 +607,13 @@ run_hooks() {
     local -a resolved=()
     readarray -d '' -t resolved < <(find_hooks "$worktree_path" "$hook_name")
 
+    # Resolved first, deliberately: hook resolution derives
+    # <org>/<repo>/<branch-parts> from the real git home, so the farm must
+    # not be in scope until after it has run.
+    local farm
+    farm=$(worktree_farm "$worktree_path")
+    [[ -n $farm ]] && hook_git_home=$farm
+
     local hook_path
     for hook_path in "${resolved[@]}"
     do
@@ -1736,6 +1743,106 @@ farm_assert_preserves_symlinks() {
     [[ $seen == "${root}/${rel}" ]] || return 1
     [[ -n $expected ]] || return 0
     [[ $(cd "${root}/${rel}" && pwd -P) == "$(cd "$expected" && pwd -P)" ]]
+}
+
+# A worktree pins a dependency to a tree by naming the repo, not a path:
+#
+#     xenodium/acp.el @ ~/git/xenodium/acp.el/terminal-caps
+#
+# Every branch directory that repo has in the real git home is then pointed
+# at that tree in the farm, so however a consumer's hook addresses it --
+# today every one of them says <org>/<repo>/main -- it resolves to the pin.
+# Naming the path instead would mean guessing which one the hook asks for,
+# and a guess that misses lands an override where nothing reads it: a green
+# run against the unpinned tree, which is the failure this whole mechanism
+# exists to prevent.
+DEPENDENCY_PINS_FILENAME=x.dependency-pins
+FARM_ROOT="${XDG_STATE_HOME:-${HOME}/.local/state}/timvisher/dev_ci/farms"
+
+# Expand a worktree's pins into the <relative/path>=<target> pairs farm_build
+# takes.  One pin becomes one pair per branch directory of the pinned repo.
+dependency_pin_overrides() {
+    local wt=$1
+    local file="${wt}/${DEPENDENCY_PINS_FILENAME}"
+
+    [[ -f $file ]] || return 0
+
+    local home line org_repo target child emitted
+    home=$(canonical_git_home)
+    home=${home%/}
+
+    while IFS= read -r line
+    do
+        [[ -z $line || $line == '#'* ]] && continue
+
+        if [[ $line != *@* ]]
+        then
+            warn "pins: ignoring '%s' in '%s'; expected '<org>/<repo> @ <worktree>'" "$line" "$file"
+            continue
+        fi
+
+        org_repo=${line%%@*}
+        target=${line#*@}
+        # trim surrounding whitespace from both halves
+        org_repo=${org_repo#"${org_repo%%[![:space:]]*}"}
+        org_repo=${org_repo%"${org_repo##*[![:space:]]}"}
+        target=${target#"${target%%[![:space:]]*}"}
+        target=${target%"${target##*[![:space:]]}"}
+
+        # shellcheck disable=SC2088
+        [[ $target == "~/"* ]] && target="${HOME}/${target#"~/"}"
+
+        emitted=false
+        for child in "${home}/${org_repo}"/*
+        do
+            [[ -d $child ]] || continue
+            printf '%s/%s=%s\n' "$org_repo" "$(basename "$child")" "$target"
+            emitted=true
+        done
+
+        if [[ $emitted == false ]]
+        then
+            warn "pins: '%s' has no worktrees under '%s'; pin ignored" "$org_repo" "$home"
+        fi
+    done < "$file"
+}
+
+# The farm a worktree's hooks should run under, or nothing when it pins
+# nothing -- in which case the real git home already says the right thing
+# and standing a mirror in front of it only adds a way to be wrong.
+declare -A _worktree_farm=()
+
+worktree_farm() {
+    local wt=$1
+    local key root
+    local -a overrides=()
+
+    key=$(worktree_context_key "$wt")
+
+    if [[ -n ${_worktree_farm[$key]+set} ]]
+    then
+        printf '%s' "${_worktree_farm[$key]}"
+        return 0
+    fi
+
+    readarray -t overrides < <(dependency_pin_overrides "$wt")
+
+    root=''
+    if farm_required "${overrides[@]}"
+    then
+        root="${FARM_ROOT}/$(printf '%s' "$key" | sha256_stdin)"
+        if farm_build "$root" "${overrides[@]}"
+        then
+            info "pins: '%s' resolves %d dependency path(s) through '%s'" \
+                 "$wt" "${#overrides[@]}" "$root"
+        else
+            error "pins: cannot build a farm for '%s'; using the real git home" "$wt"
+            root=''
+        fi
+    fi
+
+    _worktree_farm[$key]=$root
+    printf '%s' "$root"
 }
 
 # ---------------------------------------------------------------------------
@@ -3284,6 +3391,24 @@ PATHS
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
+
+DEPENDENCY PINS
+
+    A worktree pins a dependency to a tree in x.dependency-pins, naming the
+    repo rather than a path:
+
+        # org/repo @ worktree
+        xenodium/acp.el @ ~/git/xenodium/acp.el/terminal-caps
+
+    Every branch directory that repo has in the real git home is pointed at
+    that tree in the farm, so however a consumer's hook addresses it -- today
+    they all say <org>/<repo>/main -- it resolves to the pin.  Naming the
+    path instead would mean guessing which one the hook asks for, and a guess
+    that misses puts the override where nothing reads it: a green run against
+    the unpinned tree.
+
+    A worktree with no pins gets no farm and sees the real git home, so
+    pinning nothing costs nothing.
 
 DEPENDENCY FARM
 

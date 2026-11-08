@@ -1799,6 +1799,111 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# dependency pins
+# ---------------------------------------------------------------------------
+
+# A consumer whose hook reads a dependency the way the real ones do, through
+# ${git_home}/<org>/<repo>/main, plus a dependency repo with a trunk and a
+# pinned branch.
+pn_wt="$TIMVISHER_GIT_HOME/pnorg/consumer/dev"
+mkdir -p "$pn_wt"
+"$test_git" init -q -b main "$pn_wt"
+"$test_git" -C "$pn_wt" config core.hooksPath /dev/null
+mkdir -p "$TIMVISHER_GIT_HOME/pndep/lib/main" "$TIMVISHER_GIT_HOME/pndep/lib/pinned"
+printf 'trunk\n'  > "$TIMVISHER_GIT_HOME/pndep/lib/main/marker"
+printf 'pinned\n' > "$TIMVISHER_GIT_HOME/pndep/lib/pinned/marker"
+
+pn_hook_dir="$REPO_HOOKS_EXT_DIR/pnorg/consumer"
+mkdir -p "$pn_hook_dir"
+cat > "$pn_hook_dir/run-tests.sh" <<'HOOK'
+#!/usr/bin/env bash
+git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+printf 'DEP=%s\n' "$(cat "${git_home}/pndep/lib/main/marker" 2>/dev/null)"
+HOOK
+chmod +x "$pn_hook_dir/run-tests.sh"
+_worktree_context[$(worktree_context_key "$pn_wt")]=$(
+  jq -n '{timvisher_git: {repo: "consumer", branchPath: "dev"},
+          timvisher_gh: {me: "pnorg", forkNetwork: {mainOwner: "pnorg"}}}')
+
+# One pin becomes one override per branch directory of the pinned repo.
+run_test
+printf '# a comment\n\npndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+readarray -t pn_ovr < <(dependency_pin_overrides "$pn_wt")
+if (( 2 == ${#pn_ovr[@]} )) &&
+   printf '%s\n' "${pn_ovr[@]}" | grep -qx "pndep/lib/main=$TIMVISHER_GIT_HOME/pndep/lib/pinned" &&
+   printf '%s\n' "${pn_ovr[@]}" | grep -qx "pndep/lib/pinned=$TIMVISHER_GIT_HOME/pndep/lib/pinned"
+then
+  pass "dependency_pin_overrides: one pin covers every branch dir of the repo"
+else
+  fail "pin expansion: ${#pn_ovr[@]} -> ${pn_ovr[*]}"
+fi
+
+# The point of the whole thing: the consumer's hook reads the pinned tree.
+run_test
+_worktree_farm=()
+hook_git_home=''
+pn_pinned=$(run_hooks "$pn_wt" "run-tests.sh" 2>/dev/null | grep '^DEP=')
+rm -f "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+_worktree_farm=()
+hook_git_home=''
+pn_unpinned=$(run_hooks "$pn_wt" "run-tests.sh" 2>/dev/null | grep '^DEP=')
+hook_git_home=''
+if [[ $pn_pinned == "DEP=pinned" ]] && [[ $pn_unpinned == "DEP=trunk" ]]
+then
+  pass "pins: a consumer's hook reads the pinned tree, and the trunk without a pin"
+else
+  fail "pin end-to-end: pinned='${pn_pinned}' unpinned='${pn_unpinned}'"
+fi
+
+# No pins means no farm at all, not an empty one.
+run_test
+_worktree_farm=()
+pn_nofarm=$(worktree_farm "$pn_wt")
+printf 'pndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+_worktree_farm=()
+pn_farm=$(worktree_farm "$pn_wt")
+if [[ -z $pn_nofarm ]] && [[ -n $pn_farm ]] && [[ -d $pn_farm ]]
+then
+  pass "worktree_farm: nothing without pins, a built farm with them"
+else
+  fail "worktree_farm: nofarm='${pn_nofarm}' farm='${pn_farm}'"
+fi
+
+# A malformed line is reported and skipped, not silently treated as a pin.
+run_test
+printf 'this line has no at-sign\npndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+# Asserting on the warning itself is not possible here -- aictl is quiet in
+# the harness -- so assert the behaviour: the bad line contributes nothing
+# and the good one still expands.
+readarray -t pn_ovr2 < <(dependency_pin_overrides "$pn_wt" 2>/dev/null)
+if (( 2 == ${#pn_ovr2[@]} )) &&
+   ! printf '%s\n' "${pn_ovr2[@]}" | grep -q 'no at-sign'
+then
+  pass "dependency_pin_overrides: a malformed line contributes nothing, good ones survive"
+else
+  fail "malformed pin: kept=${#pn_ovr2[@]} -> ${pn_ovr2[*]}"
+fi
+
+# A pin naming a repo with no worktrees would otherwise expand to nothing
+# at all, which looks exactly like having no pin.
+run_test
+printf 'pndep/absent @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+readarray -t pn_absent < <(dependency_pin_overrides "$pn_wt" 2>/dev/null)
+pn_absent_farm=''
+_worktree_farm=()
+pn_absent_farm=$(worktree_farm "$pn_wt")
+rm -f "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+if (( 0 == ${#pn_absent[@]} )) && [[ -z $pn_absent_farm ]]
+then
+  pass "dependency_pin_overrides: a repo with no worktrees yields no override and no farm"
+else
+  fail "absent repo pin: overrides=${#pn_absent[@]} farm='${pn_absent_farm}'"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
