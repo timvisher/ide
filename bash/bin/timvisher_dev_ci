@@ -1876,12 +1876,34 @@ PROMPT_EOF
 }
 
 ensure_upstream_pull_worktrees() {
+    # One pull-upstream branch per REPO, not per dev branch.  A repo can
+    # carry several dev branches -- a main integration plus a spun-out one
+    # for features needing their own dependency pins -- and they share a
+    # trunk, so the upstream merge is the same work for all of them.  Same
+    # keying as sync_soft_fork_trunks.
+    local -A seen_repos
     local dev_dir
     for dev_dir in "${!dev_branches[@]}"
     do
         # Regular forks already base dev on upstream/<trunk>, so they have
         # nothing to pull onto a branch.
         [[ -f ${dev_dir}/x.timvisher_git.soft-fork ]] || continue
+
+        local common_dir
+        common_dir=$(cd "$dev_dir" && git rev-parse --git-common-dir 2>/dev/null) || continue
+        common_dir=$(cd "$dev_dir" && cd "$common_dir" && pwd -P)
+        if [[ -n ${seen_repos[$common_dir]+x} ]]
+        then
+            # Still register it here: the branch is shared, but each dev
+            # branch has to list it to integrate it.
+            local shared
+            if shared=$(find_pull_upstream_worktree "$dev_dir")
+            then
+                register_active_worktree "$dev_dir" "$shared" || true
+            fi
+            continue
+        fi
+        seen_repos["$common_dir"]=1
 
         git -C "$dev_dir" fetch --all --quiet 2>/dev/null || true
 

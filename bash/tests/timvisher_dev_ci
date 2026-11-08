@@ -1442,6 +1442,33 @@ else
   fail "pull-upstream reuse: created='$(cat "$pu_log_created")' merged='$(cat "$pu_log_merged")' count=$(grep -c 'pull-upstream' "$pu_new/x.active-worktrees")"
 fi
 
+# Two dev branches in one repo -- a main integration plus a spun-out one
+# for features with their own dependency pins -- share a trunk, so the
+# upstream merge is one piece of work, but both must list the result.
+run_test
+pu_two_a=$(make_pull_fixture puorg tworepo yes yes)
+pu_two_b="${pu_two_a%/dev}/dev-feature"
+"$test_git" -C "$pu_two_a" worktree add -q -b dev-feature "$pu_two_b" main
+"$test_git" -C "$pu_two_b" config branch.dev-feature.remote .
+"$test_git" -C "$pu_two_b" config branch.dev-feature.merge refs/heads/main
+touch "$pu_two_b/x.timvisher_git.soft-fork"
+: > "$pu_two_b/x.active-worktrees"
+
+declare -A dev_branches=(["$pu_two_a"]="" ["$pu_two_b"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+
+if (( 1 == $(wc -l < "$pu_log_created") )) &&
+   (( 1 == $(wc -l < "$pu_log_merged") )) &&
+   grep -q 'pull-upstream' "$pu_two_a/x.active-worktrees" &&
+   grep -q 'pull-upstream' "$pu_two_b/x.active-worktrees"
+then
+  pass "ensure_upstream_pull_worktrees: one merge per repo, registered on every dev branch"
+else
+  fail "two dev branches: created=$(wc -l < "$pu_log_created") merged=$(wc -l < "$pu_log_merged") a=$(grep -c pull-upstream "$pu_two_a/x.active-worktrees") b=$(grep -c pull-upstream "$pu_two_b/x.active-worktrees")"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
