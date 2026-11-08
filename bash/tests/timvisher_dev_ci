@@ -1977,6 +1977,101 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# upstream baseline
+# ---------------------------------------------------------------------------
+
+# Two worktrees of one repo, plus a second repo, so the manifest has to key
+# per repository rather than per worktree.
+bl_a="$TIMVISHER_GIT_HOME/blorg/blrepo/dev"
+bl_a2="$TIMVISHER_GIT_HOME/blorg/blrepo/feature"
+bl_b="$TIMVISHER_GIT_HOME/blorg/other/dev"
+mkdir -p "$bl_a" "$bl_b"
+for d in "$bl_a" "$bl_b"
+do
+  "$test_git" init -q -b main "$d"
+  "$test_git" -C "$d" config core.hooksPath /dev/null
+  "$test_git" -C "$d" config user.email t@t
+  "$test_git" -C "$d" config user.name t
+  "$test_git" -C "$d" commit -q --allow-empty -m base
+  "$test_git" -C "$d" update-ref refs/remotes/origin/main "$("$test_git" -C "$d" rev-parse HEAD)"
+  "$test_git" -C "$d" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  "$test_git" -C "$d" update-ref refs/remotes/upstream/main "$("$test_git" -C "$d" rev-parse HEAD)"
+  "$test_git" -C "$d" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
+done
+"$test_git" -C "$bl_a" branch -q feature
+"$test_git" -C "$bl_a" worktree add -q "$bl_a2" feature
+
+run_test
+# Assigned straight to the global the other functions read: command
+# substitution runs baseline_establish in a subshell, so the global it sets
+# for itself cannot reach this shell.
+baseline_file=$(baseline_establish "$bl_a" "$bl_a2" "$bl_b")
+bl_file=$baseline_file
+bl_repos=$(jq -r '.repos | length' "$bl_file" 2>/dev/null)
+if [[ -f $bl_file ]] && (( bl_repos == 2 ))
+then
+  pass "baseline_establish: one entry per repository, not per worktree"
+else
+  fail "baseline repos: file='${bl_file}' repos=${bl_repos}"
+fi
+
+run_test
+bl_a_sha=$("$test_git" -C "$bl_a" rev-parse origin/main)
+if [[ $(baseline_commit "$bl_a" origin) == "$bl_a_sha" ]] &&
+   [[ $(baseline_commit "$bl_a2" origin) == "$bl_a_sha" ]] &&
+   [[ $(baseline_ref "$bl_a" origin) == origin/main ]]
+then
+  pass "baseline_commit: both worktrees of a repo read the same recorded commit"
+else
+  fail "baseline_commit: dev='$(baseline_commit "$bl_a" origin)' feature='$(baseline_commit "$bl_a2" origin)' expected='${bl_a_sha}'"
+fi
+
+# The point of the whole thing: upstream moving after the baseline must not
+# change what the run targets.
+run_test
+"$test_git" -C "$bl_a" commit -q --allow-empty -m "upstream moved after the baseline"
+"$test_git" -C "$bl_a" update-ref refs/remotes/origin/main "$("$test_git" -C "$bl_a" rev-parse HEAD)"
+bl_moved=$("$test_git" -C "$bl_a" rev-parse origin/main)
+if [[ $bl_moved != "$bl_a_sha" ]] && [[ $(baseline_commit "$bl_a" origin) == "$bl_a_sha" ]]
+then
+  pass "baseline_commit: still the pinned commit after origin moves"
+else
+  fail "baseline drift: ref now '${bl_moved}', baseline says '$(baseline_commit "$bl_a" origin)'"
+fi
+
+# No baseline means fall back to live refs rather than failing, so a partial
+# rollout degrades to today's behaviour.
+run_test
+bl_saved=$baseline_file
+baseline_file=''
+bl_none=$(TIMVISHER_DEV_CI_BASELINE='' baseline_commit "$bl_a" origin && echo FOUND)
+baseline_file=$bl_saved
+if [[ -z $bl_none ]]
+then
+  pass "baseline_commit: reports nothing when no baseline was established"
+else
+  fail "baseline fallback: got '${bl_none}'"
+fi
+
+# A repo with no upstream remote records an empty upstream, not a bogus one.
+run_test
+bl_noup="$TIMVISHER_GIT_HOME/blorg/noupstream/dev"
+mkdir -p "$bl_noup"
+"$test_git" init -q -b main "$bl_noup"
+"$test_git" -C "$bl_noup" config core.hooksPath /dev/null
+"$test_git" -C "$bl_noup" config user.email t@t
+"$test_git" -C "$bl_noup" config user.name t
+"$test_git" -C "$bl_noup" commit -q --allow-empty -m base
+baseline_establish "$bl_noup" >/dev/null
+if ! baseline_commit "$bl_noup" upstream >/dev/null 2>&1
+then
+  pass "baseline_establish: a repo without an upstream remote records none"
+else
+  fail "baseline no-upstream: got '$(baseline_commit "$bl_noup" upstream)'"
+fi
+baseline_file=$bl_saved
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

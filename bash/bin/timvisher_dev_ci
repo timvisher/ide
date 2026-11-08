@@ -159,6 +159,7 @@ integrate_scratch_path=''
 integrate_scratch_branch=''
 integrate_scratch_dev_branch=''
 integrate_scratch_dev_head=''
+integrate_scratch_start=''
 
 # Put the dev branch back where it started.  Also the EXIT trap, so a die()
 # anywhere in the run restores rather than stranding dev on the scratch.
@@ -213,6 +214,21 @@ integrate_scratch_begin() {
             return 1
         }
 
+    # Start the scratch at the run's recorded commit rather than at @{u} as
+    # it resolves now. They are the same thing only if nothing re-fetched
+    # since the baseline, and the whole point is not to depend on that.
+    local start=$upstream
+    local pinned
+    if pinned=$(baseline_commit "$path" origin) || pinned=$(baseline_commit "$path" upstream)
+    then
+        if [[ $(git -C "$path" rev-parse "$upstream" 2>/dev/null) != "$pinned" ]]
+        then
+            info "integrate: '%s' has moved since the baseline; using %s" \
+                 "$upstream" "${pinned:0:12}"
+        fi
+        start=$pinned
+    fi
+
     scratch="${INTEGRATE_SCRATCH_PREFIX}-${branch//\//-}-$$"
 
     # Registered before the branch exists so a death in between still restores.
@@ -220,14 +236,15 @@ integrate_scratch_begin() {
     integrate_scratch_dev_branch=$branch
     integrate_scratch_dev_head=$head
     integrate_scratch_branch=$scratch
+    integrate_scratch_start=$start
     trap integrate_scratch_restore EXIT
 
     # -B so a scratch branch orphaned by a killed run is reused, not a blocker.
-    if ! git -C "$path" checkout -q -B "$scratch" "$upstream"
+    if ! git -C "$path" checkout -q -B "$scratch" "$start"
     then
         integrate_scratch_branch=''
         trap - EXIT
-        error "integrate: cannot start scratch branch '%s' at '%s'" "$scratch" "$upstream"
+        error "integrate: cannot start scratch branch '%s' at '%s'" "$scratch" "$start"
         return 1
     fi
 
@@ -240,7 +257,7 @@ integrate_scratch_begin() {
         return 1
     fi
 
-    info "integrate: integrating on scratch branch '%s' at '%s'" "$scratch" "$upstream"
+    info "integrate: integrating on scratch branch '%s' at '%s'" "$scratch" "$start"
 }
 
 is_pull_upstream_worktree() {
@@ -886,13 +903,18 @@ retire_merged_worktrees() {
 
         for wt in "${wt_list[@]}"
         do
-            # Fetch in the worktree so we have current refs.
-            git -C "$wt" fetch --all --quiet 2>/dev/null || true
-
-            # Resolve the ref this branch must merge into (origin for soft
-            # forks, upstream otherwise).
+            # No fetch: retirement is judged against the run's baseline, the
+            # same commit every other phase targets. Fetching here would let
+            # a branch retire against an upstream nothing else saw.
             local merge_ref
-            merge_ref=$(resolve_retire_merge_ref "$wt")
+            if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
+            then
+                merge_ref=$(baseline_commit "$wt" origin) ||
+                    merge_ref=$(resolve_retire_merge_ref "$wt")
+            else
+                merge_ref=$(baseline_commit "$wt" upstream) ||
+                    merge_ref=$(resolve_retire_merge_ref "$wt")
+            fi
 
             if [[ -z $merge_ref ]]
             then
@@ -1037,8 +1059,17 @@ cmd__sync() {
 
     # Tracking is set correctly by timvisher_git (origin/<trunk> for soft
     # forks, upstream/<trunk> for regular forks).  Plain pull --rebase
-    # follows the tracking branch.
+    # follows the tracking branch -- but it also fetches, which is a second
+    # observation of upstream. With a baseline, rebase onto the commit the
+    # run pinned instead, so every worktree lands on the same one.
     local pull_cmd="git pull --rebase"
+    local sync_pin
+    if sync_pin=$(baseline_commit "$worktree_path" origin) ||
+       sync_pin=$(baseline_commit "$worktree_path" upstream)
+    then
+        pull_cmd="git rebase ${sync_pin}"
+        info "sync: rebasing onto the baseline %s" "${sync_pin:0:12}"
+    fi
 
     require_worktree_context "$worktree_path"
 
@@ -1179,11 +1210,18 @@ cmd__integrate() {
 
     # --- scripted baseline ---
 
-    info "integrate: fetching"
-    if ! git fetch --all
+    # No fetch when the run handed us a baseline: @{u} is re-resolved here
+    # otherwise, which is a second observation of upstream and the whole
+    # reason a run could target two different snapshots.
+    if ! baseline_commit "$dev_path" origin >/dev/null 2>&1 &&
+       ! baseline_commit "$dev_path" upstream >/dev/null 2>&1
     then
-        echo 'fail' > "$status_file"
-        die "git fetch failed in '%s'" "$dev_path"
+        info "integrate: no baseline; fetching"
+        if ! git fetch --all
+        then
+            echo 'fail' > "$status_file"
+            die "git fetch failed in '%s'" "$dev_path"
+        fi
     fi
 
     if ! integrate_scratch_begin "$dev_path"
@@ -1331,10 +1369,15 @@ $(agent_session_contract "$status_file")
 
 You are in a dev integration worktree at ${dev_path}.
 
-You are on scratch branch '${integrate_scratch_branch}', created at the
-upstream tracking branch (@{u}), which it also tracks. Do NOT switch
-branches or create new ones. '${integrate_scratch_dev_branch}' is moved to
-your work only if you succeed, so a failure here costs nothing.
+You are on scratch branch '${integrate_scratch_branch}', created at
+${integrate_scratch_start}, the commit this run pinned as its upstream
+baseline. Do NOT switch branches or create new ones.
+'${integrate_scratch_dev_branch}' is moved to your work only if you succeed,
+so a failure here costs nothing.
+
+If you need to start over, reset to ${integrate_scratch_start} -- that exact
+commit, not @{u}. Every phase of this run targets it, and re-resolving a ref
+could pick up an upstream the rest of the run never saw.
 
 Integrate the following branches using a single octopus merge:
 
@@ -1633,6 +1676,120 @@ PROMPT_EOF
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Upstream baseline
+# ---------------------------------------------------------------------------
+
+# A run targets one upstream state and propagates it through the tree. That
+# only means anything if the run observes upstream once: fetching again in a
+# later phase is a second observation, and with several repos in play the
+# phases can end up targeting different snapshots, integrating and pushing a
+# combination that never existed upstream and was never tested as a set.
+#
+# So: fetch each repo once, resolve the refs that matter to concrete commits,
+# and write them down. Every later phase merges and compares against the
+# recorded commit, never a ref it resolves for itself.
+#
+# Written to a file rather than held in memory because the phases that need
+# it are not the process that establishes it -- cmd__sync and cmd__integrate
+# run as separate processes in their own tmux windows.
+BASELINE_SCHEMA=1
+baseline_file=''
+
+# Stable per repository rather than per worktree: several worktrees of one
+# repo share refs, and fetching once per worktree is the same mistake in
+# miniature.
+baseline_repo_key() {
+    local wt=$1
+    local common
+
+    common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || return 1
+    (cd "$wt" && cd "$common" && pwd -P)
+}
+
+# Fetch each distinct repo among the given worktrees once, and record what
+# origin and upstream resolved to.  Sets baseline_file and echoes the path;
+# a caller that wants both from a command substitution has to assign the
+# global itself, since the subshell's copy dies with it.
+baseline_establish() {
+    local dir=${TMPDIR:-/tmp}
+    local file
+    local -A seen=()
+    local wt key entries=''
+
+    file=$(mktemp "${dir}/x.dev-ci-baseline.XXXXXX") || return 1
+
+    for wt in "$@"
+    do
+        [[ -d $wt ]] || continue
+        key=$(baseline_repo_key "$wt") || continue
+        [[ -n ${seen[$key]+x} ]] && continue
+        seen[$key]=1
+
+        info "baseline: fetching '%s'" "$key"
+        git -C "$wt" fetch --all --quiet 2>/dev/null || true
+
+        local origin_ref upstream_ref origin_sha='' upstream_sha=''
+        origin_ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || origin_ref=''
+        upstream_ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || upstream_ref=''
+        [[ -z $origin_ref ]] && git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null && origin_ref=origin/main
+        [[ -z $upstream_ref ]] && git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null && upstream_ref=upstream/main
+
+        [[ -n $origin_ref ]] && origin_sha=$(git -C "$wt" rev-parse "$origin_ref" 2>/dev/null)
+        [[ -n $upstream_ref ]] && upstream_sha=$(git -C "$wt" rev-parse "$upstream_ref" 2>/dev/null)
+
+        entries+=$(jq -n --arg key "$key" \
+                        --arg oref "$origin_ref" --arg osha "$origin_sha" \
+                        --arg uref "$upstream_ref" --arg usha "$upstream_sha" \
+                        '{($key): {origin: {ref: $oref, commit: $osha},
+                                   upstream: {ref: $uref, commit: $usha}}}')
+        entries+=$'\n'
+    done
+
+    printf '%s' "$entries" |
+        jq -s --argjson schema "$BASELINE_SCHEMA" \
+           '{schema: $schema, repos: (add // {})}' > "$file" || return 1
+
+    baseline_file=$file
+    printf '%s' "$file"
+}
+
+# The commit a worktree's repo was pinned to for this run, for 'origin' or
+# 'upstream'.  Empty when there is no baseline or the repo has no such ref,
+# which callers treat as "fall back to resolving it live" so a partial
+# rollout degrades to today's behaviour rather than failing.
+baseline_commit() {
+    local wt=$1
+    local which=$2
+    local file=${baseline_file:-${TIMVISHER_DEV_CI_BASELINE-}}
+    local key
+
+    [[ -n $file && -f $file ]] || return 1
+    key=$(baseline_repo_key "$wt") || return 1
+
+    local sha
+    sha=$(jq -r --arg key "$key" --arg which "$which" \
+             '.repos[$key][$which].commit // ""' "$file" 2>/dev/null) || return 1
+    [[ -n $sha ]] || return 1
+    printf '%s' "$sha"
+}
+
+# The ref a worktree's repo resolved 'origin' or 'upstream' to, for messages
+# and for callers that still need a name rather than a commit.
+baseline_ref() {
+    local wt=$1
+    local which=$2
+    local file=${baseline_file:-${TIMVISHER_DEV_CI_BASELINE-}}
+    local key ref
+
+    [[ -n $file && -f $file ]] || return 1
+    key=$(baseline_repo_key "$wt") || return 1
+    ref=$(jq -r --arg key "$key" --arg which "$which" \
+             '.repos[$key][$which].ref // ""' "$file" 2>/dev/null) || return 1
+    [[ -n $ref ]] || return 1
+    printf '%s' "$ref"
+}
 
 # ---------------------------------------------------------------------------
 # Dependency farm
@@ -2322,10 +2479,11 @@ ensure_upstream_pull_worktrees() {
         fi
         seen_repos["$common_dir"]=1
 
-        git -C "$dev_dir" fetch --all --quiet 2>/dev/null || true
-
+        # No fetch here: the run established its baseline before any phase
+        # ran, and fetching again would be a second opinion about upstream.
         local upstream_ref trunk_ref
-        upstream_ref=$(resolve_upstream_trunk_ref "$dev_dir")
+        upstream_ref=$(baseline_commit "$dev_dir" upstream) ||
+            upstream_ref=$(resolve_upstream_trunk_ref "$dev_dir")
         if [[ -z $upstream_ref ]]
         then
             info "pull-upstream: no upstream remote for '%s'; skipping" "$dev_dir"
@@ -2341,7 +2499,8 @@ ensure_upstream_pull_worktrees() {
 
         if git -C "$dev_dir" merge-base --is-ancestor "$upstream_ref" "$trunk_ref" 2>/dev/null
         then
-            info "pull-upstream: '%s' already contains '%s'" "$trunk_ref" "$upstream_ref"
+            info "pull-upstream: '%s' already contains the baseline %s" \
+                 "$trunk_ref" "$(baseline_ref "$dev_dir" upstream || printf '%s' "$upstream_ref")"
             continue
         fi
 
@@ -2417,8 +2576,18 @@ sync_soft_fork_trunks() {
             continue
         fi
 
-        info "sync_trunk: pull --rebase origin/%s in '%s'" "$trunk_branch" "$trunk_wt"
-        if ! git -C "$trunk_wt" pull --rebase origin "$trunk_branch" >&2
+        # Rebase onto the run's pinned commit where there is one: a pull
+        # here would fetch, and the trunk would then sit on an upstream no
+        # other phase saw.
+        local trunk_target="origin/${trunk_branch}"
+        local trunk_pin
+        if trunk_pin=$(baseline_commit "$trunk_wt" origin)
+        then
+            trunk_target=$trunk_pin
+        fi
+
+        info "sync_trunk: rebasing '%s' onto %s" "$trunk_wt" "$trunk_target"
+        if ! git -C "$trunk_wt" rebase "$trunk_target" >&2
         then
             error "sync_trunk: pull --rebase failed in '%s'; skipping" "$trunk_wt"
             git -C "$trunk_wt" rebase --abort >&2 2>/dev/null || true
@@ -2613,7 +2782,8 @@ launch_sync_phase() {
         }
 
         info "Launching sync for '%s' in session '%s':admin" "$wt" "$session_name"
-        send_to_admin "$session_name" " '${SELF}' __sync '${wt}'"
+        send_to_admin "$session_name" \
+            " ${baseline_file:+TIMVISHER_DEV_CI_BASELINE='${baseline_file}' }'${SELF}' __sync '${wt}'"
     done
 }
 
@@ -2785,7 +2955,7 @@ launch_integrate_phase() {
             }
 
             # Build the argument list: dev_path followed by worktree paths
-            local args="'${SELF}' __integrate '${dev}'"
+            local args="${baseline_file:+TIMVISHER_DEV_CI_BASELINE='${baseline_file}' }'${SELF}' __integrate '${dev}'"
             read -ra dep_paths <<< "$deps_str"
             for dep in "${dep_paths[@]}"
             do
@@ -3396,6 +3566,28 @@ PATHS
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
 
+UPSTREAM BASELINE
+
+    A run targets one upstream state and propagates it through the tree.
+    Phase 0.4 fetches each repository once, resolves origin and upstream to
+    concrete commits, and writes them to a manifest; every later phase
+    merges and compares against the recorded commit rather than a ref it
+    resolves for itself.
+
+    Without that a run has no baseline but several, taken minutes apart, and
+    with more than one repository in play it can integrate and push a
+    combination of upstream states that never existed upstream and was never
+    tested as a set.
+
+    The manifest is a file, not a variable: cmd__sync and cmd__integrate run
+    as separate processes in their own tmux windows, and are handed its path
+    in TIMVISHER_DEV_CI_BASELINE.  The integrate scratch branch starts at the
+    recorded commit, and the integration agent is told that commit rather
+    than @{u}.
+
+    A worktree whose repo has no baseline entry falls back to resolving refs
+    live, so this degrades to the previous behaviour instead of failing.
+
 DEPENDENCY PINS
 
     A worktree pins a dependency to a tree in x.dependency-pins, naming the
@@ -3614,6 +3806,13 @@ cmd_run() {
       warn "sweep-bogus reported errors (non-fatal, continuing)"
 
     discover "$@"
+
+    # Before any phase: one fetch per repo, and the resolved commits written
+    # down. Everything after this targets the manifest, not a live ref.
+    info "Phase 0.4: establishing the upstream baseline"
+    baseline_establish "${!dev_branches[@]}" "${!all_worktrees[@]}" >/dev/null ||
+        warn "baseline: could not establish one; phases will resolve refs live"
+
     retire_merged_worktrees
     info "Found %d dev branches, %d feature worktrees" "${#dev_branches[@]}" "${#all_worktrees[@]}"
 
