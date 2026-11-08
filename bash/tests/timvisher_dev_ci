@@ -1098,6 +1098,105 @@ REPO_HOOKS_DIR=$rung_saved_repo_hooks_dir
 REPO_HOOKS_EXT_DIR=$rung_saved_repo_hooks_ext_dir
 
 # ---------------------------------------------------------------------------
+# integrate: the dev branch moves only when the whole run succeeds
+# ---------------------------------------------------------------------------
+
+# A dev integration worktree on branch 'dev' tracking local 'main' (remote '.'
+# avoids needing a real remote), plus one feature worktree per extra branch.
+make_integrate_fixture() {
+  local root=$1
+  shift
+  local repo="${root}/repo/dev"
+
+  mkdir -p "$repo" || return 1
+  "$test_git" init -q -b main "$repo" || return 1
+  "$test_git" -C "$repo" config core.hooksPath /dev/null
+  "$test_git" -C "$repo" config user.email t@t
+  "$test_git" -C "$repo" config user.name t
+  printf 'base\n' > "$repo/shared.txt"
+  "$test_git" -C "$repo" add -A
+  "$test_git" -C "$repo" commit -q -m base
+
+  # 'dev' starts behind main so a successful integrate visibly moves it.
+  "$test_git" -C "$repo" checkout -q -b dev
+  "$test_git" -C "$repo" config branch.dev.remote .
+  "$test_git" -C "$repo" config branch.dev.merge refs/heads/main
+
+  touch "$repo/x.dev-integration-branch"
+  : > "$repo/x.active-worktrees"
+
+  local name content wt
+  for name in "$@"
+  do
+    content=${name#*=}
+    name=${name%%=*}
+    wt="${root}/repo/${name}"
+    "$test_git" -C "$repo" branch -q "$name" main
+    "$test_git" -C "$repo" worktree add -q "$wt" "$name" || return 1
+    printf '%s\n' "$content" > "$wt/shared.txt"
+    "$test_git" -C "$wt" commit -q -am "$name"
+    printf '%s\n' "$wt" >> "$repo/x.active-worktrees"
+  done
+
+  printf '%s\n' "$repo"
+}
+
+scratch_branches() {
+  "$test_git" -C "$1" for-each-ref --format='%(refname:short)' \
+    'refs/heads/x.dev-ci-integrate-*'
+}
+
+# --- success: dev advances, scratch is gone ---
+run_test
+int_ok_root="$TIMVISHER_GIT_HOME/int-ok"
+int_ok_repo=$(make_integrate_fixture "$int_ok_root" "feat=feature")
+int_ok_before=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+
+if PATH="$tmpdir/mockbin:$PATH" "$script" integrate -C "$int_ok_repo" >/dev/null 2>&1
+then
+  int_ok_after=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+  int_ok_head=$("$test_git" -C "$int_ok_repo" symbolic-ref --short HEAD)
+  int_ok_content=$(cat "$int_ok_repo/shared.txt")
+  int_ok_left=$(scratch_branches "$int_ok_repo")
+
+  if [[ $int_ok_after != "$int_ok_before" ]] &&
+     [[ $int_ok_head == dev ]] &&
+     [[ $int_ok_content == feature ]] &&
+     [[ -z $int_ok_left ]]
+  then
+    pass "integrate: success advances dev and deletes the scratch branch"
+  else
+    fail "integrate success: head='${int_ok_head}' moved=$([[ $int_ok_after != "$int_ok_before" ]] && echo yes || echo no) content='${int_ok_content}' scratch='${int_ok_left}'"
+  fi
+else
+  fail "integrate success: command failed"
+fi
+
+# --- failure: dev is untouched, scratch survives for inspection ---
+run_test
+int_bad_root="$TIMVISHER_GIT_HOME/int-bad"
+int_bad_repo=$(make_integrate_fixture "$int_bad_root" "one=alpha" "two=beta")
+int_bad_before=$("$test_git" -C "$int_bad_repo" rev-parse dev)
+
+if PATH="$tmpdir/mockbin:$PATH" "$script" integrate -C "$int_bad_repo" >/dev/null 2>&1
+then
+  fail "integrate conflict: command unexpectedly succeeded"
+else
+  int_bad_after=$("$test_git" -C "$int_bad_repo" rev-parse dev)
+  int_bad_head=$("$test_git" -C "$int_bad_repo" symbolic-ref --short HEAD 2>/dev/null)
+  int_bad_left=$(scratch_branches "$int_bad_repo")
+
+  if [[ $int_bad_after == "$int_bad_before" ]] &&
+     [[ $int_bad_head == dev ]] &&
+     [[ -n $int_bad_left ]]
+  then
+    pass "integrate: a conflict leaves dev untouched and keeps the scratch branch"
+  else
+    fail "integrate conflict: dev moved=$([[ $int_bad_after != "$int_bad_before" ]] && echo yes || echo no) head='${int_bad_head}' scratch='${int_bad_left}'"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

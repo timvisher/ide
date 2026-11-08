@@ -147,6 +147,131 @@ push_to_remote() {
     fi
 }
 
+# Integration runs on a scratch branch, and the dev branch is moved to it
+# only once merge, verification and post-integrate have all passed, so a
+# failure never leaves dev at @{u} plus whichever merges happened to land.
+#
+# The switch happens inside the dev worktree rather than in a scratch
+# worktree because hook resolution derives <org>/<repo>/<branch-parts> from
+# the worktree path, so hooks would resolve differently anywhere else.
+INTEGRATE_SCRATCH_PREFIX='x.dev-ci-integrate'
+integrate_scratch_path=''
+integrate_scratch_branch=''
+integrate_scratch_dev_branch=''
+integrate_scratch_dev_head=''
+
+# Put the dev branch back where it started.  Also the EXIT trap, so a die()
+# anywhere in the run restores rather than stranding dev on the scratch.
+integrate_scratch_restore() {
+    [[ -n $integrate_scratch_branch ]] || return 0
+
+    local path=$integrate_scratch_path
+    local scratch=$integrate_scratch_branch
+    local branch=$integrate_scratch_dev_branch
+    local head=$integrate_scratch_dev_head
+
+    # Cleared first: this also runs from the EXIT trap and must not recurse.
+    integrate_scratch_branch=''
+    trap - EXIT
+
+    git -C "$path" merge --abort >/dev/null 2>&1
+    git -C "$path" reset -q --hard >/dev/null 2>&1
+
+    if ! git -C "$path" checkout --force -q "$branch"
+    then
+        error "integrate: cannot restore '%s' in '%s'; the attempt is on '%s'" \
+              "$branch" "$path" "$scratch"
+        return 1
+    fi
+
+    if ! git -C "$path" reset -q --hard "$head"
+    then
+        error "integrate: cannot reset '%s' to '%s'" "$branch" "$head"
+        return 1
+    fi
+
+    # Kept, not deleted: it is the only record of what the run produced.
+    warn "integrate: '%s' left unchanged at %s; the attempt is on scratch branch '%s'" \
+         "$branch" "${head:0:12}" "$scratch"
+}
+
+integrate_scratch_begin() {
+    local path=$1
+    local branch head upstream scratch
+
+    branch=$(git -C "$path" symbolic-ref --quiet --short HEAD) ||
+        {
+            error "integrate: no branch checked out in '%s'" "$path"
+            return 1
+        }
+
+    head=$(git -C "$path" rev-parse HEAD) || return 1
+
+    upstream=$(git -C "$path" rev-parse --abbrev-ref '@{u}') ||
+        {
+            error "integrate: '%s' (%s) tracks no upstream" "$path" "$branch"
+            return 1
+        }
+
+    scratch="${INTEGRATE_SCRATCH_PREFIX}-${branch//\//-}-$$"
+
+    # Registered before the branch exists so a death in between still restores.
+    integrate_scratch_path=$path
+    integrate_scratch_dev_branch=$branch
+    integrate_scratch_dev_head=$head
+    integrate_scratch_branch=$scratch
+    trap integrate_scratch_restore EXIT
+
+    # -B so a scratch branch orphaned by a killed run is reused, not a blocker.
+    if ! git -C "$path" checkout -q -B "$scratch" "$upstream"
+    then
+        integrate_scratch_branch=''
+        trap - EXIT
+        error "integrate: cannot start scratch branch '%s' at '%s'" "$scratch" "$upstream"
+        return 1
+    fi
+
+    # The agent is told to fall back to 'git reset --hard @{u}', and the
+    # post-merge verification compares against @{u}: both need the scratch
+    # branch to track whatever dev tracks.
+    if ! git -C "$path" branch -q --set-upstream-to "$upstream" "$scratch"
+    then
+        error "integrate: cannot point '%s' at upstream '%s'" "$scratch" "$upstream"
+        return 1
+    fi
+
+    info "integrate: integrating on scratch branch '%s' at '%s'" "$scratch" "$upstream"
+}
+
+# Advance the dev branch to the integrated tree and drop the scratch branch.
+integrate_scratch_finish() {
+    [[ -n $integrate_scratch_branch ]] || return 0
+
+    local path=$integrate_scratch_path
+    local scratch=$integrate_scratch_branch
+    local branch=$integrate_scratch_dev_branch
+
+    integrate_scratch_branch=''
+    trap - EXIT
+
+    if ! git -C "$path" checkout -q "$branch"
+    then
+        error "integrate: cannot check '%s' back out; the result is on '%s'" \
+              "$branch" "$scratch"
+        return 1
+    fi
+
+    if ! git -C "$path" reset -q --hard "$scratch"
+    then
+        error "integrate: cannot advance '%s' to '%s'" "$branch" "$scratch"
+        return 1
+    fi
+
+    git -C "$path" branch -q -D "$scratch" >/dev/null 2>&1
+
+    info "integrate: '%s' advanced to the integrated tree" "$branch"
+}
+
 # Read x.active-worktrees and emit uncommented, expanded paths.
 read_active_worktrees() {
     local file=$1
@@ -1029,11 +1154,10 @@ cmd__integrate() {
         die "git fetch failed in '%s'" "$dev_path"
     fi
 
-    info "integrate: resetting to @{u}"
-    if ! git reset --hard '@{u}'
+    if ! integrate_scratch_begin "$dev_path"
     then
         echo 'fail' > "$status_file"
-        die "git reset failed in '%s'" "$dev_path"
+        die "integrate: cannot start a scratch branch in '%s'" "$dev_path"
     fi
 
     # Ensure run-tests.sh exists before baseline test.
@@ -1105,6 +1229,13 @@ cmd__integrate() {
 
         if [[ $early_status == pass ]]
         then
+            integrate_scratch_finish || early_status=fail
+        else
+            integrate_scratch_restore
+        fi
+
+        if [[ $early_status == pass ]]
+        then
             if ! push_to_remote "$dev_path"
             then
                 early_status=fail
@@ -1124,6 +1255,7 @@ cmd__integrate() {
         local branch
         branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || {
             error "integrate: cannot resolve branch for '%s'" "$wt"
+            integrate_scratch_restore
             echo 'fail' > "$status_file"
             return 1
         }
@@ -1166,7 +1298,11 @@ baseline, that counts as passing."
 $(agent_session_contract "$status_file")
 
 You are in a dev integration worktree at ${dev_path}.
-It has been reset to the upstream tracking branch (@{u}).
+
+You are on scratch branch '${integrate_scratch_branch}', created at the
+upstream tracking branch (@{u}), which it also tracks. Do NOT switch
+branches or create new ones. '${integrate_scratch_dev_branch}' is moved to
+your work only if you succeed, so a failure here costs nothing.
 
 Integrate the following branches using a single octopus merge:
 
@@ -1268,6 +1404,18 @@ PROMPT_EOF
             error "integrate: post-integration hook failed"
             final_status=fail
         fi
+    fi
+
+    # Move the dev branch only now that the merge, the verification and
+    # post-integrate have all passed; otherwise put it back untouched.
+    # This also has to precede the push: push_to_remote pushes HEAD and
+    # reads branch.<branch>.pushRemote, so from the scratch branch it would
+    # push to a remote branch named after the scratch.
+    if [[ $final_status == pass ]]
+    then
+        integrate_scratch_finish || final_status=fail
+    else
+        integrate_scratch_restore
     fi
 
     # Push before writing the status file so the polling loop never
@@ -2263,9 +2411,8 @@ cmd_integrate_local() {
         git fetch --all ||
             die "integrate: git fetch failed in '%s'" "$dev_path"
 
-        info "integrate: resetting to @{u}"
-        git reset --hard '@{u}' ||
-            die "integrate: git reset --hard @{u} failed in '%s'" "$dev_path"
+        integrate_scratch_begin "$dev_path" ||
+            die "integrate: cannot start a scratch branch in '%s'" "$dev_path"
 
         # Generated files (default: BUILD.bazel) are DERIVED, not source: each
         # feature commits its own gazelle output in isolation, so they collide
@@ -2344,6 +2491,11 @@ cmd_integrate_local() {
             --suggestion "Add post-integrate.sh under '${REPO_HOOKS_EXT_DIR}/<org>/<repo>/<branch-parts>/'"
     fi
 
+    # A die() anywhere above reaches the EXIT trap instead, which puts dev
+    # back and keeps the scratch branch.
+    integrate_scratch_finish ||
+        die "integrate: cannot advance '%s' to the integrated tree" "$dev_path"
+
     if "$build_only"
     then
         info "integrate: done (build only, '%s')" "$dev_path"
@@ -2368,7 +2520,7 @@ SYNOPSIS
     timvisher_dev_ci hooks run [HOOK ...] [-C PATH]      # run hooks (all known if HOOK omitted)
     timvisher_dev_ci hooks run [-C PATH] -- [HOOK ...]   # `--` ends flags before hook names
     timvisher_dev_ci run-tests [-C PATH]                 # convenience for: hooks run run-tests.sh
-    timvisher_dev_ci integrate [-C PATH]                 # reset to @{u} + merge active worktrees + post-integrate (no test/agent/push)
+    timvisher_dev_ci integrate [-C PATH]                 # merge active worktrees onto @{u} + post-integrate (no test/agent/push)
     timvisher_dev_ci integrate --build-only [-C PATH]    # post-integrate only: no fetch, no reset, no merge
 
     # Misc:
@@ -2387,6 +2539,17 @@ PATHS
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
+
+SCRATCH BRANCH
+
+    Both integrate paths do their work on a scratch branch named
+    'x.dev-ci-integrate-<dev-branch>-<pid>', branched from @{u} and set to
+    track it.  The dev branch is moved to the result only once every merge,
+    the verification run and post-integrate.sh have passed.
+
+    So a failed integration leaves the dev branch exactly where it was, and
+    the half-finished attempt stays on the scratch branch for inspection
+    rather than being thrown away.  A successful one deletes the scratch.
 
 AGENT USAGE
     To run the project's full local CI suite from inside a worktree:
