@@ -1271,14 +1271,14 @@ pu_find_dev=$(make_pull_fixture puorg findrepo yes yes)
 pu_find_wt="$TIMVISHER_GIT_HOME/puorg/findrepo/pull-upstream/2026-01-01T00-00-00+0000"
 "$test_git" -C "$pu_find_dev" branch -q "pull-upstream/2026-01-01T00-00-00+0000" main
 "$test_git" -C "$pu_find_dev" worktree add -q "$pu_find_wt" "pull-upstream/2026-01-01T00-00-00+0000"
-pu_before_find=$(find_pull_upstream_worktree "$pu_find_dev" && echo found)
+pu_none_dev=$(make_pull_fixture puorg nonerepo yes yes)
 printf '%s\n' "$pu_find_wt" >> "$pu_find_dev/x.active-worktrees"
-if [[ -z $pu_before_find ]] &&
-   [[ $(find_pull_upstream_worktree "$pu_find_dev") == "$pu_find_wt" ]]
+if [[ $(find_pull_upstream_worktree "$pu_find_dev") == "$pu_find_wt" ]] &&
+   ! find_pull_upstream_worktree "$pu_none_dev" >/dev/null
 then
-  pass "find_pull_upstream_worktree: finds a registered pull-upstream worktree, nothing before"
+  pass "find_pull_upstream_worktree: finds a registered worktree, and none when there is none"
 else
-  fail "find_pull_upstream_worktree: before='${pu_before_find}' after='$(find_pull_upstream_worktree "$pu_find_dev")'"
+  fail "find_pull_upstream_worktree: registered='$(find_pull_upstream_worktree "$pu_find_dev")' none='$(find_pull_upstream_worktree "$pu_none_dev")'"
 fi
 
 # ntmux3's second form takes a branch, not the remote-tracking ref that
@@ -1288,14 +1288,52 @@ run_test
 pu_ntmux_args="$tmpdir/pu-ntmux-args"
 : > "$pu_ntmux_args"
 pu_stack_dev=$(make_pull_fixture puorg stackrepo yes yes)
-run_ntmux3() { printf '%s\n' "$*" >> "$pu_ntmux_args"; mkdir -p "${pu_stack_dev%/dev}/pull-upstream/x"; }
-create_pull_upstream_worktree "$pu_stack_dev" origin/main >/dev/null 2>&1
-unset -f run_ntmux3
-if grep -qE ' main$' "$pu_ntmux_args" && ! grep -q 'origin/main' "$pu_ntmux_args"
+# Run with TIMVISHER_GIT_HOME unset: the worktree path it returns is built
+# from the git home too, and the real environment does not export one.
+pu_stack_out=$(
+  unset TIMVISHER_GIT_HOME
+  mkdir -p "${HOME}/git/puorg/stackrepo/dev"
+  run_ntmux3() {
+    printf '%s\n' "$*" >> "$pu_ntmux_args"
+    # $2 is "<org>/<repo>/<branch>"; materialize it so the -d check passes.
+    mkdir -p "${HOME}/git/$2"
+  }
+  create_pull_upstream_worktree "${HOME}/git/puorg/stackrepo/dev" origin/main 2>/dev/null
+)
+if grep -qE ' main$' "$pu_ntmux_args" &&
+   ! grep -q 'origin/main' "$pu_ntmux_args" &&
+   [[ $pu_stack_out == "${HOME}/git/puorg/stackrepo/pull-upstream/"* ]]
 then
-  pass "create_pull_upstream_worktree: stacks on the branch, not the remote-tracking ref"
+  pass "create_pull_upstream_worktree: stacks on the branch and returns an absolute worktree path"
 else
-  fail "pull-upstream stack base: ntmux3 got '$(cat "$pu_ntmux_args")'"
+  fail "pull-upstream stack base: ntmux3 got '$(cat "$pu_ntmux_args")' wt='${pu_stack_out}'"
+fi
+
+# A worktree created by a run that died before registering it must be
+# adopted, not duplicated.  This is the state run 3 against agent-shell-plus
+# actually left behind.
+run_test
+pu_orphan_dev=$(make_pull_fixture puorg orphanrepo yes yes)
+pu_orphan_wt="$TIMVISHER_GIT_HOME/puorg/orphanrepo/pull-upstream/2026-02-02T00-00-00+0000"
+"$test_git" -C "$pu_orphan_dev" branch -q "pull-upstream/2026-02-02T00-00-00+0000" main
+"$test_git" -C "$pu_orphan_dev" worktree add -q "$pu_orphan_wt" "pull-upstream/2026-02-02T00-00-00+0000"
+if [[ $(find_pull_upstream_worktree "$pu_orphan_dev") == "$pu_orphan_wt" ]]
+then
+  pass "find_pull_upstream_worktree: adopts an unregistered pull-upstream worktree"
+else
+  fail "pull-upstream adopt: got '$(find_pull_upstream_worktree "$pu_orphan_dev")'"
+fi
+
+run_test
+declare -A dev_branches=(["$pu_orphan_dev"]="")
+declare -A all_worktrees=()
+register_active_worktree "$pu_orphan_dev" "$pu_orphan_wt"
+register_active_worktree "$pu_orphan_dev" "$pu_orphan_wt"
+if (( 1 == $(grep -cxF -- "$pu_orphan_wt" "$pu_orphan_dev/x.active-worktrees") ))
+then
+  pass "register_active_worktree: registering twice leaves one entry"
+else
+  fail "register idempotence: count=$(grep -cxF -- "$pu_orphan_wt" "$pu_orphan_dev/x.active-worktrees")"
 fi
 
 # Orchestration: skip / create / reuse.  ntmux3 and claudeshot cannot run in

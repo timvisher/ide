@@ -1689,6 +1689,27 @@ find_pull_upstream_worktree() {
         fi
     done < <(read_active_worktrees "${dev_dir}/x.active-worktrees")
 
+    # Nothing registered.  A worktree can still exist unregistered, if a
+    # previous run created one and then failed before registering it; adopt
+    # it rather than stacking a second pull-upstream branch beside it.
+    local line current=""
+    while IFS= read -r line
+    do
+        case $line in
+            "worktree "*)
+                current=${line#worktree }
+                ;;
+            "branch refs/heads/${PULL_UPSTREAM_PREFIX}/"*)
+                if [[ -n $current ]]
+                then
+                    warn "pull-upstream: adopting unregistered worktree '%s'" "$current"
+                    printf '%s' "$current"
+                    return 0
+                fi
+                ;;
+        esac
+    done < <(git -C "$dev_dir" worktree list --porcelain 2>/dev/null)
+
     return 1
 }
 
@@ -1698,6 +1719,13 @@ register_active_worktree() {
     local dev_dir=$1
     local wt=$2
     local file="${dev_dir}/x.active-worktrees"
+
+    # Idempotent: an adopted worktree is registered on the run that finds it,
+    # and must not be appended again on the next one.
+    if [[ -f $file ]] && grep -qxF -- "$wt" "$file"
+    then
+        return 0
+    fi
 
     printf '%s\n' "$wt" >> "$file" ||
         {
@@ -1724,7 +1752,7 @@ create_pull_upstream_worktree() {
     # Matches the stamp the hand-made branches already use.
     stamp=$(date -u +%Y-%m-%dT%H-%M-%S%z) || return 1
     branch="${PULL_UPSTREAM_PREFIX}/${stamp}"
-    wt="${TIMVISHER_GIT_HOME}/${org_repo}/${branch}"
+    wt="$(canonical_git_home)${org_repo}/${branch}"
 
     # The second ntmux3 form stacks a new worktree on a branch-ish; the
     # trunk is the base because the merge has to land somewhere that can
@@ -1865,8 +1893,9 @@ ensure_upstream_pull_worktrees() {
             info "pull-upstream: reusing '%s'" "$wt"
         else
             wt=$(create_pull_upstream_worktree "$dev_dir" "$trunk_ref") || continue
-            register_active_worktree "$dev_dir" "$wt" || continue
         fi
+
+        register_active_worktree "$dev_dir" "$wt" || continue
 
         merge_upstream_into "$wt" "$upstream_ref" || continue
     done
