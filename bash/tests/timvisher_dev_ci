@@ -1252,6 +1252,19 @@ else
   fail "worktree_org_repo: got '$(worktree_org_repo "$pu_ref_wt")'"
 fi
 
+# The suite exports TIMVISHER_GIT_HOME; the real environment does not, so the
+# fallback is the case that actually ships.
+run_test
+pu_fb_dir="$HOME/git/puorg/fallbackrepo/dev"
+mkdir -p "$pu_fb_dir"
+pu_fb_out=$(unset TIMVISHER_GIT_HOME; worktree_org_repo "$pu_fb_dir")
+if [[ $pu_fb_out == puorg/fallbackrepo ]]
+then
+  pass "worktree_org_repo: falls back to \$HOME/git when TIMVISHER_GIT_HOME is unset"
+else
+  fail "worktree_org_repo fallback: got '${pu_fb_out}'"
+fi
+
 # find_pull_upstream_worktree spots a registered worktree on a pull-upstream branch.
 run_test
 pu_find_dev=$(make_pull_fixture puorg findrepo yes yes)

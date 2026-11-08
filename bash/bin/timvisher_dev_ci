@@ -1626,10 +1626,12 @@ worktree_org_repo() {
     local path=$1
     local home resolved rel
 
-    home=$(cd "$TIMVISHER_GIT_HOME" && pwd -P) || return 1
+    # canonical_git_home carries the TIMVISHER_GIT_HOME fallback and the
+    # trailing slash; the variable is normally unset outside the tests.
+    home=$(canonical_git_home)
     resolved=$(cd "$path" && pwd -P) || return 1
 
-    rel=${resolved#"${home}/"}
+    rel=${resolved#"${home}"}
     [[ $rel != "$resolved" ]] || return 1
 
     local org=${rel%%/*}
