@@ -1281,6 +1281,23 @@ else
   fail "find_pull_upstream_worktree: before='${pu_before_find}' after='$(find_pull_upstream_worktree "$pu_find_dev")'"
 fi
 
+# ntmux3's second form takes a branch, not the remote-tracking ref that
+# resolve_retire_merge_ref returns; passing origin/main made it refuse with
+# timvisher_git_stack_base_missing.
+run_test
+pu_ntmux_args="$tmpdir/pu-ntmux-args"
+: > "$pu_ntmux_args"
+pu_stack_dev=$(make_pull_fixture puorg stackrepo yes yes)
+run_ntmux3() { printf '%s\n' "$*" >> "$pu_ntmux_args"; mkdir -p "${pu_stack_dev%/dev}/pull-upstream/x"; }
+create_pull_upstream_worktree "$pu_stack_dev" origin/main >/dev/null 2>&1
+unset -f run_ntmux3
+if grep -qE ' main$' "$pu_ntmux_args" && ! grep -q 'origin/main' "$pu_ntmux_args"
+then
+  pass "create_pull_upstream_worktree: stacks on the branch, not the remote-tracking ref"
+else
+  fail "pull-upstream stack base: ntmux3 got '$(cat "$pu_ntmux_args")'"
+fi
+
 # Orchestration: skip / create / reuse.  ntmux3 and claudeshot cannot run in
 # the suite, so stand in for the two functions that reach them and record.
 # Recorded through files: create_pull_upstream_worktree is called in a

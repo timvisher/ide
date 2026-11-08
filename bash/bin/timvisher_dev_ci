@@ -1712,7 +1712,8 @@ register_active_worktree() {
 
 create_pull_upstream_worktree() {
     local dev_dir=$1
-    local stamp org_repo branch wt
+    local trunk_ref=$2
+    local stamp org_repo branch wt trunk_branch
 
     org_repo=$(worktree_org_repo "$dev_dir") ||
         {
@@ -1727,9 +1728,13 @@ create_pull_upstream_worktree() {
 
     # The second ntmux3 form stacks a new worktree on a branch-ish; the
     # trunk is the base because the merge has to land somewhere that can
-    # become a PR into it.
-    info "pull-upstream: creating '%s/%s' on the trunk" "$org_repo" "$branch"
-    run_ntmux3 -d "${org_repo}/${branch}" "$2" ||
+    # become a PR into it.  ntmux3 wants the branch, not the
+    # remote-tracking ref resolve_retire_merge_ref hands back, and Phase
+    # 0.5 has already brought that branch up to its remote.
+    trunk_branch=${trunk_ref#*/}
+
+    info "pull-upstream: creating '%s/%s' on '%s'" "$org_repo" "$branch" "$trunk_branch"
+    run_ntmux3 -d "${org_repo}/${branch}" "$trunk_branch" ||
         {
             error "pull-upstream: ntmux3 could not stack '%s/%s'" "$org_repo" "$branch"
             return 1
