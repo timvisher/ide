@@ -243,6 +243,12 @@ integrate_scratch_begin() {
     info "integrate: integrating on scratch branch '%s' at '%s'" "$scratch" "$upstream"
 }
 
+is_pull_upstream_worktree() {
+    local branch
+    branch=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
+    [[ $branch == "${PULL_UPSTREAM_PREFIX}/"* ]]
+}
+
 # Advance the dev branch to the integrated tree and drop the scratch branch.
 integrate_scratch_finish() {
     [[ -n $integrate_scratch_branch ]] || return 0
@@ -1619,6 +1625,11 @@ PROMPT_EOF
 # on the same footing as the rest of the pipeline.
 PULL_UPSTREAM_PREFIX='pull-upstream'
 
+# Its own status file.  This phase runs inline, before the polling phases,
+# inside a worktree those phases then poll; sharing STATUS_FILENAME let the
+# two see each other's verdicts.
+PULL_UPSTREAM_STATUS_FILENAME=x.dev-ci-pull-upstream.status
+
 # "<org>/<repo>" for a worktree, from its position under $TIMVISHER_GIT_HOME.
 # ntmux3 addresses worktrees the same way, so the layout is the shared
 # contract rather than something re-derived from the remote.
@@ -1784,7 +1795,7 @@ create_pull_upstream_worktree() {
 merge_upstream_into() {
     local wt=$1
     local upstream_ref=$2
-    local status_file="${wt}/${STATUS_FILENAME}"
+    local status_file="${wt}/${PULL_UPSTREAM_STATUS_FILENAME}"
 
     if git -C "$wt" merge --no-edit "$upstream_ref"
     then
@@ -1796,7 +1807,15 @@ merge_upstream_into() {
 
     local test_instruction="No run-tests.sh is available, so skip testing."
     local -a hooks=()
-    readarray -d '' -t hooks < <(find_hooks "$wt" "run-tests.sh")
+    # find_hooks dies unless the worktree's context was resolved first, and it
+    # runs in a process substitution, so the death is silent and the agent
+    # would be told to skip the tests this phase exists to keep green.
+    if worktree_context "$wt" 2>/dev/null
+    then
+        readarray -d '' -t hooks < <(find_hooks "$wt" "run-tests.sh")
+    else
+        warn "pull-upstream: cannot resolve hooks for '%s'" "$wt"
+    fi
     if (( 0 < ${#hooks[@]} ))
     then
         test_instruction="Then run each of these test hooks in order and make them pass:
@@ -2136,6 +2155,17 @@ read_status() {
 launch_sync_phase() {
     for wt in "${!all_worktrees[@]}"
     do
+        # A pull-upstream worktree carries one merge commit and tracks the
+        # trunk, so 'git pull --rebase' would replay it onto the trunk and
+        # drop it -- silently undoing the merge Phase 0.6 just made.  It is
+        # already current by construction; record it done and leave it be.
+        if is_pull_upstream_worktree "$wt"
+        then
+            info "sync: skipping pull-upstream worktree '%s'" "$wt"
+            echo 'pass' > "${wt}/${STATUS_FILENAME}"
+            continue
+        fi
+
         local session_name
         session_name=$(ensure_session "$wt") || {
             error "Cannot create session for '%s'; marking fail" "$wt"

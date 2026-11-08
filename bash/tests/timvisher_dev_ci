@@ -1336,6 +1336,45 @@ else
   fail "register idempotence: count=$(grep -cxF -- "$pu_orphan_wt" "$pu_orphan_dev/x.active-worktrees")"
 fi
 
+# The sync phase must not touch a pull-upstream worktree: it tracks the
+# trunk and carries a merge commit, so pull --rebase would drop the merge.
+run_test
+pu_sync_dev=$(make_pull_fixture puorg syncrepo yes yes)
+pu_sync_wt="$TIMVISHER_GIT_HOME/puorg/syncrepo/pull-upstream/2026-03-03T00-00-00+0000"
+"$test_git" -C "$pu_sync_dev" branch -q "pull-upstream/2026-03-03T00-00-00+0000" main
+"$test_git" -C "$pu_sync_dev" worktree add -q "$pu_sync_wt" "pull-upstream/2026-03-03T00-00-00+0000"
+if is_pull_upstream_worktree "$pu_sync_wt" && ! is_pull_upstream_worktree "$pu_sync_dev"
+then
+  pass "is_pull_upstream_worktree: true for the pull-upstream branch, false for dev"
+else
+  fail "is_pull_upstream_worktree: wt=$(is_pull_upstream_worktree "$pu_sync_wt" && echo y || echo n) dev=$(is_pull_upstream_worktree "$pu_sync_dev" && echo y || echo n)"
+fi
+
+run_test
+declare -A all_worktrees=(["$pu_sync_wt"]=1)
+pu_sync_sessions="$tmpdir/pu-sync-sessions"
+: > "$pu_sync_sessions"
+ensure_session() { printf '%s\n' "$1" >> "$pu_sync_sessions"; printf 'sess'; }
+send_to_admin() { :; }
+launch_sync_phase >/dev/null 2>&1
+unset -f ensure_session send_to_admin
+if [[ ! -s $pu_sync_sessions ]] &&
+   [[ $(cat "${pu_sync_wt}/x.dev-ci.status" 2>/dev/null) == pass ]]
+then
+  pass "launch_sync_phase: skips a pull-upstream worktree and marks it done"
+else
+  fail "sync skip: sessions='$(cat "$pu_sync_sessions")' status='$(cat "${pu_sync_wt}/x.dev-ci.status" 2>/dev/null)'"
+fi
+
+run_test
+if [[ $(grep -c 'PULL_UPSTREAM_STATUS_FILENAME' "$script") -ge 2 ]] &&
+   ! grep -q 'status_file="${wt}/${STATUS_FILENAME}"' "$script"
+then
+  pass "merge_upstream_into: uses its own status file, not the polled one"
+else
+  fail "pull-upstream status file: still shares STATUS_FILENAME"
+fi
+
 # Orchestration: skip / create / reuse.  ntmux3 and claudeshot cannot run in
 # the suite, so stand in for the two functions that reach them and record.
 # Recorded through files: create_pull_upstream_worktree is called in a
