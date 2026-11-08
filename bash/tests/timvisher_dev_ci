@@ -1903,6 +1903,79 @@ else
   fail "absent repo pin: overrides=${#pn_absent[@]} farm='${pn_absent_farm}'"
 fi
 
+# retire_merged_worktrees: a branch that has landed in its retirement ref
+# should be commented out of x.active-worktrees.
+run_test
+rt_dev="$TIMVISHER_GIT_HOME/rtorg/rtrepo/dev"
+rt_landed="$TIMVISHER_GIT_HOME/rtorg/rtrepo/landed"
+rt_live="$TIMVISHER_GIT_HOME/rtorg/rtrepo/live"
+mkdir -p "$rt_dev"
+"$test_git" init -q -b main "$rt_dev"
+"$test_git" -C "$rt_dev" config core.hooksPath /dev/null
+"$test_git" -C "$rt_dev" config user.email t@t
+"$test_git" -C "$rt_dev" config user.name t
+"$test_git" -C "$rt_dev" commit -q --allow-empty -m base
+"$test_git" -C "$rt_dev" branch -q landed
+"$test_git" -C "$rt_dev" commit -q --allow-empty -m later
+"$test_git" -C "$rt_dev" update-ref refs/remotes/origin/main "$("$test_git" -C "$rt_dev" rev-parse HEAD)"
+"$test_git" -C "$rt_dev" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+"$test_git" -C "$rt_dev" branch -q live
+"$test_git" -C "$rt_dev" worktree add -q "$rt_landed" landed
+"$test_git" -C "$rt_dev" worktree add -q "$rt_live" live
+"$test_git" -C "$rt_live" commit -q --allow-empty -m "not yet landed"
+touch "$rt_dev/x.timvisher_git.soft-fork" "$rt_landed/x.timvisher_git.soft-fork" "$rt_live/x.timvisher_git.soft-fork"
+printf '%s\n%s\n' "$rt_landed" "$rt_live" > "$rt_dev/x.active-worktrees"
+
+declare -A dev_branches=(["$rt_dev"]="$rt_landed $rt_live")
+declare -A all_worktrees=(["$rt_landed"]=1 ["$rt_live"]=1)
+retire_merged_worktrees >/dev/null 2>&1
+
+rt_landed_line=$(grep -cxF -- "$rt_landed" "$rt_dev/x.active-worktrees")
+rt_landed_commented=$(grep -cxF -- "# $rt_landed" "$rt_dev/x.active-worktrees")
+rt_live_line=$(grep -cxF -- "$rt_live" "$rt_dev/x.active-worktrees")
+
+if (( rt_landed_line == 0 )) && (( rt_landed_commented == 1 )) && (( rt_live_line == 1 ))
+then
+  pass "retire_merged_worktrees: comments out a landed branch, keeps a live one"
+else
+  fail "retire: landed-live=${rt_landed_line} landed-commented=${rt_landed_commented} live=${rt_live_line}; file: $(tr '\n' '|' < "$rt_dev/x.active-worktrees")"
+fi
+
+# The real x.active-worktrees entries are in tilde form, and the real git
+# home is under $HOME so ${wt/#$HOME/~} actually converts. The fixture above
+# cannot exercise that: its git home is a tmpdir outside $HOME.
+run_test
+rt2_home="$HOME/git/rt2org/rt2repo"
+rt2_dev="$rt2_home/dev"
+rt2_landed="$rt2_home/timvisher/landed-with-slash"
+mkdir -p "$rt2_dev"
+"$test_git" init -q -b main "$rt2_dev"
+"$test_git" -C "$rt2_dev" config core.hooksPath /dev/null
+"$test_git" -C "$rt2_dev" config user.email t@t
+"$test_git" -C "$rt2_dev" config user.name t
+"$test_git" -C "$rt2_dev" commit -q --allow-empty -m base
+"$test_git" -C "$rt2_dev" branch -q timvisher/landed-with-slash
+"$test_git" -C "$rt2_dev" commit -q --allow-empty -m later
+"$test_git" -C "$rt2_dev" update-ref refs/remotes/origin/main "$("$test_git" -C "$rt2_dev" rev-parse HEAD)"
+"$test_git" -C "$rt2_dev" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+"$test_git" -C "$rt2_dev" worktree add -q "$rt2_landed" timvisher/landed-with-slash
+touch "$rt2_dev/x.timvisher_git.soft-fork" "$rt2_landed/x.timvisher_git.soft-fork"
+
+# written exactly as the real file does: tilde form
+printf '~/git/rt2org/rt2repo/timvisher/landed-with-slash\n' > "$rt2_dev/x.active-worktrees"
+
+declare -A dev_branches=(["$rt2_dev"]="$rt2_landed")
+declare -A all_worktrees=(["$rt2_landed"]=1)
+retire_merged_worktrees >/dev/null 2>&1
+
+rt2_after=$(cat "$rt2_dev/x.active-worktrees")
+if [[ $rt2_after == '# ~/git/rt2org/rt2repo/timvisher/landed-with-slash' ]]
+then
+  pass "retire_merged_worktrees: retires a tilde-form entry under \$HOME"
+else
+  fail "retire tilde form: file is '${rt2_after}'"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

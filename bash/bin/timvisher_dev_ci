@@ -906,7 +906,11 @@ retire_merged_worktrees() {
 
                 # Comment out the line in x.active-worktrees.
                 # The file may use ~/... or absolute paths; match either form.
-                local wt_home_relative="${wt/#${HOME}/~}"
+                # The tilde must be escaped: bash tilde-expands the
+                # replacement, so an unescaped one puts $HOME back and this
+                # comes out identical to $wt -- leaving both sed expressions
+                # below the same and every tilde-form entry unmatched.
+                local wt_home_relative="${wt/#${HOME}/\~}"
                 local escaped_wt escaped_home_rel
                 escaped_wt=$(printf '%s' "$wt" | sed 's/[&/\]/\\&/g')
                 escaped_home_rel=$(printf '%s' "$wt_home_relative" | sed 's/[&/\]/\\&/g')
