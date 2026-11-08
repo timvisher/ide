@@ -611,7 +611,18 @@ run_hooks() {
     for hook_path in "${resolved[@]}"
     do
         info "hook: running '%s'" "$hook_path"
-        (cd "$worktree_path" && bash "$hook_path") || return $?
+
+        # Injected for the hook only.  Resolution above already ran against
+        # the real git home, which is what derives <org>/<repo>/<branch-parts>
+        # -- pointing the variable at the farm any earlier would send hook
+        # resolution looking for the worktree somewhere it is not.
+        if [[ -n $hook_git_home ]]
+        then
+            info "hook: dependencies resolved through '%s'" "$hook_git_home"
+            (cd "$worktree_path" && TIMVISHER_GIT_HOME="$hook_git_home" bash "$hook_path") || return $?
+        else
+            (cd "$worktree_path" && bash "$hook_path") || return $?
+        fi
     done
 }
 
@@ -1611,6 +1622,121 @@ PROMPT_EOF
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dependency farm
+# ---------------------------------------------------------------------------
+
+# Hooks address their dependencies through ${TIMVISHER_GIT_HOME}/<org>/<repo>/…
+# -- see the agent-shell-plus hook's acp_root and shell_maker_root.  So which
+# tree a dependency *means* can be decided without touching any hook, by
+# pointing that variable at a tree of symlinks: unoverridden paths lead back
+# to the real ~/git, overridden ones lead wherever the caller says.
+#
+# That is what lets a feature branch pin a dependency to its own branch and be
+# tested against it, instead of waiting for the pin to land in the
+# dependency's trunk first.
+#
+# It holds only as long as nothing resolves symlinks: a hook reaching for
+# pwd -P, realpath or readlink -f on a dependency escapes back to the real
+# tree and silently tests the wrong thing.  bin/test uses plain `pwd`, which
+# keeps the logical path, and farm_assert_preserves_symlinks checks that
+# rather than trusting it.
+# Set by a caller that has built a farm for the worktree whose hooks it is
+# about to run; empty means hooks see the real git home and nothing changes.
+hook_git_home=''
+
+# Replace a symlinked directory in the farm with a real one holding a symlink
+# per child, so a descendant can be overridden without losing its siblings.
+farm_explode() {
+    local dir=$1
+    local target child
+
+    if [[ -L $dir ]]
+    then
+        target=$(readlink "$dir") || return 1
+        rm -f "$dir" || return 1
+        mkdir -p "$dir" || return 1
+        for child in "$target"/*
+        do
+            [[ -e $child ]] || continue
+            ln -sfn "$child" "${dir}/$(basename "$child")" || return 1
+        done
+    elif [[ ! -d $dir ]]
+    then
+        mkdir -p "$dir" || return 1
+    fi
+}
+
+# Build a farm at $1 mirroring the real git home, with each remaining
+# argument an override of the form <relative/path>=<target>.
+farm_build() {
+    local root=$1
+    shift
+    local home org override rel target parent part walked
+
+    home=$(canonical_git_home)
+    home=${home%/}
+
+    rm -rf -- "${root:?farm_build needs a root}" || return 1
+    mkdir -p "$root" || return 1
+
+    for org in "$home"/*
+    do
+        [[ -d $org ]] || continue
+        ln -sfn "$org" "${root}/$(basename "$org")" || return 1
+    done
+
+    for override in "$@"
+    do
+        rel=${override%%=*}
+        target=${override#*=}
+
+        [[ -d $target ]] ||
+            {
+                error "farm: override target '%s' does not exist" "$target"
+                return 1
+            }
+
+        # Every directory above the override has to become real before the
+        # leaf can be replaced, or the override would be written through a
+        # symlink into the actual ~/git.
+        walked=$root
+        parent=$(dirname "$rel")
+        if [[ $parent != . ]]
+        then
+            local -a parts=()
+            IFS=/ read -ra parts <<<"$parent"
+            for part in "${parts[@]}"
+            do
+                walked="${walked}/${part}"
+                farm_explode "$walked" || return 1
+            done
+        fi
+
+        rm -rf -- "${root:?}/${rel:?}" || return 1
+        ln -sfn "$target" "${root}/${rel}" || return 1
+    done
+}
+
+# A farm is only worth building when something is actually overridden;
+# otherwise the real git home already says the right thing and standing a
+# mirror in front of it buys nothing but a way to be wrong.
+farm_required() {
+    (( 0 < $# ))
+}
+
+# Guard the farm's one load-bearing assumption.  Cheap, and it fails loudly
+# rather than producing a green run against the wrong tree.
+farm_assert_preserves_symlinks() {
+    local root=$1 rel=$2 expected=$3
+    local seen
+
+    seen=$(cd "${root}/${rel}" 2>/dev/null && pwd) || return 1
+    [[ $seen == "${root}/${rel}" ]] || return 1
+    [[ -n $expected ]] || return 0
+    [[ $(cd "${root}/${rel}" && pwd -P) == "$(cd "$expected" && pwd -P)" ]]
+}
 
 # ---------------------------------------------------------------------------
 # Verification cache
@@ -3158,6 +3284,28 @@ PATHS
       - Inside a worktree under $TIMVISHER_GIT_HOME: scopes the pipeline to
         that worktree's root (resolved via `git rev-parse --show-toplevel`,
         so subdirs of a worktree work too).
+
+DEPENDENCY FARM
+
+    Hooks address their dependencies through ${TIMVISHER_GIT_HOME}/<org>/
+    <repo>/..., so which tree a dependency MEANS can be decided without
+    editing any hook: point that variable at a tree of symlinks where
+    unoverridden paths lead back to the real git home and overridden ones
+    lead wherever the caller says.
+
+    That is what lets a feature branch pin a dependency to its own branch
+    and be tested against it, rather than waiting for the pin to land in
+    the dependency's trunk first.
+
+    The farm is injected for the hook process only.  Hook resolution runs
+    first, against the real git home, because that is what derives
+    <org>/<repo>/<branch-parts> -- a farm in scope any earlier would send
+    resolution looking for the worktree somewhere it is not.
+
+    It holds only as long as nothing resolves symlinks.  A hook reaching
+    for pwd -P, realpath or readlink -f on a dependency escapes back to the
+    real tree and silently tests the wrong thing.  bin/test uses plain
+    `pwd`, which keeps the logical path.
 
 VERIFICATION CACHE
 

@@ -1676,6 +1676,129 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# dependency farm
+# ---------------------------------------------------------------------------
+
+# A real git home with two orgs, one of which has a repo carrying both a
+# trunk and a pinned branch.
+fm_home="$TIMVISHER_GIT_HOME"
+mkdir -p "$fm_home/fmorg/dep/main" "$fm_home/fmorg/dep/pinned" \
+         "$fm_home/fmorg/other/main" "$fm_home/fmother/thing/main"
+printf 'trunk\n'  > "$fm_home/fmorg/dep/main/marker"
+printf 'pinned\n' > "$fm_home/fmorg/dep/pinned/marker"
+printf 'other\n'  > "$fm_home/fmorg/other/main/marker"
+printf 'thing\n'  > "$fm_home/fmother/thing/main/marker"
+fm_root="$tmpdir/farm"
+
+run_test
+farm_build "$fm_root" "fmorg/dep/main=$fm_home/fmorg/dep/pinned"
+fm_overridden=$(cat "$fm_root/fmorg/dep/main/marker" 2>/dev/null)
+fm_sibling=$(cat "$fm_root/fmorg/other/main/marker" 2>/dev/null)
+fm_otherorg=$(cat "$fm_root/fmother/thing/main/marker" 2>/dev/null || echo MISSING)
+if [[ $fm_overridden == pinned ]] && [[ $fm_sibling == other ]] && [[ $fm_otherorg != MISSING ]]
+then
+  pass "farm_build: overrides one repo path, leaves siblings and other orgs reachable"
+else
+  fail "farm: overridden='${fm_overridden}' sibling='${fm_sibling}' otherorg='${fm_otherorg}'"
+fi
+
+# The override must not be written through a symlink into the real git home.
+run_test
+fm_real_trunk=$(cat "$fm_home/fmorg/dep/main/marker" 2>/dev/null)
+if [[ $fm_real_trunk == trunk ]]
+then
+  pass "farm_build: the real git home is untouched by an override"
+else
+  fail "farm leaked into the real home: '${fm_real_trunk}'"
+fi
+
+# The whole mechanism rests on a farm path staying a farm path.
+run_test
+if farm_assert_preserves_symlinks "$fm_root" "fmorg/dep/main" "$fm_home/fmorg/dep/pinned"
+then
+  pass "farm_assert_preserves_symlinks: a logical cd keeps the farm path and lands on the pin"
+else
+  fail "farm symlink preservation: cd gave '$(cd "$fm_root/fmorg/dep/main" && pwd)'"
+fi
+
+# Rebuilding is idempotent, and dropping the override restores the trunk.
+run_test
+farm_build "$fm_root" "fmorg/dep/main=$fm_home/fmorg/dep/pinned"
+fm_again=$(cat "$fm_root/fmorg/dep/main/marker" 2>/dev/null)
+farm_build "$fm_root"
+fm_cleared=$(cat "$fm_root/fmorg/dep/main/marker" 2>/dev/null)
+if [[ $fm_again == pinned ]] && [[ $fm_cleared == trunk ]]
+then
+  pass "farm_build: rebuilds idempotently and clears an override when it is dropped"
+else
+  fail "farm rebuild: again='${fm_again}' cleared='${fm_cleared}'"
+fi
+
+# No overrides means no farm: the real git home already says the right thing.
+run_test
+if ! farm_required && farm_required "fmorg/dep/main=$fm_home/fmorg/dep/pinned"
+then
+  pass "farm_required: only when something is actually overridden"
+else
+  fail "farm_required: empty=$(farm_required && echo y || echo n) with=$(farm_required x=y && echo y || echo n)"
+fi
+
+# A missing target is a hard error, not a dangling symlink nobody notices.
+run_test
+fm_bad_rc=0
+farm_build "$fm_root" "fmorg/dep/main=$tmpdir/does-not-exist" >/dev/null 2>&1 || fm_bad_rc=$?
+if (( fm_bad_rc != 0 ))
+then
+  pass "farm_build: refuses an override whose target does not exist"
+else
+  fail "farm bad target: rc=${fm_bad_rc}"
+fi
+
+# run_hooks hands the farm to the hook and nothing else: resolution already
+# happened against the real git home, which is what derives org/repo/branch.
+run_test
+fi_wt="$TIMVISHER_GIT_HOME/fiorg/firepo/main"
+mkdir -p "$fi_wt"
+"$test_git" init -q -b main "$fi_wt"
+"$test_git" -C "$fi_wt" config core.hooksPath /dev/null
+fi_hook_dir="$REPO_HOOKS_EXT_DIR/fiorg/firepo"
+mkdir -p "$fi_hook_dir"
+printf '#!/usr/bin/env bash\nprintf "GITHOME=%%s\\n" "${TIMVISHER_GIT_HOME:-<unset>}"\n' \
+  > "$fi_hook_dir/run-tests.sh"
+chmod +x "$fi_hook_dir/run-tests.sh"
+_worktree_context[$(worktree_context_key "$fi_wt")]=$(
+  jq -n '{timvisher_git: {repo: "firepo", branchPath: "main"},
+          timvisher_gh: {me: "fiorg", forkNetwork: {mainOwner: "fiorg"}}}')
+
+hook_git_home=''
+fi_plain=$(run_hooks "$fi_wt" "run-tests.sh" 2>/dev/null | grep '^GITHOME=')
+hook_git_home="$fm_root"
+fi_farmed=$(run_hooks "$fi_wt" "run-tests.sh" 2>/dev/null | grep '^GITHOME=')
+hook_git_home=''
+fi_after=$(run_hooks "$fi_wt" "run-tests.sh" 2>/dev/null | grep '^GITHOME=')
+
+if [[ $fi_plain == "GITHOME=${TIMVISHER_GIT_HOME}" ]] &&
+   [[ $fi_farmed == "GITHOME=${fm_root}" ]] &&
+   [[ $fi_after == "$fi_plain" ]]
+then
+  pass "run_hooks: a hook sees the farm when one is set, and the real home otherwise"
+else
+  fail "hook git home: plain='${fi_plain}' farmed='${fi_farmed}' after='${fi_after}'"
+fi
+
+# Resolution must not follow the farm: the worktree does not live there.
+run_test
+hook_git_home="$fm_root"
+readarray -d '' -t fi_resolved < <(find_hooks "$fi_wt" "run-tests.sh")
+hook_git_home=''
+if (( 1 == ${#fi_resolved[@]} )) && [[ ${fi_resolved[0]} == "$fi_hook_dir/run-tests.sh" ]]
+then
+  pass "find_hooks: unaffected by a farm, since hooks are not addressed through it"
+else
+  fail "resolution under farm: found ${#fi_resolved[@]}: ${fi_resolved[*]}"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
