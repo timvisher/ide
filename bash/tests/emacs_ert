@@ -4,10 +4,12 @@ tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
 
+# Activate packages the way startup does instead of requiring package:
+# Emacs 32's activation no longer loads package.el, so a suite that
+# requires it hides init.el code that only works when it's loaded.
 emacs --batch \
   --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
-  --eval "(require 'package)" \
-  --eval "(package-initialize)" \
+  --eval '(package-activate-all)' \
   --eval '(prepare-user-lisp)' \
   --eval '(load "~/.config/emacs/init.el")' \
   --eval '(load "~/.config/emacs/init-test.el")' \
