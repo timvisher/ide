@@ -389,5 +389,16 @@ starts is deleted afterwards."
           (should (equal "some-other-server" server-name)))
       (delete-process server-process))))
 
+(ert-deftest test-init-tty-grapheme-shim-only-without-upstream-emoji-support ()
+  "init.el turns the tty grapheme shim on only where Emacs lacks it.
+
+Emacs 32 composes terminal Emoji sequences itself with
+`compose-gstring-and-emoji-for-terminal'.  There both shim modes must
+stay off; on older Emacs both must be on.  Run the suite under each
+version to cover both branches."
+  (let ((want (not (fboundp 'compose-gstring-and-emoji-for-terminal))))
+    (should (eq want (and timvisher-tty-grapheme-width-mode t)))
+    (should (eq want (and timvisher-tty-emoji-presentation-mode t)))))
+
 (provide 'init-test)
 ;;; init-test.el ends here

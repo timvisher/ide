@@ -616,8 +616,12 @@ over the code-block language minibuffer prompt."
 ;;; Display
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(timvisher-tty-grapheme-width-mode 1)
-(timvisher-tty-emoji-presentation-mode 1)
+;; Emacs 32 sizes terminal Emoji sequences itself, so the width mode
+;; is redundant there, and the presentation mode corrupts the display
+;; because Emacs pads only Emoji sequences it recognizes in the text.
+(unless (fboundp 'compose-gstring-and-emoji-for-terminal)
+  (timvisher-tty-grapheme-width-mode 1)
+  (timvisher-tty-emoji-presentation-mode 1))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
