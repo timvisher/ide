@@ -243,7 +243,12 @@ def rest(state, request):
             state["pulls"].setdefault(repo, {})[str(number)] = created
             return 201, pull_view(repo, created)
         case "GET", ["pulls", number]:
-            return 200, pull_view(repo, pull(state, repo, number))
+            found = pull(state, repo, number)
+            if found.get("rest_gets_before_too_many_files") == 0:
+                raise Reply(422, {"message": "The request could not be processed because too many files changed"})
+            if found.get("rest_gets_before_too_many_files"):
+                found["rest_gets_before_too_many_files"] -= 1
+            return 200, pull_view(repo, found)
         case "PATCH", ["pulls", number]:
             found = pull(state, repo, number)
             for key in ("title", "body", "base", "state"):

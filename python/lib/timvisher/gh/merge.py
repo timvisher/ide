@@ -126,15 +126,16 @@ def request_by_gh(target, extra):
 
 
 def wait_until_merged(target):
-    spec = f"{target.owner}/{target.repo}"
     interval = int(os.environ.get("TIMVISHER_GH_PR_MERGE_POLL_INTERVAL") or 10)
     timeout = int(os.environ.get("TIMVISHER_GH_PR_MERGE_TIMEOUT") or 7200)
     started = time.monotonic()
     while True:
-        pull = fetch.api(spec, f"repos/{spec}/pulls/{target.number}")
-        if pull.get("merged"):
-            return pull.get("merge_commit_sha")
-        if pull["state"] == "closed":
+        # GraphQL, not REST pulls/N: REST computes the PR's diff stats and
+        # GitHub sometimes refuses that with HTTP 422 "too many files changed".
+        pull = merge_state(target)
+        if pull["state"] == "MERGED":
+            return (pull.get("mergeCommit") or {}).get("oid")
+        if pull["state"] == "CLOSED":
             fail("timvisher_gh_pr_closed", f"{target.pr_url} was closed without merging.",
                  suggestions=["Reopen it on GitHub to merge it"])
         waited = time.monotonic() - started
