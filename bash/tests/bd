@@ -223,6 +223,54 @@ else
   fail "expected explicit BEADS_DIR preserved; got '${result}'"
 fi
 
+mkdir -p "$tmpdir/plain"
+run_bd_in_plain() {
+  (
+    cd "$tmpdir/plain"
+    BD_BINARY="$tmpdir/fake-bd" "$script" "$@"
+  )
+}
+
+# --- init gets --skip-agents right after the subcommand ---
+run_test
+result=$(run_bd_in_plain init --prefix x -- extra)
+if [[ $result == "fake-bd init --skip-agents --prefix x -- extra" ]]
+then
+  pass "adds --skip-agents to bd init"
+else
+  fail "expected --skip-agents after init; got '${result}'"
+fi
+
+# --- global flags before init still get it ---
+run_test
+result=$(run_bd_in_plain -q init)
+if [[ $result == "fake-bd -q init --skip-agents" ]]
+then
+  pass "adds --skip-agents to bd init after leading flags"
+else
+  fail "expected --skip-agents after leading flags; got '${result}'"
+fi
+
+# --- an explicit --skip-agents=false wins ---
+run_test
+result=$(run_bd_in_plain init --skip-agents=false)
+if [[ $result == "fake-bd init --skip-agents=false" ]]
+then
+  pass "leaves a caller's --skip-agents alone"
+else
+  fail "expected caller's --skip-agents untouched; got '${result}'"
+fi
+
+# --- other subcommands, even with an 'init' argument, are untouched ---
+run_test
+result=$(run_bd_in_plain create --title init)
+if [[ $result == "fake-bd create --title init" ]]
+then
+  pass "leaves other subcommands alone"
+else
+  fail "expected create untouched; got '${result}'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 

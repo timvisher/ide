@@ -70,4 +70,31 @@ then
   fi
 fi
 
-exec "${BD_BINARY:-/opt/homebrew/bin/bd}" "$@"
+# bd init writes AGENTS.md, CLAUDE.md and Claude/Codex/Cursor setup into
+# the cwd unless told not to, and bd has no config key or env var for
+# that (init reads only the --skip-agents flag), so the wrapper supplies
+# the flag. Pass any --skip-agents yourself (e.g. --skip-agents=false)
+# to override.
+args=("$@")
+for (( i = 0; i < ${#args[@]}; i += 1 ))
+do
+  [[ ${args[i]} == -* ]] && continue
+  if [[ ${args[i]} == init ]]
+  then
+    skip_agents_given=0
+    for arg in "${args[@]}"
+    do
+      if [[ $arg == --skip-agents || $arg == --skip-agents=* ]]
+      then
+        skip_agents_given=1
+      fi
+    done
+    if (( ! skip_agents_given ))
+    then
+      args=("${args[@]:0:i+1}" --skip-agents "${args[@]:i+1}")
+    fi
+  fi
+  break
+done
+
+exec "${BD_BINARY:-/opt/homebrew/bin/bd}" "${args[@]}"
