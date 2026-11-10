@@ -426,6 +426,58 @@ else
   fail "symlinked subscriber: sym-a='${a_subs}' sym-b='${b_subs}' set='${result}'"
 fi
 
+docs="$tmpdir/docs"
+mkdir -p "$docs/projects/inner/.beads" "$docs/config/timvisher/ide" "$docs/bin" || exit 1
+: > "$docs/todo.org"
+: > "$docs/projects/inner/todo.org"
+printf '%s\n' "$docs/projects" > "$docs/config/timvisher/ide/bd_topics_root"
+cat > "$docs/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_BD_LOG"
+if [[ $1 == init ]]
+then
+  mkdir -p "$BEADS_DIR"
+fi
+EOF
+chmod +x "$docs/bin/bd" || exit 1
+
+run_docs() {
+  PATH="$docs/bin:$PATH" FAKE_BD_LOG="$docs/bd.log" XDG_CONFIG_HOME="$docs/config" "$script" "$@"
+}
+
+# Test: set refuses a todo.org directory that contains the topics root.
+run_test
+if ! (cd "$docs" && run_docs set inner >/dev/null 2>&1) &&
+    [[ ! -e $docs/.beads/redirect && ! -e $docs/.timvisher_bd_topics/topic.txt ]]
+then
+  pass "set refuses a directory containing the topics root"
+else
+  fail "set from a directory containing the topics root subscribed it"
+fi
+
+# Test: set refuses a todo.org directory inside the topics root.
+run_test
+if ! (cd "$docs/projects/inner" && run_docs set inner >/dev/null 2>&1) &&
+    [[ ! -e $docs/projects/inner/.timvisher_bd_topics/topic.txt ]]
+then
+  pass "set refuses a directory inside the topics root"
+else
+  fail "set from a directory inside the topics root subscribed it"
+fi
+
+# Test: new from a directory containing the topics root creates the topic
+# without subscribing that directory, and keeps bd init's agent files out.
+run_test
+result=$(cd "$docs" && run_docs new fresh 2>&1)
+if [[ -d $docs/projects/fresh/.beads && ! -e $docs/.beads/redirect &&
+    ! -e $docs/.timvisher_bd_topics/topic.txt ]] &&
+    grep -q -- '--skip-agents' "$docs/bd.log"
+then
+  pass "new creates the topic without subscribing a directory containing the topics root"
+else
+  fail "new from the topics root's parent: result='${result}' bd='$(< "$docs/bd.log")'"
+fi
+
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"
 
