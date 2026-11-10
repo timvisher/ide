@@ -15,7 +15,8 @@
 ;;
 ;; `timvisher-tty-emoji-presentation-mode' additionally shows bare
 ;; symbols that only have color emoji glyphs, such as 🏳, as their
-;; 2-column emoji on text terminals, by sending VS16 after them.
+;; 2-column emoji on text terminals, by sending VS16 after them and
+;; making them 2 columns in `char-width-table'.
 
 ;;; Code:
 
@@ -41,26 +42,41 @@
                   (<= #xE0020 c #xE007F)))
             chars))
 
-(defun timvisher-tty-grapheme-width--widen (gstring)
-  "Make GSTRING one 2-column cluster if it is an emoji sequence.
-Return GSTRING, modified in place."
+(defun timvisher-tty-grapheme-width--glyphs (gstring)
+  "Return GSTRING's glyphs in order."
   (let (glyphs)
     (dotimes (i (lgstring-glyph-len gstring))
       (when-let* ((glyph (lgstring-glyph gstring i)))
         (push glyph glyphs)))
-    (setq glyphs (nreverse glyphs))
+    (nreverse glyphs)))
+
+(defun timvisher-tty-grapheme-width--one-cluster (glyphs width)
+  "Make GLYPHS a single cluster WIDTH columns wide."
+  (let ((last (1- (length glyphs))))
+    (seq-do-indexed (lambda (glyph i)
+                      (lglyph-set-from-to glyph 0 last)
+                      (lglyph-set-width glyph (if (= i 0) width 0)))
+                    glyphs)))
+
+(defun timvisher-tty-grapheme-width--widen (gstring)
+  "Make GSTRING one 2-column cluster if it is an emoji sequence.
+Return GSTRING, modified in place."
+  (let ((glyphs (timvisher-tty-grapheme-width--glyphs gstring)))
     ;; The whole gstring becomes a single cluster rather than widening
     ;; each of `compose-gstring-for-terminal''s clusters, because that
     ;; function splits a ZWJ sequence at the joiner while the terminal
     ;; draws the whole sequence in one cell.
     (when (timvisher-tty-grapheme-width--wide-cluster-p
            (mapcar #'lglyph-char glyphs))
-      (let ((last (1- (length glyphs))))
-        (seq-do-indexed (lambda (glyph i)
-                          (lglyph-set-from-to glyph 0 last)
-                          (lglyph-set-width glyph (if (= i 0) 2 0)))
-                        glyphs)))
+      (timvisher-tty-grapheme-width--one-cluster glyphs 2))
     gstring))
+
+(defun timvisher-tty-grapheme-width--narrow (gstring)
+  "Make GSTRING one 1-column cluster.
+Return GSTRING, modified in place."
+  (timvisher-tty-grapheme-width--one-cluster
+   (timvisher-tty-grapheme-width--glyphs gstring) 1)
+  gstring)
 
 (defun timvisher-tty-grapheme-width--present (gstring direction)
   "Compose GSTRING for an emoji base on a graphic display.
@@ -89,6 +105,14 @@ FUNC, FROM, TO, FONT-OBJECT, STRING and DIRECTION are as for
      ((and (eq func #'timvisher-tty-grapheme-width--present)
            (= 1 (- to from)))
       (timvisher-tty-grapheme-width--add-vs16 gstring))
+     ;; The presentation mode makes these bases 2 columns in
+     ;; `char-width-table', which would otherwise size an explicit
+     ;; text-presentation sequence 2 wide; terminals draw it 1 wide.
+     ((and (eq func #'timvisher-tty-grapheme-width--present)
+           (memq #xFE0E (mapcar #'lglyph-char
+                                (timvisher-tty-grapheme-width--glyphs
+                                 gstring))))
+      (timvisher-tty-grapheme-width--narrow gstring))
      (t (timvisher-tty-grapheme-width--widen gstring)))))
 
 ;;;###autoload
@@ -115,12 +139,17 @@ the screen."
           0
           #'timvisher-tty-grapheme-width--present))
 
+(defvar timvisher-tty-emoji-presentation--saved-widths nil
+  "Alist of (CHAR . WIDTH) `char-width-table' entries the mode replaced.")
+
 ;;;###autoload
 (define-minor-mode timvisher-tty-emoji-presentation-mode
   "Show bare color-only emoji symbols as 2-column emoji on text terminals.
 Symbols in `timvisher-tty-grapheme-width--emoji-bases' are sent to the
 terminal followed by VS16, as though written with it, unless the text
-already follows them with VS15 or VS16.  Use together with
+already follows them with VS15 or VS16.  The mode also makes them 2
+columns wide in `char-width-table', so `string-width' and
+`current-column' count them as displayed.  Use together with
 `timvisher-tty-grapheme-width-mode'."
   :global t
   :group 'display
@@ -131,6 +160,20 @@ already follows them with VS15 or VS16.  Use together with
                             (if timvisher-tty-emoji-presentation-mode
                                 (append rules (list rule))
                               rules))))
+  ;; Emacs 32 gives a wide terminal composition its second, padding
+  ;; glyph only when `char-width-table' calls its first character wide.
+  ;; Widening the composition alone leaves one glyph for two columns,
+  ;; and redisplay loses track of the screen after it.
+  (if timvisher-tty-emoji-presentation-mode
+      (unless timvisher-tty-emoji-presentation--saved-widths
+        (seq-doseq (char timvisher-tty-grapheme-width--emoji-bases)
+          (push (cons char (aref char-width-table char))
+                timvisher-tty-emoji-presentation--saved-widths)
+          (set-char-table-range char-width-table char 2)))
+    (pcase-dolist (`(,char . ,width)
+                   timvisher-tty-emoji-presentation--saved-widths)
+      (set-char-table-range char-width-table char width))
+    (setq timvisher-tty-emoji-presentation--saved-widths nil))
   (clear-composition-cache))
 
 (provide 'timvisher-tty-grapheme-width)
