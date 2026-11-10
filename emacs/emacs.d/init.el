@@ -21,6 +21,8 @@
   (display-warning :warning "Please upgrade your emacs version to at least 27.1")
   (package-initialize))
 
+(require 'package)
+
 (add-to-list 'package-archives
              '("melpa-stable" . "https://stable.melpa.org/packages/")
              t)
