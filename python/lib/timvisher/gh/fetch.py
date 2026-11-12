@@ -1,6 +1,8 @@
 import json
 import subprocess
+import time
 
+from timvisher import logging
 from timvisher.gh import store
 from timvisher.gh.errors import USAGE, fail
 
@@ -53,6 +55,31 @@ class NotFound(Exception):
     pass
 
 
+class Progress:
+    def __init__(self, label, total, interval=3.0):
+        self.label = label
+        self.total = total
+        self.interval = interval
+        self.done = 0
+        self.logged = time.monotonic()
+
+    def step(self):
+        self.done += 1
+        now = time.monotonic()
+        if self.done in (1, self.total) or self.interval <= now - self.logged:
+            logging.info("%s: %d/%d", self.label, self.done, self.total)
+            self.logged = now
+
+
+# A payload without a reaction summary is looked up, not taken as unreacted.
+def _reacted(comment):
+    return (comment.get("reactions") or {}).get("total_count", 1) != 0
+
+
+def _plural(count, noun):
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
 def api(repo, *args):
     done = subprocess.run(["gh", "-R", repo, "api", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True)
@@ -103,9 +130,20 @@ class Fetcher:
         self.state.touch(id)
         return True
 
-    def _reactions(self, spec, endpoint):
+    def _fresh(self, object_id, only_new):
+        return not (only_new and self._known(object_id))
+
+    def _reactions(self, spec, endpoint, comment, progress):
+        if not _reacted(comment):
+            return []
+        progress.step()
         mine = [r["content"] for r in api(spec, "--paginate", endpoint) if r["user"]["login"] == self.viewer(spec)]
         return sorted(mine)
+
+    def _lookups(self, label, total):
+        if total:
+            logging.info("Looking up reactions on %s: %s to make", label, _plural(total, "API call"))
+        return Progress(f"Looking up reactions on {label}", total)
 
     def pr(self, owner, repo, number, *, conversation=True, only_new=False):
         spec = f"{owner}/{repo}"
@@ -122,23 +160,38 @@ class Fetcher:
         pr_key = self._known(pr_id)[0]
         if not conversation:
             return pr_id
-        self._comments(spec, owner, repo, number, pr_id, pr_key, only_new)
+        label = f"{spec}#{number}"
+        logging.info("Listing %s's comments, review threads and reviews: 4 API calls", label)
+        comments = api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments")
         review_comments = {c["id"]: c for c in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/comments")}
         threads = api(spec, "graphql", "-f", f"query={REVIEW_THREADS}", "-f", f"owner={owner}", "-f", f"repo={repo}",
                       "-F", f"number={number}")
+        reviews = [review for review in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews")
+                   if review["state"] != "PENDING"]
         connection = threads["data"]["repository"]["pullRequest"]["reviewThreads"]
         nodes = connection["nodes"]
         self.partial = (connection.get("pageInfo") or {}).get("hasNextPage", False) or any(
             (node["comments"].get("pageInfo") or {}).get("hasNextPage", False) for node in nodes)
-        for node in nodes:
-            ids = [c["databaseId"] for c in node["comments"]["nodes"] if c["databaseId"] in review_comments]
-            if not ids:
-                continue
+        threaded = [(node, ids) for node in nodes
+                    if (ids := [c["databaseId"] for c in node["comments"]["nodes"]
+                                if c["databaseId"] in review_comments])]
+        lookups = sum(self._fresh(c["node_id"], only_new) and _reacted(c) for c in comments)
+        for node, ids in threaded:
+            lookups += self._fresh(node["id"], only_new) and _reacted(review_comments[ids[0]])
+            lookups += sum(self._fresh(review_comments[i]["node_id"], only_new) and _reacted(review_comments[i])
+                           for i in ids[1:])
+        logging.info("%s has %s, %s in %s and %s", label, _plural(len(comments), "comment"),
+                     _plural(sum(len(ids) for _, ids in threaded), "review comment"),
+                     _plural(len(threaded), "thread"), _plural(len(reviews), "review"))
+        progress = self._lookups(label, lookups)
+        self._comments(spec, owner, repo, comments, pr_id, pr_key, only_new, progress)
+        for node, ids in threaded:
             root = review_comments[ids[0]]
             self.seen.add(node["id"])
-            if not (only_new and self._known(node["id"])):
+            if self._fresh(node["id"], only_new):
                 name = store.thread_name(root["created_at"], root["user"]["login"], root.get("path"), root.get("line"))
-                reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{root['id']}/reactions")
+                reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{root['id']}/reactions", root,
+                                            progress)
                 self._put(id=node["id"], kind="thread", url=root["html_url"], owner=owner, repo=repo,
                           database_id=root["id"], parent_id=pr_id, key=store.child_key(pr_key, "threads", name),
                           raw={"root": root, "thread": node}, only_new=only_new,
@@ -147,17 +200,16 @@ class Fetcher:
             for reply_id in ids[1:]:
                 reply = review_comments[reply_id]
                 self.seen.add(reply["node_id"])
-                if only_new and self._known(reply["node_id"]):
+                if not self._fresh(reply["node_id"], only_new):
                     continue
                 name = store.comment_name(reply["created_at"], reply["user"]["login"], reply["body"])
-                reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{reply['id']}/reactions")
+                reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{reply['id']}/reactions", reply,
+                                            progress)
                 self._put(id=reply["node_id"], kind="comment", url=reply["html_url"], owner=owner, repo=repo,
                           database_id=reply["id"], parent_id=node["id"],
                           key=store.child_key(thread_key, "replies", name), raw=reply, only_new=only_new,
                           remote={"body": reply["body"], "reactions": reactions})
-        for review in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews"):
-            if review["state"] == "PENDING":
-                continue
+        for review in reviews:
             self.seen.add(review["node_id"])
             name = store.review_name(review["submitted_at"], review["user"]["login"])
             self._put(id=review["node_id"], kind="review", url=review["html_url"], owner=owner, repo=repo,
@@ -169,13 +221,14 @@ class Fetcher:
 
     # PRs and issues share the issue-comments endpoint for their top-level
     # comments.
-    def _comments(self, spec, owner, repo, number, parent_id, parent_key, only_new):
-        for comment in api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments"):
+    def _comments(self, spec, owner, repo, comments, parent_id, parent_key, only_new, progress):
+        for comment in comments:
             self.seen.add(comment["node_id"])
-            if only_new and self._known(comment["node_id"]):
+            if not self._fresh(comment["node_id"], only_new):
                 continue
             name = store.comment_name(comment["created_at"], comment["user"]["login"], comment["body"])
-            reactions = self._reactions(spec, f"repos/{spec}/issues/comments/{comment['id']}/reactions")
+            reactions = self._reactions(spec, f"repos/{spec}/issues/comments/{comment['id']}/reactions", comment,
+                                        progress)
             self._put(id=comment["node_id"], kind="comment", url=comment["html_url"], owner=owner, repo=repo,
                       database_id=comment["id"], parent_id=parent_id, key=store.child_key(parent_key, "comments", name),
                       raw=comment, only_new=only_new, remote={"body": comment["body"], "reactions": reactions})
@@ -212,7 +265,12 @@ class Fetcher:
         issue_id = found["node_id"]
         if not conversation:
             return issue_id
-        self._comments(spec, owner, repo, number, issue_id, self._known(issue_id)[0], only_new)
+        label = f"{spec}#{number}"
+        logging.info("Listing %s's comments: 1 API call", label)
+        comments = api(spec, "--paginate", f"repos/{spec}/issues/{number}/comments")
+        logging.info("%s has %s", label, _plural(len(comments), "comment"))
+        progress = self._lookups(label, sum(self._fresh(c["node_id"], only_new) and _reacted(c) for c in comments))
+        self._comments(spec, owner, repo, comments, issue_id, self._known(issue_id)[0], only_new, progress)
         if not only_new:
             self._archive_missing(issue_id)
         return issue_id
