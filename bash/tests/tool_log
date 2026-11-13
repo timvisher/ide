@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # bash -c scripts expand their own args
+
+# Tests for bash/functions/tool_log.bash and its reader,
+# bash/bin/timvisher_tool_log.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+core="$(cd "$(dirname "$0")/../.." && pwd -P)"
+lib=$core/bash/functions/tool_log.bash
+reader=$core/bash/bin/timvisher_tool_log
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+mkdir -p "$t/logs" "$t/sessions" "$t/bin"
+export TIMVISHER_TOOL_LOG_DIR=$t/logs
+export TIMVISHER_TOOL_LOG_SESSIONS_DIR=$t/sessions
+
+cat > "$t/bin/faketool" <<'FAKE'
+#!/usr/bin/env bash
+printf 'out:%s\n' "$*"
+IFS= read -r line && printf 'in:%s\n' "$line"
+[[ -n ${FAKE_SLEEP-} ]] && sleep "$FAKE_SLEEP"
+exit "${FAKE_RC:-0}"
+FAKE
+chmod +x "$t/bin/faketool"
+
+# Run faketool through the lib, with no agent in the environment unless
+# the caller adds one: <env assignments>... -- <args>...
+logged() {
+  local -a assigns=()
+  while [[ $1 != -- ]]
+  do
+    assigns+=("$1")
+    shift
+  done
+  shift
+  env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_CODEX -u TIMVISHER_AGENT_WRAPPER_EXEC \
+    -u TIMVISHER_TOOL_LOG_CALLER_SESSION -u TIMVISHER_TOOL_LOG_CALLER_NAME \
+    ${assigns[@]+"${assigns[@]}"} \
+    bash -c 'source "$1"; shift; timvisher_tool_log_run faketool "$@"' _ "$lib" "$t/bin/faketool" "$@"
+}
+last() {
+  tail -n 1 "$t/logs/faketool.jsonl"
+}
+
+run_test
+out=$(printf 'hello\n' | logged FAKE_RC=3 -- create my-box --region us-east-1)
+rc=$?
+if (( rc == 3 )) && [[ $out == $'out:create my-box --region us-east-1\nin:hello' ]] &&
+   jq -e --arg cwd "$PWD" --arg real "$t/bin/faketool" '
+     .tool == "faketool" and .real == $real and .rc == 3 and .cwd == $cwd
+     and .argv == ["create","my-box","--region","us-east-1"]
+     and (.duration_ms | type) == "number" and (.epoch | type) == "number"
+     and (.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$")) and (.host | length) > 0' <<<"$(last)" >/dev/null
+then
+  pass "one line per call with the shared fields; stdio and rc pass through"
+else
+  fail "basic line: rc=$rc out='$out' line=$(last)"
+fi
+
+run_test
+logged -- --token s3cret --password=hunter2 GH_TOKEN=ghp_abcdefghijklmnop ghp_abcdefghijklmnop \
+  'Authorization: Bearer xyz' AKIAABCDEFGHIJKLMNOP --name ok api_key=zzz </dev/null >/dev/null
+if jq -e '.argv == ["--token","<redacted>","--password=<redacted>","GH_TOKEN=<redacted>","<redacted>","<redacted>","<redacted>","--name","ok","api_key=<redacted>"]' <<<"$(last)" >/dev/null &&
+   ! grep -q -e s3cret -e hunter2 -e ghp_ -e xyz -e AKIA -e zzz "$t/logs/faketool.jsonl"
+then
+  pass "secrets in argv are redacted, other args kept"
+else
+  fail "redaction: $(jq -c .argv <<<"$(last)")"
+fi
+
+run_test
+logged OPENAI_API_KEY=sk-resolved-by-op-run SOME_SECRET=hush -- run </dev/null >/dev/null
+if ! grep -q -e sk-resolved-by-op-run -e hush -e OPENAI_API_KEY -e SOME_SECRET "$t/logs/faketool.jsonl"
+then
+  pass "the environment (what op run resolves) never reaches the log"
+else
+  fail "environment leaked into the log: $(last)"
+fi
+
+run_test
+logged -- plain </dev/null >/dev/null
+if jq -e '.caller.kind == "human" and (.caller.tty | type) == "string"' <<<"$(last)" >/dev/null
+then
+  pass "with no agent in the environment the caller is human, with a tty"
+else
+  fail "human caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+run_test
+printf '{"pid":%s,"sessionId":"sess-1234","name":"cfctl-99"}\n' "$$" > "$t/sessions/$$.json"
+logged CLAUDE_PID=$$ -- as-agent </dev/null >/dev/null
+if jq -e --argjson pid "$$" '.caller == {"kind":"claude","pid":$pid,"session_id":"sess-1234","name":"cfctl-99"}' <<<"$(last)" >/dev/null
+then
+  pass "CLAUDE_PID with a session file names the Claude session"
+else
+  fail "claude caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+run_test
+logged CLAUDE_PID=999999 CLAUDE_CODE_SESSION_ID=sess-x -- dead-pid </dev/null >/dev/null
+if jq -e '.caller == {"kind":"claude","session_id":"sess-x"}' <<<"$(last)" >/dev/null
+then
+  pass "a dead CLAUDE_PID falls back to CLAUDE_CODE_SESSION_ID"
+else
+  fail "session-id caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+run_test
+logged TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-fwd TIMVISHER_TOOL_LOG_CALLER_NAME=cfctl-77 -- forwarded </dev/null >/dev/null
+if jq -e '.caller == {"kind":"claude","session_id":"sess-fwd","name":"cfctl-77","forwarded":true}' <<<"$(last)" >/dev/null
+then
+  pass "TIMVISHER_TOOL_LOG_CALLER_SESSION names a forwarded Claude caller"
+else
+  fail "forwarded caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+# These two also log as cfctl-99, so keep them out of the log the
+# reader's --caller case counts.
+fwd_log=$t/logs-fwd/faketool.jsonl
+
+run_test
+logged TIMVISHER_TOOL_LOG_DIR="$t/logs-fwd" CLAUDE_PID=$$ TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-fwd -- local-wins </dev/null >/dev/null
+if jq -e '.caller.session_id == "sess-1234" and (.caller | has("forwarded") | not)' <<<"$(tail -n 1 "$fwd_log")" >/dev/null
+then
+  pass "a local Claude caller wins over a forwarded one"
+else
+  fail "local over forwarded: $(tail -n 1 "$fwd_log")"
+fi
+
+run_test
+fwd_env=$(env -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION CLAUDE_PID=$$ \
+  bash -c 'source "$1"; timvisher_tool_log_caller_env' _ "$lib")
+human_env=$(env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION -u TIMVISHER_CODEX \
+  bash -c 'source "$1"; timvisher_tool_log_caller_env' _ "$lib")
+fwd_assigns=()
+eval "fwd_assigns=($fwd_env)"
+logged TIMVISHER_TOOL_LOG_DIR="$t/logs-fwd" "${fwd_assigns[@]}" -- via-ssh </dev/null >/dev/null
+if [[ -z $human_env ]] &&
+   jq -e '.caller == {"kind":"claude","session_id":"sess-1234","name":"cfctl-99","forwarded":true}' <<<"$(tail -n 1 "$fwd_log")" >/dev/null
+then
+  pass "timvisher_tool_log_caller_env carries a Claude caller to another host, and is empty for a human"
+else
+  fail "caller_env: fwd='$fwd_env' human='$human_env' line=$(tail -n 1 "$fwd_log")"
+fi
+
+run_test
+logged TIMVISHER_CODEX=true TIMVISHER_AGENT_WRAPPER_EXEC=4242:codex -- via-codex </dev/null >/dev/null
+if jq -e '.caller == {"kind":"codex","pid":4242}' <<<"$(last)" >/dev/null
+then
+  pass "the codex wrapper's marker names a codex caller"
+else
+  fail "codex caller: $(jq -c .caller <<<"$(last)")"
+fi
+
+run_test
+logged FAKE_SLEEP=1 -- interrupted </dev/null >/dev/null &
+pid=$!
+sleep 0.3
+kill -INT "$pid" 2>/dev/null
+wait "$pid"
+if jq -e '.argv == ["interrupted"]' <<<"$(last)" >/dev/null
+then
+  pass "an interrupted wrapper still logs the call"
+else
+  fail "interrupt: last line $(last)"
+fi
+
+run_test
+pub_caller=$(env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID TIMVISHER_CODEX=true TIMVISHER_AGENT_WRAPPER_EXEC=7:codex \
+  bash -c 'source "$1"; timvisher_tool_log_caller' _ "$lib")
+pub_json=$(bash -c 'source "$1"; timvisher_tool_log_json "$2"' _ "$lib" $'a"b\\c\nd')
+if [[ $pub_caller == '{"kind":"codex","pid":7}' && $pub_json == '"a\"b\\c\nd"' ]]
+then
+  pass "timvisher_tool_log_caller and timvisher_tool_log_json print what the log would"
+else
+  fail "public helpers: caller='$pub_caller' json='$pub_json'"
+fi
+
+run_test
+help_out=$("$reader" --help 2>/dev/null)
+err_out=$("$reader" --bogus 2>/dev/null)
+err_rc=$?
+if [[ $help_out == Usage:* && -z $err_out ]] && (( err_rc != 0 ))
+then
+  pass "reader: --help on stdout, usage errors only on stderr"
+else
+  fail "reader help/usage streams: help='${help_out:0:40}' err='$err_out' rc=$err_rc"
+fi
+
+run_test
+rows=$("$reader" --tool faketool --caller cfctl-99)
+if [[ $(wc -l <<<"$rows") == 1 && $rows == *cfctl-99*as-agent* ]]
+then
+  pass "reader: --caller picks one session's calls"
+else
+  fail "reader --caller: '$rows'"
+fi
+
+run_test
+n_since=$("$reader" --tool faketool --since 1h --json | wc -l)
+n_until=$("$reader" --tool faketool --until 1h --json | wc -l)
+n_all=$(wc -l < "$t/logs/faketool.jsonl")
+if (( n_since == n_all && n_until == 0 ))
+then
+  pass "reader: time-window filters"
+else
+  fail "reader filters: since=$n_since until=$n_until all=$n_all"
+fi
+
+run_test
+cp "$t/logs/faketool.jsonl" "$t/logs/faketool.jsonl.1"
+gzip -f "$t/logs/faketool.jsonl.1"
+n_rotated=$("$reader" --tool faketool --json | wc -l)
+if (( n_rotated == 2 * n_all ))
+then
+  pass "reader: rotated .jsonl.N.gz generations are read too"
+else
+  fail "reader with a rotated generation: $n_rotated lines, want $(( 2 * n_all ))"
+fi
+
+run_test
+tailed=$("$reader" --tool faketool --tail 2 --json)
+if [[ $(wc -l <<<"$tailed") == 2 && $(tail -n 1 <<<"$tailed") == "$(last)" ]]
+then
+  pass "reader: --tail N reads the last N lines of the current log and no generations"
+else
+  fail "reader --tail: '$tailed'"
+fi
+
+run_test
+touch -t 202001010000 "$t/logs/faketool.jsonl.1.gz"
+n_skip=$("$reader" --tool faketool --since 1h --json | wc -l)
+if (( n_skip == n_all ))
+then
+  pass "reader: --since skips generations last written before it"
+else
+  fail "reader --since with an old generation: $n_skip lines, want $n_all"
+fi
+
+run_test
+reader_env=$(env -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_TOOL_LOG_CALLER_SESSION CLAUDE_PID=$$ "$reader" --caller-env)
+if [[ $reader_env == "TIMVISHER_TOOL_LOG_CALLER_SESSION=sess-1234 TIMVISHER_TOOL_LOG_CALLER_NAME=cfctl-99" ]]
+then
+  pass "reader: --caller-env prints the caller assignments"
+else
+  fail "reader --caller-env: '$reader_env'"
+fi
+
+run_test
+if [[ $("$reader" --path) == "$t/logs" ]] &&
+   [[ $(env -u TIMVISHER_TOOL_LOG_DIR HOME=/h XDG_STATE_HOME= bash -c 'source "$1"; timvisher_tool_log_dir' _ "$lib") == \
+      "$( [[ $OSTYPE == darwin* ]] && echo /h/Library/Logs/timvisher/tools || echo /h/.local/state/timvisher/logs )" ]]
+then
+  pass "log dir: the override, else ~/Library/Logs on macOS and ~/.local/state elsewhere"
+else
+  fail "log dir: '$("$reader" --path)'"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))

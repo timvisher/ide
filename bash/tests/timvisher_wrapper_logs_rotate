@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+
+# Tests for bash/bin/timvisher_wrapper_logs_rotate.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+core="$(cd "$(dirname "$0")/../.." && pwd -P)"
+script=$core/bash/bin/timvisher_wrapper_logs_rotate
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+mkdir -p "$t/state/timvisher/wrappers/git" "$t/logs" "$t/bin"
+
+# launchd's PATH: no coreutils gnubin, so on macOS this is BSD stat. Keep a
+# bash 4+ ahead of the system dirs.
+ln -s "$(command -v bash)" "$t/bin/bash"
+for tool in gzip nice
+do
+  ln -s "$(command -v "$tool")" "$t/bin/$tool"
+done
+
+rotate() {
+  env XDG_STATE_HOME="$t/state" TIMVISHER_TOOL_LOG_DIR="$t/logs" TIMVISHER_WRAPPER_LOG_MAX_BYTES=1024 \
+    PATH="$t/bin:/usr/bin:/bin" "$script" 2>&1
+}
+
+trace=$t/state/timvisher/wrappers/git/trace2.jsonl
+head -c 4096 /dev/zero | tr '\0' 'x' > "$trace"
+printf 'small\n' > "$t/logs/git.jsonl"
+head -c 4096 /dev/zero | tr '\0' 'y' > "$t/logs/gh.jsonl"
+
+run_test
+out=$(rotate)
+rc=$?
+if (( rc == 0 )) && [[ -f $trace.1.gz && ! -s $trace ]] && [[ $(gzip -dc "$trace.1.gz" | wc -c | tr -d ' ') == 4096 ]]
+then
+  pass "an oversized trace2.jsonl is rotated with launchd's PATH (no GNU stat needed)"
+else
+  fail "trace2 rotation: rc=$rc out='$out' files=$(ls "${trace%/*}")"
+fi
+
+run_test
+if [[ -f $t/logs/gh.jsonl.1.gz && ! -s $t/logs/gh.jsonl && $(< "$t/logs/git.jsonl") == small && ! -e $t/logs/git.jsonl.1.gz ]]
+then
+  pass "tool logs over the cap are rotated, smaller ones left alone"
+else
+  fail "tool log rotation: $(ls "$t/logs")"
+fi
+
+run_test
+for (( i = 0; i < 9; i += 1 ))
+do
+  head -c 2048 /dev/zero > "$trace"
+  rotate >/dev/null
+done
+if [[ -f $trace.7.gz && ! -e $trace.8.gz ]]
+then
+  pass "at most 7 generations are kept"
+else
+  fail "generations: $(ls "${trace%/*}")"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))

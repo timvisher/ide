@@ -79,6 +79,10 @@ gh_args__parse() {
   fi
 }
 
+# The call as the caller wrote it, for the tool log.
+gh_tool_log__argv=("$@")
+gh_tool_log__t0=$EPOCHREALTIME
+
 gh_args__parse "$@"
 if [[ -z $gh_args__unknown_pre && -z $gh_args__missing_value && $gh_args__help == true ]]
 then
@@ -506,4 +510,21 @@ fi
 
 gh_account__select
 
-exec "$gh_account__real_gh" ${gh_account__argv[@]+"${gh_account__argv[@]}"}
+# Log the call (~/.functions/tool_log.bash) with the caller's own argv; -R
+# was turned into GH_REPO above, so it's recorded as a field too.
+# shellcheck source=../functions/tool_log.bash
+if ! source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash"
+then
+  exec "$gh_account__real_gh" ${gh_account__argv[@]+"${gh_account__argv[@]}"}
+fi
+trap ':' INT TERM HUP
+"$gh_account__real_gh" ${gh_account__argv[@]+"${gh_account__argv[@]}"}
+gh_tool_log__rc=$?
+trap - INT TERM HUP
+timvisher_tool_log__json "${GH_REPO-}"
+# timvisher_tool_log__json sets timvisher_tool_log__json_out, in tool_log.bash,
+# which shellcheck only follows with -x.
+# shellcheck disable=SC2154
+timvisher_tool_log_write gh "$gh_account__real_gh" "$gh_tool_log__t0" "$gh_tool_log__rc" \
+  ",\"gh_repo\":${timvisher_tool_log__json_out}" ${gh_tool_log__argv[@]+"${gh_tool_log__argv[@]}"}
+exit "$gh_tool_log__rc"

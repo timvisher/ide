@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+
+# Query the tool logs written through bash/functions/tool_log.bash.
+
+# shellcheck source=/dev/null
+shopt -s extglob
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=../functions/tool_log.bash
+source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/tool_log.bash" ||
+  die "Unable to source tool_log.bash"
+
+show_help() {
+  cat <<'HELP'
+Usage: timvisher_tool_log [--tool TOOL]... [--caller WHO] [--since WHEN]
+                              [--until WHEN] [--tail N] [--json]
+       timvisher_tool_log --path
+       timvisher_tool_log --caller-env
+
+Print the logged invocations of wrapped tools, oldest first.
+
+  --tool TOOL    only this tool's log (repeatable; default: every log)
+  --caller WHO   only calls whose caller name (e.g. cfctl-25), session id
+                 prefix, or kind (claude, codex, human) is WHO
+  --since WHEN   only calls at or after WHEN: 30m, 2h, 3d, or an ISO 8601
+                 UTC time such as 2026-11-01T12:00
+  --until WHEN   only calls before WHEN, same forms
+  --tail N       read only the last N lines of each current log, and no
+                 rotated generations
+  --json         print the matching JSON lines instead of a table
+  --path         print the log directory and exit
+  --caller-env   for a Claude caller, print the shell-quoted assignments
+                 that make a command on another host log as this caller,
+                 and exit; print nothing for anyone else
+
+With --since, rotated generations last written before WHEN are not read.
+
+Example: who created workspaces today?
+  timvisher_tool_log --tool workspaces --since 1d | grep ' create '
+
+Example: run a command on a workspace so its calls log as you
+  ssh workspace-<name> "$(timvisher_tool_log --caller-env) bash -ic 'git status'"
+HELP
+}
+
+usage() {
+  show_help >&2
+}
+
+tools=()
+caller=''
+since=''
+until=''
+tail=''
+json=false
+
+while (( 0 < $# ))
+do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --path)
+      timvisher_tool_log_dir
+      exit 0
+      ;;
+    --caller-env)
+      timvisher_tool_log_caller_env
+      exit 0
+      ;;
+    --tool|--caller|--since|--until|--tail)
+      if [[ -z ${2-} ]]
+      then
+        error '%s needs a value' "$1"
+        usage
+        exit 1
+      fi
+      case $1 in
+        --tool) tools+=("$2") ;;
+        --caller) caller=$2 ;;
+        --since) since=$(timvisher_tool_log_when_epoch "$2") || since='' ;;
+        --until) until=$(timvisher_tool_log_when_epoch "$2") || until='' ;;
+        --tail) tail=$2 ;;
+      esac
+      if [[ $1 == --tail && ! $tail =~ ^[1-9][0-9]*$ ]]
+      then
+        error "--tail needs a line count, not '%s'" "$2"
+        exit 1
+      fi
+      if [[ $1 == --since && -z $since ]] || [[ $1 == --until && -z $until ]]
+      then
+        error "Can't read a time from '%s'" "$2"
+        exit 1
+      fi
+      shift 2
+      ;;
+    --json)
+      json=true
+      shift
+      ;;
+    *)
+      error "Unknown argument '%s'" "$1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+mtime() {
+  stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null
+}
+
+# A generation's mtime is the time of its newest line, so one last
+# written before --since holds nothing to print.
+wanted() {
+  local file=$1 m
+  [[ -r $file ]] || return 1
+  [[ $file == *.gz ]] || return 0
+  [[ -z $tail ]] || return 1
+  [[ -n $since ]] || return 0
+  m=$(mtime "$file") || return 0
+  (( since <= m ))
+}
+
+dir=$(timvisher_tool_log_dir)
+files=()
+if (( 0 < ${#tools[@]} ))
+then
+  for tool in "${tools[@]}"
+  do
+    for file in "$dir/$tool".jsonl "$dir/$tool".jsonl.+([0-9]).gz
+    do
+      wanted "$file" && files+=("$file")
+    done
+  done
+else
+  for file in "$dir"/*.jsonl "$dir"/*.jsonl.+([0-9]).gz
+  do
+    wanted "$file" && files+=("$file")
+  done
+fi
+
+(( 0 < ${#files[@]} )) || exit 0
+
+# Rotated generations are gzipped; read every file as one stream.
+lines() {
+  local file
+  for file in "${files[@]}"
+  do
+    if [[ $file == *.gz ]]
+    then
+      gzip -dc -- "$file"
+    elif [[ -n $tail ]]
+    then
+      tail -n "$tail" -- "$file"
+    else
+      cat -- "$file"
+    fi
+  done
+}
+
+# shellcheck disable=SC2016 # jq variables, not shell
+filter='
+  select(($since == "" or ($since | tonumber) <= .epoch)
+         and ($until == "" or .epoch < ($until | tonumber))
+         and ($caller == ""
+              or .caller.name == $caller
+              or .caller.kind == $caller
+              or ((.caller.session_id // "") | startswith($caller))))'
+
+if [[ $json == true ]]
+then
+  lines | jq -c --arg since "$since" --arg until "$until" --arg caller "$caller" \
+    "$filter" | jq -sc 'sort_by(.epoch)[]'
+else
+  lines | jq -c --arg since "$since" --arg until "$until" --arg caller "$caller" \
+    "$filter" |
+    jq -sr 'sort_by(.epoch)[]
+      | [ .ts,
+          .host,
+          .tool,
+          (if .caller.kind == "claude" then ((.caller.name // "") | if . == "" then null else . end) // (.caller.session_id // "")[0:8]
+           elif .caller.kind == "codex" then "codex:\(.caller.pid)"
+           else "human:\(.caller.tty)" end),
+          "rc=\(.rc)",
+          "\(.duration_ms)ms",
+          (.argv | join(" "))
+        ] | join("  ")'
+fi

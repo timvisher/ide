@@ -477,10 +477,10 @@ fi
 run_test
 log_state="$tmpdir/xdg-state"
 rm -rf "$log_state"
-TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
   PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' status" >/dev/null 2>&1
-log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+log_file="$log_state/logs/git.jsonl"
 if [[ -f $log_file ]] && grep -q '"argv":\["status"\]' "$log_file"
 then
   pass "log file is still written when stderr is suppressed (parent=dolt)"
@@ -519,10 +519,10 @@ run_test
 nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
 log_state="$tmpdir/xdg-state-nojq"
 rm -rf "$log_state"
-TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" \
+TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
   PATH="$nojq_path" \
   "$BASH" -c "source '${funcs_dir}/logging.bash'; '$BASH' '$script' status" >/dev/null 2>&1
-log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+log_file="$log_state/logs/git.jsonl"
 if [[ -f $log_file ]] && grep -q '"argv":\["status"\]' "$log_file"
 then
   pass "log file is written without jq on PATH"
@@ -545,12 +545,12 @@ fi
 run_test
 log_state="$tmpdir/xdg-state-timing"
 rm -rf "$log_state"
-TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
   PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' status" >/dev/null 2>&1
-log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+log_file="$log_state/logs/git.jsonl"
 if [[ -f $log_file ]] &&
-  grep -q '"rec":"done"' "$log_file" &&
+  grep -q '"tool":"git"' "$log_file" &&
   grep -q '"rc":0' "$log_file" &&
   grep -qE '"total_us":[0-9]+' "$log_file" &&
   grep -qE '"phases_us":\{[^}]*"git":[0-9]+' "$log_file"
@@ -564,15 +564,50 @@ fi
 run_test
 log_state="$tmpdir/xdg-state-escape"
 rm -rf "$log_state"
-TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" \
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
   PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' status 'a\"b\\c'" >/dev/null 2>&1
-log_file="$log_state/timvisher/wrappers/git/log.jsonl"
+log_file="$log_state/logs/git.jsonl"
 if [[ -f $log_file ]] && grep -qF '["status","a\"b\\c"]' "$log_file"
 then
   pass "argv JSON escaping handles quotes and backslashes"
 else
   fail "expected escaped argv in ${log_file}, got '$(cat "$log_file" 2>/dev/null)'"
+fi
+
+# Test: a human's git push is logged too, with a human caller; other human
+# git calls are not.
+run_test
+log_state="$tmpdir/xdg-state-human"
+rm -rf "$log_state"
+env -u TIMVISHER_AGENT -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u TIMVISHER_CODEX \
+  TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
+  PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' status; '$script' push --dry-run origin" >/dev/null 2>&1
+log_file="$log_state/logs/git.jsonl"
+if [[ -f $log_file ]] && [[ $(wc -l < "$log_file") == 1 ]] &&
+   grep -q '"argv":\["push","--dry-run","origin"\]' "$log_file" &&
+   grep -q '"caller":{"kind":"human"' "$log_file"
+then
+  pass "a human's git push is logged with a human caller; git status is not"
+else
+  fail "human push log: $(cat "$log_file" 2>&1)"
+fi
+
+# Test: an agent's call records the Claude session from CLAUDE_PID.
+run_test
+log_state="$tmpdir/xdg-state-caller"
+rm -rf "$log_state"
+mkdir -p "$log_state/sessions"
+printf '{"pid":%s,"sessionId":"sess-42","name":"cfctl-77"}\n' "$$" > "$log_state/sessions/$$.json"
+TIMVISHER_AGENT=true TEST_PARENT_CMD=dolt CLAUDE_PID=$$ TIMVISHER_TOOL_LOG_SESSIONS_DIR="$log_state/sessions" \
+  XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
+  PATH="$test_path" bash -c "source '${funcs_dir}/logging.bash'; '$script' status" >/dev/null 2>&1
+log_file="$log_state/logs/git.jsonl"
+if [[ -f $log_file ]] && grep -qF "\"caller\":{\"kind\":\"claude\",\"pid\":$$,\"session_id\":\"sess-42\",\"name\":\"cfctl-77\"}" "$log_file"
+then
+  pass "an agent's git call names its Claude session as the caller"
+else
+  fail "agent caller: $(cat "$log_file" 2>&1)"
 fi
 
 # ---------------------------------------------------------------------------

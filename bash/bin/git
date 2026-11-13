@@ -69,17 +69,16 @@ then
 fi
 
 # ---------------------------------------------------------------------------
-# Agent invocation log
+# Invocation log
 #
-# When invoked under an agent ($TIMVISHER_AGENT set), append a JSONL record
-# of the invocation. A `start` record is written only when
-# $TIMVISHER_GIT_LOG_START is set; a `done` record carrying rc, total_us and
-# per-phase timings is written from an EXIT trap on every path. Bare `>>`
-# relies on O_APPEND atomicity for single write() calls up to PIPE_BUF —
-# `done` records measure ~470 bytes, so a long enough cwd plus argv can
-# cross that line. Readers MUST treat any line that fails `jq -c .` as a
-# corruption signal and surface it loudly: that's how we'll know if we need
-# real locking or a central collector.
+# Every git call under an agent ($TIMVISHER_AGENT set), and every 'git
+# push', appends one record to the shared tool log (~/.functions/
+# tool_log.bash: <log dir>/git.jsonl, with the caller), written from an
+# EXIT trap on every path. Besides the common fields it carries call_id,
+# root_id, depth, pid, ppid, parent, wrapper, total_us and per-phase
+# timings. Bare `>>` relies on O_APPEND atomicity for single write() calls
+# up to PIPE_BUF; a long enough cwd plus argv can cross that line, so
+# readers MUST treat any line that fails `jq -c .` as a corruption signal.
 # ---------------------------------------------------------------------------
 if [[ -n ${TIMVISHER_AGENT:-} ]]
 then
@@ -99,13 +98,6 @@ then
   # suppression.
   _timvisher_git__parent_cmd=$(ps -p "$PPID" -o comm= 2>/dev/null || true)
   _timvisher_git__parent_cmd=${_timvisher_git__parent_cmd##*/}
-
-  _timvisher_git__log_file="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git/log.jsonl"
-  _timvisher_git__log_dir=${_timvisher_git__log_file%/*}
-  if [[ ! -d $_timvisher_git__log_dir ]]
-  then
-    mkdir -p "$_timvisher_git__log_dir" 2>/dev/null || true
-  fi
 
   _timvisher_git__json_str "${BASH_SOURCE[0]}"
   _timvisher_git__wrapper_json=$_timvisher_git__json_str_out
@@ -130,47 +122,57 @@ then
       ;;
   esac
 
-  if [[ -n ${TIMVISHER_GIT_LOG_START:-} ]]
-  then
-    printf '{"rec":"start","ts":%s,"call_id":"%s","root_id":"%s","depth":%s,"wrapper":%s,"cwd":%s,"argv":%s}\n' \
-      "$_timvisher_git__t0" \
-      "$_timvisher_git__call_id" \
-      "$_timvisher_git__root_id" \
-      "$_timvisher_git__depth" \
-      "$_timvisher_git__wrapper_json" \
-      "$_timvisher_git__cwd_json" \
-      "$_timvisher_git__argv_json" >> "$_timvisher_git__log_file" 2>/dev/null || true
-  fi
+fi
 
-  # shellcheck disable=SC2329
-  _timvisher_git__emit() {
-    local rc=$1 now=$EPOCHREALTIME
-    local a=${_timvisher_git__t0/[.,]/} b=${now/[.,]/}
-    local total_us=$((b - a))
-    local phases="" sep="" entry name us
-    for entry in "${_timvisher_git__phases[@]}"
-    do
-      name=${entry% *}
-      us=${entry##* }
-      phases="$phases$sep\"$name\":$us"
-      sep=","
-    done
-    printf '{"rec":"done","ts":%s,"call_id":"%s","root_id":"%s","depth":%s,"pid":%s,"ppid":%s,"parent":%s,"wrapper":%s,"cwd":%s,"argv":%s,"rc":%s,"total_us":%s,"phases_us":{%s}}\n' \
-      "$_timvisher_git__t0" \
-      "$_timvisher_git__call_id" \
-      "$_timvisher_git__root_id" \
-      "$_timvisher_git__depth" \
-      "${BASHPID:-$$}" \
-      "$PPID" \
-      "$_timvisher_git__parent_json" \
-      "$_timvisher_git__wrapper_json" \
-      "$_timvisher_git__cwd_json" \
-      "$_timvisher_git__argv_json" \
-      "$rc" \
-      "$total_us" \
-      "$phases" >> "$_timvisher_git__log_file" 2>/dev/null || true
-  }
-  trap '_timvisher_git__emit "$?"' EXIT
+# The subcommand: the first argument that isn't a global option (-C and
+# -c take a value).
+_timvisher_git__subcommand() {
+  while (( 0 < $# ))
+  do
+    case $1 in
+      -C|-c) shift 2 || return 0 ;;
+      -*) shift ;;
+      *) printf '%s' "$1"; return 0 ;;
+    esac
+  done
+}
+
+if [[ -n ${TIMVISHER_AGENT:-} ]] || [[ $(_timvisher_git__subcommand "$@") == push ]]
+then
+  # shellcheck source=/dev/null
+  if source ~/.functions/tool_log.bash
+  then
+    _timvisher_git__argv=("$@")
+    if [[ -z ${_timvisher_git__parent_json-} ]]
+    then
+      _timvisher_git__parent_cmd=$(ps -p "$PPID" -o comm= 2>/dev/null || true)
+      _timvisher_git__json_str "${_timvisher_git__parent_cmd##*/}"
+      _timvisher_git__parent_json=$_timvisher_git__json_str_out
+      _timvisher_git__json_str "${BASH_SOURCE[0]}"
+      _timvisher_git__wrapper_json=$_timvisher_git__json_str_out
+    fi
+
+    # shellcheck disable=SC2329
+    _timvisher_git__emit() {
+      local rc=$1 now=$EPOCHREALTIME
+      shift
+      local a=${_timvisher_git__t0/[.,]/} b=${now/[.,]/}
+      local phases="" sep="" entry name us
+      for entry in "${_timvisher_git__phases[@]}"
+      do
+        name=${entry% *}
+        us=${entry##* }
+        phases="$phases$sep\"$name\":$us"
+        sep=","
+      done
+      timvisher_tool_log_write git "${real_git:-git}" "$_timvisher_git__t0" "$rc" \
+        ",\"call_id\":\"${_timvisher_git__call_id}\",\"root_id\":\"${_timvisher_git__root_id}\",\"depth\":${_timvisher_git__depth},\"pid\":${BASHPID:-$$},\"ppid\":${PPID},\"parent\":${_timvisher_git__parent_json},\"wrapper\":${_timvisher_git__wrapper_json},\"total_us\":$((b - a)),\"phases_us\":{${phases}}" \
+        "$@"
+    }
+    trap '_timvisher_git__emit "$?" ${_timvisher_git__argv[@]+"${_timvisher_git__argv[@]}"}' EXIT
+  else
+    [[ -t 2 ]] && echo "git wrapper: unable to source tool_log.bash; this call isn't logged" >&2
+  fi
 fi
 
 _timvisher_git__phase init
