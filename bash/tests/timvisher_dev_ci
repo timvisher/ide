@@ -1007,8 +1007,6 @@ fi
 run_test
 fi_wt="$TIMVISHER_GIT_HOME/fiorg/firepo/main"
 mkdir -p "$fi_wt"
-"$test_git" init -q -b main "$fi_wt"
-"$test_git" -C "$fi_wt" config core.hooksPath /dev/null
 fi_hook_dir="$REPO_HOOKS_EXT_DIR/fiorg/firepo"
 mkdir -p "$fi_hook_dir"
 printf '#!/usr/bin/env bash\nprintf "GITHOME=%%s\\n" "${TIMVISHER_GIT_HOME:-<unset>}"\n' \
