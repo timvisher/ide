@@ -625,19 +625,17 @@ over the code-block language minibuffer prompt."
 (timvisher-tty-emoji-presentation-mode 1)
 
 ;; Scoped by platform, not by a <system-name>.el host file: workspace
-;; host names vary. Not by pbcopy either: workspaces get a pbcopy shim
-;; around the box's xclip, so a pbcopy on PATH doesn't mean macOS.
-(defun ide-workspace-clipboard-p ()
-  "Non-nil where Emacs has no native clipboard: a workspace."
+;; host names vary. Not by pbcopy either: a pbcopy shim (workspaces get one)
+;; doesn't make a native clipboard, so a pbcopy on PATH doesn't mean macOS.
+(defun ide-no-native-clipboard-p ()
+  "Non-nil where Emacs has no native clipboard (Linux with no display)."
   (not (or (eq system-type 'darwin)
            (getenv "DISPLAY")
            (getenv "WAYLAND_DISPLAY"))))
 
-(defvar ide-workspace-clipboard-program "~/bin/timvisher_workspace_clipboard")
-
-;; Through tmux's passthrough rather than as plain OSC 52: the workspace
-;; tmux has set-clipboard off, so it would drop a plain one.
-(defun ide-workspace-clipboard--osc-52 (text frame)
+;; Through tmux's passthrough rather than as plain OSC 52: with no native
+;; clipboard, tmux has set-clipboard off, so it would drop a plain one.
+(defun ide-tty-clipboard--osc-52 (text frame)
   "Send TEXT to FRAME's terminal clipboard by OSC 52."
   (when (and (frame-live-p frame) (eq t (framep frame)))
     (let ((osc (format "\e]52;c;%s\a"
@@ -651,37 +649,39 @@ over the code-block language minibuffer prompt."
 
 ;; Only kills made by a command: this-command is nil in timers, process
 ;; filters and emacsclient --eval, which is how packages and agents call
-;; kill-new. OSC 52 only when the daemon certainly didn't get the copy
-;; (exit 3), never after an unconfirmed one (exit 4), so a copy is never
-;; sent both ways. Not getSelection: mosh can't answer an OSC 52 query.
-(defun ide-workspace-clipboard-cut (text)
-  "Copy TEXT to the laptop clipboard from a workspace, asynchronously.
-Returns the copy's process, if one was started."
+;; kill-new. pbcopy's exit code decides, so a copy is never sent both
+;; ways: 0 delivered, 4 sent but unconfirmed (never resent), anything else
+;; not sent (OSC 52). The workspace pbcopy shim (i-s-e
+;; timvisher_EXP_workspace_clipboard) produces 3 and 4. Not getSelection:
+;; mosh can't answer an OSC 52 query.
+(defun ide-pbcopy-cut (text)
+  "Copy TEXT with pbcopy asynchronously, or by OSC 52 when it can't.
+Returns pbcopy's process, if one was started."
   (when this-command
     (let ((frame (selected-frame))
-          (program (expand-file-name ide-workspace-clipboard-program)))
-      (if (not (file-executable-p program))
-          (progn (ide-workspace-clipboard--osc-52 text frame) nil)
+          (pbcopy (executable-find "pbcopy")))
+      (if (not pbcopy)
+          (progn (ide-tty-clipboard--osc-52 text frame) nil)
         (let ((proc (make-process
-                     :name "ide-workspace-clipboard"
-                     :command (list program "copy")
+                     :name "ide-pbcopy"
+                     :command (list pbcopy)
                      :connection-type 'pipe
                      :coding 'utf-8-unix
                      :noquery t
-                     :stderr (get-buffer-create " *ide-workspace-clipboard*")
+                     :stderr (get-buffer-create " *ide-pbcopy*")
                      :sentinel
                      (lambda (p _event)
                        (when (memq (process-status p) '(exit signal))
                          (pcase (process-exit-status p)
                            (0 nil)
-                           (3 (ide-workspace-clipboard--osc-52 text frame))
-                           (_ (message "clipboard: copy not confirmed by the laptop; not resent"))))))))
+                           (4 (message "clipboard: copy not confirmed; not resent"))
+                           (_ (ide-tty-clipboard--osc-52 text frame))))))))
           (process-send-string proc text)
           (process-send-eof proc)
           proc)))))
 
-(when (ide-workspace-clipboard-p)
-  (setq interprogram-cut-function #'ide-workspace-clipboard-cut))
+(when (ide-no-native-clipboard-p)
+  (setq interprogram-cut-function #'ide-pbcopy-cut))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
