@@ -32,11 +32,15 @@ When starting a session, read the Beads and Topics section below and use the `be
 
 ## General Configuration
 
-- **System Date Command**: This macOS system has GNU `date` installed (via
-  Homebrew at `/opt/homebrew/bin/date`). ALWAYS use GNU date syntax (e.g.,
-  `date -d '2025-11-04 00:00:00'` or `date -d @1730678400`) rather than BSD
-  date syntax (e.g., `date -j -f`). All date command examples in this file
-  use GNU date syntax and will work correctly on this system.
+- **Date flavor**: Don't assume which `date` you'll get. macOS ships BSD
+  `date`, Homebrew's coreutils puts GNU `date` first on interactive
+  shells, and launchd's `PATH` sees only BSD. In scripts and tools, plain
+  `date +FORMAT` and `date +%s` are portable; for anything else use
+  `timvisher_date` (`epoch`, `format`, `add`, `valid`), never `gdate`,
+  `/opt/homebrew/bin/date`, or `date -d`/`-j`/`-v`/`-r`. For a one-off
+  command, `timvisher_date flavor` prints which flavor the `date` on your
+  `PATH` is (`<path>:gnu` or `<path>:bsd`, cached), so use that flavor's
+  syntax.
 - Read-only commands should always be considered safe. Examples like `git
   rev-parse|log`, `find`, `ls`, etc.
 - When providing commands for me to copy/paste: _*Always*_ be sure that
