@@ -132,11 +132,16 @@ check_osc52() {
 }
 
 plain_home="${t_dir}/plain-home"
-if ! mkdir -p "$plain_home"
+overlay_home="${t_dir}/overlay-home"
+if ! mkdir -p "$plain_home" "${overlay_home}/.config/timvisher/ide"
 then
   echo "home setup failed under '${t_dir}'" >&2
   exit 1
 fi
+cat > "${overlay_home}/.config/timvisher/ide/tmux.conf" <<'CONF'
+set -g @tmux_clipboard_overlay loaded
+set -g set-clipboard external
+CONF
 
 text=tmux-clipboard-set-buffer
 capture="${t_dir}/set-buffer"
@@ -185,6 +190,24 @@ else
   stop_server
   run_test
   fail "no client attached for the C-] y pbcopy case"
+fi
+
+capture="${t_dir}/overlay"
+if timvisher_tests_with_home "$overlay_home" start_server "$capture" "$no_pbcopy_bin" 'sleep 30'
+then
+  got="$(t show -gv @tmux_clipboard_overlay 2>/dev/null) $(t show -gv set-clipboard)"
+  stop_server
+  run_test
+  if [[ $got = 'loaded external' ]]
+  then
+    pass "the ~/.config/timvisher/ide/tmux.conf overlay is sourced after the core config"
+  else
+    fail "overlay: want 'loaded external', got '${got}'"
+  fi
+else
+  stop_server
+  run_test
+  fail "no client attached for the overlay case"
 fi
 
 echo
