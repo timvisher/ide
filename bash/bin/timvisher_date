@@ -173,7 +173,7 @@ op_epoch() {
   local rel_re='^([+-]?)([0-9]+) (second|minute|hour|day|week)s?( ago)?$'
 
   [[ -n $spec ]] ||
-    { usage; exit 2; }
+    die 'no time given'
 
   if [[ $spec =~ ^@(-?[0-9]+)$ ]]
   then
