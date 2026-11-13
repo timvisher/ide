@@ -28,8 +28,13 @@ source "${HOME}/.functions/logging.bash" ||
     exit 1
   }
 
-command -v launchctl >/dev/null ||
-  die "launchctl not found"
+# Without launchd (Linux) there is no agent to keep loaded, but kctx and
+# kns still need the cache current, so fire alone instead of dying in
+# every interactive shell.
+if ! command -v launchctl >/dev/null
+then
+  exec timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job
+fi
 
 label='com.twonegatives.kctx-cache'
 
