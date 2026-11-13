@@ -80,10 +80,12 @@ t() {
 # Start a server with the ide tmux.conf whose one client is script(1)'s
 # pty, recording everything tmux writes to it. The server's PATH is
 # <bin>:/bin, so whether pbcopy exists is up to the case.
+workspace=0
 start_server() {
   local capture=$1 bin=$2 pane_cmd=$3 i
   local -a cmd=(
     env -u TMUX "TMUX_TMPDIR=${t_dir}" "PATH=${bin}:/bin" TERM=xterm-256color
+    "TIMVISHER_WORKSPACE_CLIPBOARD=${workspace}" ${server_env[@]+"${server_env[@]}"}
     "$real_tmux" -f "$tmux_conf" new-session -x 80 -y 24 "$pane_cmd"
   )
   if [[ $script_style = util-linux ]]
@@ -193,6 +195,110 @@ else
   run_test
   fail "no client attached for the C-] y pbcopy case"
 fi
+
+workspace=1
+ws_home="${t_dir}/ws-home"
+ws_copied="${t_dir}/ws-copied"
+if ! mkdir -p "${ws_home}/bin"
+then
+  echo "mkdir '${ws_home}/bin' failed" >&2
+  exit 1
+fi
+cat > "${ws_home}/bin/timvisher_workspace_clipboard" <<STUB
+#!/bin/sh
+cat >> '${ws_copied}'
+printf '\n' >> '${ws_copied}'
+STUB
+chmod +x "${ws_home}/bin/timvisher_workspace_clipboard"
+
+text=tmux-clipboard-ws-copy-mode
+capture="${t_dir}/ws-copy-mode"
+rm -f -- "$ws_copied"
+if timvisher_tests_with_home "$ws_home" start_server "$capture" "$no_pbcopy_bin" \
+  "printf '%s\\n' '${text}'; sleep 30"
+then
+  t copy-mode
+  t send-keys -X history-top
+  t send-keys -X begin-selection
+  t send-keys -X end-of-line
+  t send-keys -X copy-pipe-and-cancel
+  stop_server
+  check_osc52 "workspace: a copy-mode copy sends no OSC 52" "$capture" ''
+  run_test
+  if grep -q -- "$text" "$ws_copied" 2>/dev/null
+  then
+    pass "workspace: a copy-mode copy goes to timvisher_workspace_clipboard"
+  else
+    fail "workspace: copy-command got '$(cat "$ws_copied" 2>/dev/null)', want '${text}'"
+  fi
+else
+  stop_server
+  run_test
+  fail "no client attached for the workspace copy-mode case"
+fi
+
+text=tmux-clipboard-ws-prefix-y
+capture="${t_dir}/ws-prefix-y"
+rm -f -- "$ws_copied" "$pbcopy_out"
+if timvisher_tests_with_home "$ws_home" start_server "$capture" "$pbcopy_bin" 'sleep 30'
+then
+  t set-buffer "$text"
+  t send-keys -K -c "$client" C-] y
+  sleep 0.5
+  stop_server
+  check_osc52 "workspace: C-] y sends no OSC 52, pbcopy or not" "$capture" ''
+  run_test
+  if [[ $(cat "$ws_copied" 2>/dev/null) = "$text" && ! -e $pbcopy_out ]]
+  then
+    pass "workspace: C-] y goes to timvisher_workspace_clipboard, not pbcopy"
+  else
+    fail "workspace: C-] y copied '$(cat "$ws_copied" 2>/dev/null)', pbcopy got '$(cat "$pbcopy_out" 2>/dev/null)'"
+  fi
+else
+  stop_server
+  run_test
+  fail "no client attached for the workspace C-] y case"
+fi
+
+text=tmux-clipboard-ws-pane
+capture="${t_dir}/ws-pane"
+if timvisher_tests_with_home "$ws_home" start_server "$capture" "$no_pbcopy_bin" \
+  "printf '\\033]52;c;$(b64 "${text}-raw")\\a\\033Ptmux;\\033\\033]52;c;$(b64 "$text")\\a\\033\\\\'; sleep 30"
+then
+  stop_server
+  check_osc52 "workspace: only a pane's passthrough OSC 52 reaches the terminal" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the workspace pane case"
+fi
+
+fallback_home="${t_dir}/fallback-home"
+if ! mkdir -p "${fallback_home}/bin" \
+  || ! ln -s "$(cd "$(dirname "$0")/../bin" && pwd)/timvisher_workspace_clipboard" \
+    "${fallback_home}/bin/timvisher_workspace_clipboard"
+then
+  echo "fallback home setup failed under '${t_dir}'" >&2
+  exit 1
+fi
+text=tmux-clipboard-ws-fallback
+capture="${t_dir}/ws-fallback"
+server_env=("WORKSPACES_DAEMON_SOCKET=${t_dir}/no-daemon.sock" "TIMVISHER_WORKSPACE_CLIPBOARD_XCLIP=/bin/false")
+if timvisher_tests_with_home "$fallback_home" start_server "$capture" "${no_pbcopy_bin}:/usr/bin" 'sleep 30'
+then
+  t set-buffer "$text"
+  t send-keys -K -c "$client" C-] y
+  sleep 2
+  stop_server
+  check_osc52 "workspace: with no daemon, C-] y falls back to OSC 52 once" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the workspace fallback case"
+fi
+server_env=()
 
 echo
 echo "Results: ${tests} tests, ${failures} failures"
