@@ -522,32 +522,23 @@ function ntmux3__terminal() (
     ntmux3__wait_for_terminal "$log"
 )
 
-# Return 0 if $1 is a working tree backed by our managed trunk cache
-# (a worktree linked to a bare repo under
-# ~/.cache/timvisher_git_worktrees/repo_trunks), else 1.  This mirrors
-# timvisher_git's own classification (its repo_trunks_dir + the
-# git-common-dir prefix test in ensure_existing_repo): a managed worktree
-# is one whose git common dir lives under that cache root.  The check is
-# cheap — a couple of local `git rev-parse` calls, no network.
+# Return 0 if $1 is a working tree backed by one of timvisher_git's
+# trunks (a worktree linked to a bare repo under either trunk root, see
+# git_trunks.bash), else 1.  This mirrors timvisher_git's own
+# classification: a managed worktree is one whose git common dir lives in
+# a trunk.  The check is cheap — a couple of local `git rev-parse` calls,
+# no network.
 function ntmux3__is_managed_worktree() {
     local dir=$1
-    local common_dir trunks_dir
+    local common_dir
 
     common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
     # --git-common-dir may be relative to $dir; canonicalize from there.
     common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P 2>/dev/null) || return 1
 
-    trunks_dir="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
-    # Canonicalize the cache root too, so a symlinked $HOME (or cache) on
-    # either side still produces an apples-to-apples prefix match.  If it
-    # doesn't exist yet, nothing can be managed, so the raw value is fine.
-    if [[ -d $trunks_dir ]]
-    then
-        trunks_dir=$(cd "$trunks_dir" && pwd -P 2>/dev/null) ||
-            trunks_dir="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
-    fi
-
-    [[ $common_dir == "${trunks_dir}/"* ]]
+    # shellcheck source=bash/functions/git_trunks.bash
+    source "${BASH_SOURCE[0]%/*}/git_trunks.bash" || return 1
+    timvisher_git_trunk_relpath "$common_dir" >/dev/null
 }
 
 function ntmux3__handle_bd_topic() {

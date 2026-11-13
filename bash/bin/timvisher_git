@@ -33,6 +33,13 @@ source "${self_real%/*}/../functions/real_bin.bash" ||
     exit 1
   }
 
+# shellcheck source=bash/functions/git_trunks.bash
+source "${self_real%/*}/../functions/git_trunks.bash" ||
+  {
+    echo "Unable to source git_trunks functions" >&2
+    exit 1
+  }
+
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
@@ -93,7 +100,13 @@ then
   fi
 fi
 
-repo_trunks_dir=${new_cache_root}/repo_trunks
+# shellcheck disable=SC2218 # the sourced definition, before the override below
+repo_trunks_dir=$(timvisher_git_trunks_root)
+# This script's own code, and its tests, steer the root through
+# repo_trunks_dir, so the resolver reads it from there.
+timvisher_git_trunks_root() {
+  printf '%s\n' "$repo_trunks_dir"
+}
 live_repo_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
 hooks_dir=${config_dir}/bash/bin/timvisher_git_hooks
 
@@ -630,7 +643,7 @@ die_if_trunk_cached_under_alias_org() {
   while IFS= read -r candidate
   do
     [[ $candidate == "$org" ]] && continue
-    other_trunk="${repo_trunks_dir}/${candidate}/${repo}"
+    other_trunk=$(timvisher_git_trunk_dir "$candidate" "$repo")
     [[ -d $other_trunk ]] || continue
 
     note="${other_trunk}/x.relocation-note"
@@ -639,7 +652,7 @@ die_if_trunk_cached_under_alias_org() {
       cat -- "$note" >&2
     fi
     die "cache_trunk: '%s/%s' is not cached but its trunk exists under alias org '%s' at '%s'. Refusing to clone a second trunk. Use '%s/%s/...' or relocate the trunk to '%s'." \
-      "$org" "$repo" "$candidate" "$other_trunk" "$candidate" "$repo" "${repo_trunks_dir}/${org}/${repo}"
+      "$org" "$repo" "$candidate" "$other_trunk" "$candidate" "$repo" "$(timvisher_git_trunk_dir "$org" "$repo")"
   done < <(hook_org_candidates "$org")
 }
 
@@ -758,11 +771,10 @@ sweep_bogus_worktrees_in_cache() {
 # extending the glob — globbing arbitrary depth in bash is awkward.
 sweep_bogus_worktrees_in_all_caches() {
   local cache_dir
-  for cache_dir in "${repo_trunks_dir}"/*/*
+  while IFS= read -r cache_dir
   do
-    [[ -d $cache_dir ]] || continue
     sweep_bogus_worktrees_in_cache "$cache_dir"
-  done
+  done < <(timvisher_git_trunks_each)
 }
 
 # Migrate an existing non-bare trunk cache in-place to a bare layout.
@@ -965,8 +977,9 @@ cache_trunk() {
     die "Unable to get org from '${source}'"
   repo=$(get_repo "$source") ||
     die "Unable to get repo from '${source}'"
-  local org_dir="${repo_trunks_dir}/${org}"
-  local repo_dir="${org_dir}/${repo}"
+  local repo_dir org_dir
+  repo_dir=$(timvisher_git_trunk_dir "$org" "$repo")
+  org_dir=${repo_dir%/*}
 
   mkdir -p "$org_dir" ||
     die "cache_trunk: Unable to create directory '${org_dir}'"
@@ -1503,7 +1516,7 @@ ensure_fork_trunks() {
   fork_trunk=$(get_trunk_branch_name_from_cache "$trunk_cache") || return 0
 
   local parent_cache parent_trunk
-  parent_cache="${repo_trunks_dir}/${parent_spec}"
+  parent_cache=$(timvisher_git_trunk_dir "${parent_spec%%/*}" "${parent_spec#*/}")
   [[ -d $parent_cache ]] || return 0
   parent_trunk=$(get_trunk_branch_name_from_cache "$parent_cache") || return 0
 
@@ -1928,7 +1941,7 @@ ensure_existing_repo() {
       return 0
     }
 
-    if [[ $common_dir == "${repo_trunks_dir}/"* ]]
+    if timvisher_git_trunk_relpath "$common_dir" >/dev/null
     then
       # Managed worktree — run full remote/tracking configuration.
       local origin_url
@@ -1998,13 +2011,9 @@ derive_worktree_path() {
     common_dir=$(cd "$dir" && cd "$common_dir" && pwd -P)
   fi
 
-  # common_dir has been resolved via pwd -P; resolve repo_trunks_dir
-  # the same way so the prefix strip is apples-to-apples on systems
-  # (like macOS) where parent paths may contain symlinks.
-  local repo_trunks_dir_real
-  repo_trunks_dir_real=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || repo_trunks_dir_real=$repo_trunks_dir
-
-  local rel_path="${common_dir#"${repo_trunks_dir_real}/"}"
+  local rel_path
+  rel_path=$(timvisher_git_trunk_relpath "$common_dir") ||
+    die "derive_worktree_path: '%s' is not under a managed trunk root" "$common_dir"
   local result="${live_repo_dir}/${rel_path}/${branch}"
 
   # After migration, the output must never contain `.git` as a path
@@ -2760,10 +2769,8 @@ clone() {
       # --- 1a. Bare repo → translate to trunk checkout ---
       local bare_abs
       bare_abs=$(cd "$resolved_target" && pwd -P) || true
-      local resolved_trunks
-      resolved_trunks=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || true
-      local bare_rel="${bare_abs#"${resolved_trunks}/"}"
-      if [[ -n $resolved_trunks && $bare_rel != "$bare_abs" ]]
+      local bare_rel
+      if bare_rel=$(timvisher_git_trunk_relpath "$bare_abs")
       then
         # Managed bare repo under our cache system — check out trunk.
         local bare_trunk
@@ -3391,9 +3398,7 @@ is_branch_ish() {
       common_dir=$(cd "$expanded" && \
         cd "$(git rev-parse --git-common-dir 2>/dev/null)" && \
         pwd -P 2>/dev/null) || return 1
-      local resolved_trunks
-      resolved_trunks=$(cd "$repo_trunks_dir" && pwd -P 2>/dev/null) || return 1
-      [[ $common_dir == "${resolved_trunks}/"* ]]
+      timvisher_git_trunk_relpath "$common_dir" >/dev/null
       return
       ;;
   esac
@@ -3761,7 +3766,7 @@ worktree_gc() {
       resolved=$(strip_live_prefix "$st")
       org=$(get_org "$resolved")  || die "worktree gc: can't resolve org from '%s'" "$st"
       repo=$(get_repo "$resolved") || die "worktree gc: can't resolve repo from '%s'" "$st"
-      cache="${repo_trunks_dir}/${org}/${repo}"
+      cache=$(timvisher_git_trunk_dir "$org" "$repo")
       [[ -d $cache ]] ||
         die "worktree gc: no cached repo for '%s' (resolved %s/%s)" "$st" "$org" "$repo"
       scope_caches["$cache"]=1
@@ -3807,15 +3812,17 @@ worktree_gc() {
   local remove_kinds=()
 
   local trunk_cache
-  for trunk_cache in "${repo_trunks_dir}"/*/*; do
-    [[ -d $trunk_cache ]] || continue
+  local -a trunk_caches=()
+  readarray -t trunk_caches < <(timvisher_git_trunks_each)
+  for trunk_cache in "${trunk_caches[@]}"; do
 
     # When scoped, skip caches the user didn't name.
     if (( scoped )) && [[ -z ${scope_caches["$trunk_cache"]+x} ]]; then
       continue
     fi
 
-    local label="${trunk_cache#"${repo_trunks_dir}/"}"
+    local label
+    label=$(timvisher_git_trunk_relpath "$trunk_cache") || label=$trunk_cache
 
     # Sweep bogus worktrees before the normal gc pass; these are never
     # legitimate and must go regardless of age/protection.
@@ -4070,10 +4077,10 @@ reconcile_repo_config() {
   local trunk org repo hook
   local applied=0 failed=0 skipped=0
 
-  for trunk in "${repo_trunks_dir}"/*/*
+  local -a trunks=()
+  readarray -t trunks < <(timvisher_git_trunks_each)
+  for trunk in "${trunks[@]}"
   do
-    [[ -d $trunk ]] || continue
-
     repo=${trunk##*/}
     org=${trunk%/*}
     org=${org##*/}
@@ -4129,7 +4136,7 @@ maintenance_trunk_for() {
     return 0
   fi
 
-  printf '%s' "${repo_trunks_dir}/${org}/${repo}"
+  printf '%s' "$(timvisher_git_trunk_dir "$org" "$repo")"
 }
 
 # Install git's own maintenance scheduler if it has gone missing.
