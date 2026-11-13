@@ -1,6 +1,6 @@
 ---
 name: agent-shell-sessions
-description: Message, find, start, and recover other agent-shell sessions (Claude Code or Codex running in Emacs) with timvisher_emacs. Use whenever you need to put a message into another agent session's prompt (named by its ListAgents name or ref, or its session id), find which Emacs hosts a session, start a new agent-shell with a first prompt, check whether a session is wedged, or recover a wedged one. Never hand-build emacsclient --eval forms for any of this.
+description: Message, find, start, and recover other agent-shell sessions (Claude Code or Codex running in Emacs) with timvisher_emacs. Use whenever you need to put a message into another agent session's prompt (named by its ListAgents name or ref, or its session id), find which Emacs hosts a session, start a new agent-shell with a first prompt, check whether a session is wedged, recover a wedged one, or (only when Tim has said to) answer a session's pending permission prompt or cancel its turn. Never hand-build emacsclient --eval forms for any of this.
 ---
 
 # Agent-shell sessions
@@ -9,6 +9,8 @@ description: Message, find, start, and recover other agent-shell sessions (Claud
 - Handing a message, request or handoff to another agent session.
 - Spawning a new agent in a worktree's Emacs with a first prompt.
 - A session looks stuck: busy for a long time with nothing happening.
+- Tim has told you to answer a session's permission prompt or cancel
+  its turn.
 
 ## Naming a session
 
@@ -41,7 +43,8 @@ whatever Tim is typing along with your message.
 
 - `timvisher_emacs agent-shell ls` lists every agent-shell in every live
   Emacs with its name, ref, status, queued prompts, buffer and
-  directory: JSON when you run it (no terminal), a table for Tim.
+  directory, and a `blocked` session's pending permission prompt
+  title: JSON when you run it (no terminal), a table for Tim.
 - `timvisher_emacs agent-shell get-server <session>` prints the Emacs
   pid and server socket hosting a session, as JSON.
 - `timvisher_emacs server ls` lists every live Emacs server by pid.
@@ -79,6 +82,42 @@ in the old one's windows, kills the old one, and tells the new one it
 is a recovery fork, carrying the old shell's queued prompts in that
 one note. It kills a shell, so recover only a session that is yours
 or that Tim asked you to recover.
+
+## Permission prompts and turns
+
+A `blocked` session is waiting on a permission prompt. `agent-shell
+send` only queues text behind it, so it cannot answer one.
+
+```bash
+timvisher_emacs agent-shell permission-prompt --show <session>
+timvisher_emacs agent-shell permission-prompt approve <session>
+timvisher_emacs agent-shell permission-prompt approve-always <session>
+timvisher_emacs agent-shell permission-prompt deny <session>
+timvisher_emacs agent-shell turn cancel <session>
+```
+
+These answer and cancel on another session's behalf. Run `approve`,
+`approve-always`, `deny` or `turn cancel` only when Tim has explicitly
+told you to answer that prompt or cancel that turn, in Tim's own words
+or relayed by another agent. Never on your own judgment, however long
+the session has waited. Every call is logged with your session as the
+caller.
+
+- `--show` prints the latest pending prompt's title and its options
+  (`allow_once`, `allow_always`, `reject_once`) as JSON. It exits 1
+  with `timvisher_emacs_no_permission_prompt` when none is pending.
+  Show it first and check it is the prompt Tim meant.
+- `approve`, `approve-always` and `deny` pick that prompt's
+  `allow_once`, `allow_always` or `reject_once` option. `deny` also
+  interrupts the turn, as the prompt's reject key does. Each prints
+  the outcome, and `.next_prompt` if another is now pending.
+- `turn cancel` interrupts the running turn the way the shell's
+  interrupt key does, waits for the shell to go idle, and leaves an
+  idle shell alone.
+
+Do not answer a prompt or cancel a turn through a hand-built
+`emacsclient --eval`. Calling a permission button's command from a
+server eval has locked an Emacs at full CPU.
 
 ## Errors
 
