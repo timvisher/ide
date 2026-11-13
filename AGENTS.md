@@ -10,10 +10,17 @@ conformance runner), in its own throwaway `HOME` built by
 environment:
 
 ```bash
-bash/bin/timvisher_tests                                # every suite of both repos
+bash/bin/timvisher_tests                                # every suite of both repos but the integration ones
 bash/bin/timvisher_tests --suite bash/tests/git         # only this suite (repeatable)
+bash/bin/timvisher_tests --integration                  # also the integration suites
 bash/bin/timvisher_tests --overlay <system-extensions>  # a system-extensions worktree other than the installed one
+bash/bin/timvisher_tests --jobs 16                      # more suites at once than the default, half the CPUs
 ```
+
+Suites run at nice 10. Each run's joblog, output and sampled load
+averages are kept under `~/.local/state/timvisher_tests/runs/` (the
+newest 100), and the run's last line names its directory and peak load
+average.
 
 `timvisher_dev_ci run-tests` runs the same thing. From a
 system-extensions worktree, run `~/git/ide/bash/bin/timvisher_tests`
@@ -27,6 +34,25 @@ dirs move together: a test that needs a different `HOME` uses
 calling subshell) or `timvisher_tests_with_home <dir> <cmd>` (a command
 run with `HOME`, every XDG dir and `TIMVISHER_GIT_HOME` under `<dir>`), from
 `bash/tests/lib/timvisher_tests.bash`.
+
+A suite tests its unit, not the tools the unit runs. Mock those
+(`git`, `gh`, `tmux`, `ps`, `jq`, ...) with
+`bash/tests/lib/mock_commands.bash`: `mock_init` puts stubs first on
+`PATH`, `mock_respond <cmd> [--stdout|--stderr|--exit|--times|--run]
+-- <pattern>...` says how a call is answered, and `mock_calls`,
+`mock_called` and `mock_call_count` assert on the calls made. A call
+no rule answers fails the suite through `mock_finish`. On a suite's
+`PATH`, `git` is the `bash/bin/git` wrapper, about ten times the cost
+of the real one, so a test that does need a real repository builds it
+with `"$(mock_real git)"`, and lets the unit reach real git with
+`mock_passthrough git "$(mock_real git)"`, never through the wrapper.
+The wrapper's own suite mocks the real git behind it. The header of
+`mock_commands.bash` documents the rest.
+
+Tests whose subject is real repository state (worktrees, bare caches,
+pushes, submodules) go in `bash/tests/integration/<suite>`, apart from
+the unit suite. Default runs skip them; they run only on request, with
+`--integration` or by naming one with `--suite`.
 
 ## Testing a Worktree
 

@@ -288,7 +288,7 @@ integrate_scratch_abandon() {
 
     integrate_lock_release
 
-    warn "integrate: '%s' left untouched at %s; the attempt is on '%s' in '%s' until the next integrate" \
+    error "integrate: '%s' left untouched at %s; the attempt is on '%s' in '%s' until the next integrate" \
          "$branch" "${head:0:12}" "$scratch" "${wt:-(no integration worktree)}"
 }
 

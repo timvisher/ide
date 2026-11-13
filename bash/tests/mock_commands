@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+
+# Tests for the mock-command library in lib/mock_commands.bash
+
+failures=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+check() {
+  local description=$1 want=$2 got=$3
+  if [[ $got == "$want" ]]
+  then
+    pass "$description"
+  else
+    fail "$description: want '$want', got '$got'"
+  fi
+}
+
+if ! mock_init
+then
+  echo 'FAIL: mock_init' >&2
+  exit 1
+fi
+
+mock_command git
+
+# Rules answer by argv, newest first.
+mock_respond git --stdout main -- rev-parse --abbrev-ref HEAD
+check 'a rule answers its exact argv' main "$(git rev-parse --abbrev-ref HEAD)"
+
+mock_respond git --stdout other -- rev-parse ...
+check 'the newest matching rule wins' other "$(git rev-parse --abbrev-ref HEAD)"
+
+mock_reset
+mock_respond git --stdout feature -- branch --show-current
+mock_respond git --stdout glob -- log 'feature/*' ...
+check 'a glob pattern matches one argument' glob "$(git log feature/x --oneline -1)"
+check 'a trailing ... matches no arguments' glob "$(git log feature/y)"
+
+git log main >/dev/null 2>&1
+check 'an unanswered call exits 127' 127 "$?"
+check 'an unanswered call is recorded as unexpected' 'git log main' "$(mock_unexpected)"
+mock_reset
+check 'mock_reset keeps unexpected calls' 'git log main' "$(mock_unexpected)"
+check 'mock_finish names each unexpected call' 'FAIL: mock: unexpected call: git log main' \
+  "$(mock_finish 2>&1)"
+git log other >/dev/null 2>&1
+mock_finish 2>/dev/null
+check 'mock_finish fails on unexpected calls' 1 "$?"
+check 'mock_finish forgets what it reported' 0 "$(mock_finish; echo "$?")"
+
+# Streams and status.
+mock_respond git --stdout out --stderr err --exit 3 -- fetch origin
+out=$(git fetch origin 2>/dev/null)
+rc=$?
+err=$(git fetch origin 2>&1 >/dev/null)
+check '--stdout goes to stdout' out "$out"
+check '--stderr goes to stderr' err "$err"
+check '--exit sets the status' 3 "$rc"
+
+# --times answers only so many calls, then older rules take over.
+mock_reset
+mock_respond git --stdout later -- status
+mock_respond git --stdout first --times 2 -- status
+check '--times answers the first call' first "$(git status)"
+check '--times answers the second call' first "$(git status)"
+check '--times falls through after its calls' later "$(git status)"
+
+# --run gets the arguments.
+mock_reset
+mock_respond git --run 'printf "%s|" "$@"; exit 4' -- show ...
+out=$(git show 'a b' c)
+rc=$?
+check '--run sees the arguments' 'show|a b|c|' "$out"
+check '--run sets the status' 4 "$rc"
+
+# The record.
+mock_reset
+mock_command gh
+mock_respond git -- ...
+mock_respond gh -- ...
+git commit -m 'two words'
+gh pr view 7
+git -C /tmp status
+check 'mock_calls lists calls to one command, quoted' \
+  "git commit -m two\\ words"$'\n'"git -C /tmp status" "$(mock_calls git)"
+check 'mock_calls with no name lists every call' 3 "$(mock_calls | wc -l | tr -d ' ')"
+check 'mock_call_count counts matching calls' 1 "$(mock_call_count git commit ...)"
+check 'mock_call_count with no patterns counts all calls' 2 "$(mock_call_count git)"
+if mock_called git commit -m 'two words'
+then
+  pass 'mock_called matches a recorded argv'
+else
+  fail 'mock_called should match a recorded argv'
+fi
+if ! mock_called git push ...
+then
+  pass 'mock_called fails when nothing matches'
+else
+  fail 'mock_called should fail when nothing matches'
+fi
+
+# Subshells and background jobs share the rules and the record.
+mock_reset
+mock_respond git --stdout bg -- rev-parse HEAD
+( git rev-parse HEAD > "$TMPDIR/bg.out" ) &
+wait
+check 'a background job sees the rules' bg "$(< "$TMPDIR/bg.out")"
+check 'a background job adds to the record' 1 "$(mock_call_count git rev-parse HEAD)"
+
+# Passthrough.
+mock_reset
+mock_passthrough git "$(type -P echo)"
+mock_respond git --stdout ruled -- status
+check 'a rule still answers before the passthrough' ruled "$(git status)"
+check 'the passthrough answers what no rule does' 'log -1' "$(git log -1)"
+check 'passed-through calls are recorded' 1 "$(mock_call_count git log -1)"
+check 'passed-through calls are not unexpected' 0 "$(mock_finish; echo "$?")"
+mock_passthrough git ''
+git log -1 >/dev/null 2>&1
+check 'an empty passthrough removes it' 127 "$?"
+mock_finish 2>/dev/null
+mock_reset
+
+# brew --prefix reaches the mocks.
+mock_brew_prefix
+mock_respond git --stdout via-prefix -- --version
+# shellcheck disable=SC2016
+check 'mock_brew_prefix routes $(brew --prefix)/bin to the mocks' via-prefix \
+  "$("$(brew --prefix)/bin/git" --version)"
+
+# Callers that resolve a command with realpath still reach it by name.
+check 'a mock reached through realpath answers as itself' via-prefix \
+  "$("$(realpath "$TIMVISHER_MOCK_DIR/bin/git")" --version)"
+
+# A mock still works when the caller's PATH finds an older bash first.
+check 'a mock runs under the suite bash whatever PATH says' via-prefix \
+  "$(PATH=/bin "$TIMVISHER_MOCK_DIR/bin/git" --version)"
+
+# mock_real looks past the mocks.
+real=$(mock_real git)
+if [[ -n $real && $real != "$TIMVISHER_MOCK_DIR"/* && -x $real ]]
+then
+  pass 'mock_real finds the real tool, not the mock'
+else
+  fail "mock_real git: got '$real'"
+fi
+
+wrapper_dir=$(mktemp -d) || exit 1
+printf '#!/bin/sh\necho wrapper\n' > "$wrapper_dir/git" && chmod +x "$wrapper_dir/git" || exit 1
+real=$(TIMVISHER_TESTS_BASE_PATH="$wrapper_dir:$TIMVISHER_TESTS_BASE_PATH" mock_real git)
+if [[ -n $real && $real != "$wrapper_dir"/* && -x $real ]]
+then
+  pass 'mock_real skips a wrapper script on the base PATH'
+else
+  fail "mock_real git with a wrapper first: got '$real'"
+fi
+rm -rf -- "$wrapper_dir"
+
+mock_reset git
+mock_git_toplevel
+top=$(cd "$(mktemp -d)" && pwd -P) || exit 1
+mkdir -p "$top/repo/.git" "$top/repo/sub/deep" "$top/elsewhere"
+check 'mock_git_toplevel finds the marked repo from inside it' "$top/repo" \
+  "$(cd "$top/repo/sub/deep" && git rev-parse --show-toplevel)"
+check 'mock_git_toplevel takes -C' "$top/repo" \
+  "$(git -C "$top/repo/sub" rev-parse --show-toplevel)"
+git -C "$top/elsewhere" rev-parse --show-toplevel >/dev/null 2>&1
+check 'mock_git_toplevel exits 128 outside a marked repo' 128 "$?"
+mkdir -p "$top/worktree/sub" && : > "$top/worktree/.git"
+check 'mock_git_toplevel takes a worktree .git file as a marker' "$top/worktree" \
+  "$(git -C "$top/worktree/sub" rev-parse --show-toplevel)"
+git -C "$top/missing" rev-parse --show-toplevel >/dev/null 2>&1
+check 'mock_git_toplevel exits 128 for a missing directory' 128 "$?"
+rm -rf -- "$top"
+
+mock_finish || (( failures += 1 ))
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

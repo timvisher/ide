@@ -10,6 +10,7 @@ def fresh_home():
     home = os.path.join(root, "home")
     try:
         shutil.copytree(os.environ["TIMVISHER_TESTS_TEMPLATE"], home, symlinks=True)
+        _keep_global_hooks_off(home)
     except BaseException:
         _remove_tree(root)
         raise
@@ -32,6 +33,21 @@ def fresh_home():
             else:
                 os.environ[name] = value
         _remove_tree(root)
+
+
+# As timvisher_tests does for each suite's HOME: git drops the runner's
+# GIT_CONFIG_* hooksPath override for the receiving side of a push to a
+# local repo, which then runs the hooks the global config names.
+# ~/.gitconfig is read after the XDG config, so it wins. Never write
+# through a link into a real file.
+def _keep_global_hooks_off(home):
+    gitconfig = os.path.join(home, ".gitconfig")
+    if os.path.lexists(gitconfig):
+        return
+    hooks = os.path.join(home, ".local", "state", "timvisher_tests", "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    with open(gitconfig, "x") as f:
+        f.write(f"[core]\n\thooksPath = {hooks}\n")
 
 
 def _remove_tree(root):

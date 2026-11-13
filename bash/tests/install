@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016,SC2088
 
+# install.bash runs no git, so git is a mock with no rules. The checks
+# that the core worktree is unchanged use the real git directly.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_command git
+real_git=$(mock_real git) || { echo "no real git on the base PATH" >&2; exit 1; }
+
 failures=0
 tests=0
 
@@ -72,7 +80,7 @@ tree_of() {
   done)
 }
 
-core_status_before=$(git -C "$core" status --porcelain)
+core_status_before=$("$real_git" -C "$core" status --porcelain)
 overlay_tree_before=$(tree_of "$overlay")
 
 home="$tmpdir/fresh/home"
@@ -124,7 +132,7 @@ check 'second install leaves the tree unchanged' \
 check 'nothing is written beside HOME' \
       test "$(cd "$tmpdir/fresh" && /usr/bin/find . -mindepth 1 -maxdepth 1)" = ./home
 check 'the core worktree is unchanged' \
-      test "$(git -C "$core" status --porcelain)" = "$core_status_before"
+      test "$("$real_git" -C "$core" status --porcelain)" = "$core_status_before"
 check 'the overlay is unchanged' \
       test "$(tree_of "$overlay")" = "$overlay_tree_before"
 
@@ -188,6 +196,8 @@ check 'a failing git installer fails the install' test "$rc" != 0
 check 'a failing git installer is reported' grep -q 'git/bin/install failed' "$tmpdir/out"
 
 echo ""
+mock_finish || (( failures += 1 ))
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))

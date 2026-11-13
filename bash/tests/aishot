@@ -32,24 +32,37 @@ script_dir="$(cd "$(dirname "$0")/.." && pwd)" ||
   { echo "cannot resolve script_dir" >&2; exit 1; }
 script="${script_dir}/bin/aishot"
 
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_command git
+
 # Best-effort cleanup backstop; each case also removes its repo explicitly.
 trap 'rm -rf "${repo:-}"' EXIT
 
-# Build a throwaway git repo with a staged + unstaged change to review.
-# No commit is made (no upstream needed), so the branch-diff section is
-# empty and the staged/unstaged diffs carry the content.
+git_answers() {
+  mock_reset git
+  mock_respond git --stdout true -- rev-parse --is-inside-work-tree
+  mock_respond git --run 'pwd -P' -- rev-parse --show-toplevel
+  mock_respond git --exit 128 -- rev-parse --verify '@{u}'
+  mock_respond git --exit 128 -- rev-parse HEAD
+  mock_respond git --exit 128 -- rev-parse --abbrev-ref HEAD
+  mock_respond git --exit 128 -- merge-base '@{u}' HEAD
+  mock_respond git --exit 128 -- rev-list HEAD --not --remotes
+  mock_respond git --exit 128 -- log --oneline -10
+  mock_respond git --run 'printf "%s\n" "diff --git a/f.txt b/f.txt" "new file mode 100644" \
+    "index 0000000..4b48dee" "--- /dev/null" "+++ b/f.txt" "@@ -0,0 +1 @@" "+original"' -- diff --cached
+  mock_respond git --run 'printf "%s\n" "diff --git a/f.txt b/f.txt" "index 4b48dee..1b1d4b6 100644" \
+    "--- a/f.txt" "+++ b/f.txt" "@@ -1 +1,2 @@" " original" "+modified line"' -- diff
+  mock_respond git --run 'find . -type f ! -path ./f.txt | sed "s#^\./##" | LC_ALL=C sort' \
+    -- ls-files --others --exclude-standard
+}
+
 make_repo() {
   local dir
   dir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
-  (
-    cd "$dir" || exit 1
-    git init -q
-    git config user.email t@example.com
-    git config user.name t
-    printf 'original\n' > f.txt
-    git add f.txt
-    printf 'original\nmodified line\n' > f.txt
-  ) >/dev/null 2>&1
+  printf 'original\nmodified line\n' > "$dir/f.txt"
+  git_answers
   printf '%s' "$dir"
 }
 
@@ -110,12 +123,12 @@ rm -rf "$repo"
 # ---------------------------------------------------------------------------
 # Case 3: a stale spill file is not re-inlined on a later run
 #
-# These throwaway repos do NOT inherit the user's global gitignore, so the
-# spill file (x.*) shows up as an untracked working file here. That makes
-# this the meaningful case: aishot must skip its own spill file in both the
-# x.* root-file glob and the untracked-files listing on its own, not lean on
-# a global ignore. Don't "fix" this by setting core.excludesFile — it would
-# neuter the test.
+# The mocked ls-files lists every file but f.txt as untracked, as in a
+# repo with no ignore rules, so the spill file (x.*) shows up there. That
+# makes this the meaningful case: aishot must skip its own spill file in
+# both the x.* root-file glob and the untracked-files listing on its own,
+# not lean on an ignore rule. Don't make the mock hide x.* files — it
+# would neuter the test.
 # ---------------------------------------------------------------------------
 run_test
 repo=$(make_repo)
@@ -558,7 +571,10 @@ repo=$(make_repo)
 # ~2.7MB of multi-line text, comfortably over ARG_MAX (~1MB), staged so it
 # lands in the embedded diff.
 head -c 2000000 /dev/urandom | base64 > "$repo/big.txt"
-(cd "$repo" && git add big.txt) >/dev/null 2>&1
+mock_respond git --run 'printf "%s\n" "diff --git a/big.txt b/big.txt" "new file mode 100644" \
+  "--- /dev/null" "+++ b/big.txt" "@@ -0,0 +1 @@"; sed "s/^/+/" big.txt' -- diff --cached
+mock_respond git --run 'find . -type f ! -path ./f.txt ! -path ./big.txt | sed "s#^\./##" | LC_ALL=C sort' \
+  -- ls-files --others --exclude-standard
 rj="$repo/.aishot/review.json"
 if (cd "$repo" && "$script" git diff review begin) >/dev/null 2>&1 &&
    [[ -f $rj ]] &&
@@ -638,6 +654,8 @@ fi
 rm -rf "$repo"
 
 echo ""
+mock_finish || (( failures += 1 ))
+
 echo "Results: $((tests - failures))/${tests} passed"
 
 if (( 0 < failures ))

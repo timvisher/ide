@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
 
 # Tests for git wrapper
 
@@ -37,52 +39,47 @@ tmpdir=
 trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
 tmpdir=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 
-# Create a mock brew prefix with git inside it
-mkdir -p "$tmpdir/prefix/bin" || exit 1
-cat > "$tmpdir/prefix/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-echo "real-git $*"
-[[ -z ${TEST_PRINT_TRACE2-} ]] || echo "trace2=${GIT_TRACE2_EVENT-unset}"
-MOCK
-chmod +x "$tmpdir/prefix/bin/git"
+# The real git behind the wrapper is a mock. By default it echoes its
+# argv, so tests see what the wrapper passed through. brew --prefix
+# points at the mocks too, for wrappers that still shell out to it.
+mock_init || { echo "mock_init failed" >&2; exit 1; }
+mock_brew_prefix
 
-mkdir -p "$tmpdir/mockbin" || exit 1
-cat > "$tmpdir/mockbin/brew" <<MOCK
-#!/usr/bin/env bash
-echo "$tmpdir/prefix"
-MOCK
-chmod +x "$tmpdir/mockbin/brew"
+git_echoes() {
+  mock_reset git
+  mock_passthrough git ''
+  # shellcheck disable=SC2016
+  mock_respond git --run '
+    echo "real-git $*"
+    [[ -z ${TEST_PRINT_TRACE2-} ]] || echo "trace2=${GIT_TRACE2_EVENT-unset}"' -- ...
+}
+git_echoes
 
 # Mock ps: lets tests assert behavior based on simulated parent command
-# (dolt/bd/etc.).  When TEST_PARENT_CMD is set and the wrapper is asking
-# for the parent's comm, return it; otherwise fall through to real ps.
-cat > "$tmpdir/mockbin/ps" <<'MOCK'
-#!/usr/bin/env bash
-if [[ -n ${TEST_PARENT_CMD:-} && "$*" == *"-o comm="* ]]
-then
-  echo "$TEST_PARENT_CMD"
-  exit 0
-fi
-exec /bin/ps "$@"
-MOCK
-chmod +x "$tmpdir/mockbin/ps"
+# (dolt/bd/etc.). When TEST_PARENT_CMD is set and the wrapper is asking
+# for its parent's comm, answer with it; otherwise pass through to the
+# real ps (the ancestor walk reads the real process table).
+mock_passthrough ps /bin/ps
+# shellcheck disable=SC2016
+mock_respond ps --run '
+  [[ -n ${TEST_PARENT_CMD:-} ]] || exec /bin/ps "$@"
+  echo "$TEST_PARENT_CMD"' -- -p '*' -o comm=
 
 # resolve_next_git walks PATH, finds itself, returns the next entry.
 # We need:
 #   1. A PATH entry for the wrapper itself (so "self" is found).
-#   2. The mock git immediately after (so it becomes "next").
+#   2. The mocks immediately after (so the mock git becomes "next").
 # We cannot reuse $PATH because the user's $PATH already contains a path
 # to the wrapper followed by real git — which would shadow the mock. So
 # we construct a minimal PATH:
 #   - selflink/ → symlink to the wrapper under test
-#   - prefix/bin/ → mock git
-#   - $tmpdir/mockbin → mock `brew` for wrappers that still shell out to it
+#   - the mocks: git, ps, brew
 #   - $sys_path → bash builtins (`realpath`, `mktemp`, etc.) but NOT
 #     another git binary ahead of the mock
 mkdir -p "$tmpdir/selflink" || exit 1
 ln -s "$script" "$tmpdir/selflink/git"
 
-test_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:$sys_path"
+test_path="$tmpdir/selflink:$TIMVISHER_MOCK_DIR/bin:$sys_path"
 
 run_wrapper() {
   PATH="$test_path" \
@@ -257,19 +254,10 @@ fi
 # draft PR push grant allow-path
 # ---------------------------------------------------------------------------
 
-mkdir -p "$tmpdir/grantprefix/bin" "$tmpdir/grantselflink" "$tmpdir/fakegrant-bin" || exit 1
-cat > "$tmpdir/grantprefix/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-if [[ $1 == symbolic-ref ]]
-then
-  echo refs/remotes/origin/trunk
-  exit 0
-fi
-echo "real-git $*"
-MOCK
-chmod +x "$tmpdir/grantprefix/bin/git"
-ln -s "$script" "$tmpdir/grantselflink/git"
-grant_path="$tmpdir/grantselflink:$tmpdir/grantprefix/bin:$tmpdir/mockbin:$sys_path"
+mkdir -p "$tmpdir/fakegrant-bin" || exit 1
+# The wrapper resolves the default branch to refuse pushing it.
+mock_respond git --stdout refs/remotes/origin/trunk -- symbolic-ref ...
+grant_path=$test_path
 for faketool in timvisher_gh timvisher_git
 do
   cat > "$tmpdir/fakegrant-bin/$faketool" <<'FAKE_TOOL'
@@ -418,6 +406,8 @@ else
   fail "passes through all args: got '${result}'"
 fi
 
+git_echoes
+
 # ---------------------------------------------------------------------------
 # Agent invocation log routing
 #
@@ -516,7 +506,7 @@ fi
 # ("$BASH"), so 'bash' isn't resolved through nojq_path and macOS's 3.2
 # /bin/bash isn't used.
 run_test
-nojq_path="$tmpdir/selflink:$tmpdir/prefix/bin:$tmpdir/mockbin:/bin"
+nojq_path="$tmpdir/selflink:$TIMVISHER_MOCK_DIR/bin:/bin"
 log_state="$tmpdir/xdg-state-nojq"
 rm -rf "$log_state"
 TIMVISHER_AGENT=true TEST_PARENT_CMD=bash XDG_STATE_HOME="$log_state" TIMVISHER_TOOL_LOG_DIR="$log_state/logs" \
@@ -936,131 +926,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Upstream guard integration tests (using real git repos)
-# ---------------------------------------------------------------------------
-
-# The real git, past every wrapper checkout on PATH (the installed ide's
-# ~/bin/git, say), not just this one.
-real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$script") ||
-  { echo "No real git found" >&2; exit 1; }
-
-# For upstream guard tests, the wrapper needs the real git binary (not the
-# echo mock) because it calls rev-parse/config internally. Build a parallel
-# PATH that points at real git instead of the echo mock.
-mkdir -p "$tmpdir/real-prefix/bin" || exit 1
-ln -sf "$real_git" "$tmpdir/real-prefix/bin/git"
-
-test_path_real_git="$tmpdir/selflink:$tmpdir/real-prefix/bin:$tmpdir/mockbin:$sys_path"
-
-run_wrapper_real_git() {
-  TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
-  PATH="$test_path_real_git" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
-}
-
-run_wrapper_real_git_agent() {
-  TIMVISHER_AGENT=true \
-  PATH="$test_path_real_git" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' $*" 2>&1
-}
-
-# Helper: create a minimal repo with a branch tracking a remote
-setup_tracking_repo() {
-  local repo_dir=$1 branch_name=$2
-
-  "$real_git" -C "$tmpdir" init --bare "remote-${branch_name}.git" >/dev/null 2>&1
-  "$real_git" -C "$tmpdir" clone "remote-${branch_name}.git" "$repo_dir" >/dev/null 2>&1
-  "$real_git" -C "${tmpdir}/${repo_dir}" commit --allow-empty -m "init" >/dev/null 2>&1
-  "$real_git" -C "${tmpdir}/${repo_dir}" push origin HEAD >/dev/null 2>&1
-  if [[ $branch_name != main ]]
-  then
-    "$real_git" -C "${tmpdir}/${repo_dir}" checkout -b "$branch_name" >/dev/null 2>&1
-    "$real_git" -C "${tmpdir}/${repo_dir}" push -u origin "$branch_name" >/dev/null 2>&1
-  fi
-}
-
-# Test 8: upstream guard fires when tracking is dropped (pre-check)
-run_test
-setup_tracking_repo "guard-pre-test" "feature"
-# Create cookie to indicate tracking was previously observed
-touch "${tmpdir}/guard-pre-test/x.upstream-configured"
-# Strip tracking to simulate the broken state
-"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.remote
-"$real_git" -C "${tmpdir}/guard-pre-test" config --unset branch.feature.merge
-
-result=$(cd "${tmpdir}/guard-pre-test" && run_wrapper_real_git status 2>&1 || true)
-if [[ $result == *"UPSTREAM TRACKING DROPPED"* ]]
-then
-  pass "upstream guard fires when tracking is dropped"
-else
-  fail "upstream guard should fire when tracking dropped: got '${result}'"
-fi
-
-# Test 9: upstream guard uses -C target, not CWD
-run_test
-setup_tracking_repo "guard-C-target" "mybranch"
-# Create a second repo with detached HEAD (like a cache)
-"$real_git" -C "$tmpdir" init "detached-cache" >/dev/null 2>&1
-"$real_git" -C "${tmpdir}/detached-cache" commit --allow-empty -m "init" >/dev/null 2>&1
-"$real_git" -C "${tmpdir}/detached-cache" checkout --detach HEAD >/dev/null 2>&1
-
-# Make guard-C-target have broken tracking (cookie + no remote)
-touch "${tmpdir}/guard-C-target/x.upstream-configured"
-"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.remote
-"$real_git" -C "${tmpdir}/guard-C-target" config --unset branch.mybranch.merge
-
-# Run git -C <detached-cache> status FROM the broken worktree dir.
-# With the fix, the guard should check the detached cache (and skip),
-# NOT the CWD (which is broken).
-result=$(cd "${tmpdir}/guard-C-target" && run_wrapper_real_git "-C '${tmpdir}/detached-cache' status" 2>&1 || true)
-if [[ $result != *"UPSTREAM TRACKING DROPPED"* ]]
-then
-  pass "upstream guard uses -C target, not CWD"
-else
-  fail "upstream guard should not fire for -C target with detached HEAD: got '${result}'"
-fi
-
-# ---------------------------------------------------------------------------
-# @{u} resolve guard tests (agent must have upstream configured)
-# ---------------------------------------------------------------------------
-
-# Test: blocks 'git log @{u}..HEAD' when upstream is not configured
-run_test
-# Create a repo with no upstream
-"$real_git" -C "$tmpdir" init "no-upstream" >/dev/null 2>&1
-"$real_git" -C "${tmpdir}/no-upstream" commit --allow-empty -m "init" >/dev/null 2>&1
-
-result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
-if [[ $result == *'"code":"git_upstream_not_configured"'* ]]
-then
-  pass "blocks 'git log @{u}..HEAD' when no upstream"
-else
-  fail "blocks @{u} without upstream: got '${result}'"
-fi
-
-# Test: allows 'git log @{u}..HEAD' when upstream is configured
-run_test
-setup_tracking_repo "has-upstream" "feature2"
-
-result=$(cd "${tmpdir}/has-upstream" && run_wrapper_real_git_agent "log '@{u}..HEAD'" || true)
-if [[ $result != *'"level":"error"'* ]] && [[ $result != *'"level":"warning"'* ]]
-then
-  pass "allows 'git log @{u}..HEAD' when upstream exists"
-else
-  fail "should allow @{u} with upstream: got '${result}'"
-fi
-
-# Test: blocks 'git diff @{upstream}...HEAD' when no upstream (long form)
-run_test
-result=$(cd "${tmpdir}/no-upstream" && run_wrapper_real_git_agent "diff '@{upstream}...HEAD'" || true)
-if [[ $result == *'"code":"git_upstream_not_configured"'* ]]
-then
-  pass "blocks @{upstream} long form when no upstream"
-else
-  fail "blocks @{upstream} long form: got '${result}'"
-fi
-
-# ---------------------------------------------------------------------------
 # git worktree add guard tests
 # ---------------------------------------------------------------------------
 
@@ -1116,121 +981,6 @@ then
   pass "TIMVISHER_NTMUX=1 bypasses worktree add guard (passes through to real git)"
 else
   fail "TIMVISHER_NTMUX=1 bypass: got '${result}'"
-fi
-
-# ---------------------------------------------------------------------------
-# Selective-fetch: scrub_dead_refspecs drops dead explicit refspecs
-# ---------------------------------------------------------------------------
-
-# Build a selective-fetch repo. The origin URL parses to testorg/testrepo (so
-# selective fetch enables and the marker is found) but resolves to a local
-# bare remote via insteadOf. HOME is sandboxed so the enable marker is read
-# from our tree, not the real ~/.config.
-sf_setup() {
-  local name=$1
-  sf_home="$tmpdir/sf-$name/home"
-  sf_remote="$tmpdir/sf-$name/remote.git"
-  sf_work="$tmpdir/sf-$name/work"
-  mkdir -p "$sf_home" || true
-
-  # The wrapper sources ~/.functions/*.bash; with HOME sandboxed, point it at
-  # the real ones so the script can load.
-  ln -sf "$HOME/.functions" "$sf_home/.functions" || true
-
-  "$real_git" init --bare "$sf_remote" >/dev/null 2>&1 || true
-  "$real_git" clone "$sf_remote" "$sf_work" >/dev/null 2>&1 || true
-  "$real_git" -C "$sf_work" commit --allow-empty -m init >/dev/null 2>&1 || true
-  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
-  "$real_git" -C "$sf_work" push origin HEAD:refs/heads/keepme >/dev/null 2>&1 || true
-  "$real_git" -C "$sf_work" fetch origin >/dev/null 2>&1 || true
-  "$real_git" -C "$sf_work" remote set-head origin main >/dev/null 2>&1 || true
-
-  # Parse-able remote URL, rewritten to the local bare repo.
-  "$real_git" -C "$sf_work" remote set-url origin "git@github.com:testorg/testrepo.git" || true
-  "$real_git" -C "$sf_work" config --add "url.${sf_remote}.insteadOf" "git@github.com:testorg/testrepo.git" || true
-
-  # selective-fetch marker under the HOME-relative config dir.
-  mkdir -p "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo" || true
-  touch "$sf_home/.config/timvisher/ide/git/XDG_CONFIG_HOME/git/wrapper/testorg/testrepo/enable-selective-fetch" || true
-}
-
-# Run the wrapper's fetch with real git and a sandboxed HOME.
-sf_fetch() {
-  ( cd "$sf_work" && \
-    TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
-    PATH="$test_path_real_git" \
-    bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch" 2>&1 ) || true
-}
-
-# Test: drops a dead explicit refspec, keeps live explicit + wildcard, and the
-# fetch succeeds (no "couldn't find remote ref").
-run_test
-sf_setup scrub
-"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
-"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/keepme:refs/remotes/origin/keepme" || true
-"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch:refs/remotes/origin/deadbranch" || true
-"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/team/*:refs/remotes/origin/team/*" || true
-sf_out=$(sf_fetch)
-sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
-if [[ $sf_specs != *deadbranch* ]] \
-   && [[ $sf_specs == *"refs/heads/keepme:"* ]] \
-   && [[ $sf_specs == *"refs/heads/main:"* ]] \
-   && [[ $sf_specs == *"refs/heads/team/*:"* ]] \
-   && [[ $sf_out != *"couldn't find remote ref"* ]]
-then
-  pass "scrub: drops dead explicit refspec, keeps live + wildcard, fetch succeeds"
-else
-  fail "scrub: specs='${sf_specs}' out='${sf_out}'"
-fi
-
-# Test: an unreachable remote preserves all refspecs (no false-positive removal).
-run_test
-sf_setup guard
-"$real_git" -C "$sf_work" config --replace-all remote.origin.fetch "+refs/heads/main:refs/remotes/origin/main" || true
-"$real_git" -C "$sf_work" config --add remote.origin.fetch "+refs/heads/deadbranch2:refs/remotes/origin/deadbranch2" || true
-# Break the remote: repoint insteadOf at a nonexistent bare repo so ls-remote fails.
-"$real_git" -C "$sf_work" config --unset-all "url.${sf_remote}.insteadOf" 2>/dev/null || true
-"$real_git" -C "$sf_work" config --add "url.${tmpdir}/sf-guard/missing.git.insteadOf" "git@github.com:testorg/testrepo.git" || true
-sf_out=$(sf_fetch)
-sf_specs=$("$real_git" -C "$sf_work" config --get-all remote.origin.fetch 2>/dev/null || true)
-if [[ $sf_specs == *deadbranch2* ]]
-then
-  pass "scrub: unreachable remote preserves refspecs (no false-positive removal)"
-else
-  fail "scrub guard: deadbranch2 should survive an unreachable remote: specs='${sf_specs}' out='${sf_out}'"
-fi
-
-# Test: the first fetch of a brand-new selective-fetch repo (what
-# timvisher_git's init_bare_cache makes: init, remote add, fetch) fetches
-# only the main branch. There is no origin/HEAD yet, so the main branch has to
-# come from the remote; before cf-m1w0.21 the refspec setup gave up and the
-# default +refs/heads/* fetched every branch (~40k on dd-source).
-run_test
-sf_setup firstfetch
-# As on GitHub, the remote's HEAD names its default branch.
-"$real_git" -C "$sf_remote" symbolic-ref HEAD refs/heads/main || true
-sf_new="$tmpdir/sf-firstfetch/new.git"
-"$real_git" init -q --bare "$sf_new" || true
-"$real_git" -C "$sf_new" remote add origin "git@github.com:testorg/testrepo.git" || true
-"$real_git" -C "$sf_new" config --add "url.${sf_remote}.insteadOf" "git@github.com:testorg/testrepo.git" || true
-sf_out=$( cd "$sf_new" && \
-  TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' HOME="$sf_home" \
-  PATH="$test_path_real_git" \
-  bash -c "source '${funcs_dir}/logging.bash'; '$script' fetch --prune origin" 2>&1 ) || true
-sf_specs=$("$real_git" -C "$sf_new" config --get-all remote.origin.fetch 2>/dev/null || true)
-sf_refs=$("$real_git" -C "$sf_new" for-each-ref --format='%(refname)' refs/remotes 2>/dev/null || true)
-# The core's default-refspec-extras (found through TIMVISHER_GIT_HOME, which
-# the test runner sets) may add curated specs such as timvisher/*, so the
-# check is for main and against the catch-all, not for an exact list.
-if [[ $'\n'$sf_specs$'\n' == *$'\n'"+refs/heads/main:refs/remotes/origin/main"$'\n'* ]] \
-   && [[ $sf_specs != *"+refs/heads/*:refs/remotes/origin/*"* ]] \
-   && [[ $sf_refs == *refs/remotes/origin/main* ]] \
-   && [[ $sf_refs != *keepme* ]] \
-   && [[ $("$real_git" -C "$sf_new" config remote.origin.tagOpt 2>/dev/null) == --no-tags ]]
-then
-  pass "first fetch of a new selective-fetch repo fetches only main"
-else
-  fail "first fetch: specs='${sf_specs}' refs='${sf_refs}' out='${sf_out}'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1604,13 +1354,84 @@ result=$(HOME="$noaictl_home" \
   XDG_DATA_HOME="$noaictl_home/.local/share" \
   XDG_STATE_HOME="$noaictl_home/.local/state" \
   XDG_CACHE_HOME="$noaictl_home/.cache" \
-  PATH="$test_path" "$script" status 2>&1) || rc=$?
+  PATH="$test_path" "$script" push 2>&1) || rc=$?
 if (( rc == 1 )) && [[ $result == *'Unable to source aictl functions'* && $result != *real-git* ]]
 then
   pass "git wrapper stops loudly without aictl.bash"
 else
   fail "git wrapper without aictl.bash: rc=$rc got '${result}'"
 fi
+
+git_calls() {
+  local agent=$1
+  shift
+  git_echoes
+  TIMVISHER_AGENT=$agent PATH="$test_path" "$script" "$@" >/dev/null 2>&1
+  mock_call_count git
+}
+
+for cmd in 'ls-files' 'rev-parse --show-toplevel' '--version' '-C . cat-file -t HEAD' \
+           'config --get user.name' 'config user.name' 'config --file x --get-regexp a b' \
+           'config get user.name' 'config --list' 'remote' 'remote -v' \
+           'remote get-url origin' 'remote get-url --push origin' 'rev-list HEAD' \
+           'for-each-ref' 'symbolic-ref --short HEAD' 'diff-tree HEAD'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls '' $cmd)
+  if [[ $calls == 1 ]]
+  then
+    pass "read-only 'git $cmd' reaches git once"
+  else
+    fail "read-only 'git $cmd': $calls git calls"
+  fi
+done
+
+for cmd in 'ls-files' 'rev-parse HEAD' 'config --get user.name' 'remote get-url origin'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls true $cmd)
+  if [[ $calls == 1 ]]
+  then
+    pass "read-only 'git $cmd' reaches git once under an agent"
+  else
+    fail "read-only 'git $cmd' under an agent: $calls git calls"
+  fi
+done
+
+for cmd in 'config user.name x' 'config --unset user.name' 'config --add a.b c' \
+           'config set a.b c' 'config edit' 'config --get a.b --unset' \
+           'remote remove origin' 'remote set-url origin x' 'remote add o x' \
+           'commit -m x' 'checkout main' 'fetch' 'st' 'status' 'log' 'diff' 'show'
+do
+  run_test
+  # shellcheck disable=SC2086
+  calls=$(git_calls '' $cmd)
+  if (( 1 < calls ))
+  then
+    pass "'git $cmd' takes the full path"
+  else
+    fail "'git $cmd' took the fast path: $calls git calls"
+  fi
+done
+
+for cmd in 'log a b' 'diff main..HEAD' 'rev-list a b'
+do
+  run_test
+  # shellcheck disable=SC2086
+  result=$(TIMVISHER_AGENT=true PATH="$test_path" "$script" $cmd 2>&1)
+  if [[ $result == *'"code":"git_range_no_upstream_ref"'* ]]
+  then
+    pass "'git $cmd' is still range-guarded under an agent"
+  else
+    fail "'git $cmd' under an agent: got '${result}'"
+  fi
+done
+
+git_echoes
+
+mock_finish || (( failures += 1 ))
 
 echo "Results: $((tests - failures))/${tests} passed"
 
