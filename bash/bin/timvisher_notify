@@ -13,6 +13,10 @@
 #
 # Env:
 #   TIMVISHER_NOTIFY_DEBUG=1  — enable debug output to stderr
+#
+# On a Datadog workspace (WORKSPACES_DAEMON_SOCKET set) the OS notification
+# goes to Tim's laptop through the agent relay's notify op, which shows it
+# as '<workspace>: <title>'.
 
 set -euo pipefail
 
@@ -162,13 +166,34 @@ timvisher_notify__platform_notify() {
   fi
 }
 
+# A workspace has no screen of Tim's to notify; the relay carries it to
+# the laptop. Never fatal: a notification that didn't arrive is reported
+# and the caller carries on.
+timvisher_notify__relay() {
+  local title=$1 message=$2
+  local client=${TIMVISHER_NOTIFY_RELAY_CLIENT:-$HOME/.local/state/timvisher/agent-relay/notify}
+
+  if [[ ! -x $client ]]
+  then
+    printf 'notify: not shown on the laptop: no agent relay client at %s\n' "$client" >&2
+    return 0
+  fi
+  "$client" --title "$title" --body "$message" </dev/null || true
+}
+
 timvisher_notify__send() {
   local title=$1 message=$2 silent=${3:-}
 
   printf '%s: %s\n' "$title" "$message" >&2
 
-  if [[ $silent != --silent ]]
+  if [[ $silent == --silent ]]
   then
+    return 0
+  fi
+  if [[ -n ${WORKSPACES_DAEMON_SOCKET:-} ]]
+  then
+    timvisher_notify__relay "$title" "$message"
+  else
     timvisher_notify__platform_notify "$title" "$message"
   fi
 }
