@@ -398,5 +398,63 @@ through the width mode's composition function."
   (should timvisher-tty-grapheme-width-mode)
   (should timvisher-tty-emoji-presentation-mode))
 
+(defmacro init-test--with-clipboard-host (system-type env pbcopy &rest body)
+  (declare (indent 3))
+  `(let* ((system-type ,system-type)
+          (process-environment
+           (append ,env
+                   (list "DISPLAY" "WAYLAND_DISPLAY")
+                   process-environment))
+          (bin (make-temp-file "init-test-bin" t))
+          (exec-path (list bin)))
+     (unwind-protect
+         (progn
+           (when ,pbcopy
+             (let ((f (expand-file-name "pbcopy" bin)))
+               (write-region "" nil f)
+               (set-file-modes f #o755)))
+           ,@body)
+       (delete-directory bin t))))
+
+(ert-deftest test-init-tmux-osc-52-on-a-workspace ()
+  "On Linux with no display, Emacs in tmux copies by OSC 52, and never
+queries it."
+  (require 'term/tmux)
+  (init-test--with-clipboard-host 'gnu/linux nil nil
+    (let ((xterm-tmux-extra-capabilities '(modifyOtherKeys)))
+      (ide-tmux-osc-52-clipboard-setup)
+      (should (memq 'setSelection xterm-tmux-extra-capabilities))
+      (should-not (memq 'getSelection xterm-tmux-extra-capabilities)))))
+
+(ert-deftest test-init-tmux-osc-52-off-on-the-laptop ()
+  "The laptop (darwin, with pbcopy) keeps its native clipboard."
+  (require 'term/tmux)
+  (init-test--with-clipboard-host 'darwin nil t
+    (let ((xterm-tmux-extra-capabilities '(modifyOtherKeys)))
+      (ide-tmux-osc-52-clipboard-setup)
+      (should-not (memq 'setSelection xterm-tmux-extra-capabilities)))))
+
+(ert-deftest test-init-tmux-osc-52-off-with-a-display ()
+  "Linux with an X or Wayland display has a native clipboard, so it
+doesn't copy by OSC 52."
+  (should-not (init-test--with-clipboard-host 'gnu/linux '("DISPLAY=:0") nil
+                (ide-tty-osc-52-clipboard-p)))
+  (should-not (init-test--with-clipboard-host
+                  'gnu/linux '("WAYLAND_DISPLAY=wayland-0") nil
+                (ide-tty-osc-52-clipboard-p))))
+
+;; pbcopy on Linux is a workspace shim around the box's xclip, not a
+;; native clipboard, so it doesn't turn OSC 52 off.
+(ert-deftest test-init-tmux-osc-52-on-with-a-linux-pbcopy ()
+  "Linux with pbcopy and no display still copies by OSC 52."
+  (should (init-test--with-clipboard-host 'gnu/linux nil t
+            (ide-tty-osc-52-clipboard-p))))
+
+(ert-deftest test-init-tmux-osc-52-matches-this-host ()
+  "Loading term/tmux applies the scope to the running Emacs."
+  (require 'term/tmux)
+  (should (eq (and (memq 'setSelection xterm-tmux-extra-capabilities) t)
+              (and (ide-tty-osc-52-clipboard-p) t))))
+
 (provide 'init-test)
 ;;; init-test.el ends here

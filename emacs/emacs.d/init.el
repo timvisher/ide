@@ -624,6 +624,25 @@ over the code-block language minibuffer prompt."
 (timvisher-tty-grapheme-width-mode 1)
 (timvisher-tty-emoji-presentation-mode 1)
 
+;; Scoped by platform, not by a <system-name>.el host file: workspace
+;; host names vary. Not by pbcopy either: a workspace pbcopy shim (around
+;; the box's xclip) would turn OSC 52 off on exactly the boxes that need
+;; it, so a pbcopy on PATH doesn't mean macOS.
+(defun ide-tty-osc-52-clipboard-p ()
+  "Non-nil where Emacs has no native clipboard and should copy by OSC 52."
+  (not (or (eq system-type 'darwin)
+           (getenv "DISPLAY")
+           (getenv "WAYLAND_DISPLAY"))))
+
+;; Not getSelection: mosh can't answer an OSC 52 query, it stores the "?"
+;; as the clipboard instead. Pasting from the laptop stays Cmd+V.
+(defun ide-tmux-osc-52-clipboard-setup ()
+  (when (ide-tty-osc-52-clipboard-p)
+    (add-to-list 'xterm-tmux-extra-capabilities 'setSelection)))
+
+(with-eval-after-load 'term/tmux
+  (ide-tmux-osc-52-clipboard-setup))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
