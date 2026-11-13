@@ -1124,6 +1124,9 @@ make_integrate_fixture() {
 
   touch "$repo/x.dev-integration-branch"
   : > "$repo/x.active-worktrees"
+  # The git wrapper latches this on its first call in a worktree with an
+  # upstream, so every real dev worktree already has it.
+  touch "$repo/x.upstream-configured"
 
   local name content wt
   for name in "$@"
@@ -1143,57 +1146,305 @@ make_integrate_fixture() {
 
 scratch_branches() {
   "$test_git" -C "$1" for-each-ref --format='%(refname:short)' \
-    'refs/heads/x.dev-ci-integrate-*'
+    'refs/heads/x.dev-ci-integrate/'
 }
 
-# --- success: dev advances, scratch is gone ---
+int_hooks="$ide_config/timvisher_dev_ci/hooks"
+int_ntmux_log="$tmpdir/int-ntmux.log"
+
+# Where ntmux3 puts a fixture's integration worktree.
+int_worktree() {
+  printf '%s/%s/repo/x.dev-ci-integrate/dev' "$fake_git_home_real" "$(basename "$1")"
+}
+
+# ntmux3 without tmux: an absolute path is ensure_session's call for an
+# existing worktree; <org>/<repo>/<branch> <base> adds the worktree to the
+# fixture's repository.
+int_mock_ntmux3() {
+  run_ntmux3() {
+    printf '%s\n' "$*" >> "$int_ntmux_log"
+    [[ $1 == -d ]] || return 1
+    [[ $2 == /* ]] && return 0
+    local org_repo=${2%%/x.dev-ci-integrate/*}
+    "$test_git" -C "$TIMVISHER_GIT_HOME/$org_repo/dev" worktree add -q \
+      -b "${2#"$org_repo"/}" "$TIMVISHER_GIT_HOME/$2" "$3"
+  }
+}
+
+# HEAD, index and every file in the dev worktree except the status file the
+# pipeline reports through.  The index is hashed before any git command here
+# can refresh it.
+dev_snapshot() {
+  local d=$1 f
+  shasum -a 256 < "$d/.git/index"
+  "$test_git" -C "$d" symbolic-ref HEAD
+  "$test_git" -C "$d" rev-parse HEAD
+  "$test_git" -C "$d" ls-files -s
+  (
+    cd "$d" || exit 1
+    find . -path ./.git -prune -o -type f ! -name x.dev-ci.status -print |
+      LC_ALL=C sort |
+      while IFS= read -r f
+      do
+        printf '%s ' "$f"
+        shasum -a 256 < "$f"
+      done
+  )
+}
+
+reflog_count() {
+  "$test_git" -C "$1" reflog show --format=%H "$2" -- 2>/dev/null | wc -l | tr -d ' '
+}
+
+# A post-integrate.sh at the fixture's repo rung that logs the toplevel it
+# ran in and what dev's shared.txt held at that moment.
+make_recording_post_integrate() {
+  local org=$1 dev=$2 log=$3 rc=${4:-0}
+  mkdir -p "$int_hooks/$org/repo"
+  cat > "$int_hooks/$org/repo/post-integrate.sh" <<HOOK
+#!/usr/bin/env bash
+printf '%s|%s\n' "\$(git rev-parse --show-toplevel)" "\$(cat '$dev/shared.txt')" >> '$log'
+exit $rc
+HOOK
+  chmod +x "$int_hooks/$org/repo/post-integrate.sh"
+}
+
+run_integrate() {
+  (
+    int_mock_ntmux3
+    PATH="$tmpdir/mockbin:$PATH"
+    cmd_integrate_local -C "$1"
+  )
+}
+
+# --- success: dev moves exactly once, onto a tree verified elsewhere ---
 run_test
 int_ok_root="$TIMVISHER_GIT_HOME/int-ok"
 int_ok_repo=$(make_integrate_fixture "$int_ok_root" "feat=feature")
-int_ok_before=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+int_ok_wt=$(int_worktree "$int_ok_root")
+int_ok_hook_log="$tmpdir/int-ok-hook.log"
+make_recording_post_integrate int-ok "$int_ok_repo" "$int_ok_hook_log"
+int_ok_ref_before=$(reflog_count "$int_ok_repo" dev)
+int_ok_head_before=$(reflog_count "$int_ok_repo" HEAD)
+: > "$tmpdir/tgh-calls"
+: > "$int_ntmux_log"
 
-if PATH="$tmpdir/mockbin:$PATH" "$script" integrate -C "$int_ok_repo" >/dev/null 2>&1
+if run_integrate "$int_ok_repo" > "$tmpdir/int-ok.log" 2>&1
 then
-  int_ok_after=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+  int_ok_ref_after=$(reflog_count "$int_ok_repo" dev)
+  int_ok_head_after=$(reflog_count "$int_ok_repo" HEAD)
+  int_ok_subject=$("$test_git" -C "$int_ok_repo" reflog show -1 --format=%gs dev --)
   int_ok_head=$("$test_git" -C "$int_ok_repo" symbolic-ref --short HEAD)
   int_ok_content=$(cat "$int_ok_repo/shared.txt")
   int_ok_left=$(scratch_branches "$int_ok_repo")
+  int_ok_wt_real=$(cd "$int_ok_wt" 2>/dev/null && pwd -P)
+  int_ok_dev_real=$(cd "$int_ok_repo" && pwd -P)
+  int_ok_expected_hooks="${int_ok_wt_real}|base"$'\n'"${int_ok_dev_real}|feature"
+  int_ok_hooks=$(cat "$int_ok_hook_log" 2>/dev/null)
+  int_ok_wt_head=$("$test_git" -C "$int_ok_wt" symbolic-ref -q --short HEAD 2>/dev/null)
+  int_ok_int=$("$test_git" -C "$int_ok_repo" rev-parse x.dev-ci-integrate/dev 2>/dev/null)
+  int_ok_dev=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+  int_ok_ntmux=$(cat "$int_ntmux_log")
 
-  if [[ $int_ok_after != "$int_ok_before" ]] &&
+  if (( int_ok_ref_after == int_ok_ref_before + 1 )) &&
+     (( int_ok_head_after == int_ok_head_before + 1 )) &&
+     [[ $int_ok_subject == "reset: moving to x.dev-ci-integrate/dev" ]] &&
      [[ $int_ok_head == dev ]] &&
      [[ $int_ok_content == feature ]] &&
-     [[ -z $int_ok_left ]]
+     [[ $int_ok_int == "$int_ok_dev" ]] &&
+     [[ -n $int_ok_wt_real && $int_ok_wt_head == x.dev-ci-integrate/dev ]] &&
+     [[ $int_ok_ntmux == "-d int-ok/repo/x.dev-ci-integrate/dev dev" ]]
   then
-    pass "integrate: success advances dev and deletes the scratch branch"
+    pass "integrate: success makes the integration worktree with ntmux3 and moves dev once, by a single reset onto it"
   else
-    fail "integrate success: head='${int_ok_head}' moved=$([[ $int_ok_after != "$int_ok_before" ]] && echo yes || echo no) content='${int_ok_content}' scratch='${int_ok_left}'"
+    fail "integrate success: dev reflog ${int_ok_ref_before}->${int_ok_ref_after} HEAD reflog ${int_ok_head_before}->${int_ok_head_after} last='${int_ok_subject}' head='${int_ok_head}' content='${int_ok_content}' integration='${int_ok_int}' dev='${int_ok_dev}' worktree='${int_ok_wt_real}' worktree HEAD='${int_ok_wt_head}' ntmux3='${int_ok_ntmux}'"
+  fi
+
+  run_test
+  if [[ $int_ok_hooks == "$int_ok_expected_hooks" ]]
+  then
+    pass "integrate: post-integrate gates in the integration worktree while dev is untouched, then builds in dev"
+  else
+    fail "integrate hooks: expected '${int_ok_expected_hooks}', got '${int_ok_hooks}'"
+  fi
+
+  run_test
+  if [[ -s $tmpdir/tgh-calls ]] && ! grep -qF -- /x.dev-ci-integrate/ "$tmpdir/tgh-calls"
+  then
+    pass "integrate: hooks resolve as the dev worktree's, never from the integration worktree's path"
+  else
+    fail "integrate context: timvisher_gh was asked about '$(tr '\n' ' ' < "$tmpdir/tgh-calls")'"
   fi
 else
-  fail "integrate success: command failed"
+  fail "integrate success: command failed: $(cat "$tmpdir/int-ok.log")"
 fi
 
-# --- failure: dev is untouched, scratch survives for inspection ---
+# --- a later run reuses the integration worktree the first one made ---
+run_test
+printf 'feature2\n' > "$int_ok_root/repo/feat/shared.txt"
+"$test_git" -C "$int_ok_root/repo/feat" commit -q -am feature2
+printf 'stray\n' > "$int_ok_wt/stray.txt"
+: > "$int_ntmux_log"
+int_ok_wt_real=$(cd "$int_ok_wt" && pwd -P)
+if run_integrate "$int_ok_repo" > "$tmpdir/int-reuse.log" 2>&1 &&
+   [[ $(cat "$int_ok_repo/shared.txt") == feature2 ]] &&
+   [[ ! -e $int_ok_wt/stray.txt ]] &&
+   [[ $(cat "$int_ntmux_log") == "-d ${int_ok_wt_real}" ]]
+then
+  pass "integrate: a later run resets and reuses the integration worktree, only asking ntmux3 for its session"
+else
+  fail "integrate reuse: content='$(cat "$int_ok_repo/shared.txt")' stray=$([[ -e $int_ok_wt/stray.txt ]] && echo kept || echo gone) ntmux3='$(cat "$int_ntmux_log")': $(cat "$tmpdir/int-reuse.log")"
+fi
+
+# --- conflict: dev is byte-identical, the attempt is kept and reported ---
 run_test
 int_bad_root="$TIMVISHER_GIT_HOME/int-bad"
 int_bad_repo=$(make_integrate_fixture "$int_bad_root" "one=alpha" "two=beta")
-int_bad_before=$("$test_git" -C "$int_bad_repo" rev-parse dev)
+int_bad_wt=$(int_worktree "$int_bad_root")
+int_bad_before=$(dev_snapshot "$int_bad_repo")
 
-if PATH="$tmpdir/mockbin:$PATH" "$script" integrate -C "$int_bad_repo" >/dev/null 2>&1
+if run_integrate "$int_bad_repo" > "$tmpdir/int-bad.log" 2>&1
 then
   fail "integrate conflict: command unexpectedly succeeded"
 else
-  int_bad_after=$("$test_git" -C "$int_bad_repo" rev-parse dev)
-  int_bad_head=$("$test_git" -C "$int_bad_repo" symbolic-ref --short HEAD 2>/dev/null)
+  int_bad_after=$(dev_snapshot "$int_bad_repo")
   int_bad_left=$(scratch_branches "$int_bad_repo")
+  int_bad_unmerged=$("$test_git" -C "$int_bad_wt" diff --name-only --diff-filter=U 2>/dev/null)
 
   if [[ $int_bad_after == "$int_bad_before" ]] &&
-     [[ $int_bad_head == dev ]] &&
-     [[ -n $int_bad_left ]]
+     [[ -n $int_bad_left ]] &&
+     [[ $int_bad_unmerged == shared.txt ]] &&
+     grep -qF -- "$int_bad_wt" "$tmpdir/int-bad.log" &&
+     grep -qF -- "$int_bad_left" "$tmpdir/int-bad.log"
   then
-    pass "integrate: a conflict leaves dev untouched and keeps the scratch branch"
+    pass "integrate: a conflict leaves dev's HEAD, index and files byte-identical and keeps the attempt where it says"
   else
-    fail "integrate conflict: dev moved=$([[ $int_bad_after != "$int_bad_before" ]] && echo yes || echo no) head='${int_bad_head}' scratch='${int_bad_left}'"
+    diff <(printf '%s\n' "$int_bad_before") <(printf '%s\n' "$int_bad_after") >&2
+    fail "integrate conflict: dev unchanged=$([[ $int_bad_after == "$int_bad_before" ]] && echo yes || echo no) scratch='${int_bad_left}' unmerged='${int_bad_unmerged}'"
   fi
+fi
+
+# --- a failing post-integrate gate never reaches dev ---
+run_test
+int_pf_root="$TIMVISHER_GIT_HOME/int-postfail"
+int_pf_repo=$(make_integrate_fixture "$int_pf_root" "feat=feature")
+make_recording_post_integrate int-postfail "$int_pf_repo" "$tmpdir/int-pf-hook.log" 1
+int_pf_before=$(dev_snapshot "$int_pf_repo")
+
+if run_integrate "$int_pf_repo" > "$tmpdir/int-pf.log" 2>&1
+then
+  fail "integrate post-integrate failure: command unexpectedly succeeded"
+else
+  int_pf_after=$(dev_snapshot "$int_pf_repo")
+  int_pf_runs=$(wc -l < "$tmpdir/int-pf-hook.log" | tr -d ' ')
+
+  if [[ $int_pf_after == "$int_pf_before" ]] &&
+     (( int_pf_runs == 1 )) &&
+     [[ -n $(scratch_branches "$int_pf_repo") ]]
+  then
+    pass "integrate: a failing post-integrate leaves dev byte-identical and is not re-run there"
+  else
+    fail "integrate post-integrate failure: dev unchanged=$([[ $int_pf_after == "$int_pf_before" ]] && echo yes || echo no) hook runs=${int_pf_runs}"
+  fi
+fi
+
+# --- the pipeline worker: agent merges and verification run in the
+# integration worktree ---
+
+# Stands in for the integration agent: merge 'feat' wherever it was started
+# and report pass to the file the prompt names.
+mkdir -p "$tmpdir/agentbin"
+cat > "$tmpdir/agentbin/claudeshot" <<MOCK
+#!/usr/bin/env bash
+pwd -P >> "$tmpdir/claudeshot-cwd"
+status=\$(sed -n "s/^When ALL branches are integrated and tests pass, write 'pass' to '\\(.*\\)'\\.\$/\\1/p" <<<"\$1")
+git merge -q --no-edit feat >/dev/null 2>&1 || exit 1
+printf 'pass\\n' > "\$status"
+MOCK
+chmod +x "$tmpdir/agentbin/claudeshot"
+
+# run-tests.sh at the fixture's repo rung; $2 is the shared.txt content that
+# fails it.
+make_run_tests() {
+  mkdir -p "$int_hooks/$1/repo"
+  cat > "$int_hooks/$1/repo/run-tests.sh" <<HOOK
+#!/usr/bin/env bash
+[[ \$(cat shared.txt) != '$2' ]]
+HOOK
+  chmod +x "$int_hooks/$1/repo/run-tests.sh"
+}
+
+# Not under an agent: the success case pushes, which the git wrapper
+# refuses an agent.
+run_pipeline_integrate() {
+  (
+    int_mock_ntmux3
+    unset TIMVISHER_AGENT
+    PATH="$tmpdir/agentbin:$tmpdir/mockbin:$PATH"
+    cmd__integrate "$@"
+  )
+}
+
+# --- pipeline, a merge that fails the tests ---
+run_test
+pipe_bad_root="$TIMVISHER_GIT_HOME/pipe-bad"
+pipe_bad_repo=$(make_integrate_fixture "$pipe_bad_root" "feat=feature")
+pipe_bad_wt=$(int_worktree "$pipe_bad_root")
+make_run_tests pipe-bad feature
+pipe_bad_before=$(dev_snapshot "$pipe_bad_repo")
+: > "$tmpdir/claudeshot-cwd"
+
+if run_pipeline_integrate "$pipe_bad_repo" "$pipe_bad_root/repo/feat" > "$tmpdir/pipe-bad.log" 2>&1
+then
+  fail "pipeline test failure: command unexpectedly succeeded"
+else
+  pipe_bad_after=$(dev_snapshot "$pipe_bad_repo")
+  pipe_bad_status=$(cat "$pipe_bad_repo/x.dev-ci.status" 2>/dev/null)
+  pipe_bad_cwd=$(cat "$tmpdir/claudeshot-cwd")
+  pipe_bad_wt_real=$(cd "$pipe_bad_wt" 2>/dev/null && pwd -P)
+  pipe_bad_wt_content=$(cat "$pipe_bad_wt/shared.txt" 2>/dev/null)
+
+  if [[ $pipe_bad_after == "$pipe_bad_before" ]] &&
+     [[ $pipe_bad_status == fail ]] &&
+     [[ -n $pipe_bad_wt_real && $pipe_bad_cwd == "$pipe_bad_wt_real" ]] &&
+     [[ $pipe_bad_wt_content == feature ]]
+  then
+    pass "__integrate: a merge that fails verification leaves dev byte-identical and the merged attempt in the integration worktree"
+  else
+    fail "pipeline test failure: dev unchanged=$([[ $pipe_bad_after == "$pipe_bad_before" ]] && echo yes || echo no) status='${pipe_bad_status}' agent cwd='${pipe_bad_cwd}' worktree content='${pipe_bad_wt_content}': $(cat "$tmpdir/pipe-bad.log")"
+  fi
+fi
+
+# --- pipeline, success: dev moves once and is what gets pushed ---
+run_test
+pipe_ok_root="$TIMVISHER_GIT_HOME/pipe-ok"
+pipe_ok_repo=$(make_integrate_fixture "$pipe_ok_root" "feat=feature")
+make_run_tests pipe-ok never
+"$test_git" init -q --bare "$pipe_ok_root/remote.git"
+"$test_git" -C "$pipe_ok_repo" config branch.dev.pushRemote "$pipe_ok_root/remote.git"
+pipe_ok_ref_before=$(reflog_count "$pipe_ok_repo" dev)
+pipe_ok_head_before=$(reflog_count "$pipe_ok_repo" HEAD)
+
+if run_pipeline_integrate "$pipe_ok_repo" "$pipe_ok_root/repo/feat" > "$tmpdir/pipe-ok.log" 2>&1
+then
+  pipe_ok_ref_after=$(reflog_count "$pipe_ok_repo" dev)
+  pipe_ok_head_after=$(reflog_count "$pipe_ok_repo" HEAD)
+  pipe_ok_dev=$("$test_git" -C "$pipe_ok_repo" rev-parse dev)
+  pipe_ok_pushed=$("$test_git" -C "$pipe_ok_root/remote.git" rev-parse dev 2>/dev/null)
+
+  if (( pipe_ok_ref_after == pipe_ok_ref_before + 1 )) &&
+     (( pipe_ok_head_after == pipe_ok_head_before + 1 )) &&
+     [[ $(cat "$pipe_ok_repo/shared.txt") == feature ]] &&
+     [[ $(cat "$pipe_ok_repo/x.dev-ci.status") == pass ]] &&
+     [[ $pipe_ok_pushed == "$pipe_ok_dev" ]] &&
+     [[ $("$test_git" -C "$pipe_ok_repo" rev-parse x.dev-ci-integrate/dev) == "$pipe_ok_dev" ]]
+  then
+    pass "__integrate: success moves dev once onto the verified merge and pushes it"
+  else
+    fail "pipeline success: dev reflog ${pipe_ok_ref_before}->${pipe_ok_ref_after} HEAD reflog ${pipe_ok_head_before}->${pipe_ok_head_after} pushed='${pipe_ok_pushed}' dev='${pipe_ok_dev}'"
+  fi
+else
+  fail "pipeline success: command failed: $(cat "$tmpdir/pipe-ok.log")"
 fi
 
 # ---------------------------------------------------------------------------

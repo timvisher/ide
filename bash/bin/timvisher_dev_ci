@@ -18,7 +18,7 @@
 # When paths are given, only those dev branches are processed instead
 # of discovering via marker files.
 #   __sync        (internal) agent: pull --rebase, resolve conflicts, test
-#   __integrate   (internal) script: fetch+reset dev branch; agent: merge worktrees one by one
+#   __integrate   (internal) script: integration worktree at the baseline; agent: merge worktrees; script: verify, move dev
 #   __ensure_tests (internal) agent creates run-tests.sh if missing
 #
 # Hook scripts (run-tests.sh, post-integrate.sh) are resolved by a rung
@@ -147,26 +147,137 @@ push_to_remote() {
     fi
 }
 
-# Integration runs on a scratch branch, and the dev branch is moved to it
-# only once merge, verification and post-integrate have all passed, so a
-# failure never leaves dev at @{u} plus whichever merges happened to land.
+# Integration runs in an integration worktree of its own, on branch
+# 'x.dev-ci-integrate/<dev-branch>', and the dev worktree is moved onto the
+# result with a single 'reset --hard' only once merge, verification and
+# post-integrate have all passed.  Until then nothing in dev changes, so
+# whatever reads dev's files mid-run (every Emacs loads agent-shell-plus from
+# its dev worktree) never sees a half-integrated tree.
 #
-# The switch happens inside the dev worktree rather than in a scratch
-# worktree because hook resolution derives <org>/<repo>/<branch-parts> from
-# the worktree path, so hooks would resolve differently anywhere else.
-INTEGRATE_SCRATCH_PREFIX='x.dev-ci-integrate'
+# Hooks still resolve as dev's rather than from the integration worktree's
+# own path, whose <branch-parts> name a different rung: see
+# hook_identity_path.
+#
+# One integration worktree per dev worktree, made by ntmux3 and reset and
+# reused across runs: a fresh one costs a full checkout (dd-source is ~470k
+# files) and a cold build cache on every run, and a long-lived one has a tmux
+# session to attach to while a run is going.
+INTEGRATE_BRANCH_PREFIX='x.dev-ci-integrate'
+INTEGRATE_LOCK_ROOT="${XDG_STATE_HOME:-${HOME}/.local/state}/timvisher/dev_ci/integrate-locks"
 integrate_scratch_path=''
+integrate_scratch_worktree=''
+integrate_scratch_lock=''
 integrate_scratch_branch=''
 integrate_scratch_dev_branch=''
 integrate_scratch_dev_head=''
 integrate_scratch_start=''
 
-# Put the dev branch back where it started.  Also the EXIT trap, so a die()
-# anywhere in the run restores rather than stranding dev on the scratch.
-integrate_scratch_restore() {
+declare -A _worktree_alias=()
+
+# The worktree whose identity hooks resolve under: the dev worktree for its
+# integration worktree, the worktree itself otherwise.
+hook_identity_path() {
+    local key
+    key=$(worktree_context_key "$1")
+    printf '%s' "${_worktree_alias[$key]:-$1}"
+}
+
+integrate_lock_acquire() {
+    local lock=$1
+    local holder
+
+    if mkdir -- "$lock" 2>/dev/null
+    then
+        printf '%s\n' "$$" > "${lock}/pid"
+        return 0
+    fi
+
+    holder=$(cat "${lock}/pid" 2>/dev/null)
+
+    # An empty pid is a holder between its mkdir and its write as often as a
+    # dead one, so only a pid that is provably gone is taken over.
+    if [[ -z $holder ]] || kill -0 "$holder" 2>/dev/null
+    then
+        error "integrate: '%s' is held by pid '%s'; remove it if that run is gone" \
+              "$lock" "$holder"
+        return 1
+    fi
+
+    warn "integrate: taking over '%s' from pid %s, which is gone" "$lock" "$holder"
+    rm -rf -- "$lock"
+
+    if ! mkdir -- "$lock" 2>/dev/null
+    then
+        error "integrate: lost '%s' to another run" "$lock"
+        return 1
+    fi
+
+    printf '%s\n' "$$" > "${lock}/pid"
+}
+
+integrate_lock_release() {
+    [[ -n $integrate_scratch_lock ]] || return 0
+    rm -rf -- "$integrate_scratch_lock"
+    integrate_scratch_lock=''
+}
+
+integrate_worktree_ensure() {
+    local dev=$1
+    local dev_branch=$2
+    local org_repo branch wt dev_repo wt_repo
+
+    org_repo=$(worktree_org_repo "$dev") ||
+        {
+            error "integrate: cannot derive <org>/<repo> for '%s'" "$dev"
+            return 1
+        }
+
+    branch="${INTEGRATE_BRANCH_PREFIX}/${dev_branch}"
+    wt="$(canonical_git_home)${org_repo}/${branch}"
+
+    if [[ -e $wt ]]
+    then
+        ensure_session "$wt" >&2 ||
+            warn "integrate: no tmux session for '%s'; carrying on without one" "$wt"
+    else
+        info "integrate: creating integration worktree '%s/%s'" "$org_repo" "$branch"
+        run_ntmux3 -d "${org_repo}/${branch}" "$dev_branch" >&2 ||
+            {
+                error "integrate: ntmux3 could not create '%s/%s'" "$org_repo" "$branch"
+                return 1
+            }
+    fi
+
+    dev_repo=$(baseline_repo_key "$dev") || return 1
+    if ! wt_repo=$(baseline_repo_key "$wt") || [[ $wt_repo != "$dev_repo" ]]
+    then
+        error "integrate: '%s' is not a worktree of '%s''s repository" "$wt" "$dev"
+        return 1
+    fi
+
+    printf '%s' "$wt"
+}
+
+# 'clean -fd', not '-fdx': ignored files survive, so dependency and build
+# caches stay warm.
+integrate_worktree_reset() {
+    local wt=$1
+    local branch=$2
+    local start=$3
+
+    git -C "$wt" merge --abort >/dev/null 2>&1
+    git -C "$wt" rebase --abort >/dev/null 2>&1
+    git -C "$wt" reset -q --hard || return 1
+    git -C "$wt" clean -q -fd || return 1
+    git -C "$wt" checkout -q -B "$branch" "$start"
+}
+
+# Leave dev as it is and keep the attempt.  Also the EXIT trap, so a die()
+# anywhere in the run reports where the attempt is instead of losing it.
+integrate_scratch_abandon() {
     [[ -n $integrate_scratch_branch ]] || return 0
 
-    local path=$integrate_scratch_path
+    local wt=$integrate_scratch_worktree
     local scratch=$integrate_scratch_branch
     local branch=$integrate_scratch_dev_branch
     local head=$integrate_scratch_dev_head
@@ -175,30 +286,15 @@ integrate_scratch_restore() {
     integrate_scratch_branch=''
     trap - EXIT
 
-    git -C "$path" merge --abort >/dev/null 2>&1
-    git -C "$path" reset -q --hard >/dev/null 2>&1
+    integrate_lock_release
 
-    if ! git -C "$path" checkout --force -q "$branch"
-    then
-        error "integrate: cannot restore '%s' in '%s'; the attempt is on '%s'" \
-              "$branch" "$path" "$scratch"
-        return 1
-    fi
-
-    if ! git -C "$path" reset -q --hard "$head"
-    then
-        error "integrate: cannot reset '%s' to '%s'" "$branch" "$head"
-        return 1
-    fi
-
-    # Kept, not deleted: it is the only record of what the run produced.
-    warn "integrate: '%s' left unchanged at %s; the attempt is on scratch branch '%s'" \
-         "$branch" "${head:0:12}" "$scratch"
+    warn "integrate: '%s' left untouched at %s; the attempt is on '%s' in '%s' until the next integrate" \
+         "$branch" "${head:0:12}" "$scratch" "${wt:-(no integration worktree)}"
 }
 
 integrate_scratch_begin() {
     local path=$1
-    local branch head upstream scratch
+    local branch head upstream scratch wt
 
     branch=$(git -C "$path" symbolic-ref --quiet --short HEAD) ||
         {
@@ -229,35 +325,50 @@ integrate_scratch_begin() {
         start=$pinned
     fi
 
-    scratch="${INTEGRATE_SCRATCH_PREFIX}-${branch//\//-}-$$"
+    scratch="${INTEGRATE_BRANCH_PREFIX}/${branch}"
 
-    # Registered before the branch exists so a death in between still restores.
+    if ! mkdir -p -- "$INTEGRATE_LOCK_ROOT"
+    then
+        error "integrate: cannot create '%s'" "$INTEGRATE_LOCK_ROOT"
+        return 1
+    fi
+
+    local lock
+    lock="${INTEGRATE_LOCK_ROOT}/$(worktree_context_key "$path" | sha256_stdin)"
+    integrate_lock_acquire "$lock" || return 1
+
+    # Registered before the worktree is touched so a death in between still
+    # releases the lock and reports.
     integrate_scratch_path=$path
+    integrate_scratch_worktree=''
+    integrate_scratch_lock=$lock
     integrate_scratch_dev_branch=$branch
     integrate_scratch_dev_head=$head
     integrate_scratch_branch=$scratch
     integrate_scratch_start=$start
-    trap integrate_scratch_restore EXIT
+    trap integrate_scratch_abandon EXIT
 
-    # -B so a scratch branch orphaned by a killed run is reused, not a blocker.
-    if ! git -C "$path" checkout -q -B "$scratch" "$start"
+    wt=$(integrate_worktree_ensure "$path" "$branch") || return 1
+    integrate_scratch_worktree=$wt
+
+    if ! integrate_worktree_reset "$wt" "$scratch" "$start"
     then
-        integrate_scratch_branch=''
-        trap - EXIT
-        error "integrate: cannot start scratch branch '%s' at '%s'" "$scratch" "$start"
+        error "integrate: cannot put '%s' at '%s' in '%s'" "$scratch" "$start" "$wt"
         return 1
     fi
 
     # The agent is told to fall back to 'git reset --hard @{u}', and the
     # post-merge verification compares against @{u}: both need the scratch
     # branch to track whatever dev tracks.
-    if ! git -C "$path" branch -q --set-upstream-to "$upstream" "$scratch"
+    if ! git -C "$wt" branch -q --set-upstream-to "$upstream" "$scratch"
     then
         error "integrate: cannot point '%s' at upstream '%s'" "$scratch" "$upstream"
         return 1
     fi
 
-    info "integrate: integrating on scratch branch '%s' at '%s'" "$scratch" "$start"
+    _worktree_alias[$(worktree_context_key "$wt")]=$path
+
+    info "integrate: integrating on '%s' at '%s' in '%s'" "$scratch" "$start" "$wt"
 }
 
 is_pull_upstream_worktree() {
@@ -266,33 +377,54 @@ is_pull_upstream_worktree() {
     [[ $branch == "${PULL_UPSTREAM_PREFIX}/"* ]]
 }
 
-# Advance the dev branch to the integrated tree and drop the scratch branch.
 integrate_scratch_finish() {
     [[ -n $integrate_scratch_branch ]] || return 0
 
     local path=$integrate_scratch_path
+    local wt=$integrate_scratch_worktree
     local scratch=$integrate_scratch_branch
     local branch=$integrate_scratch_dev_branch
+    local head=$integrate_scratch_dev_head
+    local now_branch now_head
+
+    now_branch=$(git -C "$path" symbolic-ref --quiet --short HEAD)
+    now_head=$(git -C "$path" rev-parse HEAD)
+
+    if [[ $now_branch != "$branch" || $now_head != "$head" ]]
+    then
+        error "integrate: '%s' changed during the run (%s at %s, was %s at %s); not moving it" \
+              "$path" "$now_branch" "${now_head:0:12}" "$branch" "${head:0:12}"
+        integrate_scratch_abandon
+        return 1
+    fi
 
     integrate_scratch_branch=''
     trap - EXIT
-
-    if ! git -C "$path" checkout -q "$branch"
-    then
-        error "integrate: cannot check '%s' back out; the result is on '%s'" \
-              "$branch" "$scratch"
-        return 1
-    fi
+    integrate_lock_release
 
     if ! git -C "$path" reset -q --hard "$scratch"
     then
-        error "integrate: cannot advance '%s' to '%s'" "$branch" "$scratch"
+        error "integrate: cannot advance '%s' to '%s'; the result is in '%s'" \
+              "$branch" "$scratch" "$wt"
         return 1
     fi
 
-    git -C "$path" branch -q -D "$scratch" >/dev/null 2>&1
+    info "integrate: '%s' advanced to the verified tree" "$branch"
+}
 
-    info "integrate: '%s' advanced to the integrated tree" "$branch"
+# Post-integrate runs twice: in the integration worktree as the last gate
+# before dev moves, then here, because what it builds is consumed from dev
+# (the cfctl shim execs dev's bazel-bin).  Only in dev would move dev onto a
+# tree whose build was never tried; only in the integration worktree would
+# leave dev's build output stale.
+integrate_build_in_dev() {
+    local dev=$1
+
+    hook_exists "$dev" "post-integrate.sh" || return 0
+
+    info "integrate: running post-integrate.sh in '%s'" "$dev"
+    run_hooks "$dev" "pre-post-integrate.sh" &&
+        run_hooks "$dev" "post-integrate.sh"
 }
 
 # Read x.active-worktrees and emit uncommented, expanded paths.
@@ -412,8 +544,9 @@ worktree_context_key() {
 # cannot be resolved, leaving timvisher_gh's stderr intact.
 # Usage: worktree_context "/path/to/worktree"
 worktree_context() {
-    local key
-    key=$(worktree_context_key "$1")
+    local wt key
+    wt=$(hook_identity_path "$1")
+    key=$(worktree_context_key "$wt")
 
     if [[ -n ${_worktree_context[$key]+set} ]]
     then
@@ -421,7 +554,7 @@ worktree_context() {
     fi
 
     local blob
-    blob=$(timvisher_gh -C "$1" info --json) ||
+    blob=$(timvisher_gh -C "$wt" info --json) ||
         return 1
 
     jq -e '
@@ -430,7 +563,7 @@ worktree_context() {
         (.timvisher_gh.me | type == "string" and . != "") and
         (.timvisher_gh.forkNetwork.mainOwner | type == "string" and . != "")
     ' <<<"$blob" >/dev/null 2>&1 || {
-        error "worktree_context: 'timvisher_gh -C %s info --json' returned a blob missing required fields" "$1"
+        error "worktree_context: 'timvisher_gh -C %s info --json' returned a blob missing required fields" "$wt"
         return 1
     }
 
@@ -444,7 +577,7 @@ worktree_context() {
 # Usage: fields=$(worktree_context_fields "/path/to/worktree")
 worktree_context_fields() {
     local key
-    key=$(worktree_context_key "$1")
+    key=$(worktree_context_key "$(hook_identity_path "$1")")
 
     [[ -n ${_worktree_context[$key]+set} ]] ||
         die "worktree_context_fields: context for '%s' was not resolved first" "$1"
@@ -677,7 +810,8 @@ ensure_repo_script() {
     [[ -n $branch_path ]] && target_rel="${target_rel}/${branch_path}"
 
     local config_path="${REPO_HOOKS_DIR}/${target_rel}/${script_name}"
-    local legacy_path="${worktree_path}/x.${script_name}"
+    local legacy_path
+    legacy_path="$(hook_identity_path "$worktree_path")/x.${script_name}"
 
     # Migrate legacy x. file if it exists and no config version exists
     # at any rung.
@@ -1129,8 +1263,7 @@ PROMPT_EOF
     rm -f "$prompt_file"
 
     # Capture the agent's verdict and remove the status file to prevent
-    # the outer polling loop from reading a premature result (same race
-    # fix as cmd__integrate).
+    # the outer polling loop from reading a premature result.
     local final_status
     if [[ -f $status_file ]]
     then
@@ -1227,20 +1360,29 @@ cmd__integrate() {
     if ! integrate_scratch_begin "$dev_path"
     then
         echo 'fail' > "$status_file"
-        die "integrate: cannot start a scratch branch in '%s'" "$dev_path"
+        die "integrate: cannot start a scratch branch for '%s'" "$dev_path"
     fi
 
+    local int_path=$integrate_scratch_worktree
+
     # Ensure run-tests.sh exists before baseline test.
-    if ! ensure_repo_script "$dev_path" "run-tests.sh"
+    if ! ensure_repo_script "$int_path" "run-tests.sh"
     then
         info "integrate: no run-tests.sh found; launching agent to create one"
         cmd__ensure_tests "$dev_path"
     fi
 
-    require_worktree_context "$dev_path"
+    # cmd__ensure_tests cds into dev; the agent below runs from the cwd.
+    cd "$int_path" ||
+        {
+            echo 'fail' > "$status_file"
+            die "Cannot cd to '%s'" "$int_path"
+        }
+
+    require_worktree_context "$int_path"
 
     local -a run_tests_hooks=()
-    readarray -d '' -t run_tests_hooks < <(find_hooks "$dev_path" "run-tests.sh")
+    readarray -d '' -t run_tests_hooks < <(find_hooks "$int_path" "run-tests.sh")
 
     local has_run_tests=false
     (( 0 < ${#run_tests_hooks[@]} )) && has_run_tests=true
@@ -1249,17 +1391,17 @@ cmd__integrate() {
     # failing hard -- pre-existing upstream failures should not block
     # integration.  The output is passed to the agent so it can tell
     # which failures are pre-existing vs caused by the merge.
-    local baseline_log="${dev_path}/x.dev-ci-baseline.log"
-    local baseline_results="${dev_path}/x.dev-ci-baseline-results.txt"
+    local baseline_log="${int_path}/x.dev-ci-baseline.log"
+    local baseline_results="${int_path}/x.dev-ci-baseline-results.txt"
     local baseline_clean=true
 
     if $has_run_tests
     then
         info "integrate: running baseline tests on @{u}"
         : > "$baseline_results"
-        run_hooks "$dev_path" "pre-run-tests.sh"
+        run_hooks "$int_path" "pre-run-tests.sh"
         if TIMVISHER_DEV_CI_RESULTS_FILE="$baseline_results" \
-           run_hooks "$dev_path" "run-tests.sh" > "$baseline_log" 2>&1
+           run_hooks "$int_path" "run-tests.sh" > "$baseline_log" 2>&1
         then
             info "integrate: baseline tests passed"
         else
@@ -1285,12 +1427,12 @@ cmd__integrate() {
         fi
 
         # Run post-integration hook even with no worktrees (e.g. build+install).
-        ensure_repo_script "$dev_path" "post-integrate.sh" || true
-        if hook_exists "$dev_path" "post-integrate.sh"
+        ensure_repo_script "$int_path" "post-integrate.sh" || true
+        if hook_exists "$int_path" "post-integrate.sh"
         then
             info "integrate: running post-integration hook"
-            run_hooks "$dev_path" "pre-post-integrate.sh"
-            if ! run_hooks "$dev_path" "post-integrate.sh"
+            run_hooks "$int_path" "pre-post-integrate.sh"
+            if ! run_hooks "$int_path" "post-integrate.sh"
             then
                 error "integrate: post-integration hook failed"
                 early_status=fail
@@ -1301,7 +1443,12 @@ cmd__integrate() {
         then
             integrate_scratch_finish || early_status=fail
         else
-            integrate_scratch_restore
+            integrate_scratch_abandon
+        fi
+
+        if [[ $early_status == pass ]]
+        then
+            integrate_build_in_dev "$dev_path" || early_status=fail
         fi
 
         if [[ $early_status == pass ]]
@@ -1325,7 +1472,7 @@ cmd__integrate() {
         local branch
         branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || {
             error "integrate: cannot resolve branch for '%s'" "$wt"
-            integrate_scratch_restore
+            integrate_scratch_abandon
             echo 'fail' > "$status_file"
             return 1
         }
@@ -1358,22 +1505,28 @@ baseline, that counts as passing."
 
     local regen_glob=${TIMVISHER_DEV_CI_INTEGRATE_REGEN_GLOB:-BUILD.bazel}
 
+    # The agent's verdict goes in the integration worktree: only this
+    # function, once it has verified that verdict, writes dev's status file.
+    local agent_status_file="${int_path}/${STATUS_FILENAME}"
+    rm -f "$agent_status_file"
+
     local prompt_file
-    prompt_file=$(mktemp "${dev_path}/x.dev-ci-prompt.XXXXXX") || {
+    prompt_file=$(mktemp "${int_path}/x.dev-ci-prompt.XXXXXX") || {
         echo 'fail' > "$status_file"
         die "Cannot create prompt file"
     }
 
     cat > "$prompt_file" <<PROMPT_EOF
-$(agent_session_contract "$status_file")
+$(agent_session_contract "$agent_status_file")
 
-You are in a dev integration worktree at ${dev_path}.
+You are in an integration worktree at ${int_path}, set up for the dev
+integration worktree at ${dev_path}.
 
 You are on scratch branch '${integrate_scratch_branch}', created at
 ${integrate_scratch_start}, the commit this run pinned as its upstream
 baseline. Do NOT switch branches or create new ones.
-'${integrate_scratch_dev_branch}' is moved to your work only if you succeed,
-so a failure here costs nothing.
+'${integrate_scratch_dev_branch}' in ${dev_path} is moved to your work only
+if you succeed, so a failure here costs nothing. Never touch ${dev_path}.
 
 If you need to start over, reset to ${integrate_scratch_start} -- that exact
 commit, not @{u}. Every phase of this run targets it, and re-resolving a ref
@@ -1407,10 +1560,10 @@ Pay special attention to conflicts BETWEEN worktrees -- cases where two
 feature branches both modify the same file or API in mutually incompatible
 ways. When this happens, reconcile both features so they coexist correctly.
 
-When ALL branches are integrated and tests pass, write 'pass' to '${status_file}'.
-If you cannot resolve a conflict or fix a test failure, write 'fail' to '${status_file}'.
+When ALL branches are integrated and tests pass, write 'pass' to '${agent_status_file}'.
+If you cannot resolve a conflict or fix a test failure, write 'fail' to '${agent_status_file}'.
 
-Work in ${dev_path}. Do not modify other directories.
+Work in ${int_path}. Do not modify other directories.
 PROMPT_EOF
 
     info "integrate: launching agent to integrate %d worktrees" "${#worktree_paths[@]}"
@@ -1424,15 +1577,11 @@ PROMPT_EOF
 
     rm -f "$prompt_file"
 
-    # Capture the agent's verdict and remove the status file so the
-    # outer polling loop cannot read a premature "pass" while we are
-    # still running verification steps (race condition: the polling
-    # loop could read the agent's "pass" before verification runs).
     local final_status
-    if [[ -f $status_file ]]
+    if [[ -f $agent_status_file ]]
     then
-        final_status=$(cat "$status_file")
-        rm -f "$status_file"
+        final_status=$(cat "$agent_status_file")
+        rm -f "$agent_status_file"
     else
         warn "integrate: agent did not write status file; marking fail"
         final_status=fail
@@ -1446,35 +1595,35 @@ PROMPT_EOF
     if [[ $final_status == pass ]] && $has_run_tests
     then
         info "integrate: verifying tests post-merge"
-        local verify_log="${dev_path}/x.dev-ci-verify.log"
-        local verify_results="${dev_path}/x.dev-ci-verify-results.txt"
+        local verify_log="${int_path}/x.dev-ci-verify.log"
+        local verify_results="${int_path}/x.dev-ci-verify-results.txt"
         : > "$verify_results"
-        run_hooks "$dev_path" "pre-run-tests.sh"
+        run_hooks "$int_path" "pre-run-tests.sh"
         if ! TIMVISHER_DEV_CI_RESULTS_FILE="$verify_results" \
-             run_hooks "$dev_path" "run-tests.sh" > "$verify_log" 2>&1
+             run_hooks "$int_path" "run-tests.sh" > "$verify_log" 2>&1
         then
             if [[ $baseline_clean == false ]] \
                && diff -q "$baseline_results" "$verify_results" >/dev/null 2>&1
             then
                 info "integrate: post-merge failures match baseline; treating as pass"
             else
-                error "integrate: tests failed post-merge"
+                error "integrate: tests failed post-merge; log in '%s'" "$verify_log"
                 final_status=fail
             fi
         fi
-        rm -f "$verify_log" "$verify_results"
+        [[ $final_status == pass ]] && rm -f "$verify_log" "$verify_results"
     fi
 
-    rm -f "$baseline_log" "$baseline_results"
+    [[ $final_status == pass ]] && rm -f "$baseline_log" "$baseline_results"
 
     # Run post-integration hook if integration passed.
-    ensure_repo_script "$dev_path" "post-integrate.sh" || true
+    ensure_repo_script "$int_path" "post-integrate.sh" || true
     if [[ $final_status == pass ]] &&
-       hook_exists "$dev_path" "post-integrate.sh"
+       hook_exists "$int_path" "post-integrate.sh"
     then
         info "integrate: running post-integration hook"
-        run_hooks "$dev_path" "pre-post-integrate.sh"
-        if ! run_hooks "$dev_path" "post-integrate.sh"
+        run_hooks "$int_path" "pre-post-integrate.sh"
+        if ! run_hooks "$int_path" "post-integrate.sh"
         then
             error "integrate: post-integration hook failed"
             final_status=fail
@@ -1482,15 +1631,17 @@ PROMPT_EOF
     fi
 
     # Move the dev branch only now that the merge, the verification and
-    # post-integrate have all passed; otherwise put it back untouched.
-    # This also has to precede the push: push_to_remote pushes HEAD and
-    # reads branch.<branch>.pushRemote, so from the scratch branch it would
-    # push to a remote branch named after the scratch.
+    # post-integrate have all passed; otherwise leave it untouched.
     if [[ $final_status == pass ]]
     then
         integrate_scratch_finish || final_status=fail
     else
-        integrate_scratch_restore
+        integrate_scratch_abandon
+    fi
+
+    if [[ $final_status == pass ]]
+    then
+        integrate_build_in_dev "$dev_path" || final_status=fail
     fi
 
     # Push before writing the status file so the polling loop never
@@ -1974,10 +2125,10 @@ dependency_pin_overrides() {
 declare -A _worktree_farm=()
 
 worktree_farm() {
-    local wt=$1
-    local key root
+    local wt key root
     local -a overrides=()
 
+    wt=$(hook_identity_path "$1")
     key=$(worktree_context_key "$wt")
 
     if [[ -n ${_worktree_farm[$key]+set} ]]
@@ -3275,9 +3426,10 @@ resolve_regen_conflicts() {
     GIT_EDITOR=true git merge --continue
 }
 
-# Lightweight foreground integrate: reset a dev worktree to @{u} and
-# sequential-merge every branch listed in its x.active-worktrees, then run
-# the post-integrate.sh hook.  No baseline tests, no nested agent, no push
+# Lightweight foreground integrate: in the dev worktree's integration
+# worktree, start from @{u}, sequential-merge every branch listed in its
+# x.active-worktrees and run the post-integrate.sh hook, then move dev onto
+# the result and build it there.  No baseline tests, no nested agent, no push
 # -- unlike the bare pipeline (cmd__integrate).  Sequential (not octopus)
 # so a conflict pinpoints the offending branch.  A conflict confined to
 # derived files (BUILD.bazel) is resolved in place and re-derived by
@@ -3338,6 +3490,7 @@ cmd_integrate_local() {
         die "integrate: cannot cd to '%s'" "$dev_path"
 
     local -a paths=()
+    local hook_path=$dev_path
 
     if "$build_only"
     then
@@ -3350,7 +3503,11 @@ cmd_integrate_local() {
             die "integrate: git fetch failed in '%s'" "$dev_path"
 
         integrate_scratch_begin "$dev_path" ||
-            die "integrate: cannot start a scratch branch in '%s'" "$dev_path"
+            die "integrate: cannot start a scratch branch for '%s'" "$dev_path"
+
+        hook_path=$integrate_scratch_worktree
+        cd "$hook_path" ||
+            die "integrate: cannot cd to '%s'" "$hook_path"
 
         # Generated files (default: BUILD.bazel) are DERIVED, not source: each
         # feature commits its own gazelle output in isolation, so they collide
@@ -3408,17 +3565,16 @@ cmd_integrate_local() {
             conflicted=$(git diff --name-only --diff-filter=U)
             error "integrate: unresolvable conflict merging '%s':" "$branch"
             printf '%s\n' "$conflicted" >&2
-            git merge --abort
             die "integrate: real conflict in '%s' -- resolve it, or run the bare pipeline ('timvisher_dev_ci .') for agent-driven resolution" "$branch"
         done
     fi
 
-    if hook_exists "$dev_path" "post-integrate.sh"
+    if hook_exists "$hook_path" "post-integrate.sh"
     then
-        info "integrate: running post-integrate.sh"
-        run_hooks "$dev_path" "pre-post-integrate.sh"
-        run_hooks "$dev_path" "post-integrate.sh" ||
-            die "integrate: post-integrate.sh failed in '%s'" "$dev_path"
+        info "integrate: running post-integrate.sh in '%s'" "$hook_path"
+        run_hooks "$hook_path" "pre-post-integrate.sh"
+        run_hooks "$hook_path" "post-integrate.sh" ||
+            die "integrate: post-integrate.sh failed in '%s'" "$hook_path"
     elif "$build_only"
     then
         aictl_die \
@@ -3429,10 +3585,16 @@ cmd_integrate_local() {
             --suggestion "Add post-integrate.sh under '${REPO_HOOKS_EXT_DIR}/<org>/<repo>/<branch-parts>/'"
     fi
 
-    # A die() anywhere above reaches the EXIT trap instead, which puts dev
-    # back and keeps the scratch branch.
-    integrate_scratch_finish ||
-        die "integrate: cannot advance '%s' to the integrated tree" "$dev_path"
+    # A die() anywhere above reaches the EXIT trap instead, which leaves dev
+    # alone and reports where the attempt is.
+    if ! "$build_only"
+    then
+        integrate_scratch_finish ||
+            die "integrate: cannot advance '%s' to the integrated tree" "$dev_path"
+
+        integrate_build_in_dev "$dev_path" ||
+            die "integrate: post-integrate.sh failed in '%s' after it moved" "$dev_path"
+    fi
 
     if "$build_only"
     then
@@ -3543,7 +3705,7 @@ SYNOPSIS
     timvisher_dev_ci hooks run [HOOK ...] [-C PATH]      # run hooks (all known if HOOK omitted)
     timvisher_dev_ci hooks run [-C PATH] -- [HOOK ...]   # `--` ends flags before hook names
     timvisher_dev_ci run-tests [-C PATH]                 # convenience for: hooks run run-tests.sh
-    timvisher_dev_ci integrate [-C PATH]                 # merge active worktrees onto @{u} + post-integrate (no test/agent/push)
+    timvisher_dev_ci integrate [-C PATH]                 # merge active worktrees onto @{u} + post-integrate in an integration worktree, then move dev (no test/agent/push)
     timvisher_dev_ci integrate --build-only [-C PATH]    # post-integrate only: no fetch, no reset, no merge
 
     # Misc:
@@ -3672,16 +3834,21 @@ UPSTREAM PULL BRANCHES
     Regular forks get none of this: their dev already resets to
     upstream/<trunk>.
 
-SCRATCH BRANCH
+INTEGRATION WORKTREE
 
-    Both integrate paths do their work on a scratch branch named
-    'x.dev-ci-integrate-<dev-branch>-<pid>', branched from @{u} and set to
-    track it.  The dev branch is moved to the result only once every merge,
-    the verification run and post-integrate.sh have passed.
+    Both integrate paths do their work in an integration worktree that ntmux3
+    makes once per dev worktree, at <org>/<repo>/x.dev-ci-integrate/<dev-branch>
+    on branch 'x.dev-ci-integrate/<dev-branch>', with a tmux session to attach
+    to.  Each run resets it to @{u} (the run's baseline), and merges, the
+    integration agent, the verification run and post-integrate.sh all run
+    there, with hooks resolved as the dev worktree's.  The dev worktree is not
+    touched until all of them have passed; then it moves onto the result with
+    one 'git reset --hard', and post-integrate.sh runs again in it so what it
+    builds is built where it is used.
 
-    So a failed integration leaves the dev branch exactly where it was, and
-    the half-finished attempt stays on the scratch branch for inspection
-    rather than being thrown away.  A successful one deletes the scratch.
+    So a failed integration leaves the dev worktree exactly as it was, and
+    the attempt stays in the integration worktree for inspection until the
+    next integrate of the same dev worktree; its path is printed.
 
 AGENT USAGE
     To run the project's full local CI suite from inside a worktree:
