@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 
+from timvisher.gh import perf
 from timvisher.gh.errors import fail, usage
 
 _SPEC = re.compile(r"[^/]+/[^/]+")
@@ -32,7 +33,7 @@ def from_option(value):
 
 
 def _git(*args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, text=True)
+    return perf.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, text=True)
 
 
 def _target_remote(toplevel):
@@ -50,8 +51,8 @@ def from_worktree(path, required=True):
     if path is not None and not os.path.isdir(path):
         fail("timvisher_gh_no_such_path", f"Option -C: unable to enter '{path}'",
              suggestions=["Pass -C a worktree directory that exists"])
-    shown = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path or ".",
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    shown = perf.run(["git", "rev-parse", "--show-toplevel"], cwd=path or ".",
+                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     if shown.returncode != 0 and not required:
         return None
     if shown.returncode != 0:

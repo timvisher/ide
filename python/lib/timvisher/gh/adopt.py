@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import subprocess
 
-from timvisher.gh import store, targets
+from timvisher.gh import perf, store, targets
 from timvisher.gh.errors import USAGE, fail
 
 
@@ -29,8 +29,8 @@ def ensure_parent(db, target, lookup):
 
 def _record_context(db, worktree, pr_id):
     owner, repo = db.execute("SELECT owner, repo FROM objects WHERE id = ?", (pr_id,)).fetchone()
-    branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    branch = perf.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, text=True).stdout.strip()
     db.execute("INSERT INTO context VALUES (?, ?, ?, ?, ?) ON CONFLICT (worktree) DO UPDATE SET "
                "owner = excluded.owner, repo = excluded.repo, branch = excluded.branch, pr_id = excluded.pr_id",
                (str(worktree), owner, repo, None if branch in ("", "HEAD") else branch, pr_id))

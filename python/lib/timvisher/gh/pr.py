@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, hooks, nouns, record, state, store, sync, targets
+from timvisher.gh import adopt, fetch, hooks, nouns, perf, record, state, store, sync, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 VERBS = ("fetch", "pull", "push", "edit")
@@ -134,8 +134,8 @@ class ConversationAdapter:
 
 
 def _git(*args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                          text=True).stdout.strip()
+    return perf.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True).stdout.strip()
 
 
 def _lookup(target):
@@ -212,7 +212,8 @@ def _push_branch(context, flags, grant=None):
     if flags["plan"]:
         args.append("--plan")
     env = {**os.environ, "TIMVISHER_GIT_PUSH_GRANT": grant} if grant else None
-    return subprocess.run(args, cwd=context.toplevel, env=env).returncode
+    with perf.phase("push_branch"):
+        return perf.run(args, cwd=context.toplevel, env=env).returncode
 
 
 # An agent's --ours settles the PR's title and body, never its branch:
@@ -231,7 +232,8 @@ def _record_head(opened, object_id, sha):
 def _branch_moves(context, flags, grant=None):
     ours = _ours(flags)
     args = ["timvisher_git", "push", "--plan"] + (["--ours"] if ours else [])
-    done = subprocess.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    with perf.phase("push_plan"):
+        done = perf.run(args, cwd=context.toplevel, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     kind = (done.stdout.split() or [""])[0]
     return kind in ("new", "fast-forward", "same-content") or (
         ours and kind in ("behind", "decision")) or (
@@ -330,12 +332,14 @@ def run(context, args):
     try:
         store.exporting(opened, lambda object_id: record.record(opened.db, object_id), nouns.now)
         if context is not None:
-            adopt.adopt_root(opened, context.toplevel, _lookup, nouns.now())
-            adopt.adopt_directory(opened, context.toplevel, "pr", _lookup, nouns.now())
+            with perf.phase("adopt"):
+                adopt.adopt_root(opened, context.toplevel, _lookup, nouns.now())
+                adopt.adopt_directory(opened, context.toplevel, "pr", _lookup, nouns.now())
         # A push never syncs the browser's PR: with nothing else to name one, it
         # pushes the branch alone.
-        found = targets.resolve("pr", target, context=context, db=opened.db, creating=True,
-                                browser_fallback=verb not in ("push", "sync"))
+        with perf.phase("resolve"):
+            found = targets.resolve("pr", target, context=context, db=opened.db, creating=True,
+                                    browser_fallback=verb not in ("push", "sync"))
         if found is None:
             if _agent() and not flags["plan"]:
                 _refuse("push a branch that has no draft PR")
@@ -372,7 +376,8 @@ def run(context, args):
             pr_id = fetcher.pr(found.owner, found.repo, found.number, conversation=verb in ("fetch", "pull", "sync"))
         object_id = object_id or pr_id
         url = opened.db.execute("SELECT url FROM objects WHERE id = ?", (object_id,)).fetchone()[0]
-        viewer = fetcher.viewer(f"{found.owner}/{found.repo}")
+        with perf.phase("viewer"):
+            viewer = fetcher.viewer(f"{found.owner}/{found.repo}")
         worktree_pr = _is_worktree_pr(context, opened, object_id)
         if worktree_pr and not flags["plan"]:
             with opened.write() as db:
@@ -381,12 +386,14 @@ def run(context, args):
             print(url)
             return 0
         if verb in ("pull", "sync"):
-            items = _conversation_items(opened, object_id, viewer)
-            if items:
-                rc = sync.Engine(opened, "pull", now=now, rerun=rerun, resolution=flags["resolution"],
-                                 plan_only=flags["plan"], ask=sync.prompt if sync.interactive() else None).run(items)
-                if rc not in (0,):
-                    return rc
+            with perf.phase("pull_conversation"):
+                items = _conversation_items(opened, object_id, viewer)
+                if items:
+                    rc = sync.Engine(opened, "pull", now=now, rerun=rerun, resolution=flags["resolution"],
+                                     plan_only=flags["plan"],
+                                     ask=sync.prompt if sync.interactive() else None).run(items)
+                    if rc not in (0,):
+                        return rc
         raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (object_id,)).fetchone()[0])
         pushing = verb in ("push", "sync", "edit") and worktree_pr and not flags["plan"]
         grant = None
@@ -415,8 +422,9 @@ def run(context, args):
                 _record_head(opened, object_id, _local_sha(context))
         item = sync.Item(object_id, "pr", url, PrAdapter(opened, fetcher, flags),
                          mine=raw["user"]["login"].lower() == viewer.lower())
-        rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"], plan_only=flags["plan"],
-                         ask=sync.prompt if sync.interactive() else None).run([item])
+        with perf.phase("sync_pr"):
+            rc = sync.Engine(opened, verb, now=now, rerun=rerun, resolution=flags["resolution"],
+                             plan_only=flags["plan"], ask=sync.prompt if sync.interactive() else None).run([item])
         given = {name: flags[name] for name in ("draft", "base") if flags[name] is not None}
         if rc == 0 and not flags["plan"] and given and verb in ("push", "sync", "edit"):
             with opened.write() as db:

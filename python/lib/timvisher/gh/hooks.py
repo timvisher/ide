@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from timvisher import aictl, logging
+from timvisher.gh import perf
 from timvisher.gh.errors import fail
 
 CORE = pathlib.Path(__file__).resolve().parents[3] / "bin" / "timvisher_gh.config"
@@ -39,25 +40,25 @@ class Hooks:
     def changed(self):
         if self._changed is None:
             if self.pr_url:
-                done = subprocess.run(["gh", "-R", self.repo, "pr", "diff", self.pr_url, "--name-only"],
-                                      stdout=subprocess.PIPE, text=True)
+                done = perf.run(["gh", "-R", self.repo, "pr", "diff", self.pr_url, "--name-only"],
+                                stdout=subprocess.PIPE, text=True)
                 self._changed = done.stdout.splitlines() if done.returncode == 0 else []
             else:
-                base = subprocess.run(["gh", "-R", self.repo, "repo", "view", self.repo, "--json",
-                                       "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
-                                      stdout=subprocess.PIPE, text=True).stdout.strip()
+                base = perf.run(["gh", "-R", self.repo, "repo", "view", self.repo, "--json",
+                                 "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+                                stdout=subprocess.PIPE, text=True).stdout.strip()
                 if not base:
                     fail("timvisher_gh_hooks_no_default_branch",
                          f"Could not determine the default branch of {self.repo} for path-scoped hooks.",
                          suggestions=["Check gh's error above, then rerun"])
-                merge_base = subprocess.run(["git", "merge-base", f"refs/remotes/origin/{base}", "HEAD"],
-                                            cwd=self.worktree, stdout=subprocess.PIPE, text=True).stdout.strip()
+                merge_base = perf.run(["git", "merge-base", f"refs/remotes/origin/{base}", "HEAD"],
+                                      cwd=self.worktree, stdout=subprocess.PIPE, text=True).stdout.strip()
                 if not merge_base:
                     fail("timvisher_gh_hooks_no_merge_base",
                          f"Couldn't find the merge base of HEAD and origin/{base} for path-scoped hooks.",
                          suggestions=[f"Fetch it: 'git fetch origin {base}', then rerun"])
-                done = subprocess.run(["git", "diff", "--name-only", merge_base, "HEAD"], cwd=self.worktree,
-                                      stdout=subprocess.PIPE, text=True)
+                done = perf.run(["git", "diff", "--name-only", merge_base, "HEAD"], cwd=self.worktree,
+                                stdout=subprocess.PIPE, text=True)
                 self._changed = done.stdout.splitlines() if done.returncode == 0 else []
         return self._changed
 
@@ -81,8 +82,8 @@ class Hooks:
 
     def _env(self, phase, when, scope):
         number = self.pr_url.rsplit("/", 1)[-1] if self.pr_url and "/pull/" in self.pr_url else ""
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.worktree, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, text=True).stdout.strip()
+        head = perf.run(["git", "rev-parse", "HEAD"], cwd=self.worktree, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, text=True).stdout.strip()
         current = self.title() if callable(self.title) else self.title
         title = self.repo + (f"#{number}" if number else "") + (f": {current}" if current else "")
         return {**os.environ, "TIMVISHER_GH_PHASE": phase, "TIMVISHER_GH_HOOK": when,
@@ -96,8 +97,8 @@ class Hooks:
         failures = 0
         for hook, scope in self.collect(phase, when):
             logging.info("Running %s %s-hook %s", phase, when, hook)
-            done = subprocess.run([str(hook)], cwd=self.worktree, env=self._env(phase, when, scope),
-                                  stdout=sys.stderr, stderr=sys.stderr)
+            done = perf.run([str(hook)], cwd=self.worktree, env=self._env(phase, when, scope),
+                            stdout=sys.stderr, stderr=sys.stderr)
             if done.returncode != 0:
                 logging.error("%s %s-hook failed: %s", phase, when, hook)
                 failures += 1
@@ -106,7 +107,9 @@ class Hooks:
         return failures == 0
 
     def pre(self, phase):
-        if not self.run(phase, "pre"):
+        with perf.phase("pre_hooks"):
+            ok = self.run(phase, "pre")
+        if not ok:
             aictl.error(code="timvisher_gh_pre_hook_failed",
                         message=f"A {phase} pre-hook failed; not proceeding.",
                         suggestions=["Fix what the hook reported, then rerun"])
@@ -114,7 +117,9 @@ class Hooks:
         return True
 
     def post(self, phase):
-        if not self.run(phase, "post"):
+        with perf.phase("post_hooks"):
+            ok = self.run(phase, "post")
+        if not ok:
             aictl.error(code="timvisher_gh_post_hook_failed",
                         message=f"{phase} post-hook(s) failed; the rest ran.",
                         suggestions=["Fix what failed, then rerun; completed steps report 'already'"])
