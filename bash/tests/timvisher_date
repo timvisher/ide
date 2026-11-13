@@ -71,9 +71,6 @@ do
   fi
 done
 
-# td <flavor> <args...>: timvisher_date with only that flavor's date,
-# no inherited flavor, a fresh cache dir per flavor and a DST-observing
-# zone.
 td() {
   local flavor=$1
   shift
@@ -111,7 +108,6 @@ check_fails() {
   fi
 }
 
-# check_near <flavor> <name> <offset from now> <args...>
 check_near() {
   local flavor=$1 name=$2 offset=$3 got now
   shift 3
@@ -215,7 +211,6 @@ else
   echo 'SKIP: no BSD date on this host'
 fi
 
-# A date that is neither flavor, and counts how often it runs.
 mkdir -p "$t/fake" || exit 1
 cat > "$t/fake/date" <<EOF
 #!$t/tools/bash

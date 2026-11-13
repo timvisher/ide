@@ -99,7 +99,6 @@ resolve_flavor() {
   export TIMVISHER_DATE_FLAVOR="$date_path:$flavor"
 }
 
-# format_epoch <-u or ''> <epoch> <+FMT>
 format_epoch() {
   local utc=$1 epoch=$2 fmt=$3 out='' i c
   for (( i = 0; i < ${#fmt}; i += 1 ))
@@ -128,9 +127,9 @@ format_epoch() {
   fi
 }
 
-# calendar_epoch <-u or ''> <YYYY-MM-DD> <HH:MM:SS>: fails for a time
-# that does not exist, which BSD date would otherwise roll over (Feb 30
-# into March, a skipped DST hour into the next).
+# Round-trips through format: BSD date -j -f rolls a time that does not
+# exist over (Feb 30 into March, a skipped DST hour into the next)
+# instead of failing.
 calendar_epoch() {
   local utc=$1 ymd=$2 hms=$3 epoch back
   if [[ $flavor == gnu ]]
