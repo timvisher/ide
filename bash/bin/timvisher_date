@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_date <operation> [args...]
+
+The date operations ide and its system extensions need, on whichever
+date is first on PATH, GNU or BSD.
+
+  epoch <spec>              print <spec> as seconds since the epoch
+  format [-u] <epoch> +FMT  print <epoch> formatted as date +FMT would,
+                            in UTC with -u; %N is always 000000000
+  add <YYYY-MM-DD> <+-N>    print the date N days from <YYYY-MM-DD>
+  valid <YYYY-MM-DD>        exit 0 only for a real calendar date
+  flavor                    print <date path>:<gnu|bsd>
+
+<spec> is one of:
+
+  @N                         N itself
+  YYYY-MM-DD                 local midnight
+  YYYY-MM-DD HH:MM:SS        local time
+  YYYY-MM-DDTHH:MM:SS[.f]Z   UTC; or with an offset, +HH:MM or +HHMM
+  now, today                 the current time
+  yesterday                  1 day ago
+  N <unit>[s] [ago]          N may be signed; <unit> is second, minute,
+                             hour, day (86400 seconds) or week
+
+The words of <spec> may be given as one argument or several. Anything
+else is an error.
+
+The flavor of each date binary is remembered as <path>:<flavor> in
+TIMVISHER_DATE_FLAVOR and in
+${XDG_CACHE_HOME:-~/.cache}/timvisher_date/flavor.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+die() {
+  local fmt=$1
+  shift
+  # shellcheck disable=SC2059 # the format is ours
+  printf "timvisher_date: ${fmt}\n" "$@" >&2
+  exit 1
+}
+
+date_path=
+flavor=
+
+resolve_flavor() {
+  local cache_file line candidate out
+
+  date_path=$(type -P date) ||
+    die 'no date on PATH'
+
+  candidate=${TIMVISHER_DATE_FLAVOR-}
+  if [[ ${candidate%:*} == "$date_path" ]]
+  then
+    case ${candidate##*:} in
+      gnu|bsd)
+        flavor=${candidate##*:}
+        return 0
+        ;;
+    esac
+  fi
+
+  cache_file=${XDG_CACHE_HOME:-$HOME/.cache}/timvisher_date/flavor
+  if [[ -r $cache_file ]]
+  then
+    while IFS= read -r line
+    do
+      case $line in
+        "$date_path:gnu"|"$date_path:bsd")
+          flavor=${line##*:}
+          ;;
+      esac
+    done < "$cache_file"
+  fi
+
+  if [[ -z $flavor ]]
+  then
+    # GNU first: GNU date reads -r 0 as a file named 0, and BSD date
+    # has no -d.
+    if out=$("$date_path" -d @0 +%s 2>/dev/null) && [[ $out == 0 ]]
+    then
+      flavor=gnu
+    elif out=$("$date_path" -r 0 +%s 2>/dev/null) && [[ $out == 0 ]]
+    then
+      flavor=bsd
+    else
+      die '"%s" is neither GNU nor BSD date' "$date_path"
+    fi
+    mkdir -p -- "${cache_file%/*}" 2>/dev/null &&
+      printf '%s:%s\n' "$date_path" "$flavor" >> "$cache_file" 2>/dev/null
+  fi
+
+  export TIMVISHER_DATE_FLAVOR="$date_path:$flavor"
+}
+
+# format_epoch <-u or ''> <epoch> <+FMT>
+format_epoch() {
+  local utc=$1 epoch=$2 fmt=$3 out='' i c
+  for (( i = 0; i < ${#fmt}; i += 1 ))
+  do
+    c=${fmt:i:1}
+    if [[ $c == % ]] && (( i + 1 < ${#fmt} ))
+    then
+      (( i += 1 ))
+      c=${fmt:i:1}
+      if [[ $c == N ]]
+      then
+        out+='000000000'
+      else
+        out+=%$c
+      fi
+    else
+      out+=$c
+    fi
+  done
+
+  if [[ $flavor == gnu ]]
+  then
+    "$date_path" ${utc:+-u} -d "@$epoch" "$out"
+  else
+    "$date_path" ${utc:+-u} -r "$epoch" "$out"
+  fi
+}
+
+# calendar_epoch <-u or ''> <YYYY-MM-DD> <HH:MM:SS>: fails for a time
+# that does not exist, which BSD date would otherwise roll over (Feb 30
+# into March, a skipped DST hour into the next).
+calendar_epoch() {
+  local utc=$1 ymd=$2 hms=$3 epoch back
+  if [[ $flavor == gnu ]]
+  then
+    epoch=$("$date_path" ${utc:+-u} -d "$ymd $hms" +%s 2>/dev/null) ||
+      return 1
+  else
+    epoch=$("$date_path" ${utc:+-u} -j -f '%Y-%m-%d %H:%M:%S' "$ymd $hms" +%s 2>/dev/null) ||
+      return 1
+  fi
+  back=$(format_epoch "$utc" "$epoch" '+%Y-%m-%d %H:%M:%S') ||
+    return 1
+  [[ $back == "$ymd $hms" ]] ||
+    return 1
+  printf '%s\n' "$epoch"
+}
+
+# A day is always 86400 seconds, as GNU date -d counts it. BSD date -v
+# keeps the wall-clock time instead, which across a DST change is an
+# hour off from GNU, so neither flavor's relative arithmetic is used.
+relative_epoch() {
+  local n=$1 unit=$2 now seconds
+  case $unit in
+    second) seconds=1 ;;
+    minute) seconds=60 ;;
+    hour)   seconds=3600 ;;
+    day)    seconds=86400 ;;
+    week)   seconds=604800 ;;
+  esac
+  now=$("$date_path" +%s) ||
+    return 1
+  printf '%s\n' "$(( now + n * seconds ))"
+}
+
+op_epoch() {
+  local spec="$*" n epoch offset
+  local date_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  local local_re='^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}:[0-9]{2}:[0-9]{2})$'
+  local iso_re='^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?(Z|([+-])([0-9]{2}):?([0-9]{2}))$'
+  local rel_re='^([+-]?)([0-9]+) (second|minute|hour|day|week)s?( ago)?$'
+
+  [[ -n $spec ]] ||
+    { usage; exit 2; }
+
+  if [[ $spec =~ ^@(-?[0-9]+)$ ]]
+  then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  elif [[ $spec == now || $spec == today ]]
+  then
+    "$date_path" +%s
+  elif [[ $spec == yesterday ]]
+  then
+    relative_epoch -1 day
+  elif [[ $spec =~ $date_re ]]
+  then
+    calendar_epoch '' "$spec" 00:00:00 ||
+      die 'not a date: "%s"' "$spec"
+  elif [[ $spec =~ $local_re ]]
+  then
+    calendar_epoch '' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" ||
+      die 'not a local time: "%s"' "$spec"
+  elif [[ $spec =~ $iso_re ]]
+  then
+    offset=0
+    if [[ ${BASH_REMATCH[4]} != Z ]]
+    then
+      offset=$(( 10#${BASH_REMATCH[6]} * 3600 + 10#${BASH_REMATCH[7]} * 60 ))
+      [[ ${BASH_REMATCH[5]} == - ]] && offset=$(( -offset ))
+    fi
+    epoch=$(calendar_epoch -u "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") ||
+      die 'not an ISO 8601 time: "%s"' "$spec"
+    printf '%s\n' "$(( epoch - offset ))"
+  elif [[ $spec =~ $rel_re ]]
+  then
+    n=$(( 10#${BASH_REMATCH[2]} ))
+    [[ ${BASH_REMATCH[1]} == - ]] && n=$(( -n ))
+    [[ -n ${BASH_REMATCH[4]} ]] && n=$(( -n ))
+    relative_epoch "$n" "${BASH_REMATCH[3]}"
+  else
+    die 'unrecognized time: "%s"' "$spec"
+  fi
+}
+
+op_format() {
+  local utc='' arg
+  local -a positional=()
+  for arg in "$@"
+  do
+    if [[ $arg == -u ]]
+    then
+      utc=-u
+    else
+      positional+=("$arg")
+    fi
+  done
+
+  if (( ${#positional[@]} != 2 ))
+  then
+    usage
+    exit 2
+  fi
+  [[ ${positional[0]} =~ ^-?[0-9]+$ ]] ||
+    die 'not an epoch: "%s"' "${positional[0]}"
+  [[ ${positional[1]} == +* ]] ||
+    die 'a format starts with +: "%s"' "${positional[1]}"
+
+  format_epoch "$utc" "${positional[0]}" "${positional[1]}"
+}
+
+is_valid_date() {
+  [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] &&
+    calendar_epoch -u "$1" 00:00:00 >/dev/null
+}
+
+op_add() {
+  local day=$1 n=$2 epoch
+  [[ $n =~ ^([+-]?)([0-9]+)$ ]] ||
+    die 'not a number of days: "%s"' "$n"
+  n=$(( 10#${BASH_REMATCH[2]} ))
+  [[ ${BASH_REMATCH[1]} == - ]] && n=$(( -n ))
+  if ! [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+      ! epoch=$(calendar_epoch -u "$day" 00:00:00)
+  then
+    die 'not a date: "%s"' "$day"
+  fi
+  format_epoch -u "$(( epoch + n * 86400 ))" +%Y-%m-%d
+}
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  epoch|format|add|valid|flavor)
+    ;;
+  '')
+    usage
+    exit 2
+    ;;
+  *)
+    printf 'timvisher_date: unknown operation "%s"\n' "$1" >&2
+    usage
+    exit 2
+    ;;
+esac
+
+op=$1
+shift
+resolve_flavor
+
+case $op in
+  epoch)
+    op_epoch "$@"
+    ;;
+  format)
+    op_format "$@"
+    ;;
+  add)
+    if (( $# != 2 ))
+    then
+      usage
+      exit 2
+    fi
+    op_add "$@"
+    ;;
+  valid)
+    if (( $# != 1 ))
+    then
+      usage
+      exit 2
+    fi
+    is_valid_date "$1"
+    ;;
+  flavor)
+    if (( $# != 0 ))
+    then
+      usage
+      exit 2
+    fi
+    printf '%s:%s\n' "$date_path" "$flavor"
+    ;;
+esac
