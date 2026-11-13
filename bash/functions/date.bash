@@ -1,6 +1,7 @@
 timvisher_date() {
   local date_path
-  if date_path=$(type -P date) &&
+  if [[ ${1-} != now ]] &&
+      date_path=$(type -P date) &&
       [[ ${TIMVISHER_DATE_FLAVOR-} != "$date_path":gnu &&
          ${TIMVISHER_DATE_FLAVOR-} != "$date_path":bsd ]]
   then
@@ -17,6 +18,5 @@ function days_ago {
 }
 
 iso8601() {
-    # follows POSIX so it's cross platform
-    date -u "+%Y-%m-%dT%H:%M:%SZ"
+  timvisher_date now -u '+%Y-%m-%dT%H:%M:%SZ'
 }
