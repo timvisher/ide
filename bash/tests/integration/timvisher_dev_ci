@@ -2,7 +2,9 @@
 # shellcheck disable=SC2034
 
 # Tests for timvisher_dev_ci against real repositories: auto-committing
-# regenerated BUILD.bazel files and resolving their merge conflicts.
+# regenerated BUILD.bazel files, resolving their merge conflicts,
+# integrating in an integration worktree, pull-upstream branches, the
+# verification cache, dependency pins and the upstream baseline.
 
 failures=0
 tests=0
@@ -50,6 +52,39 @@ unset TIMVISHER_AICTL_LOG
 eval "$(sed '/^case \${1:-} in$/,$ d' "$script")"
 
 test_git=$real_git
+
+# Hook resolution calls `timvisher_gh -C <wt> info --json`, which hits
+# the GitHub API.  Stub it via PATH so the test makes no network calls
+# and does not depend on `timvisher_gh` being installed.  The stub
+# derives org/repo/branchPath from the -C path the way the real tool
+# does, and records each invocation so tests can assert on caching and
+# on the path actually queried.
+fake_git_home_real=$(cd "$TIMVISHER_GIT_HOME" && pwd -P)
+mkdir -p "$tmpdir/mockbin"
+cat > "$tmpdir/mockbin/timvisher_gh" <<MOCK
+#!/usr/bin/env bash
+if [[ \$1 == -C && \$3 == info && \$4 == --json ]]
+then
+  printf '%s\\n' "\$2" >> "$tmpdir/tgh-calls"
+  rel=\${2#${TIMVISHER_GIT_HOME}/}
+  rel=\${rel#${fake_git_home_real}/}
+  org=\${rel%%/*}
+  rest=\${rel#*/}
+  repo=\${rest%%/*}
+  branch=\${rest#*/}
+  [[ \$branch == "\$repo" ]] && branch=""
+  jq -n --arg org "\$org" --arg repo "\$repo" --arg branch "\$branch" \\
+    '{timvisher_git: {org: \$org, repo: \$repo, branch: \$branch,
+                      branchPath: \$branch, absPath: "", prefixPath: ""},
+      timvisher_gh: {me: \$org,
+                     forkNetwork: {mainRepo: (\$org + "/" + \$repo),
+                                   mainOwner: \$org}}}'
+  exit 0
+fi
+echo "(mock) unhandled: \$*" >&2
+exit 2
+MOCK
+chmod +x "$tmpdir/mockbin/timvisher_gh"
 
 # ---------------------------------------------------------------------------
 # autocommit_build_artifacts: worktrees whose ONLY dirt is BUILD.bazel get
@@ -217,6 +252,1108 @@ then
 else
   fail "regen no conflict: expected non-zero, got $rc_none_rc"
 fi
+
+# ---------------------------------------------------------------------------
+# integrate: the dev branch moves only when the whole run succeeds
+# ---------------------------------------------------------------------------
+
+# A dev integration worktree on branch 'dev' tracking local 'main' (remote '.'
+# avoids needing a real remote), plus one feature worktree per extra branch.
+make_integrate_fixture() {
+  local root=$1
+  shift
+  local repo="${root}/repo/dev"
+
+  mkdir -p "$repo" || return 1
+  "$test_git" init -q -b main "$repo" || return 1
+  "$test_git" -C "$repo" config core.hooksPath /dev/null
+  "$test_git" -C "$repo" config user.email t@t
+  "$test_git" -C "$repo" config user.name t
+  printf 'base\n' > "$repo/shared.txt"
+  "$test_git" -C "$repo" add -A
+  "$test_git" -C "$repo" commit -q -m base
+
+  # 'dev' starts behind main so a successful integrate visibly moves it.
+  "$test_git" -C "$repo" checkout -q -b dev
+  "$test_git" -C "$repo" config branch.dev.remote .
+  "$test_git" -C "$repo" config branch.dev.merge refs/heads/main
+
+  touch "$repo/x.dev-integration-branch"
+  : > "$repo/x.active-worktrees"
+  # The git wrapper latches this on its first call in a worktree with an
+  # upstream, so every real dev worktree already has it.
+  touch "$repo/x.upstream-configured"
+
+  local name content wt
+  for name in "$@"
+  do
+    content=${name#*=}
+    name=${name%%=*}
+    wt="${root}/repo/${name}"
+    "$test_git" -C "$repo" branch -q "$name" main
+    "$test_git" -C "$repo" worktree add -q "$wt" "$name" || return 1
+    printf '%s\n' "$content" > "$wt/shared.txt"
+    "$test_git" -C "$wt" commit -q -am "$name"
+    printf '%s\n' "$wt" >> "$repo/x.active-worktrees"
+  done
+
+  printf '%s\n' "$repo"
+}
+
+scratch_branches() {
+  "$test_git" -C "$1" for-each-ref --format='%(refname:short)' \
+    'refs/heads/x.dev-ci-integrate/'
+}
+
+int_hooks="$ide_config/timvisher_dev_ci/hooks"
+int_ntmux_log="$tmpdir/int-ntmux.log"
+
+# Where ntmux3 puts a fixture's integration worktree.
+int_worktree() {
+  printf '%s/%s/repo/x.dev-ci-integrate/dev' "$fake_git_home_real" "$(basename "$1")"
+}
+
+# ntmux3 without tmux: an absolute path is ensure_session's call for an
+# existing worktree; <org>/<repo>/<branch> <base> adds the worktree to the
+# fixture's repository.
+int_mock_ntmux3() {
+  run_ntmux3() {
+    printf '%s\n' "$*" >> "$int_ntmux_log"
+    [[ $1 == -d ]] || return 1
+    [[ $2 == /* ]] && return 0
+    local org_repo=${2%%/x.dev-ci-integrate/*}
+    "$test_git" -C "$TIMVISHER_GIT_HOME/$org_repo/dev" worktree add -q \
+      -b "${2#"$org_repo"/}" "$TIMVISHER_GIT_HOME/$2" "$3"
+  }
+}
+
+# HEAD, index and every file in the dev worktree except the status file the
+# pipeline reports through.  The index is hashed before any git command here
+# can refresh it.
+dev_snapshot() {
+  local d=$1 f
+  shasum -a 256 < "$d/.git/index"
+  "$test_git" -C "$d" symbolic-ref HEAD
+  "$test_git" -C "$d" rev-parse HEAD
+  "$test_git" -C "$d" ls-files -s
+  (
+    cd "$d" || exit 1
+    find . -path ./.git -prune -o -type f ! -name x.dev-ci.status -print |
+      LC_ALL=C sort |
+      while IFS= read -r f
+      do
+        printf '%s ' "$f"
+        shasum -a 256 < "$f"
+      done
+  )
+}
+
+reflog_count() {
+  "$test_git" -C "$1" reflog show --format=%H "$2" -- 2>/dev/null | wc -l | tr -d ' '
+}
+
+# A post-integrate.sh at the fixture's repo rung that logs the toplevel it
+# ran in and what dev's shared.txt held at that moment.
+make_recording_post_integrate() {
+  local org=$1 dev=$2 log=$3 rc=${4:-0}
+  mkdir -p "$int_hooks/$org/repo"
+  cat > "$int_hooks/$org/repo/post-integrate.sh" <<HOOK
+#!/usr/bin/env bash
+printf '%s|%s\n' "\$(git rev-parse --show-toplevel)" "\$(cat '$dev/shared.txt')" >> '$log'
+exit $rc
+HOOK
+  chmod +x "$int_hooks/$org/repo/post-integrate.sh"
+}
+
+run_integrate() {
+  (
+    int_mock_ntmux3
+    PATH="$tmpdir/mockbin:$PATH"
+    cmd_integrate_local -C "$1"
+  )
+}
+
+# --- success: dev moves exactly once, onto a tree verified elsewhere ---
+run_test
+int_ok_root="$TIMVISHER_GIT_HOME/int-ok"
+int_ok_repo=$(make_integrate_fixture "$int_ok_root" "feat=feature")
+int_ok_wt=$(int_worktree "$int_ok_root")
+int_ok_hook_log="$tmpdir/int-ok-hook.log"
+make_recording_post_integrate int-ok "$int_ok_repo" "$int_ok_hook_log"
+int_ok_ref_before=$(reflog_count "$int_ok_repo" dev)
+int_ok_head_before=$(reflog_count "$int_ok_repo" HEAD)
+: > "$tmpdir/tgh-calls"
+: > "$int_ntmux_log"
+
+if run_integrate "$int_ok_repo" > "$tmpdir/int-ok.log" 2>&1
+then
+  int_ok_ref_after=$(reflog_count "$int_ok_repo" dev)
+  int_ok_head_after=$(reflog_count "$int_ok_repo" HEAD)
+  int_ok_subject=$("$test_git" -C "$int_ok_repo" reflog show -1 --format=%gs dev --)
+  int_ok_head=$("$test_git" -C "$int_ok_repo" symbolic-ref --short HEAD)
+  int_ok_content=$(cat "$int_ok_repo/shared.txt")
+  int_ok_left=$(scratch_branches "$int_ok_repo")
+  int_ok_wt_real=$(cd "$int_ok_wt" 2>/dev/null && pwd -P)
+  int_ok_dev_real=$(cd "$int_ok_repo" && pwd -P)
+  int_ok_expected_hooks="${int_ok_wt_real}|base"$'\n'"${int_ok_dev_real}|feature"
+  int_ok_hooks=$(cat "$int_ok_hook_log" 2>/dev/null)
+  int_ok_wt_head=$("$test_git" -C "$int_ok_wt" symbolic-ref -q --short HEAD 2>/dev/null)
+  int_ok_int=$("$test_git" -C "$int_ok_repo" rev-parse x.dev-ci-integrate/dev 2>/dev/null)
+  int_ok_dev=$("$test_git" -C "$int_ok_repo" rev-parse dev)
+  int_ok_ntmux=$(cat "$int_ntmux_log")
+
+  if (( int_ok_ref_after == int_ok_ref_before + 1 )) &&
+     (( int_ok_head_after == int_ok_head_before + 1 )) &&
+     [[ $int_ok_subject == "reset: moving to x.dev-ci-integrate/dev" ]] &&
+     [[ $int_ok_head == dev ]] &&
+     [[ $int_ok_content == feature ]] &&
+     [[ $int_ok_int == "$int_ok_dev" ]] &&
+     [[ -n $int_ok_wt_real && $int_ok_wt_head == x.dev-ci-integrate/dev ]] &&
+     [[ $int_ok_ntmux == "-d int-ok/repo/x.dev-ci-integrate/dev dev" ]]
+  then
+    pass "integrate: success makes the integration worktree with ntmux3 and moves dev once, by a single reset onto it"
+  else
+    fail "integrate success: dev reflog ${int_ok_ref_before}->${int_ok_ref_after} HEAD reflog ${int_ok_head_before}->${int_ok_head_after} last='${int_ok_subject}' head='${int_ok_head}' content='${int_ok_content}' integration='${int_ok_int}' dev='${int_ok_dev}' worktree='${int_ok_wt_real}' worktree HEAD='${int_ok_wt_head}' ntmux3='${int_ok_ntmux}'"
+  fi
+
+  run_test
+  if [[ $int_ok_hooks == "$int_ok_expected_hooks" ]]
+  then
+    pass "integrate: post-integrate gates in the integration worktree while dev is untouched, then builds in dev"
+  else
+    fail "integrate hooks: expected '${int_ok_expected_hooks}', got '${int_ok_hooks}'"
+  fi
+
+  run_test
+  if [[ -s $tmpdir/tgh-calls ]] && ! grep -qF -- /x.dev-ci-integrate/ "$tmpdir/tgh-calls"
+  then
+    pass "integrate: hooks resolve as the dev worktree's, never from the integration worktree's path"
+  else
+    fail "integrate context: timvisher_gh was asked about '$(tr '\n' ' ' < "$tmpdir/tgh-calls")'"
+  fi
+else
+  fail "integrate success: command failed: $(cat "$tmpdir/int-ok.log")"
+fi
+
+# --- a later run reuses the integration worktree the first one made ---
+run_test
+printf 'feature2\n' > "$int_ok_root/repo/feat/shared.txt"
+"$test_git" -C "$int_ok_root/repo/feat" commit -q -am feature2
+printf 'stray\n' > "$int_ok_wt/stray.txt"
+: > "$int_ntmux_log"
+int_ok_wt_real=$(cd "$int_ok_wt" && pwd -P)
+if run_integrate "$int_ok_repo" > "$tmpdir/int-reuse.log" 2>&1 &&
+   [[ $(cat "$int_ok_repo/shared.txt") == feature2 ]] &&
+   [[ ! -e $int_ok_wt/stray.txt ]] &&
+   [[ $(cat "$int_ntmux_log") == "-d ${int_ok_wt_real}" ]]
+then
+  pass "integrate: a later run resets and reuses the integration worktree, only asking ntmux3 for its session"
+else
+  fail "integrate reuse: content='$(cat "$int_ok_repo/shared.txt")' stray=$([[ -e $int_ok_wt/stray.txt ]] && echo kept || echo gone) ntmux3='$(cat "$int_ntmux_log")': $(cat "$tmpdir/int-reuse.log")"
+fi
+
+# --- conflict: dev is byte-identical, the attempt is kept and reported ---
+run_test
+int_bad_root="$TIMVISHER_GIT_HOME/int-bad"
+int_bad_repo=$(make_integrate_fixture "$int_bad_root" "one=alpha" "two=beta")
+int_bad_wt=$(int_worktree "$int_bad_root")
+int_bad_before=$(dev_snapshot "$int_bad_repo")
+
+if run_integrate "$int_bad_repo" > "$tmpdir/int-bad.log" 2>&1
+then
+  fail "integrate conflict: command unexpectedly succeeded"
+else
+  int_bad_after=$(dev_snapshot "$int_bad_repo")
+  int_bad_left=$(scratch_branches "$int_bad_repo")
+  int_bad_unmerged=$("$test_git" -C "$int_bad_wt" diff --name-only --diff-filter=U 2>/dev/null)
+
+  if [[ $int_bad_after == "$int_bad_before" ]] &&
+     [[ -n $int_bad_left ]] &&
+     [[ $int_bad_unmerged == shared.txt ]] &&
+     grep -qF -- "$int_bad_wt" "$tmpdir/int-bad.log" &&
+     grep -qF -- "$int_bad_left" "$tmpdir/int-bad.log"
+  then
+    pass "integrate: a conflict leaves dev's HEAD, index and files byte-identical and keeps the attempt where it says"
+  else
+    diff <(printf '%s\n' "$int_bad_before") <(printf '%s\n' "$int_bad_after") >&2
+    fail "integrate conflict: dev unchanged=$([[ $int_bad_after == "$int_bad_before" ]] && echo yes || echo no) scratch='${int_bad_left}' unmerged='${int_bad_unmerged}'"
+  fi
+fi
+
+# --- a failing post-integrate gate never reaches dev ---
+run_test
+int_pf_root="$TIMVISHER_GIT_HOME/int-postfail"
+int_pf_repo=$(make_integrate_fixture "$int_pf_root" "feat=feature")
+make_recording_post_integrate int-postfail "$int_pf_repo" "$tmpdir/int-pf-hook.log" 1
+int_pf_before=$(dev_snapshot "$int_pf_repo")
+
+if run_integrate "$int_pf_repo" > "$tmpdir/int-pf.log" 2>&1
+then
+  fail "integrate post-integrate failure: command unexpectedly succeeded"
+else
+  int_pf_after=$(dev_snapshot "$int_pf_repo")
+  int_pf_runs=$(wc -l < "$tmpdir/int-pf-hook.log" | tr -d ' ')
+
+  if [[ $int_pf_after == "$int_pf_before" ]] &&
+     (( int_pf_runs == 1 )) &&
+     [[ -n $(scratch_branches "$int_pf_repo") ]]
+  then
+    pass "integrate: a failing post-integrate leaves dev byte-identical and is not re-run there"
+  else
+    fail "integrate post-integrate failure: dev unchanged=$([[ $int_pf_after == "$int_pf_before" ]] && echo yes || echo no) hook runs=${int_pf_runs}"
+  fi
+fi
+
+# --- the pipeline worker: agent merges and verification run in the
+# integration worktree ---
+
+# Stands in for the integration agent: merge 'feat' wherever it was started
+# and report pass to the file the prompt names.
+mkdir -p "$tmpdir/agentbin"
+cat > "$tmpdir/agentbin/claudeshot" <<MOCK
+#!/usr/bin/env bash
+pwd -P >> "$tmpdir/claudeshot-cwd"
+status=\$(sed -n "s/^When ALL branches are integrated and tests pass, write 'pass' to '\\(.*\\)'\\.\$/\\1/p" <<<"\$1")
+git merge -q --no-edit feat >/dev/null 2>&1 || exit 1
+printf 'pass\\n' > "\$status"
+MOCK
+chmod +x "$tmpdir/agentbin/claudeshot"
+
+# run-tests.sh at the fixture's repo rung; $2 is the shared.txt content that
+# fails it.
+make_run_tests() {
+  mkdir -p "$int_hooks/$1/repo"
+  cat > "$int_hooks/$1/repo/run-tests.sh" <<HOOK
+#!/usr/bin/env bash
+[[ \$(cat shared.txt) != '$2' ]]
+HOOK
+  chmod +x "$int_hooks/$1/repo/run-tests.sh"
+}
+
+# Not under an agent: the success case pushes, which the git wrapper
+# refuses an agent.
+run_pipeline_integrate() {
+  (
+    int_mock_ntmux3
+    unset TIMVISHER_AGENT
+    PATH="$tmpdir/agentbin:$tmpdir/mockbin:$PATH"
+    cmd__integrate "$@"
+  )
+}
+
+# --- pipeline, a merge that fails the tests ---
+run_test
+pipe_bad_root="$TIMVISHER_GIT_HOME/pipe-bad"
+pipe_bad_repo=$(make_integrate_fixture "$pipe_bad_root" "feat=feature")
+pipe_bad_wt=$(int_worktree "$pipe_bad_root")
+make_run_tests pipe-bad feature
+pipe_bad_before=$(dev_snapshot "$pipe_bad_repo")
+: > "$tmpdir/claudeshot-cwd"
+
+if run_pipeline_integrate "$pipe_bad_repo" "$pipe_bad_root/repo/feat" > "$tmpdir/pipe-bad.log" 2>&1
+then
+  fail "pipeline test failure: command unexpectedly succeeded"
+else
+  pipe_bad_after=$(dev_snapshot "$pipe_bad_repo")
+  pipe_bad_status=$(cat "$pipe_bad_repo/x.dev-ci.status" 2>/dev/null)
+  pipe_bad_cwd=$(cat "$tmpdir/claudeshot-cwd")
+  pipe_bad_wt_real=$(cd "$pipe_bad_wt" 2>/dev/null && pwd -P)
+  pipe_bad_wt_content=$(cat "$pipe_bad_wt/shared.txt" 2>/dev/null)
+
+  if [[ $pipe_bad_after == "$pipe_bad_before" ]] &&
+     [[ $pipe_bad_status == fail ]] &&
+     [[ -n $pipe_bad_wt_real && $pipe_bad_cwd == "$pipe_bad_wt_real" ]] &&
+     [[ $pipe_bad_wt_content == feature ]]
+  then
+    pass "__integrate: a merge that fails verification leaves dev byte-identical and the merged attempt in the integration worktree"
+  else
+    fail "pipeline test failure: dev unchanged=$([[ $pipe_bad_after == "$pipe_bad_before" ]] && echo yes || echo no) status='${pipe_bad_status}' agent cwd='${pipe_bad_cwd}' worktree content='${pipe_bad_wt_content}': $(cat "$tmpdir/pipe-bad.log")"
+  fi
+fi
+
+# --- pipeline, success: dev moves once and is what gets pushed ---
+run_test
+pipe_ok_root="$TIMVISHER_GIT_HOME/pipe-ok"
+pipe_ok_repo=$(make_integrate_fixture "$pipe_ok_root" "feat=feature")
+make_run_tests pipe-ok never
+"$test_git" init -q --bare "$pipe_ok_root/remote.git"
+"$test_git" -C "$pipe_ok_repo" config branch.dev.pushRemote "$pipe_ok_root/remote.git"
+pipe_ok_ref_before=$(reflog_count "$pipe_ok_repo" dev)
+pipe_ok_head_before=$(reflog_count "$pipe_ok_repo" HEAD)
+
+if run_pipeline_integrate "$pipe_ok_repo" "$pipe_ok_root/repo/feat" > "$tmpdir/pipe-ok.log" 2>&1
+then
+  pipe_ok_ref_after=$(reflog_count "$pipe_ok_repo" dev)
+  pipe_ok_head_after=$(reflog_count "$pipe_ok_repo" HEAD)
+  pipe_ok_dev=$("$test_git" -C "$pipe_ok_repo" rev-parse dev)
+  pipe_ok_pushed=$("$test_git" -C "$pipe_ok_root/remote.git" rev-parse dev 2>/dev/null)
+
+  if (( pipe_ok_ref_after == pipe_ok_ref_before + 1 )) &&
+     (( pipe_ok_head_after == pipe_ok_head_before + 1 )) &&
+     [[ $(cat "$pipe_ok_repo/shared.txt") == feature ]] &&
+     [[ $(cat "$pipe_ok_repo/x.dev-ci.status") == pass ]] &&
+     [[ $pipe_ok_pushed == "$pipe_ok_dev" ]] &&
+     [[ $("$test_git" -C "$pipe_ok_repo" rev-parse x.dev-ci-integrate/dev) == "$pipe_ok_dev" ]]
+  then
+    pass "__integrate: success moves dev once onto the verified merge and pushes it"
+  else
+    fail "pipeline success: dev reflog ${pipe_ok_ref_before}->${pipe_ok_ref_after} HEAD reflog ${pipe_ok_head_before}->${pipe_ok_head_after} pushed='${pipe_ok_pushed}' dev='${pipe_ok_dev}'"
+  fi
+else
+  fail "pipeline success: command failed: $(cat "$tmpdir/pipe-ok.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# pull-upstream: soft forks get upstream on a generated feature branch
+# ---------------------------------------------------------------------------
+
+# A dev worktree under $TIMVISHER_GIT_HOME/<org>/<repo>/dev with fabricated
+# origin/main and upstream/main refs.  $4 soft=yes adds the soft-fork cookie;
+# upstream_ahead=yes puts a commit on upstream/main the trunk lacks.
+make_pull_fixture() {
+  local org=$1 repo=$2 soft=$3 ahead=$4
+  local wt="$TIMVISHER_GIT_HOME/$org/$repo/dev"
+
+  mkdir -p "$wt" || return 1
+  "$test_git" init -q -b main "$wt"
+  "$test_git" -C "$wt" config core.hooksPath /dev/null
+  "$test_git" -C "$wt" config user.email t@t
+  "$test_git" -C "$wt" config user.name t
+  "$test_git" -C "$wt" commit -q --allow-empty -m base
+  local base; base=$("$test_git" -C "$wt" rev-parse HEAD)
+  "$test_git" -C "$wt" update-ref refs/remotes/origin/main "$base"
+  "$test_git" -C "$wt" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
+  if [[ $ahead == yes ]]
+  then
+    "$test_git" -C "$wt" commit -q --allow-empty -m upstream-only
+    "$test_git" -C "$wt" update-ref refs/remotes/upstream/main "$("$test_git" -C "$wt" rev-parse HEAD)"
+    "$test_git" -C "$wt" reset -q --hard "$base"
+  else
+    "$test_git" -C "$wt" update-ref refs/remotes/upstream/main "$base"
+  fi
+  "$test_git" -C "$wt" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
+
+  [[ $soft == yes ]] && touch "$wt/x.timvisher_git.soft-fork"
+  : > "$wt/x.active-worktrees"
+  printf '%s' "$wt"
+}
+
+run_test
+pu_ref_wt=$(make_pull_fixture puorg refwithup yes no)
+pu_noup="$TIMVISHER_GIT_HOME/puorg/noup/dev"
+mkdir -p "$pu_noup"; "$test_git" init -q -b main "$pu_noup"
+if [[ $(resolve_upstream_trunk_ref "$pu_ref_wt") == upstream/main ]] &&
+   [[ -z $(resolve_upstream_trunk_ref "$pu_noup") ]]
+then
+  pass "resolve_upstream_trunk_ref: upstream/main when present, empty when absent"
+else
+  fail "resolve_upstream_trunk_ref: with='$(resolve_upstream_trunk_ref "$pu_ref_wt")' without='$(resolve_upstream_trunk_ref "$pu_noup")'"
+fi
+
+run_test
+if [[ $(worktree_org_repo "$pu_ref_wt") == puorg/refwithup ]]
+then
+  pass "worktree_org_repo: derives <org>/<repo> from the managed layout"
+else
+  fail "worktree_org_repo: got '$(worktree_org_repo "$pu_ref_wt")'"
+fi
+
+# The suite exports TIMVISHER_GIT_HOME; the real environment does not, so the
+# fallback is the case that actually ships.
+run_test
+pu_fb_dir="$HOME/git/puorg/fallbackrepo/dev"
+mkdir -p "$pu_fb_dir"
+pu_fb_out=$(unset TIMVISHER_GIT_HOME; worktree_org_repo "$pu_fb_dir")
+if [[ $pu_fb_out == puorg/fallbackrepo ]]
+then
+  pass "worktree_org_repo: falls back to \$HOME/git when TIMVISHER_GIT_HOME is unset"
+else
+  fail "worktree_org_repo fallback: got '${pu_fb_out}'"
+fi
+
+# find_pull_upstream_worktree spots a registered worktree on a pull-upstream branch.
+run_test
+pu_find_dev=$(make_pull_fixture puorg findrepo yes yes)
+pu_find_wt="$TIMVISHER_GIT_HOME/puorg/findrepo/pull-upstream/2026-01-01T00-00-00+0000"
+"$test_git" -C "$pu_find_dev" branch -q "pull-upstream/2026-01-01T00-00-00+0000" main
+"$test_git" -C "$pu_find_dev" worktree add -q "$pu_find_wt" "pull-upstream/2026-01-01T00-00-00+0000"
+pu_none_dev=$(make_pull_fixture puorg nonerepo yes yes)
+printf '%s\n' "$pu_find_wt" >> "$pu_find_dev/x.active-worktrees"
+if [[ $(find_pull_upstream_worktree "$pu_find_dev") == "$pu_find_wt" ]] &&
+   ! find_pull_upstream_worktree "$pu_none_dev" >/dev/null
+then
+  pass "find_pull_upstream_worktree: finds a registered worktree, and none when there is none"
+else
+  fail "find_pull_upstream_worktree: registered='$(find_pull_upstream_worktree "$pu_find_dev")' none='$(find_pull_upstream_worktree "$pu_none_dev")'"
+fi
+
+# ntmux3's second form takes a branch, not the remote-tracking ref that
+# resolve_retire_merge_ref returns; passing origin/main made it refuse with
+# timvisher_git_stack_base_missing.
+run_test
+pu_ntmux_args="$tmpdir/pu-ntmux-args"
+: > "$pu_ntmux_args"
+pu_stack_dev=$(make_pull_fixture puorg stackrepo yes yes)
+# Run with TIMVISHER_GIT_HOME unset: the worktree path it returns is built
+# from the git home too, and the real environment does not export one.
+pu_stack_out=$(
+  unset TIMVISHER_GIT_HOME
+  mkdir -p "${HOME}/git/puorg/stackrepo/dev"
+  run_ntmux3() {
+    printf '%s\n' "$*" >> "$pu_ntmux_args"
+    # $2 is "<org>/<repo>/<branch>"; materialize it so the -d check passes.
+    mkdir -p "${HOME}/git/$2"
+  }
+  create_pull_upstream_worktree "${HOME}/git/puorg/stackrepo/dev" origin/main 2>/dev/null
+)
+if grep -qE ' main$' "$pu_ntmux_args" &&
+   ! grep -q 'origin/main' "$pu_ntmux_args" &&
+   [[ $pu_stack_out == "${HOME}/git/puorg/stackrepo/pull-upstream/"* ]]
+then
+  pass "create_pull_upstream_worktree: stacks on the branch and returns an absolute worktree path"
+else
+  fail "pull-upstream stack base: ntmux3 got '$(cat "$pu_ntmux_args")' wt='${pu_stack_out}'"
+fi
+
+# A worktree created by a run that died before registering it must be
+# adopted, not duplicated.  This is the state run 3 against agent-shell-plus
+# actually left behind.
+run_test
+pu_orphan_dev=$(make_pull_fixture puorg orphanrepo yes yes)
+pu_orphan_wt="$TIMVISHER_GIT_HOME/puorg/orphanrepo/pull-upstream/2026-02-02T00-00-00+0000"
+"$test_git" -C "$pu_orphan_dev" branch -q "pull-upstream/2026-02-02T00-00-00+0000" main
+"$test_git" -C "$pu_orphan_dev" worktree add -q "$pu_orphan_wt" "pull-upstream/2026-02-02T00-00-00+0000"
+if [[ $(find_pull_upstream_worktree "$pu_orphan_dev") == "$pu_orphan_wt" ]]
+then
+  pass "find_pull_upstream_worktree: adopts an unregistered pull-upstream worktree"
+else
+  fail "pull-upstream adopt: got '$(find_pull_upstream_worktree "$pu_orphan_dev")'"
+fi
+
+run_test
+declare -A dev_branches=(["$pu_orphan_dev"]="")
+declare -A all_worktrees=()
+register_active_worktree "$pu_orphan_dev" "$pu_orphan_wt"
+register_active_worktree "$pu_orphan_dev" "$pu_orphan_wt"
+if (( 1 == $(grep -cxF -- "$pu_orphan_wt" "$pu_orphan_dev/x.active-worktrees") ))
+then
+  pass "register_active_worktree: registering twice leaves one entry"
+else
+  fail "register idempotence: count=$(grep -cxF -- "$pu_orphan_wt" "$pu_orphan_dev/x.active-worktrees")"
+fi
+
+# The sync phase must not touch a pull-upstream worktree: it tracks the
+# trunk and carries a merge commit, so pull --rebase would drop the merge.
+run_test
+pu_sync_dev=$(make_pull_fixture puorg syncrepo yes yes)
+pu_sync_wt="$TIMVISHER_GIT_HOME/puorg/syncrepo/pull-upstream/2026-03-03T00-00-00+0000"
+"$test_git" -C "$pu_sync_dev" branch -q "pull-upstream/2026-03-03T00-00-00+0000" main
+"$test_git" -C "$pu_sync_dev" worktree add -q "$pu_sync_wt" "pull-upstream/2026-03-03T00-00-00+0000"
+if is_pull_upstream_worktree "$pu_sync_wt" && ! is_pull_upstream_worktree "$pu_sync_dev"
+then
+  pass "is_pull_upstream_worktree: true for the pull-upstream branch, false for dev"
+else
+  fail "is_pull_upstream_worktree: wt=$(is_pull_upstream_worktree "$pu_sync_wt" && echo y || echo n) dev=$(is_pull_upstream_worktree "$pu_sync_dev" && echo y || echo n)"
+fi
+
+run_test
+declare -A all_worktrees=(["$pu_sync_wt"]=1)
+pu_sync_sessions="$tmpdir/pu-sync-sessions"
+: > "$pu_sync_sessions"
+ensure_session() { printf '%s\n' "$1" >> "$pu_sync_sessions"; printf 'sess'; }
+send_to_admin() { :; }
+launch_sync_phase >/dev/null 2>&1
+unset -f ensure_session send_to_admin
+if [[ ! -s $pu_sync_sessions ]] &&
+   [[ $(cat "${pu_sync_wt}/x.dev-ci.status" 2>/dev/null) == pass ]]
+then
+  pass "launch_sync_phase: skips a pull-upstream worktree and marks it done"
+else
+  fail "sync skip: sessions='$(cat "$pu_sync_sessions")' status='$(cat "${pu_sync_wt}/x.dev-ci.status" 2>/dev/null)'"
+fi
+
+run_test
+if [[ $(grep -c 'PULL_UPSTREAM_STATUS_FILENAME' "$script") -ge 2 ]] &&
+   ! grep -q 'status_file="${wt}/${STATUS_FILENAME}"' "$script"
+then
+  pass "merge_upstream_into: uses its own status file, not the polled one"
+else
+  fail "pull-upstream status file: still shares STATUS_FILENAME"
+fi
+
+# Orchestration: skip / create / reuse.  ntmux3 and claudeshot cannot run in
+# the suite, so stand in for the two functions that reach them and record.
+# Recorded through files: create_pull_upstream_worktree is called in a
+# command substitution, so a variable it sets cannot reach this shell.
+pu_log_created="$tmpdir/pu-created"
+pu_log_merged="$tmpdir/pu-merged"
+create_pull_upstream_worktree() {
+  printf '%s\n' "$1" >> "$pu_log_created"
+  local wt="${1%/dev}/pull-upstream/stub"
+  "$test_git" -C "$1" branch -q pull-upstream/stub main
+  "$test_git" -C "$1" worktree add -q "$wt" pull-upstream/stub
+  printf '%s' "$wt"
+}
+merge_upstream_into() { printf '%s|%s\n' "$1" "$2" >> "$pu_log_merged"; }
+
+run_test
+pu_skip=$(make_pull_fixture puorg skiprepo yes no)
+declare -A dev_branches=(["$pu_skip"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]] && [[ ! -s "$pu_skip/x.active-worktrees" ]]
+then
+  pass "ensure_upstream_pull_worktrees: creates nothing when the trunk already has upstream"
+else
+  fail "pull-upstream skip: created='$(cat "$pu_log_created")' active='$(cat "$pu_skip/x.active-worktrees")'"
+fi
+
+run_test
+pu_reg=$(make_pull_fixture puorg regrepo no yes)
+declare -A dev_branches=(["$pu_reg"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]]
+then
+  pass "ensure_upstream_pull_worktrees: leaves a regular fork alone"
+else
+  fail "pull-upstream regular fork: created='$(cat "$pu_log_created")'"
+fi
+
+run_test
+pu_new=$(make_pull_fixture puorg newrepo yes yes)
+declare -A dev_branches=(["$pu_new"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ $(cat "$pu_log_created") == "$pu_new" ]] &&
+   grep -q '|upstream/main$' "$pu_log_merged" &&
+   grep -q 'pull-upstream/stub' "$pu_new/x.active-worktrees"
+then
+  pass "ensure_upstream_pull_worktrees: creates, registers and merges when upstream is ahead"
+else
+  fail "pull-upstream create: created='$(cat "$pu_log_created")' merged='$(cat "$pu_log_merged")' active='$(cat "$pu_new/x.active-worktrees")'"
+fi
+
+run_test
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+if [[ ! -s $pu_log_created ]] && grep -q '|upstream/main$' "$pu_log_merged" &&
+   (( 1 == $(grep -c 'pull-upstream' "$pu_new/x.active-worktrees") ))
+then
+  pass "ensure_upstream_pull_worktrees: reuses the existing pull-upstream branch"
+else
+  fail "pull-upstream reuse: created='$(cat "$pu_log_created")' merged='$(cat "$pu_log_merged")' count=$(grep -c 'pull-upstream' "$pu_new/x.active-worktrees")"
+fi
+
+# Two dev branches in one repo -- a main integration plus a spun-out one
+# for features with their own dependency pins -- share a trunk, so the
+# upstream merge is one piece of work, but both must list the result.
+run_test
+pu_two_a=$(make_pull_fixture puorg tworepo yes yes)
+pu_two_b="${pu_two_a%/dev}/dev-feature"
+"$test_git" -C "$pu_two_a" worktree add -q -b dev-feature "$pu_two_b" main
+"$test_git" -C "$pu_two_b" config branch.dev-feature.remote .
+"$test_git" -C "$pu_two_b" config branch.dev-feature.merge refs/heads/main
+touch "$pu_two_b/x.timvisher_git.soft-fork"
+: > "$pu_two_b/x.active-worktrees"
+
+declare -A dev_branches=(["$pu_two_a"]="" ["$pu_two_b"]="")
+declare -A all_worktrees=()
+: > "$pu_log_created"; : > "$pu_log_merged"
+ensure_upstream_pull_worktrees >/dev/null 2>&1
+
+if (( 1 == $(wc -l < "$pu_log_created") )) &&
+   (( 1 == $(wc -l < "$pu_log_merged") )) &&
+   grep -q 'pull-upstream' "$pu_two_a/x.active-worktrees" &&
+   grep -q 'pull-upstream' "$pu_two_b/x.active-worktrees"
+then
+  pass "ensure_upstream_pull_worktrees: one merge per repo, registered on every dev branch"
+else
+  fail "two dev branches: created=$(wc -l < "$pu_log_created") merged=$(wc -l < "$pu_log_merged") a=$(grep -c pull-upstream "$pu_two_a/x.active-worktrees") b=$(grep -c pull-upstream "$pu_two_b/x.active-worktrees")"
+fi
+
+# ---------------------------------------------------------------------------
+# verification cache
+# ---------------------------------------------------------------------------
+
+vc_home="$tmpdir/vcstore"
+VERIFIED_STORE="$vc_home"
+
+# A worktree under $TIMVISHER_GIT_HOME with one committed file and a
+# resolvable run-tests hook.
+make_vc_fixture() {
+  local org=$1 repo=$2 body=$3
+  local wt="$TIMVISHER_GIT_HOME/$org/$repo/main"
+  mkdir -p "$wt"
+  "$test_git" init -q -b main "$wt"
+  "$test_git" -C "$wt" config core.hooksPath /dev/null
+  "$test_git" -C "$wt" config user.email t@t
+  "$test_git" -C "$wt" config user.name t
+  printf '%s\n' "$body" > "$wt/f.txt"
+  "$test_git" -C "$wt" add -A
+  "$test_git" -C "$wt" commit -q -m init
+  printf '%s' "$wt"
+}
+
+vc_hook_dir="$REPO_HOOKS_EXT_DIR/vcorg/vcrepo"
+mkdir -p "$vc_hook_dir"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$vc_hook_dir/run-tests.sh"
+chmod +x "$vc_hook_dir/run-tests.sh"   # find_hooks only resolves executable hooks
+
+vc_wt=$(make_vc_fixture vcorg vcrepo original)
+_worktree_context=()
+_worktree_context[$(worktree_context_key "$vc_wt")]=$(
+  jq -n '{timvisher_git: {repo: "vcrepo", branchPath: "main"},
+          timvisher_gh: {me: "vcorg", forkNetwork: {mainOwner: "vcorg"}}}')
+
+# A dirty worktree is not cacheable: HEAD^{tree} would name content the
+# tests did not run against.
+run_test
+vc_tree_clean=$(verifiable_tree "$vc_wt")
+printf 'dirt\n' > "$vc_wt/untracked.txt"
+vc_tree_dirty=$(verifiable_tree "$vc_wt" && echo CACHEABLE)
+rm -f "$vc_wt/untracked.txt"
+if [[ -n $vc_tree_clean ]] && [[ -z $vc_tree_dirty ]]
+then
+  pass "verifiable_tree: a tree when clean, nothing when dirty"
+else
+  fail "verifiable_tree: clean='${vc_tree_clean}' dirty='${vc_tree_dirty}'"
+fi
+
+# The same content under a rewritten history is the same work.
+run_test
+vc_key_before=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+"$test_git" -C "$vc_wt" commit -q --amend -m "same tree, new commit"
+vc_key_after=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+if [[ -n $vc_key_before ]] && [[ $vc_key_before == "$vc_key_after" ]]
+then
+  pass "verification_key: unchanged by a commit that leaves the tree alone"
+else
+  fail "key across amend: before='${vc_key_before}' after='${vc_key_after}'"
+fi
+
+# Editing the hook is different work even though the tree did not move.
+run_test
+printf '#!/usr/bin/env bash\n# edited\nexit 0\n' > "$vc_hook_dir/run-tests.sh"
+chmod +x "$vc_hook_dir/run-tests.sh"
+vc_key_hook=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests)")
+if [[ $vc_key_hook != "$vc_key_after" ]]
+then
+  pass "verification_key: changes when the hook content changes"
+else
+  fail "key across hook edit: unchanged '${vc_key_hook}'"
+fi
+
+# A dependency moving underneath an unchanged consumer is different work.
+run_test
+vc_key_dep_a=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests depkey-aaa)")
+vc_key_dep_b=$(verification_key "$(verification_key_inputs "$vc_wt" run-tests depkey-bbb)")
+if [[ $vc_key_dep_a != "$vc_key_dep_b" ]] && [[ $vc_key_dep_a != "$vc_key_hook" ]]
+then
+  pass "verification_key: a dependency key is part of the consumer's key"
+else
+  fail "dep keys: a='${vc_key_dep_a}' b='${vc_key_dep_b}' none='${vc_key_hook}'"
+fi
+
+# No resolvable hook means there is no "what was run" to record.
+run_test
+mv "$vc_hook_dir/run-tests.sh" "$vc_hook_dir/run-tests.sh.off"
+vc_nohook=$(verification_key_inputs "$vc_wt" run-tests && echo CACHEABLE)
+mv "$vc_hook_dir/run-tests.sh.off" "$vc_hook_dir/run-tests.sh"
+if [[ -z $vc_nohook ]]
+then
+  pass "verification_key_inputs: refuses when no hook resolves"
+else
+  fail "no-hook: got '${vc_nohook}'"
+fi
+
+# Record then look up, and confirm layout B put it where it claims.
+run_test
+vc_inputs=$(verification_key_inputs "$vc_wt" run-tests)
+vc_key=$(verification_key "$vc_inputs")
+vc_tree=$(jq -r '.tree' <<<"$vc_inputs")
+verified_record "$vc_wt" run-tests "$vc_inputs" 12
+vc_expect="$vc_home/vcorg/vcrepo/run-tests/$vc_tree/$vc_key/vcorg_vcrepo_run-tests_${vc_key}.json"
+if verified_lookup "$vc_wt" run-tests "$vc_inputs" && [[ -f $vc_expect ]]
+then
+  pass "verified_record/lookup: round-trips at <org>/<repo>/<tool>/<tree>/<key>"
+else
+  fail "record/lookup: hit=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo y || echo n) file=$([[ -f $vc_expect ]] && echo y || echo n)"
+fi
+
+# The entry must be able to explain and re-prove itself.
+run_test
+vc_recomputed=$(verification_key "$(jq -c '.key_inputs' "$vc_expect")")
+if jq -e '.schema == 1 and .result == "pass" and .provenance.commit != ""' "$vc_expect" >/dev/null &&
+   [[ $vc_recomputed == "$vc_key" ]]
+then
+  pass "verified entry: valid JSON whose key_inputs rehash to its own key"
+else
+  fail "entry self-check: recomputed='${vc_recomputed}' key='${vc_key}'"
+fi
+
+# A corrupted entry is a miss, never a green run.
+run_test
+cp "$vc_expect" "$vc_expect.bak"
+printf '{"schema":1,"result":"pass","key":"deadbeef","key_inputs":{}}\n' > "$vc_expect"
+vc_corrupt=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+printf 'not json at all' > "$vc_expect"
+vc_garbage=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+mv "$vc_expect.bak" "$vc_expect"
+if [[ -z $vc_corrupt ]] && [[ -z $vc_garbage ]]
+then
+  pass "verified_lookup: a tampered or unparseable entry is a miss"
+else
+  fail "corrupt handling: tampered='${vc_corrupt}' garbage='${vc_garbage}'"
+fi
+
+# The escape hatch has to work in both directions.
+run_test
+vc_bypass=$(TIMVISHER_DEV_CI_NO_MEMO=1 verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo HIT)
+if [[ -z $vc_bypass ]] && verified_lookup "$vc_wt" run-tests "$vc_inputs"
+then
+  pass "TIMVISHER_DEV_CI_NO_MEMO: bypasses a hit that is otherwise there"
+else
+  fail "no-memo: bypassed='${vc_bypass}'"
+fi
+
+# ls renders an entry, forget removes a scope, and neither can be talked
+# into touching anything outside the store.
+run_test
+vc_ls=$(cmd_verified ls 2>/dev/null)
+if [[ $vc_ls == *"vcorg/vcrepo"* ]] && [[ $vc_ls == *"run-tests"* ]]
+then
+  pass "verified ls: renders a cached entry"
+else
+  fail "verified ls: got '${vc_ls}'"
+fi
+
+run_test
+mkdir -p "$tmpdir/vc-outside"
+printf 'keep me\n' > "$tmpdir/vc-outside/sentinel"
+vc_escape_rc=0
+( cmd_verified forget ../vc-outside ) >/dev/null 2>&1 || vc_escape_rc=$?
+if (( vc_escape_rc != 0 )) && [[ -f $tmpdir/vc-outside/sentinel ]]
+then
+  pass "verified forget: refuses a scope resolving outside the store, and deletes nothing"
+else
+  fail "verified forget escape: rc=${vc_escape_rc} sentinel=$([[ -f $tmpdir/vc-outside/sentinel ]] && echo intact || echo DELETED)"
+fi
+
+run_test
+cmd_verified forget vcorg/vcrepo >/dev/null 2>&1
+if [[ ! -d $vc_home/vcorg/vcrepo ]] &&
+   ! verified_lookup "$vc_wt" run-tests "$vc_inputs"
+then
+  pass "verified forget: drops the scope so the next run re-verifies"
+else
+  fail "verified forget: dir=$([[ -d $vc_home/vcorg/vcrepo ]] && echo present || echo gone) hit=$(verified_lookup "$vc_wt" run-tests "$vc_inputs" && echo y || echo n)"
+fi
+
+# The pipeline resets whatever it is given to @{u}; a feature worktree must
+# not be mistaken for a dev integration branch.
+run_test
+gd_feat="$TIMVISHER_GIT_HOME/gdorg/gdrepo/feature"
+gd_dev="$TIMVISHER_GIT_HOME/gdorg/gdrepo/dev"
+mkdir -p "$gd_feat" "$gd_dev"
+touch "$gd_dev/x.dev-integration-branch"
+gd_feat_rc=0
+( assert_dev_integration_worktrees "$gd_feat" ) >/dev/null 2>&1 || gd_feat_rc=$?
+gd_dev_rc=0
+( assert_dev_integration_worktrees "$gd_dev" ) >/dev/null 2>&1 || gd_dev_rc=$?
+if (( gd_feat_rc != 0 )) && (( gd_dev_rc == 0 ))
+then
+  pass "assert_dev_integration_worktrees: refuses a feature worktree, allows a marked one"
+else
+  fail "integration guard: feature rc=${gd_feat_rc} dev rc=${gd_dev_rc}"
+fi
+
+run_test
+gd_out=$( ( assert_dev_integration_worktrees "$gd_feat" ) 2>&1 )
+if [[ $gd_out == *dev_ci_run_not_integration_worktree* ]] &&
+   [[ $gd_out == *"run-tests -C"* ]]
+then
+  pass "assert_dev_integration_worktrees: names a code and points at run-tests"
+else
+  fail "integration guard message: '${gd_out}'"
+fi
+
+# ---------------------------------------------------------------------------
+# dependency pins
+# ---------------------------------------------------------------------------
+
+# A consumer whose hook reads a dependency the way the real ones do, through
+# ${git_home}/<org>/<repo>/main, plus a dependency repo with a trunk and a
+# pinned branch.
+pn_wt="$TIMVISHER_GIT_HOME/pnorg/consumer/dev"
+mkdir -p "$pn_wt"
+"$test_git" init -q -b main "$pn_wt"
+"$test_git" -C "$pn_wt" config core.hooksPath /dev/null
+mkdir -p "$TIMVISHER_GIT_HOME/pndep/lib/main" "$TIMVISHER_GIT_HOME/pndep/lib/pinned"
+printf 'trunk\n'  > "$TIMVISHER_GIT_HOME/pndep/lib/main/marker"
+printf 'pinned\n' > "$TIMVISHER_GIT_HOME/pndep/lib/pinned/marker"
+
+pn_hook_dir="$REPO_HOOKS_EXT_DIR/pnorg/consumer"
+mkdir -p "$pn_hook_dir"
+cat > "$pn_hook_dir/run-tests.sh" <<'HOOK'
+#!/usr/bin/env bash
+git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
+printf 'DEP=%s\n' "$(cat "${git_home}/pndep/lib/main/marker" 2>/dev/null)"
+HOOK
+chmod +x "$pn_hook_dir/run-tests.sh"
+_worktree_context[$(worktree_context_key "$pn_wt")]=$(
+  jq -n '{timvisher_git: {repo: "consumer", branchPath: "dev"},
+          timvisher_gh: {me: "pnorg", forkNetwork: {mainOwner: "pnorg"}}}')
+
+# One pin becomes one override per branch directory of the pinned repo.
+run_test
+printf '# a comment\n\npndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+readarray -t pn_ovr < <(dependency_pin_overrides "$pn_wt")
+if (( 2 == ${#pn_ovr[@]} )) &&
+   printf '%s\n' "${pn_ovr[@]}" | grep -qx "pndep/lib/main=$TIMVISHER_GIT_HOME/pndep/lib/pinned" &&
+   printf '%s\n' "${pn_ovr[@]}" | grep -qx "pndep/lib/pinned=$TIMVISHER_GIT_HOME/pndep/lib/pinned"
+then
+  pass "dependency_pin_overrides: one pin covers every branch dir of the repo"
+else
+  fail "pin expansion: ${#pn_ovr[@]} -> ${pn_ovr[*]}"
+fi
+
+# The point of the whole thing: the consumer's hook reads the pinned tree.
+run_test
+_worktree_farm=()
+hook_git_home=''
+pn_pinned=$(run_hooks "$pn_wt" "run-tests.sh" 2>/dev/null | grep '^DEP=')
+rm -f "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+_worktree_farm=()
+hook_git_home=''
+pn_unpinned=$(run_hooks "$pn_wt" "run-tests.sh" 2>/dev/null | grep '^DEP=')
+hook_git_home=''
+if [[ $pn_pinned == "DEP=pinned" ]] && [[ $pn_unpinned == "DEP=trunk" ]]
+then
+  pass "pins: a consumer's hook reads the pinned tree, and the trunk without a pin"
+else
+  fail "pin end-to-end: pinned='${pn_pinned}' unpinned='${pn_unpinned}'"
+fi
+
+# No pins means no farm at all, not an empty one.
+run_test
+_worktree_farm=()
+pn_nofarm=$(worktree_farm "$pn_wt")
+printf 'pndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+_worktree_farm=()
+pn_farm=$(worktree_farm "$pn_wt")
+if [[ -z $pn_nofarm ]] && [[ -n $pn_farm ]] && [[ -d $pn_farm ]]
+then
+  pass "worktree_farm: nothing without pins, a built farm with them"
+else
+  fail "worktree_farm: nofarm='${pn_nofarm}' farm='${pn_farm}'"
+fi
+
+# A malformed line is reported and skipped, not silently treated as a pin.
+run_test
+printf 'this line has no at-sign\npndep/lib @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+# Asserting on the warning itself is not possible here -- aictl is quiet in
+# the harness -- so assert the behaviour: the bad line contributes nothing
+# and the good one still expands.
+readarray -t pn_ovr2 < <(dependency_pin_overrides "$pn_wt" 2>/dev/null)
+if (( 2 == ${#pn_ovr2[@]} )) &&
+   ! printf '%s\n' "${pn_ovr2[@]}" | grep -q 'no at-sign'
+then
+  pass "dependency_pin_overrides: a malformed line contributes nothing, good ones survive"
+else
+  fail "malformed pin: kept=${#pn_ovr2[@]} -> ${pn_ovr2[*]}"
+fi
+
+# A pin naming a repo with no worktrees would otherwise expand to nothing
+# at all, which looks exactly like having no pin.
+run_test
+printf 'pndep/absent @ %s\n' "$TIMVISHER_GIT_HOME/pndep/lib/pinned" \
+  > "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+readarray -t pn_absent < <(dependency_pin_overrides "$pn_wt" 2>/dev/null)
+pn_absent_farm=''
+_worktree_farm=()
+pn_absent_farm=$(worktree_farm "$pn_wt")
+rm -f "$pn_wt/$DEPENDENCY_PINS_FILENAME"
+if (( 0 == ${#pn_absent[@]} )) && [[ -z $pn_absent_farm ]]
+then
+  pass "dependency_pin_overrides: a repo with no worktrees yields no override and no farm"
+else
+  fail "absent repo pin: overrides=${#pn_absent[@]} farm='${pn_absent_farm}'"
+fi
+
+# retire_merged_worktrees: a branch that has landed in its retirement ref
+# should be commented out of x.active-worktrees.
+run_test
+rt_dev="$TIMVISHER_GIT_HOME/rtorg/rtrepo/dev"
+rt_landed="$TIMVISHER_GIT_HOME/rtorg/rtrepo/landed"
+rt_live="$TIMVISHER_GIT_HOME/rtorg/rtrepo/live"
+mkdir -p "$rt_dev"
+"$test_git" init -q -b main "$rt_dev"
+"$test_git" -C "$rt_dev" config core.hooksPath /dev/null
+"$test_git" -C "$rt_dev" config user.email t@t
+"$test_git" -C "$rt_dev" config user.name t
+"$test_git" -C "$rt_dev" commit -q --allow-empty -m base
+"$test_git" -C "$rt_dev" branch -q landed
+"$test_git" -C "$rt_dev" commit -q --allow-empty -m later
+"$test_git" -C "$rt_dev" update-ref refs/remotes/origin/main "$("$test_git" -C "$rt_dev" rev-parse HEAD)"
+"$test_git" -C "$rt_dev" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+"$test_git" -C "$rt_dev" branch -q live
+"$test_git" -C "$rt_dev" worktree add -q "$rt_landed" landed
+"$test_git" -C "$rt_dev" worktree add -q "$rt_live" live
+"$test_git" -C "$rt_live" commit -q --allow-empty -m "not yet landed"
+touch "$rt_dev/x.timvisher_git.soft-fork" "$rt_landed/x.timvisher_git.soft-fork" "$rt_live/x.timvisher_git.soft-fork"
+printf '%s\n%s\n' "$rt_landed" "$rt_live" > "$rt_dev/x.active-worktrees"
+
+declare -A dev_branches=(["$rt_dev"]="$rt_landed $rt_live")
+declare -A all_worktrees=(["$rt_landed"]=1 ["$rt_live"]=1)
+retire_merged_worktrees >/dev/null 2>&1
+
+rt_landed_line=$(grep -cxF -- "$rt_landed" "$rt_dev/x.active-worktrees")
+rt_landed_commented=$(grep -cxF -- "# $rt_landed" "$rt_dev/x.active-worktrees")
+rt_live_line=$(grep -cxF -- "$rt_live" "$rt_dev/x.active-worktrees")
+
+if (( rt_landed_line == 0 )) && (( rt_landed_commented == 1 )) && (( rt_live_line == 1 ))
+then
+  pass "retire_merged_worktrees: comments out a landed branch, keeps a live one"
+else
+  fail "retire: landed-live=${rt_landed_line} landed-commented=${rt_landed_commented} live=${rt_live_line}; file: $(tr '\n' '|' < "$rt_dev/x.active-worktrees")"
+fi
+
+# The real x.active-worktrees entries are in tilde form, and the real git
+# home is under $HOME so ${wt/#$HOME/~} actually converts. The fixture above
+# cannot exercise that: its git home is a tmpdir outside $HOME.
+run_test
+rt2_home="$HOME/git/rt2org/rt2repo"
+rt2_dev="$rt2_home/dev"
+rt2_landed="$rt2_home/timvisher/landed-with-slash"
+mkdir -p "$rt2_dev"
+"$test_git" init -q -b main "$rt2_dev"
+"$test_git" -C "$rt2_dev" config core.hooksPath /dev/null
+"$test_git" -C "$rt2_dev" config user.email t@t
+"$test_git" -C "$rt2_dev" config user.name t
+"$test_git" -C "$rt2_dev" commit -q --allow-empty -m base
+"$test_git" -C "$rt2_dev" branch -q timvisher/landed-with-slash
+"$test_git" -C "$rt2_dev" commit -q --allow-empty -m later
+"$test_git" -C "$rt2_dev" update-ref refs/remotes/origin/main "$("$test_git" -C "$rt2_dev" rev-parse HEAD)"
+"$test_git" -C "$rt2_dev" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+"$test_git" -C "$rt2_dev" worktree add -q "$rt2_landed" timvisher/landed-with-slash
+touch "$rt2_dev/x.timvisher_git.soft-fork" "$rt2_landed/x.timvisher_git.soft-fork"
+
+# written exactly as the real file does: tilde form
+printf '~/git/rt2org/rt2repo/timvisher/landed-with-slash\n' > "$rt2_dev/x.active-worktrees"
+
+declare -A dev_branches=(["$rt2_dev"]="$rt2_landed")
+declare -A all_worktrees=(["$rt2_landed"]=1)
+retire_merged_worktrees >/dev/null 2>&1
+
+rt2_after=$(cat "$rt2_dev/x.active-worktrees")
+if [[ $rt2_after == '# ~/git/rt2org/rt2repo/timvisher/landed-with-slash' ]]
+then
+  pass "retire_merged_worktrees: retires a tilde-form entry under \$HOME"
+else
+  fail "retire tilde form: file is '${rt2_after}'"
+fi
+
+# ---------------------------------------------------------------------------
+# upstream baseline
+# ---------------------------------------------------------------------------
+
+# Two worktrees of one repo, plus a second repo, so the manifest has to key
+# per repository rather than per worktree.
+bl_a="$TIMVISHER_GIT_HOME/blorg/blrepo/dev"
+bl_a2="$TIMVISHER_GIT_HOME/blorg/blrepo/feature"
+bl_b="$TIMVISHER_GIT_HOME/blorg/other/dev"
+mkdir -p "$bl_a" "$bl_b"
+for d in "$bl_a" "$bl_b"
+do
+  "$test_git" init -q -b main "$d"
+  "$test_git" -C "$d" config core.hooksPath /dev/null
+  "$test_git" -C "$d" config user.email t@t
+  "$test_git" -C "$d" config user.name t
+  "$test_git" -C "$d" commit -q --allow-empty -m base
+  "$test_git" -C "$d" update-ref refs/remotes/origin/main "$("$test_git" -C "$d" rev-parse HEAD)"
+  "$test_git" -C "$d" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  "$test_git" -C "$d" update-ref refs/remotes/upstream/main "$("$test_git" -C "$d" rev-parse HEAD)"
+  "$test_git" -C "$d" symbolic-ref refs/remotes/upstream/HEAD refs/remotes/upstream/main
+done
+"$test_git" -C "$bl_a" branch -q feature
+"$test_git" -C "$bl_a" worktree add -q "$bl_a2" feature
+
+run_test
+# Assigned straight to the global the other functions read: command
+# substitution runs baseline_establish in a subshell, so the global it sets
+# for itself cannot reach this shell.
+baseline_file=$(baseline_establish "$bl_a" "$bl_a2" "$bl_b")
+bl_file=$baseline_file
+bl_repos=$(jq -r '.repos | length' "$bl_file" 2>/dev/null)
+if [[ -f $bl_file ]] && (( bl_repos == 2 ))
+then
+  pass "baseline_establish: one entry per repository, not per worktree"
+else
+  fail "baseline repos: file='${bl_file}' repos=${bl_repos}"
+fi
+
+run_test
+bl_a_sha=$("$test_git" -C "$bl_a" rev-parse origin/main)
+if [[ $(baseline_commit "$bl_a" origin) == "$bl_a_sha" ]] &&
+   [[ $(baseline_commit "$bl_a2" origin) == "$bl_a_sha" ]] &&
+   [[ $(baseline_ref "$bl_a" origin) == origin/main ]]
+then
+  pass "baseline_commit: both worktrees of a repo read the same recorded commit"
+else
+  fail "baseline_commit: dev='$(baseline_commit "$bl_a" origin)' feature='$(baseline_commit "$bl_a2" origin)' expected='${bl_a_sha}'"
+fi
+
+# The point of the whole thing: upstream moving after the baseline must not
+# change what the run targets.
+run_test
+"$test_git" -C "$bl_a" commit -q --allow-empty -m "upstream moved after the baseline"
+"$test_git" -C "$bl_a" update-ref refs/remotes/origin/main "$("$test_git" -C "$bl_a" rev-parse HEAD)"
+bl_moved=$("$test_git" -C "$bl_a" rev-parse origin/main)
+if [[ $bl_moved != "$bl_a_sha" ]] && [[ $(baseline_commit "$bl_a" origin) == "$bl_a_sha" ]]
+then
+  pass "baseline_commit: still the pinned commit after origin moves"
+else
+  fail "baseline drift: ref now '${bl_moved}', baseline says '$(baseline_commit "$bl_a" origin)'"
+fi
+
+# No baseline means fall back to live refs rather than failing, so a partial
+# rollout degrades to today's behaviour.
+run_test
+bl_saved=$baseline_file
+baseline_file=''
+bl_none=$(TIMVISHER_DEV_CI_BASELINE='' baseline_commit "$bl_a" origin && echo FOUND)
+baseline_file=$bl_saved
+if [[ -z $bl_none ]]
+then
+  pass "baseline_commit: reports nothing when no baseline was established"
+else
+  fail "baseline fallback: got '${bl_none}'"
+fi
+
+# A repo with no upstream remote records an empty upstream, not a bogus one.
+run_test
+bl_noup="$TIMVISHER_GIT_HOME/blorg/noupstream/dev"
+mkdir -p "$bl_noup"
+"$test_git" init -q -b main "$bl_noup"
+"$test_git" -C "$bl_noup" config core.hooksPath /dev/null
+"$test_git" -C "$bl_noup" config user.email t@t
+"$test_git" -C "$bl_noup" config user.name t
+"$test_git" -C "$bl_noup" commit -q --allow-empty -m base
+baseline_establish "$bl_noup" >/dev/null
+if ! baseline_commit "$bl_noup" upstream >/dev/null 2>&1
+then
+  pass "baseline_establish: a repo without an upstream remote records none"
+else
+  fail "baseline no-upstream: got '$(baseline_commit "$bl_noup" upstream)'"
+fi
+baseline_file=$bl_saved
 
 # ---------------------------------------------------------------------------
 # Summary
