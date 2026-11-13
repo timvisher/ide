@@ -2518,6 +2518,610 @@ heal__cmd() {
   return "$failed"
 }
 
+# ---------------------------------------------------------------------------
+# migrate-trunks: move trunks out of ~/.cache (see git_trunks.bash)
+# ---------------------------------------------------------------------------
+
+fs_device() {
+  stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null
+}
+
+existing_ancestor() {
+  local path=$1
+  while [[ ! -d $path && $path == /* && $path != / ]]
+  do
+    path=${path%/*}
+    [[ -n $path ]] || path=/
+  done
+  printf '%s\n' "$path"
+}
+
+open_paths_snapshot() {
+  if command -v lsof >/dev/null 2>&1
+  then
+    lsof -n -P -w -F pcn 2>/dev/null | awk '
+      /^p/ { pid = substr($0, 2) }
+      /^c/ { cmd = substr($0, 2) }
+      /^n/ { printf "%s\t%s\t%s\n", pid, cmd, substr($0, 2) }'
+    return 0
+  fi
+  local proc cmd link
+  for proc in /proc/[0-9]*
+  do
+    cmd=$(cat "$proc/comm" 2>/dev/null) || continue
+    for link in "$proc/cwd" "$proc"/fd/*
+    do
+      link=$(readlink "$link" 2>/dev/null) &&
+        printf '%s\t%s\t%s\n' "${proc##*/}" "$cmd" "$link"
+    done
+  done
+}
+
+trunk_worktrees() {
+  local trunk=$1 admin gitfile
+  for admin in "$(trunk_gitdir "$trunk")"/worktrees/*
+  do
+    [[ -f $admin/gitdir ]] || continue
+    gitfile=$(< "$admin/gitdir")
+    [[ -e $gitfile ]] && printf '%s\n' "${gitfile%/.git}"
+  done
+}
+
+# A shell or editor sitting in a worktree doesn't make the trunk busy;
+# only a git command running there touches it.
+trunk_busy_reasons() {
+  local snapshot=$1 trunk=$2 trunk_real worktree reals=
+  trunk_real=$(cd "$trunk" && pwd -P) || return 0
+  while IFS= read -r worktree
+  do
+    reals+=$(cd "$worktree" 2>/dev/null && pwd -P)$'\n'
+  done < <(trunk_worktrees "$trunk")
+  TRUNK_WORKTREES=$reals awk -F '\t' -v trunk="$trunk_real" -v self="$$" -v skip=" ${TRUNK_BUSY_SKIP_PIDS:-} " '
+    BEGIN { n = split(ENVIRON["TRUNK_WORKTREES"], wt, "\n") }
+    $1 == self || seen[$1] || index(skip, " " $1 " ") { next }
+    $3 == trunk || index($3, trunk "/") == 1 {
+      seen[$1] = 1
+      printf "pid %s (%s) has %s open\n", $1, $2, $3
+      next
+    }
+    $2 ~ /^git/ {
+      for (i = 1; i <= n; i++) {
+        if (wt[i] != "" && ($3 == wt[i] || index($3, wt[i] "/") == 1)) {
+          seen[$1] = 1
+          printf "pid %s (%s) is running in %s\n", $1, $2, wt[i]
+          next
+        }
+      }
+    }' "$snapshot"
+}
+
+stop_trunk_fsmonitors() {
+  local trunk=$1 worktree
+  if [[ -d $trunk/.git ]]
+  then
+    command git -C "$trunk" fsmonitor--daemon stop >/dev/null 2>&1 || true
+  fi
+  while IFS= read -r worktree
+  do
+    command git -C "$worktree" fsmonitor--daemon stop >/dev/null 2>&1 || true
+  done < <(trunk_worktrees "$trunk")
+}
+
+trunk_refs_digest() {
+  command git -C "$1" for-each-ref --format='%(objectname) %(refname)' 2>/dev/null | cksum
+}
+
+# Only entries naming something gone are rewritten, so a rerun, or a
+# trunk not yet moved, is left alone.
+relink_trunk_references() {
+  local root=$1 legacy=$2 legacy_real alt line rel changed entry machine_config
+  local -a lines entries
+  legacy_real=$(cd "$legacy" 2>/dev/null && pwd -P) || legacy_real=$legacy
+  while IFS= read -r alt
+  do
+    alt=$(trunk_gitdir "$alt")/objects/info/alternates
+    [[ -f $alt ]] || continue
+    lines=()
+    changed=
+    while IFS= read -r line || [[ -n $line ]]
+    do
+      if [[ ! -d $line ]]
+      then
+        rel=
+        [[ $line == "$legacy"/* ]] && rel=${line#"$legacy"/}
+        [[ $line == "$legacy_real"/* ]] && rel=${line#"$legacy_real"/}
+        if [[ -n $rel && -d $root/$rel ]]
+        then
+          line=$root/$rel
+          changed=1
+        fi
+      fi
+      lines+=("$line")
+    done < "$alt"
+    if [[ -n $changed ]]
+    then
+      printf '%s\n' "${lines[@]}" > "$alt" ||
+        warn "migrate-trunks: unable to rewrite '%s'" "$alt"
+    fi
+  done < <(timvisher_git_trunks_each)
+
+  machine_config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config_machine"
+  [[ -f $machine_config ]] || return 0
+  entries=()
+  changed=
+  while IFS= read -r entry
+  do
+    if [[ ! -d $entry ]]
+    then
+      rel=
+      [[ $entry == "$legacy"/* ]] && rel=${entry#"$legacy"/}
+      [[ $entry == "$legacy_real"/* ]] && rel=${entry#"$legacy_real"/}
+      if [[ -n $rel && -d $root/$rel ]]
+      then
+        entry=$root/$rel
+        changed=1
+      fi
+    fi
+    entries+=("$entry")
+  done < <(command git config --file "$machine_config" --get-all maintenance.repo 2>/dev/null)
+  [[ -n $changed ]] || return 0
+  command git config --file "$machine_config" --unset-all maintenance.repo 2>/dev/null
+  for entry in "${entries[@]}"
+  do
+    command git config --file "$machine_config" --add maintenance.repo "$entry" ||
+      warn "migrate-trunks: unable to register '%s' for maintenance" "$entry"
+  done
+}
+
+# Every step is safe to repeat, so a rerun after an interruption at any
+# point picks up where it stopped.
+migrate_one_trunk() {
+  local src=$1 dst=$2 snapshot=$3 root=$4 legacy=$5
+  local rel=${src#"$legacy"/} staging worktree head
+  local -a worktrees=() heads=()
+
+  if [[ -d $dst ]]
+  then
+    if [[ $(cd "$src" && pwd -P) == "$(cd "$dst" && pwd -P)" ]]
+    then
+      printf "same %s: '%s' and '%s' are one directory; nothing to move\n" "$rel" "$src" "$dst"
+      return 0
+    fi
+    if [[ $(trunk_refs_digest "$src") != "$(trunk_refs_digest "$dst")" ]]
+    then
+      printf "conflict %s: both '%s' and '%s' exist with different refs; leaving both\n" "$rel" "$src" "$dst"
+      return 1
+    fi
+  fi
+
+  while IFS= read -r worktree
+  do
+    head=$(command git -C "$worktree" rev-parse HEAD 2>/dev/null) || continue
+    worktrees+=("$worktree")
+    heads+=("$head")
+  done < <(trunk_worktrees "$src")
+
+  stop_trunk_fsmonitors "$src"
+  open_paths_snapshot > "$snapshot"
+  local reasons
+  reasons=$(trunk_busy_reasons "$snapshot" "$src")
+  if [[ -n $reasons ]]
+  then
+    printf 'busy %s:\n  %s\n' "$rel" "${reasons//$'\n'/$'\n  '}"
+    return 4
+  fi
+
+  mkdir -p "${dst%/*}" || return 1
+  if [[ ! -d $dst ]]
+  then
+    if [[ $(fs_device "$src") == "$(fs_device "${dst%/*}")" ]]
+    then
+      mv "$src" "$dst" || return 1
+    else
+      staging=${dst%/*}/.x.migrating.${dst##*/}
+      rm -rf "$staging"
+      cp -pR "$src" "$staging" || { rm -rf "$staging"; return 1; }
+      if [[ $(trunk_refs_digest "$src") != "$(trunk_refs_digest "$staging")" ]]
+      then
+        rm -rf "$staging"
+        printf 'failed %s: the copy has different refs; left at the old root\n' "$rel"
+        return 1
+      fi
+      mv "$staging" "$dst" || return 1
+    fi
+  fi
+
+  relink_trunk_worktrees "$dst" >/dev/null || return 1
+  relink_trunk_references "$root" "$legacy"
+  local i
+  for i in "${!worktrees[@]}"
+  do
+    head=$(command git -C "${worktrees[i]}" rev-parse HEAD 2>/dev/null)
+    if [[ $head != "${heads[i]}" ]]
+    then
+      printf "failed %s: worktree '%s' was at %s and is now at '%s'; left '%s' in place\n" \
+        "$rel" "${worktrees[i]}" "${heads[i]}" "$head" "$src"
+      return 1
+    fi
+  done
+
+  [[ -d $src ]] && rm -rf "$src"
+  rmdir "${src%/*}" 2>/dev/null
+  printf 'moved %s: %s worktree(s)\n' "$rel" "${#worktrees[@]}"
+}
+
+# Why <dir> under a trunk root isn't a trunk to move, if it isn't. One
+# with no refs and no worktrees holds nothing, so it is left for a human
+# to look at rather than moved.
+trunk_junk_reason() {
+  local dir=$1 org=$2
+  if [[ ! $org =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+  then
+    printf 'not a GitHub org name'
+  elif [[ ! -d $dir/.git ]] && [[ $(command git -C "$dir" rev-parse --is-bare-repository 2>/dev/null) != true ]]
+  then
+    printf 'not a git repository'
+  elif [[ -z $(command git -C "$dir" for-each-ref --count=1 2>/dev/null) ]] &&
+       ! compgen -G "$(trunk_gitdir "$dir")/worktrees/*" >/dev/null
+  then
+    printf 'no refs and no worktrees'
+  else
+    return 1
+  fi
+}
+
+# Org directories under <root> with nothing in them, one skip line each.
+list_empty_orgs() {
+  local root=$1 org
+  for org in "$root"/*/
+  do
+    org=${org%/}
+    [[ -d $org ]] || continue
+    compgen -G "$org/*" >/dev/null && continue
+    printf "skip %s: an empty directory, not a trunk; left in '%s'\n" "${org##*/}" "$root"
+  done
+}
+
+# Rewrites the lines of <file> starting with <old>/ to start with <new>/,
+# through a temporary file so a reader never sees half of it.
+rewrite_path_prefix() {
+  local file=$1 old=$2 new=$3 line changed='' tmp
+  local -a lines=()
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    if [[ $line == "$old"/* ]]
+    then
+      line=$new/${line#"$old"/}
+      changed=1
+    fi
+    lines+=("$line")
+  done < "$file"
+  [[ -n $changed ]] || return 1
+  tmp=$file.x.migrate-trunks.$$
+  printf '%s\n' "${lines[@]}" > "$tmp" && mv -f "$tmp" "$file"
+}
+
+# An adopted old root is still named through <legacy> (a link under
+# ~/.cache) by worktree and submodule .git files, forks' alternates and
+# git maintenance. They are pointed at <legacy_real> (maintenance at the
+# new root), so nothing depends on that link. Prints what it changed, or
+# would change.
+adopt_repoint() {
+  local legacy=$1 legacy_real=$2 root=$3 dry_run=$4
+  local trunk admin gitfile worktree line key path alt entry rel
+  local gitfiles=0 submodules=0 alternates=0 maintenance=0 machine_config
+  local -a entries=()
+  for trunk in "$legacy_real"/*/*
+  do
+    [[ -d $trunk ]] || continue
+    for admin in "$(trunk_gitdir "$trunk")"/worktrees/*
+    do
+      [[ -f $admin/gitdir ]] || continue
+      gitfile=$(< "$admin/gitdir")
+      [[ -f $gitfile ]] || continue
+      worktree=${gitfile%/.git}
+      IFS= read -r line < "$gitfile" || continue
+      if [[ $line == "gitdir: $legacy/"* ]]
+      then
+        (( gitfiles++ ))
+        if [[ -z $dry_run ]]
+        then
+          rewrite_path_prefix "$gitfile" "gitdir: $legacy" "gitdir: $legacy_real"
+        fi
+      fi
+      [[ -f $worktree/.gitmodules ]] || continue
+      while read -r key path
+      do
+        [[ -f $worktree/$path/.git ]] || continue
+        IFS= read -r line < "$worktree/$path/.git" || continue
+        [[ $line == "gitdir: $legacy/"* ]] && (( submodules++ ))
+      done < <(command git config --file "$worktree/.gitmodules" --get-regexp '^submodule\..*\.path$')
+      if [[ -z $dry_run ]]
+      then
+        repair_submodule_worktrees "$worktree" ||
+          warn "migrate-trunks: unable to repoint the submodules of '%s'" "$worktree"
+      fi
+    done
+    alt=$(trunk_gitdir "$trunk")/objects/info/alternates
+    if [[ -f $alt ]] && grep -qF "$legacy/" "$alt"
+    then
+      (( alternates++ ))
+      [[ -n $dry_run ]] || rewrite_path_prefix "$alt" "$legacy" "$legacy_real"
+    fi
+  done
+
+  machine_config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config_machine"
+  if [[ -f $machine_config ]]
+  then
+    while IFS= read -r entry
+    do
+      if [[ $entry == "$legacy"/* || $entry == "$legacy_real"/* ]]
+      then
+        rel=${entry#"$legacy"/}
+        rel=${rel#"$legacy_real"/}
+        entry=$root/$rel
+        (( maintenance++ ))
+      fi
+      entries+=("$entry")
+    done < <(command git config --file "$machine_config" --get-all maintenance.repo 2>/dev/null)
+    if [[ -z $dry_run ]] && (( 0 < maintenance ))
+    then
+      command git config --file "$machine_config" --unset-all maintenance.repo 2>/dev/null
+      for entry in "${entries[@]}"
+      do
+        command git config --file "$machine_config" --add maintenance.repo "$entry" ||
+          warn "migrate-trunks: unable to register '%s' for maintenance" "$entry"
+      done
+    fi
+  fi
+
+  local verb=repointed
+  [[ -z $dry_run ]] || verb='would repoint'
+  printf '%s %s worktree .git file(s), %s submodule .git file(s) and %s alternates file(s) to %s, and %s maintenance entr(y/ies) to %s\n' \
+    "$verb" "$gitfiles" "$submodules" "$alternates" "$legacy_real" "$maintenance" "$root"
+}
+
+migrate_trunks__usage() {
+  cat <<'EOF'
+Usage: timvisher_git migrate-trunks [--dry-run]
+
+Move every trunk from the old root, ~/.cache/timvisher_git_worktrees/
+repo_trunks, to the new one, ${XDG_DATA_HOME:-~/.local/share}/
+timvisher_git/repo_trunks, one at a time. A trunk in use (a process has
+a file open in it, or a git command is running in one of its worktrees)
+is left for a later run. Rerunning picks up where a run stopped.
+
+When the old root resolves outside ~/.cache, it was put somewhere on
+purpose: nothing moves, and the new root becomes a link to it.
+
+  --dry-run   say what would be done, change nothing
+
+Exits 0 when every trunk is moved, 4 when some were busy and nothing
+failed, 3 when another run holds the lock, 1 on any failure.
+EOF
+}
+
+migrate_trunks__cmd() {
+  local dry_run=
+  case ${1:-} in
+    '') ;;
+    --dry-run) dry_run=1 ;;
+    -h|--help) migrate_trunks__usage; return 0 ;;
+    *) migrate_trunks__usage >&2; return 2 ;;
+  esac
+
+  local root legacy legacy_real cache_real
+  root=$(timvisher_git_trunks_root)
+  legacy=$(timvisher_git_legacy_trunks_root)
+  if [[ -L $legacy || ! -d $legacy ]]
+  then
+    printf "nothing to move: '%s' is not a directory\n" "$legacy"
+    return 0
+  fi
+  legacy_real=$(cd "$legacy" && pwd -P) || return 1
+  cache_real=$(cd "${XDG_CACHE_HOME:-$HOME/.cache}" 2>/dev/null && pwd -P) || cache_real=
+  if [[ $(cd "$root" 2>/dev/null && pwd -P) == "$legacy_real" ]]
+  then
+    printf "nothing to move: '%s' and '%s' are one directory\n" "$root" "$legacy"
+    return 0
+  fi
+  local adopt=
+  [[ -n $cache_real && $legacy_real != "$cache_real"/* ]] && adopt=1
+
+  local lock=${root%/*}/.migrate-trunks.lock snapshot
+  if [[ -z $dry_run ]]
+  then
+    mkdir -p "${root%/*}" || return 1
+    if ! mkdir "$lock" 2>/dev/null
+    then
+      error "migrate-trunks: another run holds '%s'; remove it if none is running" "$lock"
+      return 3
+    fi
+  fi
+  snapshot=$(mktemp) || return 1
+  # shellcheck disable=SC2064 # expand now: the paths are fixed for this run
+  trap "rm -f '$snapshot'; ${dry_run:+: }rmdir '$lock' 2>/dev/null" EXIT
+
+  local dir rel org reasons failed=0 moved=0 busy=0 skipped=0
+  local -a srcs=()
+  if [[ -n $adopt ]]
+  then
+    if [[ -L $root ]]
+    then
+      if [[ $(cd "$root" 2>/dev/null && pwd -P) == "$legacy_real" ]]
+      then
+        printf "adopted already: '%s' links to '%s'\n" "$root" "$legacy_real"
+        adopt_repoint "$legacy" "$legacy_real" "$root" "$dry_run"
+        return 0
+      fi
+      error "migrate-trunks: '%s' links somewhere other than '%s'; leaving it" "$root" "$legacy_real"
+      return 1
+    fi
+    printf "adopt: '%s' resolves to '%s', outside ~/.cache, so the trunks stay there and '%s' becomes a link to it\n" \
+      "$legacy" "$legacy_real" "$root"
+    for dir in "$root"/*/*
+    do
+      [[ -d $dir ]] && srcs+=("$dir")
+    done
+    for dir in "$legacy_real"/*/*
+    do
+      [[ -d $dir ]] || continue
+      rel=${dir#"$legacy_real"/}
+      if reasons=$(trunk_junk_reason "$dir" "${rel%%/*}")
+      then
+        printf "skip %s: %s; left in '%s'\n" "$rel" "$reasons" "$legacy_real"
+        (( skipped++ ))
+      fi
+    done
+    list_empty_orgs "$legacy_real"
+  else
+    for dir in "$legacy"/*/*
+    do
+      [[ -d $dir ]] && srcs+=("$dir")
+    done
+  fi
+
+  local from to
+  if [[ -n $adopt ]]
+  then
+    from=$root
+    to=$legacy_real
+  else
+    from=$legacy
+    to=$root
+  fi
+
+  if [[ -n $dry_run ]]
+  then
+    open_paths_snapshot > "$snapshot"
+    # A real run stops fsmonitor daemons before moving a trunk, so they
+    # don't make it busy here.
+    local TRUNK_BUSY_SKIP_PIDS
+    TRUNK_BUSY_SKIP_PIDS=$(pgrep -f '[f]smonitor--daemon run' | paste -sd ' ' -)
+    local mode kb total_kb=0 avail_kb
+    if [[ $(fs_device "$(existing_ancestor "$from")") == "$(fs_device "$(existing_ancestor "$to")")" ]]
+    then
+      mode=rename
+    else
+      mode=copy
+    fi
+    local by=", by $mode"
+    if (( ${#srcs[@]} < 1 ))
+    then
+      mode=none
+      by=
+    fi
+    printf "%s trunk(s) to move from '%s' to '%s'%s\n" "${#srcs[@]}" "$from" "$to" "$by"
+  fi
+
+  for dir in "${srcs[@]}"
+  do
+    rel=${dir#"$from"/}
+    org=${rel%%/*}
+    if reasons=$(trunk_junk_reason "$dir" "$org")
+    then
+      printf "skip %s: %s; left in '%s'\n" "$rel" "$reasons" "$from"
+      (( skipped++ ))
+      continue
+    fi
+    if [[ -n $dry_run ]]
+    then
+      if [[ -d $to/$rel ]]
+      then
+        if [[ $(trunk_refs_digest "$dir") == "$(trunk_refs_digest "$to/$rel")" ]]
+        then
+          printf 'finish %s: already copied, would relink and remove the old copy\n' "$rel"
+        else
+          printf "conflict %s: '%s' exists too, with different refs; would leave both\n" "$rel" "$to/$rel"
+          (( failed++ ))
+        fi
+        continue
+      fi
+      reasons=$(trunk_busy_reasons "$snapshot" "$dir")
+      if [[ -n $reasons ]]
+      then
+        printf 'busy %s:\n  %s\n' "$rel" "${reasons//$'\n'/$'\n  '}"
+        (( busy++ ))
+        continue
+      fi
+      if [[ $mode == copy ]]
+      then
+        kb=$(du -sk "$dir" | awk '{ print $1 }')
+        (( total_kb += kb ))
+        printf 'move %s: %s worktree(s), %s MB\n' "$rel" "$(trunk_worktrees "$dir" | grep -c .)" "$(( kb / 1024 ))"
+      else
+        printf 'move %s: %s worktree(s)\n' "$rel" "$(trunk_worktrees "$dir" | grep -c .)"
+      fi
+      (( moved++ ))
+      continue
+    fi
+    migrate_one_trunk "$dir" "$to/$rel" "$snapshot" "$to" "$from"
+    case $? in
+      0) (( moved++ )) ;;
+      4) (( busy++ )) ;;
+      *) (( failed++ )) ;;
+    esac
+  done
+
+  [[ -n $adopt ]] || list_empty_orgs "$legacy"
+
+  if [[ -n $dry_run ]]
+  then
+    if [[ $mode == copy ]]
+    then
+      avail_kb=$(df -Pk "$(existing_ancestor "$to")" | awk 'NR == 2 { print $4 }')
+      printf 'copy needs %s MB; %s MB free at %s\n' "$(( total_kb / 1024 ))" "$(( avail_kb / 1024 ))" "$(existing_ancestor "$to")"
+      (( total_kb < avail_kb )) ||
+        printf 'NOT ENOUGH SPACE\n'
+    fi
+  fi
+
+  if [[ -n $adopt ]]
+  then
+    if [[ -n $dry_run ]]
+    then
+      printf "would link '%s' -> '%s'\n" "$root" "$legacy_real"
+      adopt_repoint "$legacy" "$legacy_real" "$root" "$dry_run"
+    elif (( failed == 0 )) &&
+      { [[ ! -e $root ]] || find "$root" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null; rmdir "$root" 2>/dev/null || [[ ! -e $root ]]; }
+    then
+      ln -s "$legacy_real" "$root" &&
+        printf "linked '%s' -> '%s'\n" "$root" "$legacy_real"
+      adopt_repoint "$legacy" "$legacy_real" "$root" "$dry_run"
+    else
+      printf "not linking '%s': it still holds trunks\n" "$root"
+      (( failed++ ))
+    fi
+  else
+    if [[ -z $dry_run ]]
+    then
+      relink_trunk_references "$root" "$legacy"
+    fi
+    migrate_trunks__compat_link "$root" "$legacy" "$dry_run"
+  fi
+
+  printf 'moved %s, busy %s, skipped %s, failed %s\n' "$moved" "$busy" "$skipped" "$failed"
+  (( failed == 0 )) || return 1
+  (( busy == 0 )) || return 4
+  return 0
+}
+
+# Not when the old root's parent is a link: that belongs to whoever made it.
+migrate_trunks__compat_link() {
+  local root=$1 legacy=$2 dry_run=$3
+  [[ -d ${legacy%/*} && ! -L ${legacy%/*} ]] || return 0
+  if [[ -n $dry_run ]]
+  then
+    printf "would link '%s' -> '%s' once it is empty\n" "$legacy" "$root"
+    return 0
+  fi
+  if rmdir "$legacy" 2>/dev/null
+  then
+    ln -s "$root" "$legacy" &&
+      printf "linked '%s' -> '%s'\n" "$legacy" "$root"
+  fi
+}
+
 show_help() {
   cat <<'EOF'
 Usage: timvisher_git <subcommand> [args...]
@@ -2632,6 +3236,10 @@ Subcommands
   heal [--dry-run] [--branch <branch>] [<worktree>...]
     Re-attach worktrees whose trunk was wiped.  See 'heal --help'.
     clone heals an orphaned worktree on its own when it reaches one.
+
+  migrate-trunks [--dry-run]
+    Move trunks from ~/.cache to ${XDG_DATA_HOME:-~/.local/share}/
+    timvisher_git/repo_trunks.  See 'migrate-trunks --help'.
 
   worktree sweep-bogus
     Sweep bogus worktrees across every trunk cache.  Global by nature:
@@ -5085,6 +5693,7 @@ case $1 in
     ;;
   sync-trunk)   in_chdir sync_trunk "${@:2}" ;;
   heal)         in_chdir heal__cmd "${@:2}" ;;
+  migrate-trunks) migrate_trunks__cmd "${@:2}" ;;
   worktree)
     case ${2:-} in
       gc)          in_chdir worktree_gc "${@:3}" ;;

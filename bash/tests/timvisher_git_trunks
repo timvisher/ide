@@ -2,8 +2,8 @@
 # shellcheck disable=SC1091,SC2016,SC2034 # check's conditions are eval'd when it runs, and read variables shellcheck can't see
 source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
-# Tests for timvisher_git's trunk roots: healing worktrees whose trunk was
-# wiped.
+# Tests for timvisher_git's trunk roots: migrate-trunks out of ~/.cache,
+# and healing worktrees whose trunk was wiped.
 
 failures=0
 tests=0
@@ -66,6 +66,7 @@ run() {
 }
 
 legacy_of() { printf '%s\n' "$1/.cache/timvisher_git_worktrees/repo_trunks"; }
+root_of() { printf '%s\n' "$1/.local/share/timvisher_git/repo_trunks"; }
 
 # A HOME with testorg/testrepo cached at the old root, and a worktree of
 # feature/kept made from it.
@@ -84,6 +85,136 @@ new_home() {
 }
 
 wt_head() { tg -C "$1" rev-parse HEAD 2>/dev/null; }
+
+# --- migrate-trunks --------------------------------------------------------
+
+h=$(new_home mig) || exit 1
+wt=$h/git/testorg/testrepo/feature/kept
+head_before=$(wt_head "$wt")
+legacy=$(legacy_of "$h")
+root=$(root_of "$h")
+
+fork=$legacy/forkorg/testrepo
+mkdir -p "${fork%/*}"
+tg init -q --bare "$fork"
+printf '%s\n' "$legacy/testorg/testrepo/objects" > "$fork/objects/info/alternates"
+tg --git-dir="$fork" update-ref refs/heads/kept "$head_before" || exit 1
+mkdir -p "$h/.config/git"
+tg config --file "$h/.config/git/config_machine" --add maintenance.repo "$legacy/testorg/testrepo"
+
+plain=$legacy/plainorg/plainrepo
+plain_wt=$h/git/plainorg/plainrepo/feature/kept
+mkdir -p "${plain%/*}" "${plain_wt%/*}"
+tg clone -q "$origin" "$plain" &&
+  tg -C "$plain" worktree add -q "$plain_wt" feature/kept 2>/dev/null || exit 1
+plain_head=$(wt_head "$plain_wt")
+
+run "$h" migrate-trunks --dry-run
+check 'dry run: lists the trunk with its worktree' \
+  eval '(( rc == 0 )) && [[ $out == *"move testorg/testrepo: 1 worktree(s)"* ]]'
+check 'dry run: changes nothing' \
+  eval '[[ -d $legacy/testorg/testrepo && ! -e $root/testorg/testrepo ]]'
+
+run "$h" migrate-trunks
+check 'migrate: exits 0' eval '(( rc == 0 ))'
+check 'migrate: the trunk is at the new root, not the old' \
+  eval '[[ -d $root/testorg/testrepo/objects && ( -L $legacy || ! -e $legacy/testorg/testrepo ) ]]'
+check 'migrate: the worktree still works, at the same commit' \
+  eval '[[ $(wt_head "$wt") == "$head_before" ]]'
+check 'migrate: the worktree names the new trunk' \
+  eval '[[ $(cat "$wt/.git") == "gitdir: $root/testorg/testrepo/worktrees/"* ]]'
+check 'migrate: the fork'"'"'s alternates follow its parent' \
+  eval '[[ $(cat "$root/forkorg/testrepo/objects/info/alternates") == "$root/testorg/testrepo/objects" ]]'
+check 'migrate: a non-bare trunk moves too, and its worktree follows' \
+  eval '[[ -d $root/plainorg/plainrepo/.git && $(wt_head "$plain_wt") == "$plain_head" && $(cat "$plain_wt/.git") == "gitdir: $root/plainorg/plainrepo/.git/worktrees/"* ]]'
+check 'migrate: maintenance names the new trunk' \
+  eval '[[ $(tg config --file "$h/.config/git/config_machine" --get-all maintenance.repo | sort -u) == "$root/testorg/testrepo" ]]'
+check 'migrate: the emptied old root links to the new' \
+  eval '[[ -L $legacy && $(cd "$legacy" && pwd -P) == "$(cd "$root" && pwd -P)" ]]'
+
+run "$h" migrate-trunks
+check 'migrate again: nothing to move' \
+  eval '(( rc == 0 )) && [[ $out == "nothing to move"* ]]'
+
+# --- copy across filesystems ----------------------------------------------
+
+copy_root=
+if [[ -d /dev/shm && -w /dev/shm ]]
+then
+  copy_root=$(mktemp -d /dev/shm/x.test-git-trunks.XXXXXX) || copy_root=
+fi
+if [[ -n $copy_root ]] &&
+   [[ $(stat -c %d "$copy_root" 2>/dev/null) != "$(stat -c %d "$tmpdir" 2>/dev/null)" ]]
+then
+  h=$(new_home copy) || exit 1
+  wt=$h/git/testorg/testrepo/feature/kept
+  head_before=$(wt_head "$wt")
+  out=$(cd "$tmpdir" && timvisher_tests_with_home "$h" env TIMVISHER_GIT_TRUNKS_DIR="$copy_root/repo_trunks" \
+    "$script" migrate-trunks 2>"$tmpdir/err")
+  rc=$?
+  err=$(< "$tmpdir/err")
+  check 'copy: exits 0' eval '(( rc == 0 ))'
+  check 'copy: the trunk is on the other filesystem, and gone from the old root' \
+    eval '[[ -d $copy_root/repo_trunks/testorg/testrepo && -L $(legacy_of "$h") ]]'
+  check 'copy: the worktree still works, at the same commit' \
+    eval '[[ $(wt_head "$wt") == "$head_before" ]]'
+  rm -rf "$copy_root"
+else
+  [[ -n $copy_root ]] && rm -rf "$copy_root"
+  echo "SKIP: copy across filesystems (no separate /dev/shm here)"
+fi
+
+# --- busy and conflicting trunks -------------------------------------------
+
+h=$(new_home busy) || exit 1
+trunk=$(legacy_of "$h")/testorg/testrepo
+( exec 3< "$trunk/HEAD" && exec sleep 60 ) &
+holder=$!
+run "$h" migrate-trunks --dry-run
+check 'dry run: a trunk with a file held open is busy, naming the process' \
+  eval '[[ $out == *"busy testorg/testrepo:"*"pid $holder "* ]]'
+run "$h" migrate-trunks
+check 'migrate: a busy trunk stays where it is, exit 4' \
+  eval '(( rc == 4 )) && [[ -d $trunk/objects && ! -e $(root_of "$h")/testorg/testrepo ]]'
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+
+mkdir -p "$(root_of "$h")/testorg"
+tg init -q --bare "$(root_of "$h")/testorg/testrepo"
+run "$h" migrate-trunks --dry-run
+check 'dry run: a trunk at both roots with different refs is a conflict' \
+  eval '[[ $out == *"conflict testorg/testrepo"* ]]'
+run "$h" migrate-trunks
+check 'migrate: a conflict leaves both and fails' \
+  eval '(( rc != 0 )) && [[ -d $trunk/objects && -d $(root_of "$h")/testorg/testrepo/objects ]]'
+
+# --- adopting an old root that was put somewhere on purpose ----------------
+
+h=$(new_home adopt) || exit 1
+wt=$h/git/testorg/testrepo/feature/kept
+head_before=$(wt_head "$wt")
+mkdir -p "$tmpdir/volume"
+vol=$tmpdir/volume/trunks/repo_trunks
+mv "$h/.cache/timvisher_git_worktrees" "$tmpdir/volume/trunks"
+ln -s "$tmpdir/volume/trunks" "$h/.cache/timvisher_git_worktrees"
+tg init -q --bare "$vol/Documents/datadog"
+mkdir -p "$vol/ide"
+run "$h" migrate-trunks --dry-run
+check 'dry run: an old root outside ~/.cache is adopted, not moved' \
+  eval '[[ $out == *"adopt:"* && $out == *"would link"* && ! -L $(root_of "$h") ]]'
+check 'dry run: adopting would repoint the .git files that go through ~/.cache' \
+  eval '[[ $out == *"would repoint 1 worktree .git file(s)"* ]]'
+check 'dry run: a trunk with no refs and no worktrees, and an empty org dir, are listed as skipped' \
+  eval '[[ $out == *"skip Documents/datadog: no refs and no worktrees"* && $out == *"skip ide: an empty directory"* ]]'
+run "$h" migrate-trunks
+check 'adopt: the new root links to the old root'"'"'s real place' \
+  eval '(( rc == 0 )) && [[ -L $(root_of "$h") && $(cd "$(root_of "$h")" && pwd -P) == "$tmpdir/volume/trunks/repo_trunks" ]]'
+check 'adopt: the trunk did not move and the worktree still works' \
+  eval '[[ -d $vol/testorg/testrepo/objects && $(wt_head "$wt") == "$head_before" ]]'
+check 'adopt: the worktree .git file names the real path, not the link' \
+  eval '[[ $(cat "$wt/.git") == "gitdir: $vol/testorg/testrepo/worktrees/"* ]]'
+check 'adopt: the junk is left exactly where it was' \
+  eval '[[ -d $vol/Documents/datadog/objects && -d $vol/ide ]]'
 
 # --- heal --------------------------------------------------------------------
 
