@@ -58,6 +58,20 @@ source ~/.functions/aictl.bash ||
     exit 1
   }
 
+# Optional on purpose: git must keep working even where the ide checkout
+# predates the trunk move, so without it the old root is used.
+# shellcheck source=/dev/null
+source ~/.functions/git_trunks.bash 2>/dev/null || true
+
+_timvisher_git__trunk_dir() {
+  if declare -F timvisher_git_trunk_dir >/dev/null
+  then
+    timvisher_git_trunk_dir "$1" "$2"
+  else
+    printf '%s\n' "${HOME}/.cache/timvisher_git_worktrees/repo_trunks/$1/$2"
+  fi
+}
+
 _timvisher_git__trace2_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
 if [[ -z ${GIT_TRACE2_EVENT-} ]]
 then
@@ -1945,7 +1959,8 @@ _timvisher_git__maybe_reconcile_repo_config() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(_timvisher_git__trunk_dir "$org" "$repo")
   local sentinel="${trunk}/.timvisher_repo_config_applied"
   [[ -d $trunk ]] || return 0
 
@@ -1978,7 +1993,8 @@ _timvisher_git__maybe_register_maintenance() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(_timvisher_git__trunk_dir "$org" "$repo")
   [[ -d $trunk ]] || return 0
   [[ -f ${trunk}/.timvisher_maintenance_registered ]] && return 0
 
@@ -2005,7 +2021,8 @@ _timvisher_git__maybe_ensure_maintenance_scheduler() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(_timvisher_git__trunk_dir "$org" "$repo")
   [[ -d $trunk ]] || return 0
 
   timvisher_git ensure-maintenance-scheduler "$trunk" >/dev/null 2>&1 || true
