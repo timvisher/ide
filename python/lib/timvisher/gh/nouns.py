@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from timvisher.gh import fetch, record, state, store, targets
+from timvisher.gh import fetch, perf, record, state, store, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 NOUNS = ("pr", "issue", "comment", "thread")
@@ -79,8 +79,8 @@ def _object_id(db, found, noun):
 def _remember_context(opened, context, found, object_id):
     if found.via != "context" or found.object_id is not None or context is None:
         return
-    branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=context.toplevel,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    branch = perf.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=context.toplevel,
+                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
     owner, repo = context.spec.split("/")
     with opened.write() as db:
         db.execute("INSERT INTO context VALUES (?, ?, ?, ?, ?) ON CONFLICT (worktree) DO UPDATE SET "
@@ -140,7 +140,7 @@ def info(noun, context, args):
     if component is None:
         print(text)
         return 0
-    done = subprocess.run(["jq", "-r", component], input=text, stdout=subprocess.PIPE, text=True)
+    done = perf.run(["jq", "-r", component], input=text, stdout=subprocess.PIPE, text=True)
     sys.stdout.write(done.stdout)
     return 0 if done.returncode == 0 else ERROR
 

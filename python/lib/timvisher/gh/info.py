@@ -1,13 +1,14 @@
 import json
 import subprocess
 
+from timvisher.gh import perf
 from timvisher.gh.errors import fail, usage
 
 FIELDS = (".me", ".archived", ".forkNetwork.mainRepo", ".forkNetwork.mainOwner")
 
 
 def _gh(*args, failure):
-    done = subprocess.run(["gh", *args], stdout=subprocess.PIPE, text=True)
+    done = perf.run(["gh", *args], stdout=subprocess.PIPE, text=True)
     if done.returncode != 0:
         fail("timvisher_gh_gh_failed", failure, suggestions=["Check gh's error above, then retry"])
     return done.stdout.strip()
@@ -39,8 +40,8 @@ def _need_repo(context, name):
 
 
 def _timvisher_git(context):
-    done = subprocess.run(["timvisher_git", "info", "--json"], cwd=context.toplevel,
-                          stdout=subprocess.PIPE, text=True)
+    done = perf.run(["timvisher_git", "info", "--json"], cwd=context.toplevel,
+                    stdout=subprocess.PIPE, text=True)
     if done.returncode != 0:
         fail("timvisher_gh_timvisher_git_failed",
              f"Unable to query timvisher_git context for {context.toplevel}",

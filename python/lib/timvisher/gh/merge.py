@@ -6,7 +6,7 @@ import sys
 import time
 
 from timvisher import aictl, browser, logging
-from timvisher.gh import fetch, hooks, nouns, pr, record, state, store, targets
+from timvisher.gh import fetch, hooks, nouns, perf, pr, record, state, store, targets
 from timvisher.gh.errors import ERROR, Exit, fail, usage
 
 USAGE = """\
@@ -98,9 +98,9 @@ def request_by_gh(target, extra):
     spec = f"{target.owner}/{target.repo}"
     # gh repo view (GraphQL), not REST repos/O/R: REST reports the allow_*
     # settings as null to anyone below admin on the repo.
-    done = subprocess.run(["gh", "-R", spec, "repo", "view", spec, "--json",
-                           "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"],
-                          stdout=subprocess.PIPE, text=True)
+    done = perf.run(["gh", "-R", spec, "repo", "view", spec, "--json",
+                     "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"],
+                    stdout=subprocess.PIPE, text=True)
     if done.returncode != 0:
         fail("timvisher_gh_gh_failed", f"Couldn't read {spec}'s merge settings.",
              suggestions=["Check gh's error above, then retry"])
@@ -114,7 +114,7 @@ def request_by_gh(target, extra):
         aictl.info(code="timvisher_gh_merge_declined", message=f"Didn't merge {target.pr_url}.")
         return None
     for index, strategy in enumerate(strategies):
-        done = subprocess.run(["gh", "-R", spec, "pr", "merge", *extra, f"--{strategy}", target.pr_url])
+        done = perf.run(["gh", "-R", spec, "pr", "merge", *extra, f"--{strategy}", target.pr_url])
         if done.returncode == 0:
             return strategy
         following = strategies[index + 1] if index + 1 < len(strategies) else None
@@ -170,8 +170,8 @@ def trunk_pull(context, target):
     spec = f"{target.owner}/{target.repo}"
     default = fetch.api(spec, f"repos/{spec}").get("default_branch")
     trunk = git_home / org / repo / default if default else None
-    if trunk is None or subprocess.run(["git", "-C", str(trunk), "rev-parse", "--is-inside-work-tree"],
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+    if trunk is None or perf.run(["git", "-C", str(trunk), "rev-parse", "--is-inside-work-tree"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
         logging.info("No trunk worktree at '%s'; not pulling it", trunk)
         return
     log = trunk / ".timvisher_gh" / "trunk-pull.log"

@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 from timvisher import aictl
-from timvisher.gh import store
+from timvisher.gh import perf, store
 from timvisher.gh.errors import ERROR
 
 DECISION = 3
@@ -86,8 +86,8 @@ def _three_way(name, base, source, remote):
                 stream.write(f"{normalize(value) or ''}\n" if isinstance(value, str) or value is None
                              else f"{json.dumps(value)}\n")
             paths.append(path)
-        done = subprocess.run(["git", "merge-file", "-p", "--diff3", "-L", "yours", "-L", "base", "-L", "GitHub",
-                               *paths], stdout=subprocess.PIPE, text=True)
+        done = perf.run(["git", "merge-file", "-p", "--diff3", "-L", "yours", "-L", "base", "-L", "GitHub",
+                         *paths], stdout=subprocess.PIPE, text=True)
         return name, done.returncode, done.stdout
 
 
