@@ -4,7 +4,7 @@ find "${TIMVISHER_GIT_HOME:-${HOME}/git}" -maxdepth 7 -type d -name '.git' -mtim
   while read -rd '' timestamp
         read -rd '' name
   do
-    printf '%s\t%s\0' "$(date --date "@${timestamp}" '+%FT%T%z')" "$name"
+    printf '%s\t%s\0' "$(timvisher_date format "$timestamp" '+%FT%T%z')" "$name"
   done |
   sort -zr |
   while read -rd '' x

@@ -49,7 +49,7 @@ state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/wrappers/git"
 cutoff=$(( $(date +%s) - since_days * 86400 ))
 # trace2.eventBrief strips per-event timestamps, so the day comes from the
 # sid instead -- every event carries it, and it starts YYYYMMDDTHHMMSS.
-cutoff_day=$(date -d "@${cutoff}" +%Y%m%d)
+cutoff_day=$(timvisher_date format "$cutoff" +%Y%m%d)
 
 # Read the live file plus rotated generations as one stream.
 stream_trace2() {
