@@ -192,8 +192,9 @@ source ~/.bashrc && TIMVISHER_NTMUX3_AI_AGENT=claude \
 - `claude` or `codex`; setting only the prompt means `claude`.
 - With `-d`, ntmux3 waits for the agent and reports it as an
   `ntmux3_agent_started` instruction whose `data` has its `session_id`,
-  `name` and `ref`. It fails with `ntmux3_agent_not_started` when no
-  Emacs server comes up, or with `timvisher_emacs agent-shell start`'s own
+  `name` and `ref`. It fails with `ntmux3_agent_not_started` when the
+  editor Emacs has not answered on its server with init finished within
+  120s, or with `timvisher_emacs agent-shell start`'s own
   error (such as `timvisher_emacs_start_pending`) when the start fails.
 - Without `-d` it starts the agent in the background and attaches; a
   failure lands in `$XDG_STATE_HOME/timvisher/ntmux3/agent-start.log`
