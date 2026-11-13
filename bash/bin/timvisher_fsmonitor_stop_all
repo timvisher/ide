@@ -18,13 +18,23 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
-trunks="${HOME}/.cache/timvisher_git_worktrees/repo_trunks"
-[[ -d $trunks ]] || exit 0
+# shellcheck source=bash/functions/git_trunks.bash
+source ~/.functions/git_trunks.bash ||
+  {
+    echo "Unable to source git_trunks functions" >&2
+    exit 1
+  }
 
 stopped=0
 
 shopt -s nullglob
-for socket in "${trunks}"/*/*/fsmonitor--daemon.ipc "${trunks}"/*/*/worktrees/*/fsmonitor--daemon.ipc
+sockets=()
+while IFS= read -r trunk
+do
+  sockets+=("$trunk"/fsmonitor--daemon.ipc "$trunk"/worktrees/*/fsmonitor--daemon.ipc)
+done < <(timvisher_git_trunks_each)
+
+for socket in "${sockets[@]}"
 do
   gitdir=${socket%/fsmonitor--daemon.ipc}
 
