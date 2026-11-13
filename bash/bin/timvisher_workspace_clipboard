@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+
+show_help() {
+  cat <<'HELP'
+Usage: timvisher_workspace_clipboard copy
+       timvisher_workspace_clipboard tmux-copy
+
+Put stdin on the laptop clipboard from a workspace, through the workspaces
+daemon (the box's xclip, which sends ClipboardWrite over daemon.sock).
+
+copy       Exit 0 when the daemon took the copy, 3 when it was certainly
+           not sent (the caller may fall back to OSC 52), and 4 when it was
+           sent but not confirmed (the caller must not send it again).
+tmux-copy  For tmux's copy-command and C-] y: runs copy, falls back to
+           'tmux load-buffer -w' (OSC 52) on 3, and shows a message on 4.
+
+The daemon is pinged first, so a socket with nothing behind it fails in
+about a second without the copy ever being sent.
+
+Environment:
+  WORKSPACES_DAEMON_SOCKET              the daemon socket (default
+                                        ~/.local/state/workspaces/daemon.sock)
+  TIMVISHER_WORKSPACE_CLIPBOARD_XCLIP   the xclip to run (default: xclip on
+                                        PATH, else ~/.local/bin/xclip)
+HELP
+}
+
+usage() {
+  show_help >&2
+}
+
+delivered=0
+not_sent=3
+unconfirmed=4
+
+sock=${WORKSPACES_DAEMON_SOCKET:-$HOME/.local/state/workspaces/daemon.sock}
+
+# A Ping round trip rather than a connect: after a laptop network drop the
+# box's sshd keeps listening on daemon.sock with nothing behind it, and the
+# xclip helper would send the copy and then wait 10s for an answer, leaving
+# it unknown whether the copy landed.
+ping_py='import os, socket, struct, sys
+t = b"type.googleapis.com/daemon.Ping"
+a = b"\x0a" + bytes([len(t)]) + t
+e = b"\x12" + bytes([len(a)]) + a
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(1)
+s.connect(sys.argv[1])
+s.sendall(struct.pack(">I", len(e)) + e)
+def read(n):
+    b = b""
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        if not c:
+            sys.exit(1)
+        b += c
+    return b
+if b"daemon.PingResult" not in read(struct.unpack(">I", read(4))[0]):
+    sys.exit(1)'
+
+daemon_answers() {
+  python3 -c "$ping_py" "$sock" >/dev/null 2>&1
+}
+
+find_xclip() {
+  if [[ -n ${TIMVISHER_WORKSPACE_CLIPBOARD_XCLIP-} ]]
+  then
+    printf '%s\n' "$TIMVISHER_WORKSPACE_CLIPBOARD_XCLIP"
+  elif command -v xclip
+  then
+    :
+  elif [[ -x $HOME/.local/bin/xclip ]]
+  then
+    printf '%s\n' "$HOME/.local/bin/xclip"
+  else
+    return 1
+  fi
+}
+
+copy_file() {
+  local file=$1 xclip err rc
+  if ! xclip=$(find_xclip)
+  then
+    echo "timvisher_workspace_clipboard: no xclip" >&2
+    return "$not_sent"
+  fi
+  if ! daemon_answers
+  then
+    echo "timvisher_workspace_clipboard: the workspaces daemon at '${sock}' doesn't answer" >&2
+    return "$not_sent"
+  fi
+  err=$("$xclip" -selection clipboard < "$file" 2>&1 >/dev/null)
+  rc=$?
+  if (( 0 == rc ))
+  then
+    return "$delivered"
+  fi
+  printf '%s\n' "$err" >&2
+  # The helper's errors before it writes to the socket. Anything else may
+  # have reached the laptop.
+  case $err in
+    *'could not connect to the local workspaces daemon'*|*'exceeds the 1 MiB limit'*|*'unsupported'*|*'is required'*)
+      return "$not_sent"
+      ;;
+  esac
+  return "$unconfirmed"
+}
+
+tmp=
+# shellcheck disable=SC2329
+cleanup() {
+  [[ -z $tmp ]] || rm -f -- "$tmp"
+}
+trap cleanup EXIT
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  copy|tmux-copy)
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
+
+if ! tmp=$(mktemp "${TMPDIR:-/tmp}/timvisher_workspace_clipboard.XXXXXX")
+then
+  echo "timvisher_workspace_clipboard: mktemp failed" >&2
+  exit 1
+fi
+if ! cat > "$tmp"
+then
+  echo "timvisher_workspace_clipboard: couldn't read stdin" >&2
+  exit 1
+fi
+
+copy_file "$tmp"
+rc=$?
+
+if [[ $1 = copy ]]
+then
+  exit "$rc"
+fi
+
+case $rc in
+  "$delivered")
+    exit 0
+    ;;
+  "$not_sent")
+    if ! tmux load-buffer -w - < "$tmp"
+    then
+      tmux display-message "clipboard: the daemon didn't answer and OSC 52 failed"
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    tmux display-message "clipboard: copy not confirmed by the laptop; not resent"
+    exit "$rc"
+    ;;
+esac
