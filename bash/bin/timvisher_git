@@ -3707,19 +3707,19 @@ worktree_gc() {
   done
 
   local cutoff
-  cutoff=$(gdate -d "$cutoff_spec" +%s) ||
+  cutoff=$(timvisher_date epoch "$cutoff_spec") ||
     die "worktree gc: invalid cutoff '%s'" "$cutoff_spec"
 
-  info "Cutoff: %s (%s) — merge-detection tier" "$(gdate -d "@${cutoff}" '+%Y-%m-%d')" "$cutoff_spec"
+  info "Cutoff: %s (%s) — merge-detection tier" "$(timvisher_date format "$cutoff" +%Y-%m-%d)" "$cutoff_spec"
 
   # Eager tier: worktrees carrying an authoritative merged cookie
   # (dropped by `timvisher_gh pr merge` on confirmed merge) are reaped once
   # the cookie is older than this short cutoff — no detection needed.
   local merged_cutoff
-  merged_cutoff=$(gdate -d "$merged_cutoff_spec" +%s) ||
+  merged_cutoff=$(timvisher_date epoch "$merged_cutoff_spec") ||
     die "worktree gc: invalid --merged-cutoff '%s'" "$merged_cutoff_spec"
   info "Merged cookie cutoff: %s (%s) — eager reap of worktrees with a merged cookie" \
-    "$(gdate -d "@${merged_cutoff}" '+%Y-%m-%d')" "$merged_cutoff_spec"
+    "$(timvisher_date format "$merged_cutoff" +%Y-%m-%d)" "$merged_cutoff_spec"
 
   # Stale sweep: reap worktrees with NO merge evidence (not PR-merged, not
   # an ancestor, no cookie) older than this longest cutoff. Safe because
@@ -3728,11 +3728,11 @@ worktree_gc() {
   # disable with --no-stale.
   local stale_cutoff=0 stale_enabled=0
   if (( ! stale_disabled )); then
-    stale_cutoff=$(gdate -d "$stale_cutoff_spec" +%s) ||
+    stale_cutoff=$(timvisher_date epoch "$stale_cutoff_spec") ||
       die "worktree gc: invalid --stale-cutoff '%s'" "$stale_cutoff_spec"
     stale_enabled=1
     info "Stale cutoff: %s (%s) — unmerged worktrees older than this are reaped (branch kept)" \
-      "$(gdate -d "@${stale_cutoff}" '+%Y-%m-%d')" "$stale_cutoff_spec"
+      "$(timvisher_date format "$stale_cutoff" +%Y-%m-%d)" "$stale_cutoff_spec"
     if (( cutoff < stale_cutoff )); then
       warn "  --stale-cutoff is more recent than --cutoff; stale sweep would reap unmerged worktrees newer than merged ones"
     fi
@@ -3885,7 +3885,7 @@ worktree_gc() {
       read -r pr_state merged_at < <(worktree_gc__pr_state "$wt_path")
       local merged_epoch=0 last_commit_epoch=0
       if [[ $pr_state == merged ]]; then
-        merged_epoch=$(gdate -d "$merged_at" +%s 2>/dev/null) || merged_epoch=0
+        merged_epoch=$(timvisher_date epoch "$merged_at" 2>/dev/null) || merged_epoch=0
         last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null) || last_commit_epoch=0
       fi
       # Work committed after the merge means the worktree was reused, so the
