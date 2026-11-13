@@ -1562,13 +1562,15 @@ github_repo_of_url() {
 # the worktree is usable without it, and a failed worktree build can't
 # be retried cleanly.
 init_submodules() {
-  local worktree=$1
+  local worktree=$1 only=${2:-}
   [[ -f $worktree/.gitmodules ]] ||
     return 0
 
   local key path name url repo cache module updated
   while read -r key path
   do
+    [[ -z $only || $path == "$only" ]] ||
+      continue
     name=${key#submodule.}
     name=${name%.path}
     if ! url=$(command git config --file "$worktree/.gitmodules" --get "submodule.${name}.url")
@@ -1659,6 +1661,17 @@ ensure_worktree() {
 
   if [[ -d $branch_dir_abs ]]; then
     branch_dir_exists=1
+  fi
+
+  local lost_gitdir heal_branch
+  if (( branch_dir_exists )) && lost_gitdir=$(orphaned_gitdir "$branch_dir_abs") &&
+     ! relink_worktree "$trunk_cache" "$branch_dir_abs"
+  then
+    heal_branch=$(heal_branch_for "$trunk_cache" "$branch" "$branch_dir_abs") ||
+      die "ensure_worktree: '%s' is orphaned and can't be healed safely (above)" "$branch_dir_abs"
+    heal_worktree "$branch_dir_abs" "$trunk_cache" "$heal_branch" "$lost_gitdir" ||
+      die "ensure_worktree: unable to re-attach '%s'; its files are untouched" "$branch_dir_abs"
+    branch=$heal_branch
   fi
 
   if [[ $source == https://github.com/*/*/pull/* ]] && (( branch_dir_exists )); then
@@ -2163,6 +2176,348 @@ sync_trunk() {
 # Main entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Orphaned worktrees: heal and relink
+# ---------------------------------------------------------------------------
+
+# Old caches are non-bare clones, with their git dir in .git.
+trunk_gitdir() {
+  if [[ -d $1/.git ]]
+  then
+    printf '%s\n' "$1/.git"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+orphaned_gitdir() {
+  local worktree=$1 line
+  [[ -f $worktree/.git ]] || return 1
+  IFS= read -r line < "$worktree/.git" || return 1
+  [[ $line == 'gitdir: '* ]] || return 1
+  line=${line#gitdir: }
+  [[ $line == /* ]] || line=$worktree/$line
+  [[ -e $line ]] && return 1
+  printf '%s\n' "$line"
+}
+
+# Nothing is lost by relinking, so it is always tried before healing.
+relink_worktree() {
+  local trunk=$1 worktree=$2 admin gitfile wt_real
+  wt_real=$(cd "$worktree" && pwd -P) || return 1
+  for admin in "$(trunk_gitdir "$trunk")"/worktrees/*
+  do
+    [[ -f $admin/gitdir ]] || continue
+    gitfile=$(< "$admin/gitdir")
+    [[ $(cd "${gitfile%/.git}" 2>/dev/null && pwd -P) == "$wt_real" ]] || continue
+    printf 'gitdir: %s\n' "$admin" > "$worktree/.git" || return 1
+    repair_submodule_worktrees "$worktree" || return 1
+    info "Re-linked worktree '%s' to '%s'" "$worktree" "$admin"
+    return 0
+  done
+  return 1
+}
+
+relink_trunk_worktrees() {
+  local trunk=$1 admin admin_real gitfile worktree line current relinked=0
+  for admin in "$(trunk_gitdir "$trunk")"/worktrees/*
+  do
+    [[ -f $admin/gitdir ]] || continue
+    gitfile=$(< "$admin/gitdir")
+    [[ -f $gitfile ]] || continue
+    worktree=${gitfile%/.git}
+    admin_real=$(cd "$admin" && pwd -P) || continue
+    IFS= read -r line < "$gitfile" || line=
+    current=${line#gitdir: }
+    [[ $current == /* ]] || current=$worktree/$current
+    [[ $(cd "$current" 2>/dev/null && pwd -P) == "$admin_real" ]] && continue
+    printf 'gitdir: %s\n' "$admin" > "$gitfile" || return 1
+    repair_submodule_worktrees "$worktree" || return 1
+    (( relinked++ ))
+  done
+  printf '%s\n' "$relinked"
+}
+
+# awk mirrors sanitize_branch_name rather than calling it per branch:
+# origin can have tens of thousands.
+heal_candidates() {
+  local trunk=$1 want=$2 remote
+  remote=$(command git -C "$trunk" ls-remote --heads origin 2>/dev/null) || return 2
+  {
+    command git -C "$trunk" for-each-ref --format='%(refname:lstrip=2)' refs/heads 2>/dev/null
+    [[ -n $remote ]] && printf '%s\n' "$remote" | sed 's#^[^[:space:]]*[[:space:]]*refs/heads/##'
+  } | awk -v want="$want" '
+    seen[$0]++ { next }
+    {
+      n = split($0, part, "/")
+      out = ""
+      for (i = 1; i <= n; i++) {
+        if (part[i] == "") continue
+        sub(/^\.+/, "_", part[i])
+        out = out (out == "" ? "" : "/") part[i]
+      }
+      if (out == want) print $0
+    }'
+  return 0
+}
+
+# Several matches are never narrowed down: picking one would be a guess.
+heal_branch_for() {
+  local trunk=$1 want=$2 worktree=$3 candidates rc n
+  candidates=$(heal_candidates "$trunk" "$want")
+  rc=$?
+  if (( rc == 2 ))
+  then
+    error "HEAL: '%s' stays orphaned: unable to list origin's branches from '%s'; retry when origin is reachable" "$worktree" "$trunk"
+    return 1
+  fi
+  n=$(grep -c . <<<"$candidates")
+  case $n in
+    1)
+      printf '%s\n' "$candidates"
+      ;;
+    0)
+      error "HEAL: '%s' stays orphaned: no branch on origin or in '%s' has that path. If it was never pushed, its commits are gone; to keep its files on a fresh branch from the trunk: timvisher_git heal --branch %q %q" \
+        "$worktree" "$trunk" "$want" "$worktree"
+      return 1
+      ;;
+    *)
+      error "HEAL: '%s' stays orphaned: %s branches have its path, and picking one would be a guess: %s. Choose with: timvisher_git heal --branch <branch> %q" \
+        "$worktree" "$n" "$(paste -sd ' ' - <<<"$candidates")" "$worktree"
+      return 1
+      ;;
+  esac
+}
+
+# git can't check a submodule out over its existing files, so they are
+# set aside and copied back over a fresh checkout.
+heal_submodules() {
+  local worktree=$1 key path parent aside
+  [[ -f $worktree/.gitmodules ]] || return 0
+  while read -r key path
+  do
+    orphaned_gitdir "$worktree/$path" >/dev/null || continue
+    parent=$worktree
+    [[ $path == */* ]] && parent=$worktree/${path%/*}
+    if ! aside=$(mktemp -d "${parent}/.x.heal-submodule.XXXXXX") ||
+       ! mv "$worktree/$path" "$aside/files"
+    then
+      error "HEAL: unable to set submodule '%s' aside; it stays orphaned" "$worktree/$path"
+      continue
+    fi
+    init_submodules "$worktree" "$path"
+    if [[ -f $worktree/$path/.git ]] &&
+       rm -f "$aside/files/.git" &&
+       cp -pR "$aside/files/." "$worktree/$path/"
+    then
+      rm -rf "$aside"
+      warn "HEAL: submodule '%s' checked out again from its cache, with its files put back" "$worktree/$path"
+    else
+      rm -rf "${worktree:?}/${path:?}"
+      mv "$aside/files" "$worktree/$path" && rmdir "$aside"
+      error "HEAL: unable to check out submodule '%s' again; its files are back as they were, still orphaned" "$worktree/$path"
+    fi
+  done < <(command git config --file "$worktree/.gitmodules" --get-regexp '^submodule\..*\.path$')
+}
+
+# --no-checkout and a mixed reset: the files are the only copy of the
+# work, so they are never checked out over.
+heal_worktree() {
+  local worktree=$1 trunk=$2 branch=$3 lost=$4 tmp trunk_branch
+
+  warn "HEAL: worktree '%s' lost its git dir '%s': its trunk was wiped or moved" "$worktree" "$lost"
+  warn "HEAL: gone with that trunk, for good: commits on '%s' that were never pushed, the trunk's stashes, and its reflogs" "$branch"
+
+  if ! command git -C "$trunk" show-ref --verify --quiet "refs/heads/${branch}"
+  then
+    if command git -C "$trunk" fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" >&2 &&
+       command git -C "$trunk" show-ref --verify --quiet "refs/remotes/origin/${branch}"
+    then
+      command git -C "$trunk" branch --track "$branch" "origin/${branch}" >&2 || return 1
+    else
+      trunk_branch=$(get_trunk_branch_name_from_cache "$trunk") || return 1
+      warn "HEAL: '%s' is not on origin, so it starts again from 'origin/%s'; everything it changed shows as uncommitted" "$branch" "$trunk_branch"
+      command git -C "$trunk" branch --no-track "$branch" "origin/${trunk_branch}" >&2 || return 1
+    fi
+  fi
+
+  tmp=$(mktemp -d "${worktree%/*}/.x.heal.XXXXXX") || return 1
+  if ! command git -C "$trunk" worktree add --no-checkout "$tmp" "$branch" >&2
+  then
+    rmdir "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp/.git" "$worktree/.git"
+  then
+    command git -C "$trunk" worktree remove --force "$tmp" >&2
+    return 1
+  fi
+  rmdir "$tmp" ||
+    warn "HEAL: unable to remove '%s'" "$tmp"
+  command git -C "$trunk" worktree repair "$worktree" >/dev/null 2>&1 || return 1
+  ensure_worktrees_not_poisoned_by_bare "$trunk"
+  command git -C "$worktree" reset -q >&2 || return 1
+  heal_submodules "$worktree"
+  warn "HEAL: re-attached '%s' to '%s' on '%s'; check its status before committing" "$worktree" "$trunk" "$branch"
+}
+
+heal__usage() {
+  cat <<'EOF'
+Usage: timvisher_git heal [--dry-run] [--branch <branch>] [<worktree>...]
+
+Re-attach worktrees whose trunk was wiped, as when ~/.cache, where
+trunks used to live, is cleared. With no <worktree>, every orphaned
+worktree under the live root is healed.
+
+A worktree whose trunk only moved is relinked, losing nothing. Otherwise
+its trunk is cloned again and the worktree is put back on the branch its
+path names, with its files untouched: whatever differs from that branch
+shows as uncommitted. Commits that were never pushed, and the old
+trunk's stashes and reflogs, are gone.
+
+When no branch, or more than one, has the worktree's path, it stays
+orphaned and the matches are listed; --branch picks one (a branch that
+isn't on origin starts again from the trunk branch).
+
+  --dry-run          say what would be done, change nothing
+  --branch <branch>  the branch to heal the one <worktree> onto
+EOF
+}
+
+heal__find_orphans() {
+  local dir=$1 depth=$2 sub
+  if [[ -e $dir/.git ]]
+  then
+    orphaned_gitdir "$dir" >/dev/null && printf '%s\n' "$dir"
+    return 0
+  fi
+  (( 0 < depth )) || return 0
+  for sub in "$dir"/*/
+  do
+    sub=${sub%/}
+    [[ -d $sub && ! -L $sub ]] || continue
+    heal__find_orphans "$sub" "$(( depth - 1 ))"
+  done
+}
+
+heal__cmd() {
+  local dry_run='' branch_override='' failed=0
+  local -a targets=()
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --branch)
+        if (( $# < 2 ))
+        then
+          heal__usage >&2
+          return 2
+        fi
+        branch_override=$2
+        shift 2
+        ;;
+      -h|--help)
+        heal__usage
+        return 0
+        ;;
+      -*)
+        heal__usage >&2
+        return 2
+        ;;
+      *)
+        targets+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n $branch_override ]] && (( ${#targets[@]} != 1 ))
+  then
+    error 'heal: --branch needs exactly one <worktree>'
+    return 2
+  fi
+  if (( ${#targets[@]} < 1 ))
+  then
+    readarray -t targets < <(heal__find_orphans "$live_repo_dir" 8)
+    if (( ${#targets[@]} < 1 ))
+    then
+      info "heal: no orphaned worktrees under '%s'" "$live_repo_dir"
+      return 0
+    fi
+  fi
+
+  local worktree lost rel rest org repo want trunk branch
+  for worktree in "${targets[@]}"
+  do
+    worktree=${worktree%/}
+    [[ $worktree == /* ]] || worktree=$PWD/$worktree
+    if ! lost=$(orphaned_gitdir "$worktree")
+    then
+      info "heal: '%s' is not orphaned" "$worktree"
+      continue
+    fi
+    rel=$(live_relative "$worktree") || rel=
+    org=${rel%%/*}
+    rest=${rel#*/}
+    repo=${rest%%/*}
+    want=${rest#*/}
+    if [[ -z $rel || $rel != */*/* || -z $want ]]
+    then
+      error "heal: '%s' is not an <org>/<repo>/<branch> path under '%s', so its trunk can't be told from it" "$worktree" "$live_repo_dir"
+      failed=1
+      continue
+    fi
+
+    if [[ -n $dry_run ]]
+    then
+      trunk=$(timvisher_git_trunk_dir "$org" "$repo")
+      if [[ ! -d $trunk ]]
+      then
+        printf "would clone %s/%s, then re-attach '%s'\n" "$org" "$repo" "$worktree"
+      elif [[ -n $branch_override ]]
+      then
+        printf "would re-attach '%s' to '%s' on '%s'\n" "$worktree" "$trunk" "$branch_override"
+      elif branch=$(heal_branch_for "$trunk" "$want" "$worktree")
+      then
+        printf "would re-attach '%s' to '%s' on '%s'\n" "$worktree" "$trunk" "$branch"
+      else
+        failed=1
+      fi
+      continue
+    fi
+
+    if ! trunk=$(cache_trunk "$org/$repo")
+    then
+      error "heal: unable to cache %s/%s; '%s' stays orphaned" "$org" "$repo" "$worktree"
+      failed=1
+      continue
+    fi
+    if relink_worktree "$trunk" "$worktree"
+    then
+      printf '%s\n' "$worktree"
+      continue
+    fi
+    branch=$branch_override
+    if [[ -z $branch ]] && ! branch=$(heal_branch_for "$trunk" "$want" "$worktree")
+    then
+      failed=1
+      continue
+    fi
+    if heal_worktree "$worktree" "$trunk" "$branch" "$lost" &&
+       (cd "$worktree" && configure_remotes_and_tracking "$trunk" "$org/$repo/$branch")
+    then
+      printf '%s\n' "$worktree"
+    else
+      error "heal: unable to re-attach '%s'; its files are untouched" "$worktree"
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 show_help() {
   cat <<'EOF'
 Usage: timvisher_git <subcommand> [args...]
@@ -2273,6 +2628,10 @@ Subcommands
     Remove merged worktrees, archiving workflow files first.  A worktree
     containing .timvisher_dev_ci/protected is never removed.
     Any other 'worktree' invocation passes through to git.
+
+  heal [--dry-run] [--branch <branch>] [<worktree>...]
+    Re-attach worktrees whose trunk was wiped.  See 'heal --help'.
+    clone heals an orphaned worktree on its own when it reaches one.
 
   worktree sweep-bogus
     Sweep bogus worktrees across every trunk cache.  Global by nature:
@@ -4725,6 +5084,7 @@ case $1 in
     esac
     ;;
   sync-trunk)   in_chdir sync_trunk "${@:2}" ;;
+  heal)         in_chdir heal__cmd "${@:2}" ;;
   worktree)
     case ${2:-} in
       gc)          in_chdir worktree_gc "${@:3}" ;;

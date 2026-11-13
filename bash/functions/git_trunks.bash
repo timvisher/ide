@@ -21,8 +21,6 @@ timvisher_git_legacy_trunks_root() {
   printf '%s\n' "${TIMVISHER_GIT_LEGACY_TRUNKS_DIR:-${HOME}/.cache/timvisher_git_worktrees/repo_trunks}"
 }
 
-# The trunk for <org> <repo>: at the new root if it is there, else at the
-# old root if it is still there, else where a new one goes.
 timvisher_git_trunk_dir() {
   local org=$1 repo=$2 root legacy
   root=$(timvisher_git_trunks_root)
@@ -40,8 +38,6 @@ timvisher_git_trunk_dir() {
   printf '%s\n' "$root/$org/$repo"
 }
 
-# Every trunk, one directory per line: the new root's, then the old
-# root's that haven't been moved yet.
 timvisher_git_trunks_each() {
   local root legacy dir
   root=$(timvisher_git_trunks_root)
@@ -57,9 +53,8 @@ timvisher_git_trunks_each() {
   done
 }
 
-# <org>/<repo> when <common dir> is a managed trunk (or inside one), else
-# exit 1. Paths are compared resolved, since either root may sit behind a
-# symlink (macOS /private, a symlinked HOME).
+# Compared resolved: either root may sit behind a symlink (macOS
+# /private, a symlinked HOME).
 timvisher_git_trunk_relpath() {
   local dir=$1 resolved root rel
   resolved=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
