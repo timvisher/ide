@@ -4,22 +4,8 @@
 # dependencies = []
 # ///
 import sys
-import time
 
-from timvisher import tool_log
 from timvisher.gh import cli
 
 if __name__ == "__main__":
-    t0 = time.time()
-    rc: int = 1
-    try:
-        rc = cli.main(sys.argv[1:])
-    except SystemExit as exit_:
-        rc = exit_.code if isinstance(exit_.code, int) else (0 if exit_.code is None else 1)
-        raise
-    except KeyboardInterrupt:
-        rc = 130
-        raise
-    finally:
-        tool_log.write("timvisher_gh", sys.argv[0], sys.argv[1:], rc, t0)
-    sys.exit(rc)
+    sys.exit(cli.main(sys.argv[1:]))

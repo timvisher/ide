@@ -1,57 +1,15 @@
 import contextlib
 import cProfile
 import datetime
-import json
 import os
 import pathlib
-import re
-import socket
 import subprocess
 import sys
 import time
 
+from timvisher import tool_log
+
 _run = None
-
-
-def log_dir():
-    if os.environ.get("TIMVISHER_TOOL_LOG_DIR"):
-        return pathlib.Path(os.environ["TIMVISHER_TOOL_LOG_DIR"])
-    if sys.platform == "darwin":
-        return pathlib.Path.home() / "Library" / "Logs" / "timvisher" / "tools"
-    state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return pathlib.Path(state) / "timvisher" / "logs"
-
-
-# The same caller object bash/functions/tool_log.bash logs for the gh
-# shim, so a run and its gh calls match on it.
-def caller():
-    pid = os.environ.get("CLAUDE_PID", "")
-    if pid.isdigit():
-        sessions = pathlib.Path(os.environ.get("TIMVISHER_TOOL_LOG_SESSIONS_DIR")
-                                or pathlib.Path.home() / ".claude" / "sessions")
-        try:
-            os.kill(int(pid), 0)
-            content = (sessions / f"{pid}.json").read_text()
-        except (OSError, ValueError):
-            content = None
-        if content is not None:
-            session_id = re.search(r'"sessionId":"([^"]*)"', content)
-            name = re.search(r'"name":"([^"]*)"', content)
-            return {"kind": "claude", "pid": int(pid), "session_id": session_id[1] if session_id else "",
-                    "name": name[1] if name else ""}
-    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        return {"kind": "claude", "session_id": os.environ["CLAUDE_CODE_SESSION_ID"]}
-    if os.environ.get("TIMVISHER_TOOL_LOG_CALLER_SESSION"):
-        return {"kind": "claude", "session_id": os.environ["TIMVISHER_TOOL_LOG_CALLER_SESSION"],
-                "name": os.environ.get("TIMVISHER_TOOL_LOG_CALLER_NAME", ""), "forwarded": True}
-    if os.environ.get("TIMVISHER_CODEX"):
-        pid = os.environ.get("TIMVISHER_AGENT_WRAPPER_EXEC", "").split(":")[0]
-        return {"kind": "codex", "pid": int(pid) if pid.isdigit() else None}
-    try:
-        tty = os.ttyname(0).removeprefix("/dev/")
-    except OSError:
-        tty = "none"
-    return {"kind": "human", "tty": tty}
 
 
 def _ms(seconds):
@@ -61,7 +19,6 @@ def _ms(seconds):
 class Run:
     def __init__(self, argv, profile_dir=None):
         self.argv = list(argv)
-        self.cwd = os.getcwd()
         self.epoch = time.time()
         self.started = time.perf_counter()
         self.stack = []
@@ -100,38 +57,32 @@ class Run:
             return None
         return str(path)
 
-    def line(self, rc):
+    def fields(self):
         seconds = time.perf_counter() - self.started
         top = sum(phase["seconds"] for path, phase in self.phases.items() if "/" not in path)
 
         def calls(entries):
             return {tool: {"n": entry["n"], "ms": _ms(entry["seconds"])} for tool, entry in entries.items()}
 
-        stamp = datetime.datetime.fromtimestamp(self.epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
-        return {"ts": stamp[:23] + "Z", "epoch": round(self.epoch, 6), "tool": "timvisher_gh",
-                "real": os.path.realpath(sys.argv[0]) if sys.argv and sys.argv[0] else "", "argv": self.argv,
-                "cwd": self.cwd, "rc": rc, "duration_ms": _ms(seconds), "host": socket.gethostname().split(".")[0],
-                "caller": caller(), "pid": os.getpid(),
+        return {"pid": os.getpid(),
                 "phases": {path: {"n": phase["n"], "ms": _ms(phase["seconds"]), "calls": calls(phase["calls"])}
                            for path, phase in self.phases.items()},
                 "unphased_ms": _ms(seconds - top), "calls": calls(self.calls),
                 "lock": {"n": self.lock["n"], "wait_ms": _ms(self.lock["wait"]), "held_ms": _ms(self.lock["held"]),
                          "max_held_ms": _ms(self.lock["max_held"])}}
 
+    # The run's one tool-log line is written here, not in bin/timvisher_gh's
+    # finally: cli.main's interrupt path kills the process with SIGINT before
+    # that finally would run.
     def finish(self, rc):
         if self.written:
             return
         self.written = True
-        line = self.line(rc)
+        fields = self.fields()
         if self.profile is not None:
-            line["profile"] = self._dump_profile()
-        path = log_dir() / "timvisher_gh.jsonl"
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as log:
-                log.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
-        except OSError as error:
-            sys.stderr.write(f"timvisher_gh: could not append to '{path}': {error}\n")
+            fields["profile"] = self._dump_profile()
+        real = os.path.realpath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+        tool_log.write("timvisher_gh", real, self.argv, rc, self.epoch, **fields)
 
 
 def start(argv):

@@ -85,7 +85,7 @@ class PerfTest(GhTestCase):
         self.logs.write_text("not a directory")
         rc, err = self.run_logged("pr", "fetch", PR)
         self.assertEqual(0, rc, err)
-        self.assertIn("timvisher_gh: could not append to", err)
+        self.assertIn("tool_log: could not append to", err)
 
 
 if __name__ == "__main__":
