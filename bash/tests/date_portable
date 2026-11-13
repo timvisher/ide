@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # the expected lines hold literal $(...)
+
+# Tests that no shell code in this repo calls date outside
+# timvisher_date, and tests timvisher_lint_date itself.
+
+failures=0
+tests=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P) || exit 1
+lint=$repo_root/bash/bin/timvisher_lint_date
+
+# shellcheck disable=SC1091
+source "$repo_root/bash/functions/real_bin.bash" || exit 1
+real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$repo_root/bash/bin/git") ||
+  { echo 'no real git' >&2; exit 1; }
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+mkdir -p "$t/bin" "$t/repo" || exit 1
+ln -s "$real_git" "$t/bin/git" || exit 1
+
+run_test
+if out=$("$lint" --allow "$repo_root/bash/tests/lib/date_portable.allow" "$repo_root" 2>&1)
+then
+  pass 'no date calls outside timvisher_date in this repo'
+else
+  fail $'date calls outside timvisher_date (use timvisher_date, or add a commented entry to bash/tests/lib/date_portable.allow):\n'"$out"
+fi
+
+# scratch <path> <content>: a scratch repo holding just that tracked file.
+scratch() {
+  rm -rf -- "$t/repo" &&
+    mkdir -p "$t/repo/${1%/*}" &&
+    printf '%s\n' "$2" > "$t/repo/$1" &&
+    "$real_git" -C "$t/repo" init -q &&
+    "$real_git" -C "$t/repo" -c core.excludesFile=/dev/null add -- "$1"
+}
+
+lint_scratch() {
+  PATH="$t/bin:$PATH" "$lint" "$@" "$t/repo"
+}
+
+flags() {
+  local name=$1 path=$2 content=$3 expected=$4 out
+  run_test
+  scratch "$path" "$content" || { fail "$name: scratch repo"; return; }
+  if out=$(lint_scratch 2>&1)
+  then
+    fail "$name: not flagged"
+  elif [[ $out == "$expected" ]]
+  then
+    pass "$name"
+  else
+    fail "$name: expected '$expected', got '$out'"
+  fi
+}
+
+clean() {
+  local name=$1 path=$2 content=$3 out
+  run_test
+  scratch "$path" "$content" || { fail "$name: scratch repo"; return; }
+  if out=$(lint_scratch 2>&1)
+  then
+    pass "$name"
+  else
+    fail "$name: flagged: '$out'"
+  fi
+}
+
+sh=$'#!/usr/bin/env bash\n'
+
+flags 'a planted date -d names the file and line' bash/bin/tool \
+  "${sh}"$'echo hi\nday=$(date -d yesterday +%F)' \
+  'bash/bin/tool:3: day=$(date -d yesterday +%F)'
+flags 'plain date +FMT' bash/bin/tool "${sh}date +%s" 'bash/bin/tool:2: date +%s'
+flags 'date -u +FMT in $()' bash/bin/tool "${sh}"'x="$(date -u +%FT%T)"' \
+  'bash/bin/tool:2: x="$(date -u +%FT%T)"'
+flags 'bare date at the end of a line' bash/bin/tool "${sh}"'x=$(date)' 'bash/bin/tool:2: x=$(date)'
+flags 'date after &&' bash/bin/tool "${sh}true && date +%s" 'bash/bin/tool:2: true && date +%s'
+flags 'date after a VAR= prefix' bash/bin/tool "${sh}TZ=UTC date +%s" 'bash/bin/tool:2: TZ=UTC date +%s'
+flags 'date after env and an assignment' bash/bin/tool "${sh}env TZ=UTC date +%s" \
+  'bash/bin/tool:2: env TZ=UTC date +%s'
+flags 'date by absolute path' bash/bin/tool "${sh}/bin/date +%s" 'bash/bin/tool:2: /bin/date +%s'
+flags 'date in backticks' bash/bin/tool "${sh}"'x=`date +%s`' 'bash/bin/tool:2: x=`date +%s`'
+flags 'an awk-built date command' bash/bin/tool \
+  "${sh}"$'awk \'{ cmd = "date -d @" $1; cmd | getline t }\'' \
+  'bash/bin/tool:2: awk '"'"'{ cmd = "date -d @" $1; cmd | getline t }'"'"
+flags 'a printf-built date command' bash/bin/tool "${sh}printf 'date +%%s\\n' | sh" \
+  "bash/bin/tool:2: printf 'date +%%s\\n' | sh"
+flags 'gdate anywhere' bash/bin/tool "${sh}"'d=gdate' 'bash/bin/tool:2: d=gdate'
+flags '/opt/homebrew/bin/date anywhere' bash/bin/tool "${sh}"'d=/opt/homebrew/bin/date' \
+  'bash/bin/tool:2: d=/opt/homebrew/bin/date'
+flags 'a .bash file without a shebang' bash/functions/lib.bash 'f() { date +%s; }' \
+  'bash/functions/lib.bash:1: f() { date +%s; }'
+flags 'a sh shebang' scripts/run $'#!/bin/sh\nx=$(date +%s)' 'scripts/run:2: x=$(date +%s)'
+flags 'a plist command string' LaunchAgents/job.plist '<string>date +%s; exec x</string>' \
+  'LaunchAgents/job.plist:1: <string>date +%s; exec x</string>'
+
+clean 'variables named *date*' bash/bin/tool \
+  "${sh}"$'target_date=1\necho "$target_date" "${date}" "$date_x"\nupdate -x'
+clean 'require_cmd date' bash/bin/tool "${sh}require_cmd date"
+clean 'help prose starting a line' bash/bin/tool \
+  "${sh}"$'cat <<EOF\ndate before synthesizing; the review is date-scoped\ndate \xe2\x80\x94 see --date\nEOF'
+clean 'a quoted word date in prose' bash/bin/tool "${sh}"'die "date must be YYYY-MM-DD"'
+clean 'a whole-line comment' bash/bin/tool "${sh}"'# date -d yesterday is GNU-only'
+clean 'timvisher_date itself' bash/bin/tool "${sh}timvisher_date now +%s"
+clean 'a non-shell file' python/tool.py 'subprocess.run(["date", "-d", "x"])'
+clean 'a markdown file' docs/notes.md 'date -d yesterday'
+
+run_test
+scratch bash/bin/tool "${sh}"$'date +%s\nx=$(date -u +%F)' &&
+  printf '%s\n' '# why' 'bash/bin/tool:date +%s  # needs it' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+if [[ $out == 'bash/bin/tool:3: x=$(date -u +%F)' ]]
+then
+  pass 'a path:text entry allows only lines with that text'
+else
+  fail "path:text entry: got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/bin/tool  # whole file' > "$t/allow"
+if out=$(lint_scratch --allow "$t/allow" 2>&1)
+then
+  pass 'a path entry allows the whole file'
+else
+  fail "path entry: got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/bin/tool  # whole file' 'bash/bin/gone  # gone' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+rc=$?
+if (( rc == 1 )) && [[ $out == "$t/allow:2: allow entry matches no date call: bash/bin/gone" ]]
+then
+  pass 'a stale allow entry fails'
+else
+  fail "stale entry: rc=$rc got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/bin/tool' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+rc=$?
+if (( rc == 2 )) && [[ $out == *"needs a '# reason' comment"* ]]
+then
+  pass 'an allow entry without a reason is an error'
+else
+  fail "entry without a reason: rc=$rc got '$out'"
+fi
+
+run_test
+out=$("$lint" --help 2>/dev/null)
+if [[ $out == Usage:* ]]
+then
+  pass '--help prints usage on stdout'
+else
+  fail "--help stdout: '$out'"
+fi
+
+run_test
+if out=$("$lint" 2>/dev/null)
+then
+  fail 'no arguments exited 0'
+elif [[ -n $out ]]
+then
+  fail "no arguments printed '$out' on stdout"
+else
+  pass 'no arguments: usage on stderr only, non-zero'
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

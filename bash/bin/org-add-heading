@@ -171,7 +171,7 @@ do
       ;;
     --creation-timestamp)
       # No value form: generate current local time in inactive-timestamp shape.
-      creation_timestamp="$(date +'[%Y-%m-%d %a %H:%M]')"
+      creation_timestamp="$(timvisher_date now +'[%Y-%m-%d %a %H:%M]')"
       creation_timestamp_set="true"
       ;;
     --help|-h)

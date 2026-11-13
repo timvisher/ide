@@ -92,13 +92,13 @@ _heartbeat_start=0
 _heartbeat_last=0
 
 heartbeat_start() {
-    _heartbeat_start=$(date +%s)
+    _heartbeat_start=$(timvisher_date now +%s)
     _heartbeat_last=$_heartbeat_start
 }
 
 heartbeat_due() {
     local now
-    now=$(date +%s)
+    now=$(timvisher_date now +%s)
 
     (( now - _heartbeat_last < HEARTBEAT_INTERVAL_SECONDS )) && return 1
 
@@ -107,7 +107,7 @@ heartbeat_due() {
 
 heartbeat_elapsed() {
     local now
-    now=$(date +%s)
+    now=$(timvisher_date now +%s)
     local elapsed=$(( now - _heartbeat_start ))
 
     printf '%d:%02d' "$(( elapsed / 60 ))" "$(( elapsed % 60 ))"
@@ -2326,7 +2326,7 @@ verified_record() {
           --arg worktree "$wt" \
           --arg branch "$branch" \
           --arg commit "$commit" \
-          --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%S%z)" \
+          --arg verified_at "$(timvisher_date now -u +%Y-%m-%dT%H:%M:%S%z)" \
           --argjson duration_ms "$duration_ms" \
           '{schema: $schema, result: "pass", key: $key, key_inputs: $key_inputs,
             provenance: {org: $org, repo: $repo, worktree: $worktree,
@@ -2486,7 +2486,7 @@ create_pull_upstream_worktree() {
         }
 
     # Matches the stamp the hand-made branches already use.
-    stamp=$(date -u +%Y-%m-%dT%H-%M-%S%z) || return 1
+    stamp=$(timvisher_date now -u +%Y-%m-%dT%H-%M-%S%z) || return 1
     branch="${PULL_UPSTREAM_PREFIX}/${stamp}"
     wt="$(canonical_git_home)${org_repo}/${branch}"
 

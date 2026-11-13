@@ -1983,7 +1983,7 @@ upstream_guard__post() {
     local log_file="${HOME}/.local/state/git-upstream-dropped.log"
     mkdir -p "$(dirname "$log_file")"
     printf '%s ppid=%s branch=%s toplevel=%s command: git %s\n' \
-      "$(date -u '+%FT%T%z')" \
+      "$(timvisher_date now -u '+%FT%T%z')" \
       "$$/$PPID" \
       "$upstream_guard__branch" \
       "$upstream_guard__toplevel" \

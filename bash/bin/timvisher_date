@@ -7,6 +7,10 @@ Usage: timvisher_date <operation> [args...]
 The date operations ide and its system extensions need, on whichever
 date is first on PATH, GNU or BSD.
 
+  now [-u] [+FMT]           print the current time as date +FMT would
+                            (default +%s), in UTC with -u; %N is always
+                            000000000. It runs date directly, with no
+                            flavor check, since +FMT is POSIX.
   epoch <spec>              print <spec> as seconds since the epoch
   format [-u] <epoch> +FMT  print <epoch> formatted as date +FMT would,
                             in UTC with -u; %N is always 000000000
@@ -99,8 +103,8 @@ resolve_flavor() {
   export TIMVISHER_DATE_FLAVOR="$date_path:$flavor"
 }
 
-format_epoch() {
-  local utc=$1 epoch=$2 fmt=$3 out='' i c
+fill_nanoseconds() {
+  local fmt=$1 out='' i c
   for (( i = 0; i < ${#fmt}; i += 1 ))
   do
     c=${fmt:i:1}
@@ -118,6 +122,12 @@ format_epoch() {
       out+=$c
     fi
   done
+  printf '%s\n' "$out"
+}
+
+format_epoch() {
+  local utc=$1 epoch=$2 out
+  out=$(fill_nanoseconds "$3")
 
   if [[ $flavor == gnu ]]
   then
@@ -239,6 +249,25 @@ op_format() {
   format_epoch "$utc" "${positional[0]}" "${positional[1]}"
 }
 
+op_now() {
+  local utc='' fmt=+%s arg seen_fmt=''
+  for arg in "$@"
+  do
+    if [[ $arg == -u ]]
+    then
+      utc=-u
+    elif [[ $arg == +* && -z $seen_fmt ]]
+    then
+      fmt=$arg
+      seen_fmt=1
+    else
+      usage
+      exit 2
+    fi
+  done
+  date ${utc:+-u} "$(fill_nanoseconds "$fmt")"
+}
+
 is_valid_date() {
   [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] &&
     calendar_epoch -u "$1" 00:00:00 >/dev/null
@@ -262,6 +291,11 @@ case ${1-} in
   -h|--help)
     show_help
     exit 0
+    ;;
+  now)
+    shift
+    op_now "$@"
+    exit
     ;;
   epoch|format|add|valid|flavor)
     ;;

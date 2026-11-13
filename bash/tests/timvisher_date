@@ -298,6 +298,82 @@ then
   fi
 fi
 
+mkdir -p "$t/echo" || exit 1
+cat > "$t/echo/date" <<EOF2
+#!$t/tools/bash
+printf x >> '$t/echo/runs'
+printf '%s\n' "\$*"
+EOF2
+chmod +x "$t/echo/date" || exit 1
+
+echo_date() {
+  rm -f -- "$t/echo/runs"
+  env -u TIMVISHER_DATE_FLAVOR PATH="$t/echo:$t/tools" XDG_CACHE_HOME="$t/cache-echo" "$@"
+}
+
+check_now() {
+  local name=$1 expected=$2 got
+  shift 2
+  run_test
+  if got=$(echo_date "$script" now "$@" 2>&1) &&
+      [[ $got == "$expected" && $(< "$t/echo/runs") == x && ! -e $t/cache-echo ]]
+  then
+    pass "now: $name"
+  else
+    fail "now: $name: expected '$expected' from one date run and no cache, got '$got', runs '$(cat "$t/echo/runs" 2>/dev/null)', cache $([[ -e $t/cache-echo ]] && echo present)"
+  fi
+}
+
+check_now 'defaults to +%s without a flavor check' '+%s'
+check_now 'passes -u' '-u +%Y-%m-%d' -u +%Y-%m-%d
+check_now 'takes -u after the format' '-u +%Y' +%Y -u
+check_now 'fills %N with zeros' '+%T.000000000Z' +%T.%NZ
+check_now 'keeps %%N literal' '+%%N' +%%N
+
+for bad in '%Y' '+%Y +%m' '-x'
+do
+  run_test
+  read -ra bad_args <<< "$bad"
+  if out=$(echo_date "$script" now "${bad_args[@]}" 2>/dev/null)
+  then
+    fail "now $bad: exited 0"
+  elif [[ -n $out ]]
+  then
+    fail "now $bad: printed '$out' on stdout"
+  else
+    pass "now $bad: usage on stderr, non-zero"
+  fi
+done
+
+if [[ -n ${gnu_date}${bsd_date} ]]
+then
+  for flavor in gnu bsd
+  do
+    [[ -d $t/$flavor ]] || continue
+    run_test
+    got=$(td "$flavor" now -u +%Y-%m-%dT%H:%M:%S.%NZ)
+    if [[ $got =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.000000000Z$ ]]
+    then
+      pass "$flavor: now -u with %N"
+    else
+      fail "$flavor: now -u with %N: got '$got'"
+    fi
+  done
+fi
+
+run_test
+got=$(env -u TIMVISHER_DATE_FLAVOR PATH="$t/cmd:$t/echo:$t/tools" \
+  XDG_CACHE_HOME="$t/cache-echo" \
+  bash -c 'source "$1" || exit 1
+           timvisher_date now +%s || exit 1
+           printf "[%s]\n" "${TIMVISHER_DATE_FLAVOR-}"' _ "$funcs" 2>&1)
+if [[ $got == $'+%s\n[]' ]]
+then
+  pass 'the function runs now without resolving a flavor'
+else
+  fail "function now: got '$got'"
+fi
+
 run_test
 out=$("$script" --help 2>/dev/null)
 if [[ $out == Usage:* ]]

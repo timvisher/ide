@@ -31,7 +31,7 @@ then
 fi
 
 base_dir="${HOME}/Pictures/agent screen captures"
-ts=$(date +"%Y-%m-%dT%H-%M-%S%z")
+ts=$(timvisher_date now +"%Y-%m-%dT%H-%M-%S%z")
 out_dir="${base_dir}/${ts}"
 
 mkdir -p "${out_dir}" ||
@@ -102,7 +102,7 @@ done
 cookie_file="${out_dir}/.cookie"
 {
   printf 'timestamp_slug: %s\n' "${ts}"
-  printf 'iso8601: %s\n' "$(date -Iseconds 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z")"
+  printf 'iso8601: %s\n' "$(timvisher_date now +"%Y-%m-%dT%H:%M:%S%z")"
   printf 'user: %s\n' "${USER:-unknown}"
   printf 'host: %s\n' "$(hostname)"
   printf 'cwd: %s\n' "${PWD}"

@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_lint_date [--allow <file>] <root>
+
+Print <file>:<line>: <text> for each date call in the shell code tracked
+under the git worktree <root>, and exit 1 if there are any. Date calls
+go through timvisher_date instead, which works on GNU or BSD date.
+
+Shell code is every tracked *.sh, *.bash, *.zsh and *.plist file and
+every tracked file with a sh, bash, zsh or dash shebang. A date call is:
+
+  - date (or a path ending in /date) where a command starts: at the
+    start of a line, after ; & | ( { ` or $(, after <string> in a
+    plist, or after a keyword or command prefix such as then, do, !,
+    env, exec, command or time,
+    with any VAR=value assignments in between, and followed by an
+    option, format, quote, $, redirection or the end of the command
+  - the same inside a quoted string, as in an awk or printf-built
+    command: "date -d @" ts
+  - gdate, /opt/homebrew/bin/date or /opt/homebrew/bin/gdate anywhere
+
+Whole-line comments are skipped. bash/bin/timvisher_date,
+bash/tests/timvisher_date, this checker and its tests are exempt.
+
+The allow file exempts more. Each entry is a <path>, or <path>:<text>
+for only the lines containing <text>, and must end in a # comment
+giving the reason. Lines that are only a comment are skipped. An entry
+that matches no date call is an error, so the list cannot go stale.
+Exit status: 0 clean, 1 date calls or stale entries, 2 usage or a bad
+allow file.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+die_usage() {
+  printf 'timvisher_lint_date: %s\n' "$1" >&2
+  exit 2
+}
+
+allow_file=
+root=
+while (( 0 < $# ))
+do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --allow)
+      [[ -n ${2-} ]] ||
+        die_usage '--allow needs a file'
+      allow_file=$2
+      shift 2
+      ;;
+    --allow=*)
+      allow_file=${1#--allow=}
+      shift
+      ;;
+    -*)
+      usage
+      exit 2
+      ;;
+    *)
+      [[ -z $root ]] ||
+        { usage; exit 2; }
+      root=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n $root ]] ||
+  { usage; exit 2; }
+[[ -d $root ]] ||
+  die_usage "not a directory: $root"
+
+exempt=(
+  bash/bin/timvisher_date
+  bash/tests/timvisher_date
+  bash/bin/timvisher_lint_date
+  bash/tests/date_portable
+)
+
+allow_paths=()
+allow_texts=()
+allow_lines=()
+allow_used=()
+if [[ -n $allow_file ]]
+then
+  [[ -r $allow_file ]] ||
+    die_usage "cannot read allow file: $allow_file"
+  n=0
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    (( n += 1 ))
+    [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+    if ! [[ $line =~ ^([^[:space:]][^#]*[^[:space:]])[[:space:]]+#[[:space:]]*[^[:space:]] ]]
+    then
+      die_usage "$allow_file:$n: an entry needs a '# reason' comment: $line"
+    fi
+    entry=${BASH_REMATCH[1]}
+    if [[ $entry == *:* ]]
+    then
+      allow_paths+=("${entry%%:*}")
+      allow_texts+=("${entry#*:}")
+    else
+      allow_paths+=("$entry")
+      allow_texts+=('')
+    fi
+    allow_lines+=("$n")
+    allow_used+=('')
+  done < "$allow_file"
+fi
+
+name='(/[^[:space:]"'"'"'/]+)*/?g?date'
+suffix='([[:space:]]+[-+"'"'"'$<>]|[[:space:]]*($|[;)|&`]))'
+prefix='(^|[;&|({`]|<string>|(^|[[:space:]])(then|do|else|elif|if|while|until|exec|command|time|!|env|xargs|nohup|nice|sudo)[[:space:]]+)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+command_re="${prefix}${name}${suffix}"
+quoted_re="[\"']${name}${suffix}"
+anywhere_re='(^|[^A-Za-z0-9_.-])gdate([^A-Za-z0-9_.-]|$)|/opt/homebrew/bin/g?date([^A-Za-z0-9_.-]|$)'
+
+is_shell() {
+  local path=$1 first
+  case $path in
+    *.sh|*.bash|*.zsh|*.plist)
+      return 0
+      ;;
+  esac
+  IFS= read -r first < "$root/$path" 2>/dev/null || return 1
+  [[ $first =~ ^#![[:space:]]*[^[:space:]]*(/|env[[:space:]]+(-S[[:space:]]+)?)(ba|z|da)?sh([[:space:]]|$) ]]
+}
+
+allowed() {
+  local path=$1 text=$2 i
+  for i in "${!allow_paths[@]}"
+  do
+    [[ ${allow_paths[i]} == "$path" ]] || continue
+    if [[ -z ${allow_texts[i]} || $text == *"${allow_texts[i]}"* ]]
+    then
+      allow_used[i]=1
+      return 0
+    fi
+  done
+  return 1
+}
+
+hits=0
+candidates=()
+if ! mapfile -d '' -t candidates < <(git -C "$root" grep -lIz -e date -- 2>/dev/null)
+then
+  die_usage "cannot list files under $root"
+fi
+
+for path in "${candidates[@]}"
+do
+  for e in "${exempt[@]}"
+  do
+    [[ $path == "$e" ]] && continue 2
+  done
+  is_shell "$path" || continue
+  n=0
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    (( n += 1 ))
+    [[ $line == *date* ]] || continue
+    [[ $line =~ ^[[:space:]]*# ]] && continue
+    if [[ $line =~ $command_re || $line =~ $quoted_re || $line =~ $anywhere_re ]]
+    then
+      allowed "$path" "$line" && continue
+      printf '%s:%d: %s\n' "$path" "$n" "$line"
+      (( hits += 1 ))
+    fi
+  done < "$root/$path"
+done
+
+for i in "${!allow_paths[@]}"
+do
+  if [[ -z ${allow_used[i]} ]]
+  then
+    printf '%s:%d: allow entry matches no date call: %s%s\n' \
+      "$allow_file" "${allow_lines[i]}" "${allow_paths[i]}" \
+      "${allow_texts[i]:+:${allow_texts[i]}}"
+    (( hits += 1 ))
+  fi
+done
+
+(( hits == 0 ))
