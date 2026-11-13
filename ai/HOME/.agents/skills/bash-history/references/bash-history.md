@@ -4,8 +4,8 @@ Review command-line activity to understand experiments, tool usage, and operatio
 
 - View today's bash commands (using zsh history timestamps):
   ```bash
-  today_start=$(date -d '2025-11-02 00:00:00' +%s)
-  today_end=$(date -d '2025-11-03 00:00:00' +%s)
+  today_start=$(timvisher_date epoch '2025-11-02 00:00:00')
+  today_end=$(timvisher_date epoch '2025-11-03 00:00:00')
   tail -1000 ~/.bash_history | awk -v start="$today_start" -v end="$today_end" '
     /^#[0-9]+$/ {
       ts = substr($0, 2)
@@ -18,8 +18,8 @@ Review command-line activity to understand experiments, tool usage, and operatio
       next
     }
     print_next == 1 {
-      "date -d @" cmd_ts " +\"%H:%M:%S\"" | getline time_str
-      close("date -d @" cmd_ts " +\"%H:%M:%S\"")
+      "timvisher_date format " cmd_ts " +\"%H:%M:%S\"" | getline time_str
+      close("timvisher_date format " cmd_ts " +\"%H:%M:%S\"")
       print time_str "\t" $0
       print_next = 0
     }'
