@@ -4291,7 +4291,7 @@ cat > "$gc_bin/timvisher_gh" <<'FAKE'
   exit 2
 case ${2##*/} in
   open) echo 'open ' ;;
-  recent) printf 'merged %s\n' "$(gdate -u -d '1 day ago' '+%FT%TZ')" ;;
+  recent) printf 'merged %s\n' "$(timvisher_date format -u "$(timvisher_date epoch '1 day ago')" '+%FT%TZ')" ;;
   *) echo 'merged 2020-01-01T00:00:00Z' ;;
 esac
 FAKE

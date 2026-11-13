@@ -330,7 +330,7 @@ list_deactivated_topics_older_than_days() {
   local days=$2
   local cutoff mtime deactivated_file beads_dir topic_dir topic_rel
 
-  cutoff=$(( $(/opt/homebrew/bin/date +%s) - (days * 24 * 60 * 60) ))
+  cutoff=$(( $(date +%s) - (days * 24 * 60 * 60) ))
 
   shopt -s globstar nullglob
   for deactivated_file in "$base_dir"/**/.beads/deactivated

@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # the bash -c scripts expand their own vars
+
+# Tests for bash/bin/timvisher_date and the timvisher_date function in
+# bash/functions/date.bash, run against each flavor of date this host
+# has.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+repo=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+script=$repo/bash/bin/timvisher_date
+funcs=$repo/bash/functions/date.bash
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+
+# Only bash, env and mkdir besides the date under test, so nothing can quietly
+# fall back to another date.
+mkdir -p "$t/tools" "$t/cmd" || exit 1
+for tool in bash env mkdir
+do
+  if ! p=$(type -P "$tool") || ! ln -s "$p" "$t/tools/$tool"
+  then
+    echo "no $tool" >&2
+    exit 1
+  fi
+done
+ln -s "$script" "$t/cmd/timvisher_date" || exit 1
+
+is_gnu() {
+  local out
+  out=$("$1" -d @0 +%s 2>/dev/null) && [[ $out == 0 ]]
+}
+
+is_bsd() {
+  local out
+  ! is_gnu "$1" &&
+    out=$("$1" -r 0 +%s 2>/dev/null) && [[ $out == 0 ]]
+}
+
+gnu_date=
+bsd_date=
+for candidate in "$(type -P gdate)" "$(type -P date)" \
+                 /opt/homebrew/opt/coreutils/libexec/gnubin/date \
+                 /home/linuxbrew/.linuxbrew/opt/coreutils/libexec/gnubin/date \
+                 /usr/bin/date /bin/date
+do
+  [[ -x $candidate ]] || continue
+  if [[ -z $gnu_date ]] && is_gnu "$candidate"
+  then
+    gnu_date=$candidate
+  elif [[ -z $bsd_date ]] && is_bsd "$candidate"
+  then
+    bsd_date=$candidate
+  fi
+done
+
+td() {
+  local flavor=$1
+  shift
+  env -u TIMVISHER_DATE_FLAVOR \
+    PATH="$t/$flavor:$t/tools" \
+    XDG_CACHE_HOME="$t/cache-$flavor" \
+    TZ=America/New_York \
+    "$script" "$@"
+}
+
+check() {
+  local flavor=$1 name=$2 expected=$3 got
+  shift 3
+  run_test
+  if got=$(td "$flavor" "$@" 2>/dev/null) && [[ $got == "$expected" ]]
+  then
+    pass "$flavor: $name"
+  else
+    fail "$flavor: $name: expected '$expected', got '$got'"
+  fi
+}
+
+check_fails() {
+  local flavor=$1 name=$2 got
+  shift 2
+  run_test
+  if got=$(td "$flavor" "$@" 2>"$t/err")
+  then
+    fail "$flavor: $name: expected failure, got '$got'"
+  elif [[ -n $got ]]
+  then
+    fail "$flavor: $name: printed '$got' on stdout while failing"
+  else
+    pass "$flavor: $name"
+  fi
+}
+
+check_near() {
+  local flavor=$1 name=$2 offset=$3 got now
+  shift 3
+  run_test
+  now=$(date +%s)
+  if got=$(td "$flavor" "$@" 2>/dev/null) &&
+      [[ $got =~ ^-?[0-9]+$ ]] &&
+      (( now + offset - 5 <= got && got <= now + offset + 5 ))
+  then
+    pass "$flavor: $name"
+  else
+    fail "$flavor: $name: expected about $(( now + offset )), got '$got'"
+  fi
+}
+
+flavor_tests() {
+  local flavor=$1 date_bin=$2 cache
+
+  mkdir -p "$t/$flavor" || exit 1
+  ln -s "$date_bin" "$t/$flavor/date" || exit 1
+
+  check "$flavor" 'detects its flavor' "$t/$flavor/date:$flavor" flavor
+
+  run_test
+  cache="$t/cache-$flavor/timvisher_date/flavor"
+  if [[ $(< "$cache") == "$t/$flavor/date:$flavor" ]]
+  then
+    pass "$flavor: caches path:flavor"
+  else
+    fail "$flavor: cache holds '$(< "$cache")'"
+  fi
+
+  check "$flavor" 'epoch @N' 1794590000 epoch @1794590000
+  check "$flavor" 'epoch @-N' -1 epoch @-1
+  check "$flavor" 'epoch local midnight (EST)' 1794546000 epoch 2026-11-13
+  check "$flavor" 'epoch local midnight (EDT)' 1783310400 epoch 2026-07-06
+  check "$flavor" 'epoch local time' 1773041400 epoch '2026-03-09 03:30:00'
+  check "$flavor" 'epoch local time as words' 1773041400 epoch 2026-03-09 03:30:00
+  check "$flavor" 'epoch ISO Z' 1794499445 epoch 2026-11-12T16:04:05Z
+  check "$flavor" 'epoch ISO fractional Z' 1794499445 epoch 2026-11-12T16:04:05.987654Z
+  check "$flavor" 'epoch ISO +HH:MM' 1794479645 epoch 2026-11-12T16:04:05+05:30
+  check "$flavor" 'epoch ISO -HHMM' 1794513845 epoch 2026-11-12T16:04:05-0400
+  check_fails "$flavor" 'epoch Feb 30' epoch 2026-02-30
+  check_fails "$flavor" 'epoch month 13' epoch 2026-13-01
+  check_fails "$flavor" 'epoch a time DST skips' epoch '2026-03-08 02:30:00'
+  check_fails "$flavor" 'epoch ISO Feb 30' epoch 2026-02-30T00:00:00Z
+  check_fails "$flavor" 'epoch an unsupported phrase' epoch next tuesday
+  check_fails "$flavor" 'epoch an unsupported unit' epoch 2 fortnights ago
+  check_fails "$flavor" 'epoch ISO without a zone' epoch 2026-11-12T16:04:05
+  check_fails "$flavor" 'epoch nothing' epoch
+  check_near "$flavor" 'epoch now' 0 epoch now
+  check_near "$flavor" 'epoch today' 0 epoch today
+  check_near "$flavor" 'epoch yesterday' -86400 epoch yesterday
+  check_near "$flavor" 'epoch N weeks ago' -1209600 epoch '2 weeks ago'
+  check_near "$flavor" 'epoch N days ago' -2592000 epoch 30 days ago
+  check_near "$flavor" 'epoch 1 day ago' -86400 epoch 1 day ago
+  check_near "$flavor" 'epoch N minutes' 600 epoch 10 minutes
+  check_near "$flavor" 'epoch -N hours' -7200 epoch -2 hours
+  check_near "$flavor" 'epoch N seconds ago' -5 epoch 5 seconds ago
+
+  check "$flavor" 'format -u' 1970-01-01T00:00:00Z format -u 0 +%Y-%m-%dT%H:%M:%SZ
+  check "$flavor" 'format -u last' 1970-01-01 format 0 +%Y-%m-%d -u
+  check "$flavor" 'format local' '1969-12-31 19:00:00 -0500' format 0 '+%Y-%m-%d %H:%M:%S %z'
+  check "$flavor" 'format %N as zeros' 00:00:00.000000000Z format -u 0 +%T.%NZ
+  check "$flavor" 'format %%N stays literal' '%N' format -u 0 +%%N
+  check "$flavor" 'format a negative epoch' 1969-12-31 format -u -1 +%Y-%m-%d
+  check_fails "$flavor" 'format without +' format 0 %Y
+  check_fails "$flavor" 'format a non-epoch' format 2026-11-13 +%Y
+  check_fails "$flavor" 'format a missing format' format 0
+
+  check "$flavor" 'add -1 into a leap day' 2024-02-29 add 2024-03-01 -1
+  check "$flavor" 'add +1 across a year' 2027-01-01 add 2026-12-31 +1
+  check "$flavor" 'add unsigned' 2026-11-20 add 2026-11-13 7
+  check "$flavor" 'add across spring forward' 2026-03-09 add 2026-03-08 +1
+  check "$flavor" 'add across fall back' 2026-11-01 add 2026-11-02 -1
+  check "$flavor" 'add 0' 2026-11-13 add 2026-11-13 0
+  check "$flavor" 'add a leading zero' 2026-11-21 add 2026-11-13 +08
+  check_fails "$flavor" 'add to Feb 30' add 2026-02-30 +1
+  check_fails "$flavor" 'add a non-number' add 2026-11-13 1day
+
+  check "$flavor" 'valid a leap day' '' valid 2024-02-29
+  check "$flavor" 'valid an ordinary date' '' valid 2026-11-13
+  check_fails "$flavor" 'valid Feb 29 off a leap year' valid 2026-02-29
+  check_fails "$flavor" 'valid Apr 31' valid 2026-04-31
+  check_fails "$flavor" 'valid month 00' valid 2026-00-10
+  check_fails "$flavor" 'valid an unpadded month' valid 2026-1-10
+  check_fails "$flavor" 'valid a time' valid '2026-11-13 00:00:00'
+  check_fails "$flavor" 'valid empty' valid ''
+}
+
+if [[ -n $gnu_date ]]
+then
+  flavor_tests gnu "$gnu_date"
+else
+  echo 'SKIP: no GNU date on this host'
+fi
+if [[ -n $bsd_date ]]
+then
+  flavor_tests bsd "$bsd_date"
+else
+  echo 'SKIP: no BSD date on this host'
+fi
+
+mkdir -p "$t/fake" || exit 1
+cat > "$t/fake/date" <<EOF
+#!$t/tools/bash
+printf x >> '$t/fake/runs'
+exit 1
+EOF
+chmod +x "$t/fake/date" || exit 1
+
+fake() {
+  rm -f -- "$t/fake/runs"
+  PATH="$t/fake:$t/tools" XDG_CACHE_HOME="$t/cache-fake" "$@"
+}
+
+run_test
+if got=$(fake env -u TIMVISHER_DATE_FLAVOR "$script" flavor 2>"$t/err")
+then
+  fail "an unknown date: expected failure, got '$got'"
+elif [[ $(< "$t/err") == *'neither GNU nor BSD'* ]]
+then
+  pass 'an unknown date fails with a clear error'
+else
+  fail "an unknown date: stderr '$(< "$t/err")'"
+fi
+
+run_test
+got=$(fake env TIMVISHER_DATE_FLAVOR="$t/fake/date:bsd" "$script" flavor 2>&1)
+if [[ $got == "$t/fake/date:bsd" && ! -e $t/fake/runs ]]
+then
+  pass 'TIMVISHER_DATE_FLAVOR for this date skips detection'
+else
+  fail "TIMVISHER_DATE_FLAVOR: got '$got', date ran '$(cat "$t/fake/runs" 2>/dev/null)'"
+fi
+
+run_test
+mkdir -p "$t/cache-fake/timvisher_date" || exit 1
+printf '%s\n' /elsewhere/date:bsd "$t/fake/date:gnu" > "$t/cache-fake/timvisher_date/flavor"
+got=$(fake env TIMVISHER_DATE_FLAVOR=/elsewhere/date:bsd "$script" flavor 2>&1)
+if [[ $got == "$t/fake/date:gnu" && ! -e $t/fake/runs ]]
+then
+  pass 'the cache entry for this date wins over another date'"'"'s flavor'
+else
+  fail "cache: got '$got', date ran '$(cat "$t/fake/runs" 2>/dev/null)'"
+fi
+
+run_test
+got=$(fake env TIMVISHER_DATE_FLAVOR="$t/fake/date:weird" "$script" flavor 2>/dev/null)
+if [[ $got == "$t/fake/date:gnu" ]]
+then
+  pass 'a malformed TIMVISHER_DATE_FLAVOR is ignored'
+else
+  fail "malformed TIMVISHER_DATE_FLAVOR: got '$got'"
+fi
+
+if [[ -n ${gnu_date}${bsd_date} ]]
+then
+  flavor=gnu
+  [[ -n $gnu_date ]] || flavor=bsd
+
+  run_test
+  got=$(env -u TIMVISHER_DATE_FLAVOR PATH="$t/cmd:$t/$flavor:$t/tools" \
+    XDG_CACHE_HOME="$t/cache-func" \
+    bash -c 'source "$1" || exit 1
+             timvisher_date add 2026-11-13 +1 || exit 1
+             printf "%s\n" "$TIMVISHER_DATE_FLAVOR"
+             bash -c "printf \"%s\n\" \"\$TIMVISHER_DATE_FLAVOR\""' _ "$funcs" 2>&1)
+  expected="2026-11-14"$'\n'"$t/$flavor/date:$flavor"$'\n'"$t/$flavor/date:$flavor"
+  if [[ $got == "$expected" ]]
+  then
+    pass 'the function sets and exports TIMVISHER_DATE_FLAVOR'
+  else
+    fail "function: expected '$expected', got '$got'"
+  fi
+
+  run_test
+  got=$(env TIMVISHER_DATE_FLAVOR=/elsewhere/date:bsd PATH="$t/cmd:$t/$flavor:$t/tools" \
+    XDG_CACHE_HOME="$t/cache-func" \
+    bash -c 'source "$1" || exit 1
+             timvisher_date valid 2026-11-13 || exit 1
+             printf "%s\n" "$TIMVISHER_DATE_FLAVOR"' _ "$funcs" 2>&1)
+  if [[ $got == "$t/$flavor/date:$flavor" ]]
+  then
+    pass 'the function re-resolves when PATH finds another date'
+  else
+    fail "function with a stale flavor: got '$got'"
+  fi
+fi
+
+run_test
+out=$("$script" --help 2>/dev/null)
+if [[ $out == Usage:* ]]
+then
+  pass '--help prints usage on stdout'
+else
+  fail "--help stdout: '$out'"
+fi
+
+run_test
+if out=$("$script" 2>/dev/null)
+then
+  fail 'no arguments exited 0'
+elif [[ -n $out ]]
+then
+  fail "no arguments printed '$out' on stdout"
+else
+  pass 'no arguments: usage on stderr only, non-zero'
+fi
+
+run_test
+if out=$("$script" bogus 2>/dev/null)
+then
+  fail 'an unknown operation exited 0'
+elif [[ -n $out ]]
+then
+  fail "an unknown operation printed '$out' on stdout"
+else
+  pass 'an unknown operation fails without stdout'
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi
