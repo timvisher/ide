@@ -42,6 +42,7 @@
 # Readers must treat <name>.jsonl plus <name>.jsonl.N.gz (ascending N =
 # older) as one logical stream.
 
+# shellcheck source=/dev/null
 source ~/.functions/logging.bash ||
   {
     echo "Unable to source logging functions" >&2
