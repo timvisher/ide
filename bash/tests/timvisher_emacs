@@ -498,6 +498,144 @@ rc=$?
 check 'agent-shell ls with an unknown format: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
+perm_log=$tmpdir/perm-log
+perm_busy=$tmpdir/perm-busy
+start_emacs tvperm "(progn
+  (defvar tv-perm-buffer (get-buffer-create \"shell-perm\"))
+  (defvar tv-perm-state nil)
+  (defun tv-reset-prompt ()
+    (setq tv-perm-state
+          (list (cons :session (list (cons :id \"perm0000-0000\")))
+                (cons :client 'fake-client)
+                (cons :tool-calls
+                      (list (list \"tc-1\"
+                                  (cons :title \"rm -rf build\")
+                                  (cons :kind \"execute\")
+                                  (cons :permission-request-id 5)
+                                  (cons :permission-actions
+                                        (list (list (cons :option \"Allow\") (cons :kind \"allow_once\") (cons :option-id \"default\"))
+                                              (list (cons :option \"Reject\") (cons :kind \"reject_once\") (cons :option-id \"reject\"))
+                                              (list (cons :option \"Always Allow\") (cons :kind \"allow_always\") (cons :option-id \"acceptEdits\"))))))))))
+  (tv-reset-prompt)
+  (defun tv-pending-p ()
+    (seq-some (lambda (e) (alist-get :permission-request-id (cdr e))) (alist-get :tool-calls tv-perm-state)))
+  (defun tv-in-timer-p ()
+    (and (seq-some (lambda (f) (eq (cadr f) 'timer-event-handler)) (backtrace-frames)) t))
+  (defun agent-shell-buffers () (list tv-perm-buffer))
+  (defun agent-shell--state () (and (eq (current-buffer) tv-perm-buffer) tv-perm-state))
+  (defun shell-maker-busy () (file-exists-p \"$perm_busy\"))
+  (defun agent-shell-status (&rest _)
+    (cond ((and (shell-maker-busy) (tv-pending-p)) 'blocked) ((shell-maker-busy) 'busy) (t 'ready)))
+  (defun agent-shell--permission-title (&rest args)
+    (format \"\`\`\`console\n%s\n\`\`\`\" (alist-get :title (plist-get args :tool-call))))
+  (defun agent-shell--send-permission-response (&rest args)
+    (append-to-file (format \"respond %s %s in-timer=%s\n\" (plist-get args :request-id) (plist-get args :option-id) (tv-in-timer-p)) nil \"$perm_log\")
+    (let ((entry (assoc (plist-get args :tool-call-id) (alist-get :tool-calls tv-perm-state))))
+      (setcdr entry (assq-delete-all :permission-request-id (cdr entry)))))
+  (defun agent-shell-interrupt (&optional force)
+    (append-to-file (format \"interrupt %s in-timer=%s\n\" force (tv-in-timer-p)) nil \"$perm_log\")
+    (delete-file \"$perm_busy\"))
+  (with-temp-file \"$tmpdir/perm-child-pid\"
+    (insert (number-to-string (process-id (start-process \"child\" nil \"sleep\" \"300\")))))
+  $idle)"
+perm_pid=$started_pid
+SECONDS=0
+until [[ -s $tmpdir/perm-child-pid ]] || (( 20 < SECONDS ))
+do
+  sleep 0.1
+done
+perm_child_pid=$(< "$tmpdir/perm-child-pid")
+other_pids+=("$perm_child_pid")
+printf '{"pid": %s, "sessionId": "perm0000-0000", "name": "tvperm-5e", "messagingSocketPath": "%s"}\n' \
+       "$perm_child_pid" "$tmpdir/socks/$perm_child_pid.sock" > "$tmpdir/claude/sessions/$perm_child_pid.json"
+
+mkdir -p "$tmpdir/onlyperm" || exit 1
+cat > "$tmpdir/onlyperm/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $perm_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/onlyperm/lsof" || exit 1
+
+perm_tool() {
+  CLAUDE_CONFIG_DIR=$tmpdir/claude TIMVISHER_TOOL_LOG_DIR=$tmpdir/tool-log \
+    CLAUDE_PID='' CLAUDE_CODE_SESSION_ID=caller-0000 PATH="$tmpdir/onlyperm:$PATH" \
+    emacs_tool "$@"
+}
+
+last_log() {
+  tail -1 "$tmpdir/tool-log/timvisher_emacs.jsonl" | jq -r "$1"
+}
+
+touch "$perm_busy"
+perm_tool agent-shell permission-prompt --show tvperm-5e
+rc=$?
+check 'agent-shell permission-prompt --show: prints the latest pending prompt with its title and options' \
+      eval "(( rc == 0 )) && [[ \$(field '[.session_id, .status, .prompt.tool_call_id, .prompt.title == \"\`\`\`console\\nrm -rf build\\n\`\`\`\", (.prompt.options | map(.kind) | join(\",\"))] | @tsv') == 'perm0000-0000	blocked	tc-1	true	allow_once,reject_once,allow_always' ]]"
+check 'agent-shell permission-prompt --show: logs the call with its caller and target' \
+      eval "[[ \$(last_log '[.argv[1], .caller.session_id, .target_session, .emacs_pid, .outcome, .rc] | @tsv') == 'permission-prompt	caller-0000	perm0000-0000	$perm_pid	shown	0' ]]"
+
+perm_tool agent-shell ls
+rc=$?
+check "agent-shell ls: a blocked shell's pending prompt title is listed" \
+      eval "(( rc == 0 )) && [[ \$(field '.sessions[] | select(.buffer == \"shell-perm\") | [.status, .permission_prompt == \"\`\`\`console\\nrm -rf build\\n\`\`\`\"] | @tsv') == 'blocked	true' ]]"
+
+perm_tool agent-shell ls --format table
+rc=$?
+check 'agent-shell ls --format table: a blocked shell shows its prompt title on one line, without fences' \
+      eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q ' PROMPT\$' && grep -q '^tvperm-5e .* blocked .* rm -rf build\$' '$tmpdir/stdout'"
+
+: > "$perm_log"
+perm_tool agent-shell permission-prompt approve tvperm-5e
+rc=$?
+check 'agent-shell permission-prompt approve: answers with allow_once and prints the outcome' \
+      eval "(( rc == 0 )) && [[ \$(field '[.answer, .option.kind, .option.option_id, .outcome, .status, .next_prompt] | @tsv') == 'approve	allow_once	default	answered	busy	' ]]"
+check "agent-shell permission-prompt approve: goes through agent-shell's response path from a timer, without interrupting" \
+      eval "[[ \$(cat '$perm_log') == 'respond 5 default in-timer=t' ]]"
+check 'agent-shell permission-prompt approve: logs the call with its caller, target and outcome' \
+      eval "[[ \$(last_log '[(.argv | join(\" \")), .caller.kind, .caller.session_id, .target_session, .outcome] | @tsv') == 'agent-shell permission-prompt approve tvperm-5e	claude	caller-0000	perm0000-0000	answered' ]]"
+
+perm_tool agent-shell permission-prompt --show tvperm-5e
+rc=$?
+check 'agent-shell permission-prompt --show, nothing pending: exits 1 with timvisher_emacs_no_permission_prompt' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_permission_prompt\""'
+
+: > "$perm_log"
+perm_tool agent-shell permission-prompt deny tvperm-5e
+rc=$?
+check 'agent-shell permission-prompt deny, nothing pending: exits 1 with timvisher_emacs_no_permission_prompt and sends nothing' \
+      eval "(( rc == 1 )) && stdout_empty && stderr_has '\"code\":\"timvisher_emacs_no_permission_prompt\"' && [[ ! -s '$perm_log' ]] && [[ \$(last_log .outcome) == no_prompt ]]"
+
+emacsclient -s "$socket_dir/tvperm" --eval '(tv-reset-prompt)' > /dev/null
+: > "$perm_log"
+perm_tool agent-shell permission-prompt deny perm0000-0000
+rc=$?
+check 'agent-shell permission-prompt deny: rejects, then interrupts with force, both from a timer' \
+      eval "(( rc == 0 )) && [[ \$(field '[.option.kind, .outcome, .status] | @tsv') == 'reject_once	answered	ready' ]] && [[ \$(paste -sd '|' '$perm_log') == 'respond 5 reject in-timer=t|interrupt t in-timer=t' ]]"
+
+: > "$perm_log"
+perm_tool agent-shell turn cancel tvperm-5e
+rc=$?
+check 'agent-shell turn cancel, idle shell: a no-op that says so, exit 0' \
+      eval "(( rc == 0 )) && [[ \$(field '[.outcome, .status] | @tsv') == 'idle	ready' ]] && stderr_has '\"code\":\"timvisher_emacs_turn_idle\"' && [[ ! -s '$perm_log' ]]"
+
+touch "$perm_busy"
+perm_tool agent-shell turn cancel tvperm-5e
+rc=$?
+check 'agent-shell turn cancel: interrupts with force from a timer and waits for the shell to go idle' \
+      eval "(( rc == 0 )) && [[ \$(field '[.outcome, .status] | @tsv') == 'cancelled	ready' ]] && [[ \$(cat '$perm_log') == 'interrupt t in-timer=t' ]]"
+check 'agent-shell turn cancel: logs the call with its caller, target and outcome' \
+      eval "[[ \$(last_log '[(.argv | join(\" \")), .caller.session_id, .target_session, .outcome] | @tsv') == 'agent-shell turn cancel tvperm-5e	caller-0000	perm0000-0000	cancelled' ]]"
+
+perm_tool agent-shell permission-prompt approve
+rc=$?
+check 'agent-shell permission-prompt without a session: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+perm_tool agent-shell turn stop tvperm-5e
+rc=$?
+check 'agent-shell turn with an unknown action: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
 printf 'Pick up the deploy.\n' > "$tmpdir/recover-note"
 : > "$send_log"
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell recover fork --timeout 20 --message-file "$tmpdir/recover-note" tvshell-1a
@@ -527,6 +665,8 @@ emacs_tool --help
 rc=$?
 check '--help: on stdout, exit 0' \
       eval "(( rc == 0 )) && grep -q 'server ls' '$tmpdir/stdout' && [[ ! -s '$tmpdir/stderr' ]]"
+check '--help: says agents answer prompts and cancel turns only when Tim has said to' \
+      grep -q 'only when Tim has' "$tmpdir/stdout"
 
 emacs_tool
 rc=$?

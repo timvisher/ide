@@ -14,6 +14,13 @@ source ~/.functions/aictl.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/tool_log.bash ||
+  {
+    echo "Unable to source tool_log functions" >&2
+    exit 1
+  }
+
 timvisher_emacs__schema_version=1
 
 # Matches the process name of an Emacs (emacs, Emacs, emacs-31.1) and
@@ -31,6 +38,9 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file>
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] <session>
        timvisher_emacs agent-shell recover fork [--message-file <file>] [--timeout <seconds>] <session>
+       timvisher_emacs agent-shell permission-prompt [--show] <session>
+       timvisher_emacs agent-shell permission-prompt approve|approve-always|deny [--timeout <seconds>] <session>
+       timvisher_emacs agent-shell turn cancel [--timeout <seconds>] <session>
        timvisher_emacs agent-shell launch [<checkout options>] claude|codex [<emacs args>...]
        timvisher_emacs cleanup [--no-dry-run]
        timvisher_emacs dev [<checkout options>] [--] [<emacs args>...]
@@ -39,7 +49,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   server socket  print the absolute socket path of the Emacs with that pid
   server eval    evaluate an expression in the Emacs with that pid; prints its value
   agent-shell ls          list every agent-shell in every live Emacs: name, ref, status,
-                          queued prompts, agent, Emacs pid, buffer and directory; JSON when
+                          queued prompts, agent, Emacs pid, buffer, directory and, for a
+                          blocked shell, its pending permission prompt's title; JSON when
                           stdout is not a terminal, a table when it is
   agent-shell start       start a new agent-shell (claude by default) in the Emacs with that
                           pid, submit the prompt file once it is ready, wait for its session,
@@ -57,6 +68,19 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           is a recovery fork in one note carrying the old one's queued
                           prompts in order (plus --message-file's text); prints the outcome
                           as JSON
+  agent-shell permission-prompt [--show]
+                          print, as JSON, that agent-shell's latest pending permission
+                          prompt: its title and its options (allow_once, allow_always,
+                          reject_once); exits 1 when none is pending
+  agent-shell permission-prompt approve|approve-always|deny
+                          answer that prompt with its allow_once, allow_always or
+                          reject_once option, through agent-shell's own response path
+                          (deny also interrupts the turn, as the prompt's reject key does);
+                          waits up to --timeout (default 10) for the answer to land and
+                          prints the outcome as JSON
+  agent-shell turn cancel interrupt that agent-shell's running turn, as its interrupt key
+                          does without asking; waits up to --timeout (default 30) for it to
+                          go idle and prints the outcome as JSON; an idle shell is left alone
   agent-shell launch      start a new Emacs, through op run, running a claude or codex
                           agent-shell
   cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
@@ -73,6 +97,13 @@ nearest Emacs ancestor of the session's process, else the server whose
 agent-shell buffers include the session.
 Queued text reads as though Tim typed it, so start a message to another
 agent with a "From the ... agent (session ...)" line.
+
+permission-prompt approve|approve-always|deny and turn cancel act on
+another session's decisions. An agent runs them only when Tim has
+explicitly said to answer that prompt or cancel that turn (relayed
+instructions included), never on its own judgment. Every
+permission-prompt and turn call is logged, with its caller, to the tool
+log (timvisher_tool_log).
 
 A busy agent-shell (not one waiting on a permission prompt) is wedged
 when its agent process is dead, when no session/prompt request is in
@@ -298,10 +329,11 @@ timvisher_emacs__with_helpers() {
   # Loaded from this checkout on every call, not from the target Emacs's
   # own config: the helpers then always match this CLI, and an Emacs
   # holding an older copy picks up the current one.
-  printf '(progn (load %s nil t) (load %s nil t) (load %s nil t) %s)' \
+  printf '(progn (load %s nil t) (load %s nil t) (load %s nil t) (load %s nil t) %s)' \
     "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-send.el")" \
     "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-recover.el")" \
     "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-start.el")" \
+    "$(timvisher_emacs__elisp_string "$emacs_d/timvisher-agent-shell-permission.el")" \
     "$1"
 }
 
@@ -467,7 +499,8 @@ timvisher_emacs__agent_shell_ls() {
     esac
   done
 
-  local query='(if (not (fboundp (quote agent-shell-buffers))) "[]" (json-serialize (vconcat (delq nil (mapcar (lambda (b) (condition-case nil (with-current-buffer b (let ((st (agent-shell--state))) (list (cons (quote buffer) (buffer-name)) (cons (quote session_id) (or (map-nested-elt st (quote (:session :id))) :null)) (cons (quote agent) (let ((i (map-elt (map-elt st :agent-config) :identifier))) (if i (format "%s" i) :null))) (cons (quote status) (symbol-name (agent-shell-status))) (cons (quote pending_prompts) (length (map-elt st :pending-prompts))) (cons (quote cwd) (or (ignore-errors (agent-shell-cwd)) :null))))) (error nil))) (agent-shell-buffers))))))'
+  local query='(if (not (fboundp (quote agent-shell-buffers))) "[]" (json-serialize (vconcat (delq nil (mapcar (lambda (b) (condition-case nil (with-current-buffer b (let ((st (agent-shell--state))) (list (cons (quote buffer) (buffer-name)) (cons (quote session_id) (or (map-nested-elt st (quote (:session :id))) :null)) (cons (quote agent) (let ((i (map-elt (map-elt st :agent-config) :identifier))) (if i (format "%s" i) :null))) (cons (quote status) (symbol-name (agent-shell-status))) (cons (quote permission_prompt) (if (eq (agent-shell-status) (quote blocked)) (timvisher-agent-shell-permission-summary) :null)) (cons (quote pending_prompts) (length (map-elt st :pending-prompts))) (cons (quote cwd) (or (ignore-errors (agent-shell-cwd)) :null))))) (error nil))) (agent-shell-buffers))))))'
+  query=$(timvisher_emacs__with_helpers "$query") || return 1
 
   local shells unreachable pid socket out
   shells=$(mktemp) || return 1
@@ -525,10 +558,12 @@ timvisher_emacs__agent_shell_ls() {
   fi
 
   {
-    printf 'NAME\tREF\tSTATUS\tQUEUED\tAGENT\tEMACS\tBUFFER\tCWD\n'
+    printf 'NAME\tREF\tSTATUS\tQUEUED\tAGENT\tEMACS\tBUFFER\tCWD\tPROMPT\n'
     jq -r --arg home "$HOME" '.sessions[] |
       [(.name // "-"), (.ref // "-"), .status, (.pending_prompts | tostring), (.agent // "-"),
-       (.emacs_pid | tostring), .buffer, ((.cwd // "-") | sub("^" + $home; "~"))] | @tsv' <<< "$listing"
+       (.emacs_pid | tostring), .buffer, ((.cwd // "-") | sub("^" + $home; "~")),
+       ((.permission_prompt // "-") | split("\n") | map(select(test("^```") | not)) | join(" ")
+        | gsub("[[:space:]]+"; " ") | if 60 < length then .[0:59] + "…" else . end)] | @tsv' <<< "$listing"
   } | column -t -s $'\t'
   jq -r '.unreachable[] | "unreachable: Emacs \(.pid) (\(.server_name)) did not answer within 3s"' <<< "$listing" >&2
 }
@@ -723,6 +758,296 @@ timvisher_emacs__agent_shell_recover_fork() {
         --message "The recovery fork of session ${session_id} was not ready after ${timeout}s; it may still finish." \
         --reason "Emacs finishes the recovery (killing the old shell and briefing the new one) when the new shell is ready, whether or not this command is waiting." \
         --suggestion "Check on it: timvisher_emacs server eval ${emacs_pid} '(timvisher-agent-shell-recover-status ${sid_arg})'"
+      return 1
+      ;;
+  esac
+}
+
+timvisher_emacs__log_session=''
+timvisher_emacs__log_emacs_pid=''
+timvisher_emacs__log_outcome=''
+
+timvisher_emacs__logged() {
+  local t0=$EPOCHREALTIME rc
+  "$@"
+  rc=$?
+
+  local extra
+  extra=",\"target_session\":$(timvisher_tool_log_json "$timvisher_emacs__log_session")"
+  extra+=",\"emacs_pid\":${timvisher_emacs__log_emacs_pid:-null}"
+  extra+=",\"outcome\":$(timvisher_tool_log_json "$timvisher_emacs__log_outcome")"
+  timvisher_tool_log_write timvisher_emacs "$(realpath "${BASH_SOURCE[0]}")" "$t0" "$rc" "$extra" \
+    "${timvisher_emacs__argv[@]}"
+  return "$rc"
+}
+
+timvisher_emacs__wait_operation() {
+  local emacs_pid=$1 socket=$2 sid_arg=$3 timeout=$4 done_filter=$5 status
+
+  SECONDS=0
+  while :
+  do
+    status=$(timvisher_emacs__eval_value 10 "$emacs_pid" "$socket" \
+      "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-operation-status $sid_arg)")") || return 1
+    if [[ $status != '{'* ]] || [[ $(jq -r "$done_filter" <<< "$status") == true ]] || (( timeout <= SECONDS ))
+    then
+      printf '%s\n' "$status"
+      return 0
+    fi
+    sleep 0.5
+  done
+}
+
+timvisher_emacs__agent_shell_permission_prompt() {
+  local answer=show timeout=10
+
+  case ${1-} in
+    --show)
+      shift
+      ;;
+    approve|approve-always|deny)
+      answer=$1
+      shift
+      ;;
+  esac
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 1 == $# )) || { usage; return 2; }
+
+  local found emacs_pid socket session_id name
+  found=$(timvisher_emacs__agent_shell_server "$1") || return 1
+  IFS=$'\t' read -r emacs_pid socket _ session_id name <<< "$found"
+  timvisher_emacs__log_session=$session_id
+  timvisher_emacs__log_emacs_pid=$emacs_pid
+  local sid_arg
+  sid_arg=$(timvisher_emacs__elisp_string "$session_id")
+
+  local report
+  if [[ $answer == show ]]
+  then
+    report=$(timvisher_emacs__eval_value 10 "$emacs_pid" "$socket" \
+      "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-permission-prompt $sid_arg)")") || return 1
+  else
+    local kind
+    case $answer in
+      approve) kind=allow_once ;;
+      approve-always) kind=allow_always ;;
+      deny) kind=reject_once ;;
+    esac
+    report=$(timvisher_emacs__eval_value 10 "$emacs_pid" "$socket" \
+      "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-permission-answer $sid_arg $(timvisher_emacs__elisp_string "$kind"))")") || return 1
+  fi
+
+  if [[ $report != '{'* ]]
+  then
+    timvisher_emacs__log_outcome=no_buffer
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "Emacs ${emacs_pid} has no agent-shell buffer with session id ${session_id}." \
+      --reason "The permission-prompt helper answered: ${report}"
+    return 1
+  fi
+
+  if [[ $(jq -r '.prompt == null' <<< "$report") == true ]]
+  then
+    timvisher_emacs__log_outcome=no_prompt
+    aictl_error \
+      --code timvisher_emacs_no_permission_prompt \
+      --message "Session ${session_id} has no pending permission prompt; it is $(jq -r .status <<< "$report")." \
+      --suggestion "See every shell's status, and a blocked one's prompt, with 'timvisher_emacs agent-shell ls'"
+    return 1
+  fi
+
+  if [[ $answer == show ]]
+  then
+    timvisher_emacs__log_outcome=shown
+    jq --argjson schema_version "$timvisher_emacs__schema_version" \
+      --arg name "$name" --argjson pid "$emacs_pid" \
+      '{schema_version: $schema_version, session_id, name: (if $name == "" then null else $name end),
+        emacs_pid: $pid, buffer, status, pending_count, prompt}' <<< "$report"
+    return
+  fi
+
+  if [[ $(jq -r .outcome <<< "$report") == no_such_option ]]
+  then
+    timvisher_emacs__log_outcome=no_such_option
+    local -a suggestions=()
+    local offered
+    while IFS= read -r offered
+    do
+      suggestions+=(--suggestion "It offers ${offered}")
+    done < <(jq -r '.prompt.options[] | "\(.kind) (\(.name))"' <<< "$report")
+    aictl_error \
+      --code timvisher_emacs_no_such_permission_option \
+      --message "Session ${session_id}'s permission prompt offers no ${kind} option, so ${answer} cannot answer it." \
+      "${suggestions[@]}"
+    return 1
+  fi
+
+  local status
+  status=$(timvisher_emacs__wait_operation "$emacs_pid" "$socket" "$sid_arg" "$timeout" \
+    '.operation.outcome != "scheduled" and (.status != "blocked" or .prompt.tool_call_id != .operation.tool_call_id)') ||
+    return 1
+  if [[ $status != '{'* ]]
+  then
+    timvisher_emacs__log_outcome=no_buffer
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "The agent-shell of session ${session_id} went away while its prompt was being answered." \
+      --reason "timvisher-agent-shell-operation-status answered: ${status}"
+    return 1
+  fi
+
+  timvisher_emacs__log_outcome=$(jq -r '.operation.outcome' <<< "$status")
+  case $timvisher_emacs__log_outcome in
+    answered)
+      jq --argjson schema_version "$timvisher_emacs__schema_version" \
+        --arg name "$name" --argjson pid "$emacs_pid" --arg answer "$answer" \
+        --argjson scheduled "$report" \
+        '{schema_version: $schema_version, session_id, name: (if $name == "" then null else $name end),
+          emacs_pid: $pid, buffer, answer: $answer,
+          option: ([$scheduled.prompt.options[] | select(.option_id == $scheduled.option_id)] | first),
+          answered_prompt: $scheduled.prompt, outcome: .operation.outcome, status,
+          next_prompt: .prompt}' <<< "$status"
+      ;;
+    already_answered)
+      aictl_error \
+        --code timvisher_emacs_permission_already_answered \
+        --message "Session ${session_id}'s permission prompt was answered by someone else before ${answer} could send its answer; nothing was sent." \
+        --suggestion "Check whether another prompt is pending: timvisher_emacs agent-shell permission-prompt --show ${session_id}"
+      return 1
+      ;;
+    failed)
+      aictl_error \
+        --code timvisher_emacs_permission_answer_failed \
+        --message "Answering session ${session_id}'s permission prompt failed in Emacs ${emacs_pid}." \
+        --reason "$(jq -r '.operation.error // "unknown"' <<< "$status")" \
+        --suggestion "Answer it in that shell by hand, or ask Tim to"
+      return 1
+      ;;
+    *)
+      aictl_error \
+        --code timvisher_emacs_permission_answer_pending \
+        --message "Session ${session_id}'s permission prompt was not answered after ${timeout}s." \
+        --reason "The answer is sent from a timer in Emacs ${emacs_pid}, which may be busy; it is still sent when the timer runs." \
+        --suggestion "Check on it: timvisher_emacs agent-shell permission-prompt --show ${session_id}"
+      return 1
+      ;;
+  esac
+}
+
+timvisher_emacs__turn_json() {
+  jq --argjson schema_version "$timvisher_emacs__schema_version" --arg name "$1" --argjson pid "$2" \
+    '{schema_version: $schema_version, session_id, name: (if $name == "" then null else $name end),
+      emacs_pid: $pid, buffer, outcome: (.outcome // .operation.outcome), status}'
+}
+
+timvisher_emacs__agent_shell_turn_cancel() {
+  local timeout=30
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 1 == $# )) || { usage; return 2; }
+
+  local found emacs_pid socket session_id name
+  found=$(timvisher_emacs__agent_shell_server "$1") || return 1
+  IFS=$'\t' read -r emacs_pid socket _ session_id name <<< "$found"
+  timvisher_emacs__log_session=$session_id
+  timvisher_emacs__log_emacs_pid=$emacs_pid
+  local sid_arg
+  sid_arg=$(timvisher_emacs__elisp_string "$session_id")
+
+  local report
+  report=$(timvisher_emacs__eval_value 10 "$emacs_pid" "$socket" \
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-turn-cancel $sid_arg)")") || return 1
+  if [[ $report != '{'* ]]
+  then
+    timvisher_emacs__log_outcome=no_buffer
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "Emacs ${emacs_pid} has no agent-shell buffer with session id ${session_id}." \
+      --reason "timvisher-agent-shell-turn-cancel answered: ${report}"
+    return 1
+  fi
+
+  if [[ $(jq -r .outcome <<< "$report") == idle ]]
+  then
+    timvisher_emacs__log_outcome=idle
+    aictl_info \
+      --code timvisher_emacs_turn_idle \
+      --message "Session ${session_id} has no turn running; nothing was cancelled."
+    timvisher_emacs__turn_json "$name" "$emacs_pid" <<< "$report"
+    return 0
+  fi
+
+  local status
+  status=$(timvisher_emacs__wait_operation "$emacs_pid" "$socket" "$sid_arg" "$timeout" \
+    '.operation.outcome != "scheduled" and .status == "ready"') || return 1
+  if [[ $status != '{'* ]]
+  then
+    timvisher_emacs__log_outcome=no_buffer
+    aictl_error \
+      --code timvisher_emacs_no_session_buffer \
+      --message "The agent-shell of session ${session_id} went away while its turn was being cancelled." \
+      --reason "timvisher-agent-shell-operation-status answered: ${status}"
+    return 1
+  fi
+
+  timvisher_emacs__log_outcome=$(jq -r '.operation.outcome' <<< "$status")
+  case $timvisher_emacs__log_outcome in
+    cancelled)
+      if [[ $(jq -r .status <<< "$status") == ready ]]
+      then
+        timvisher_emacs__turn_json "$name" "$emacs_pid" <<< "$status"
+        return 0
+      fi
+      timvisher_emacs__log_outcome=cancel_pending
+      aictl_error \
+        --code timvisher_emacs_turn_cancel_pending \
+        --message "Session ${session_id}'s turn was cancelled but it was still $(jq -r .status <<< "$status") after ${timeout}s." \
+        --reason "The cancel went to the agent, which ends the turn when it acts on it." \
+        --suggestion "Check on it with 'timvisher_emacs agent-shell is-wedged ${session_id}'; a wedged shell is what 'recover fork' is for"
+      return 1
+      ;;
+    failed)
+      aictl_error \
+        --code timvisher_emacs_turn_cancel_failed \
+        --message "Cancelling session ${session_id}'s turn failed in Emacs ${emacs_pid}." \
+        --reason "$(jq -r '.operation.error // "unknown"' <<< "$status")" \
+        --suggestion "Interrupt it in that shell by hand, or ask Tim to"
+      return 1
+      ;;
+    *)
+      aictl_error \
+        --code timvisher_emacs_turn_cancel_pending \
+        --message "Session ${session_id}'s turn cancel had not run after ${timeout}s." \
+        --reason "The cancel is sent from a timer in Emacs ${emacs_pid}, which may be busy; it is still sent when the timer runs." \
+        --suggestion "Check on it with 'timvisher_emacs agent-shell ls'"
       return 1
       ;;
   esac
@@ -1115,6 +1440,19 @@ case ${1-} in
         [[ ${3-} == fork ]] || { usage; exit 2; }
         shift 3
         timvisher_emacs__agent_shell_recover_fork "$@"
+        exit
+        ;;
+      permission-prompt)
+        timvisher_emacs__argv=("$@")
+        shift 2
+        timvisher_emacs__logged timvisher_emacs__agent_shell_permission_prompt "$@"
+        exit
+        ;;
+      turn)
+        [[ ${3-} == cancel ]] || { usage; exit 2; }
+        timvisher_emacs__argv=("$@")
+        shift 3
+        timvisher_emacs__logged timvisher_emacs__agent_shell_turn_cancel "$@"
         exit
         ;;
       launch)
