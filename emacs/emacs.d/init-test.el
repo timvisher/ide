@@ -416,45 +416,108 @@ through the width mode's composition function."
            ,@body)
        (delete-directory bin t))))
 
-(ert-deftest test-init-tmux-osc-52-on-a-workspace ()
-  "On Linux with no display, Emacs in tmux copies by OSC 52, and never
-queries it."
-  (require 'term/tmux)
-  (init-test--with-clipboard-host 'gnu/linux nil nil
-    (let ((xterm-tmux-extra-capabilities '(modifyOtherKeys)))
-      (ide-tmux-osc-52-clipboard-setup)
-      (should (memq 'setSelection xterm-tmux-extra-capabilities))
-      (should-not (memq 'getSelection xterm-tmux-extra-capabilities)))))
+(ert-deftest test-init-workspace-clipboard-on-a-workspace ()
+  "Linux with no display is a workspace."
+  (should (init-test--with-clipboard-host 'gnu/linux nil nil
+            (ide-workspace-clipboard-p))))
 
-(ert-deftest test-init-tmux-osc-52-off-on-the-laptop ()
+(ert-deftest test-init-workspace-clipboard-off-on-the-laptop ()
   "The laptop (darwin, with pbcopy) keeps its native clipboard."
-  (require 'term/tmux)
-  (init-test--with-clipboard-host 'darwin nil t
-    (let ((xterm-tmux-extra-capabilities '(modifyOtherKeys)))
-      (ide-tmux-osc-52-clipboard-setup)
-      (should-not (memq 'setSelection xterm-tmux-extra-capabilities)))))
+  (should-not (init-test--with-clipboard-host 'darwin nil t
+                (ide-workspace-clipboard-p))))
 
-(ert-deftest test-init-tmux-osc-52-off-with-a-display ()
-  "Linux with an X or Wayland display has a native clipboard, so it
-doesn't copy by OSC 52."
+(ert-deftest test-init-workspace-clipboard-off-with-a-display ()
+  "Linux with an X or Wayland display has a native clipboard."
   (should-not (init-test--with-clipboard-host 'gnu/linux '("DISPLAY=:0") nil
-                (ide-tty-osc-52-clipboard-p)))
+                (ide-workspace-clipboard-p)))
   (should-not (init-test--with-clipboard-host
                   'gnu/linux '("WAYLAND_DISPLAY=wayland-0") nil
-                (ide-tty-osc-52-clipboard-p))))
+                (ide-workspace-clipboard-p))))
 
 ;; pbcopy on Linux is a workspace shim around the box's xclip, not a
-;; native clipboard, so it doesn't turn OSC 52 off.
-(ert-deftest test-init-tmux-osc-52-on-with-a-linux-pbcopy ()
-  "Linux with pbcopy and no display still copies by OSC 52."
+;; native clipboard.
+(ert-deftest test-init-workspace-clipboard-on-with-a-linux-pbcopy ()
+  "Linux with pbcopy and no display is still a workspace."
   (should (init-test--with-clipboard-host 'gnu/linux nil t
-            (ide-tty-osc-52-clipboard-p))))
+            (ide-workspace-clipboard-p))))
 
-(ert-deftest test-init-tmux-osc-52-matches-this-host ()
-  "Loading term/tmux applies the scope to the running Emacs."
-  (require 'term/tmux)
-  (should (eq (and (memq 'setSelection xterm-tmux-extra-capabilities) t)
-              (and (ide-tty-osc-52-clipboard-p) t))))
+(ert-deftest test-init-workspace-clipboard-matches-this-host ()
+  "init.el installs the workspace cut function exactly on a workspace."
+  (should (eq (eq interprogram-cut-function #'ide-workspace-clipboard-cut)
+              (and (ide-workspace-clipboard-p) t))))
+
+(defmacro init-test--with-copy-program (exit-code &rest body)
+  "Run BODY with `ide-workspace-clipboard-program' a stub exiting EXIT-CODE.
+The stub records its stdin in the file `copied'. OSC 52 sends are
+collected in `sent' instead of reaching the terminal."
+  (declare (indent 1))
+  `(let* ((dir (make-temp-file "init-test-clip" t))
+          (copied (expand-file-name "copied" dir))
+          (ide-workspace-clipboard-program (expand-file-name "copy" dir))
+          (sent nil))
+     (unwind-protect
+         (progn
+           (write-region (format "#!/bin/sh\ncat > '%s'\nexit %d\n" copied ,exit-code)
+                         nil ide-workspace-clipboard-program)
+           (set-file-modes ide-workspace-clipboard-program #o755)
+           (cl-letf (((symbol-function 'ide-workspace-clipboard--osc-52)
+                      (lambda (text _frame) (push text sent))))
+             ,@body))
+       (delete-directory dir t))))
+
+(defun init-test--finish (proc)
+  (while (process-live-p proc)
+    (accept-process-output proc 0.1))
+  (accept-process-output nil 0.1))
+
+(ert-deftest test-init-workspace-clipboard-command-kill-goes-to-the-daemon ()
+  "A kill made by a command goes to the daemon, and no OSC 52 when it
+took it."
+  (init-test--with-copy-program 0
+    (let ((this-command 'kill-ring-save))
+      (init-test--finish (ide-workspace-clipboard-cut "to-the-laptop")))
+    (should (equal "to-the-laptop"
+                   (with-temp-buffer (insert-file-contents copied) (buffer-string))))
+    (should-not sent)))
+
+(ert-deftest test-init-workspace-clipboard-falls-back-once-when-not-sent ()
+  "When the daemon certainly didn't get it, the kill goes by OSC 52,
+once."
+  (init-test--with-copy-program 3
+    (let ((this-command 'kill-region))
+      (init-test--finish (ide-workspace-clipboard-cut "fallback")))
+    (should (equal '("fallback") sent))))
+
+(ert-deftest test-init-workspace-clipboard-never-resends-an-unconfirmed-copy ()
+  "A copy the daemon may have got is not sent again by OSC 52."
+  (init-test--with-copy-program 4
+    (let ((this-command 'kill-region))
+      (init-test--finish (ide-workspace-clipboard-cut "maybe-landed")))
+    (should-not sent)))
+
+(ert-deftest test-init-workspace-clipboard-ignores-programmatic-kills ()
+  "kill-new outside a command (timers, filters, emacsclient --eval)
+doesn't leave the box."
+  (init-test--with-copy-program 0
+    (let ((this-command nil))
+      (should-not (ide-workspace-clipboard-cut "from-a-package")))
+    (should-not (file-exists-p copied))
+    (should-not sent)))
+
+(ert-deftest test-init-workspace-clipboard-osc-52-wraps-for-tmux ()
+  "The OSC 52 fallback goes through tmux's passthrough inside tmux, and
+plain outside it."
+  (let (out)
+    (cl-letf (((symbol-function 'send-string-to-terminal)
+               (lambda (s &optional _terminal) (push s out))))
+      (let ((process-environment (cons "TMUX=/tmp/tmux-1/default,1,0"
+                                       process-environment)))
+        (ide-workspace-clipboard--osc-52 "hi" (selected-frame)))
+      (let ((process-environment (cons "TMUX" process-environment)))
+        (ide-workspace-clipboard--osc-52 "hi" (selected-frame))))
+    (should (equal (list "\e]52;c;aGk=\a"
+                         "\ePtmux;\e\e]52;c;aGk=\a\e\\")
+                   out))))
 
 (provide 'init-test)
 ;;; init-test.el ends here

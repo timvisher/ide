@@ -625,23 +625,63 @@ over the code-block language minibuffer prompt."
 (timvisher-tty-emoji-presentation-mode 1)
 
 ;; Scoped by platform, not by a <system-name>.el host file: workspace
-;; host names vary. Not by pbcopy either: a workspace pbcopy shim (around
-;; the box's xclip) would turn OSC 52 off on exactly the boxes that need
-;; it, so a pbcopy on PATH doesn't mean macOS.
-(defun ide-tty-osc-52-clipboard-p ()
-  "Non-nil where Emacs has no native clipboard and should copy by OSC 52."
+;; host names vary. Not by pbcopy either: workspaces get a pbcopy shim
+;; around the box's xclip, so a pbcopy on PATH doesn't mean macOS.
+(defun ide-workspace-clipboard-p ()
+  "Non-nil where Emacs has no native clipboard: a workspace."
   (not (or (eq system-type 'darwin)
            (getenv "DISPLAY")
            (getenv "WAYLAND_DISPLAY"))))
 
-;; Not getSelection: mosh can't answer an OSC 52 query, it stores the "?"
-;; as the clipboard instead. Pasting from the laptop stays Cmd+V.
-(defun ide-tmux-osc-52-clipboard-setup ()
-  (when (ide-tty-osc-52-clipboard-p)
-    (add-to-list 'xterm-tmux-extra-capabilities 'setSelection)))
+(defvar ide-workspace-clipboard-program "~/bin/timvisher_workspace_clipboard")
 
-(with-eval-after-load 'term/tmux
-  (ide-tmux-osc-52-clipboard-setup))
+;; Through tmux's passthrough rather than as plain OSC 52: the workspace
+;; tmux has set-clipboard off, so it would drop a plain one.
+(defun ide-workspace-clipboard--osc-52 (text frame)
+  "Send TEXT to FRAME's terminal clipboard by OSC 52."
+  (when (and (frame-live-p frame) (eq t (framep frame)))
+    (let ((osc (format "\e]52;c;%s\a"
+                       (base64-encode-string
+                        (encode-coding-string text 'utf-8-unix) t))))
+      (send-string-to-terminal
+       (if (getenv "TMUX" frame)
+           (concat "\ePtmux;" (string-replace "\e" "\e\e" osc) "\e\\")
+         osc)
+       (frame-terminal frame)))))
+
+;; Only kills made by a command: this-command is nil in timers, process
+;; filters and emacsclient --eval, which is how packages and agents call
+;; kill-new. OSC 52 only when the daemon certainly didn't get the copy
+;; (exit 3), never after an unconfirmed one (exit 4), so a copy is never
+;; sent both ways. Not getSelection: mosh can't answer an OSC 52 query.
+(defun ide-workspace-clipboard-cut (text)
+  "Copy TEXT to the laptop clipboard from a workspace, asynchronously.
+Returns the copy's process, if one was started."
+  (when this-command
+    (let ((frame (selected-frame))
+          (program (expand-file-name ide-workspace-clipboard-program)))
+      (if (not (file-executable-p program))
+          (progn (ide-workspace-clipboard--osc-52 text frame) nil)
+        (let ((proc (make-process
+                     :name "ide-workspace-clipboard"
+                     :command (list program "copy")
+                     :connection-type 'pipe
+                     :coding 'utf-8-unix
+                     :noquery t
+                     :stderr (get-buffer-create " *ide-workspace-clipboard*")
+                     :sentinel
+                     (lambda (p _event)
+                       (when (memq (process-status p) '(exit signal))
+                         (pcase (process-exit-status p)
+                           (0 nil)
+                           (3 (ide-workspace-clipboard--osc-52 text frame))
+                           (_ (message "clipboard: copy not confirmed by the laptop; not resent"))))))))
+          (process-send-string proc text)
+          (process-send-eof proc)
+          proc)))))
+
+(when (ide-workspace-clipboard-p)
+  (setq interprogram-cut-function #'ide-workspace-clipboard-cut))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
