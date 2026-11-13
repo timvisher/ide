@@ -95,6 +95,22 @@ then pass "idempotent (rerun -> bootstrap + fire, no bootout)"
 else fail "rerun: log=[$(tr '\n' ';' <<<"$log2")] firelog=[$(cat "$tmpdir/firelog" 2>&1)]"
 fi
 
+# --- no launchd (Linux): fire only, quietly, exit 0 ----------------------
+run_test
+nolaunchbin="$tmpdir/nolaunchbin"
+mkdir -p "$nolaunchbin"
+ln -s "$(command -v bash)" "$nolaunchbin/bash"
+cp "$mockbin/timvisher_kctx__agent_bootstrap_and_fire__kctx_cache_job" "$nolaunchbin/"
+rm -rf "$dest"
+: > "$tmpdir/firelog"
+FIRE_LOG="$tmpdir/firelog" PATH="$nolaunchbin" TIMVISHER_LAUNCHAGENTS_DIR="$dest" \
+  "$bindir/timvisher_kctx__agent_bootstrap_and_fire" >"$tmpdir/out" 2>"$tmpdir/err"
+rc=$?
+if (( rc == 0 )) && [[ ! -s $tmpdir/err && ! -e $dest ]] && grep -qx "fired" "$tmpdir/firelog"
+then pass "no launchctl -> fires the cache job only, silently, exit 0"
+else fail "no launchctl: rc=$rc err=[$(cat "$tmpdir/err")] dest=[$(ls "$dest" 2>&1)] firelog=[$(cat "$tmpdir/firelog")]"
+fi
+
 echo
 echo "ran $tests test(s), $failures failure(s)"
 (( failures == 0 ))
