@@ -115,7 +115,7 @@ check "lock key present but false" \
   '{"idle_seconds":0,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":false,"away":false,"away_reasons":[]}' \
   0 '' '<key>CGSSessionScreenIsLocked</key><false/>'
 
-now=$(date +%s)
+now=$(timvisher_date now +%s)
 epoch=$(run 0 '' '' | sed -E 's/.*"checked_at_epoch":([0-9]+).*/\1/')
 if [[ $epoch =~ ^[0-9]+$ ]] && (( now - 5 <= epoch && epoch <= now + 5 ))
 then

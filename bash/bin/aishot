@@ -233,7 +233,7 @@ setup_run_dir() {
     repo_root=$(git rev-parse --show-toplevel) || return 1
 
     local ts
-    ts=$(date +%Y%m%dT%H%M%S)
+    ts=$(timvisher_date now +%Y%m%dT%H%M%S)
 
     local encoded_repo="${repo_root#/}"
     encoded_repo="${encoded_repo//\//_}"
@@ -1265,7 +1265,7 @@ _review_uuid() {
     fi
 }
 
-_review_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+_review_iso() { timvisher_date now -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # True when $1 is one space-separated word in the whitelist $2.
 _review_in_set() {
@@ -1387,7 +1387,7 @@ _review_begin_iteration() {
         if [[ -f $path ]]
         then
             local ts
-            ts=$(date +%Y%m%dT%H%M%S)
+            ts=$(timvisher_date now +%Y%m%dT%H%M%S)
             cp "$path" "${dir}/review.bak.${ts}.json" ||
                 { echo "Error: could not archive prior review." >&2; return 1; }
         fi

@@ -23,7 +23,7 @@ cd "${info_dir}"
 
 # Backup existing dir file if it exists
 if [[ -f dir ]]; then
-  backup_name="dir.$(date -u +%Y-%m-%dT%H-%M-%S%z).bak"
+  backup_name="dir.$(timvisher_date now -u +%Y-%m-%dT%H-%M-%S%z).bak"
   info "Backing up existing dir file to ${backup_name}"
   mv dir "${backup_name}"
 fi

@@ -39,7 +39,7 @@ run_shot() {
         codex exec \
             -c 'mcp_servers={}' \
             --sandbox read-only --json - |
-        jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
+        jq --unbuffered -r --arg tz_offset "$(timvisher_date now +%z)" -f "$JQ_FILTER"
 }
 
 aishot_shot_main codexshot Codex run_shot "$@"

@@ -318,7 +318,7 @@ aictl_warn() {
     # Capture timestamp up front; if date fails or returns non-digits,
     # emit JSON null rather than a silent 0 that would corrupt the audit.
     local _aictl__ts
-    _aictl__ts=$(date +%s 2>/dev/null || true)
+    _aictl__ts=$(timvisher_date now +%s 2>/dev/null || true)
     [[ $_aictl__ts =~ ^[0-9]+$ ]] || _aictl__ts="null"
     {
       printf '{"ts":%s,"code":"%s"' "$_aictl__ts" "$(aictl__json_escape "${_code:-}")"

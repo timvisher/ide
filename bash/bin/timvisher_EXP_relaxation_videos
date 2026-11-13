@@ -26,16 +26,16 @@ do
              -e '    delay 0.5' \
              -e '  end if' \
              -e 'end repeat' &&
-    date -u "+%FT%T%z INFO Relaxation Videos playing in $((SECONDS)) seconds"  >&2 &&
+    timvisher_date now -u "+%FT%T%z INFO Relaxation Videos playing in $((SECONDS)) seconds"  >&2 &&
     exit
 
   if (( 2 < $(osascript -e 'tell application "System Events" to get count of (application processes whose name is "VLC")') ))
   then
-    date -u '+%FT%T%z ERROR More than 2 running VLCs. Impossible!' >&2
+    timvisher_date now -u '+%FT%T%z ERROR More than 2 running VLCs. Impossible!' >&2
     exit 1
   fi
 
-  date -u "+%FT%T%z INFO Looping after $((SECONDS)) seconds" >&2
+  timvisher_date now -u "+%FT%T%z INFO Looping after $((SECONDS)) seconds" >&2
   sleep 0.5
 done
 

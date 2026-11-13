@@ -19,7 +19,7 @@ source "${SELF_DIR}/../lib/aishot_help.bash"
 # aishot make-prompt).
 run_shot() {
     claude --verbose --dangerously-skip-permissions --output-format stream-json -p |
-        jq --unbuffered -r --arg tz_offset "$(date +%z)" -f "$JQ_FILTER"
+        jq --unbuffered -r --arg tz_offset "$(timvisher_date now +%z)" -f "$JQ_FILTER"
 }
 
 aishot_shot_main claudeshot Claude run_shot "$@"

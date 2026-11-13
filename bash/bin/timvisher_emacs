@@ -1211,7 +1211,7 @@ timvisher_emacs__kill_each() {
   for i in "${!pids[@]}"
   do
     pid=${pids[$i]}
-    printf "%s Killing %s %d/%d '%s'\n" "$(date -u '+%FT%T%z')" "$label" "$(( i + 1 ))" "${#pids[@]}" "$pid" >&2
+    printf "%s Killing %s %d/%d '%s'\n" "$(timvisher_date now -u '+%FT%T%z')" "$label" "$(( i + 1 ))" "${#pids[@]}" "$pid" >&2
     if [[ $dry_run == true ]]
     then
       printf 'DRY_RUN: kill %s\n' "$pid" >&2

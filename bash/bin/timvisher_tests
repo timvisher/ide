@@ -631,8 +631,13 @@ run_suite() {
   declare -f name_of new_home home_env tree_of show_log run_suite
 } > "$run_dir/state.bash" || die "Can't write '%s'" "$run_dir/state.bash"
 
+# This checkout's timvisher_date, not PATH's: the runner runs outside the
+# HOME it builds, so PATH finds the installed ide, which can lag the
+# branch under test.
+timvisher_date=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/timvisher_date
+
 runs=${XDG_STATE_HOME:-$HOME/.local/state}/timvisher_tests/runs
-kept=$runs/$(date -u +%Y%m%dT%H%M%SZ)-$$
+kept=$runs/$("$timvisher_date" now -u +%Y%m%dT%H%M%SZ)-$$
 mkdir -p "$kept" || die "Can't create '%s'" "$kept"
 while IFS= read -r old
 do
@@ -650,7 +655,7 @@ load_average() {
   if read -r _ one five fifteen _ < <(sysctl -n vm.loadavg 2>/dev/null) ||
      read -r one five fifteen _ < /proc/loadavg 2>/dev/null
   then
-    printf '%s %s %s %s\n' "$(date +%s)" "$one" "$five" "$fifteen"
+    printf '%s %s %s %s\n' "$("$timvisher_date" now +%s)" "$one" "$five" "$fifteen"
   fi
 }
 

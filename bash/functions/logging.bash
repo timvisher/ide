@@ -159,7 +159,7 @@ timvisher_logging__log() {
       fi
     else
       # Format: timestamp LEVEL caller_function: message
-      printf "%s %s %s: ${1}\n" "$(date -u '+%FT%T%z')" "$level" "${FUNCNAME[2]:-main}" "${@:2}" >&2
+      printf "%s %s %s: ${1}\n" "$(timvisher_date now -u '+%FT%T%z')" "$level" "${FUNCNAME[2]:-main}" "${@:2}" >&2
     fi
   fi
 }

@@ -71,7 +71,7 @@ STUB
 chmod +x "$tmpdir/op" ||
   die 'could not make the op stub executable'
 
-today=$(date +%Y-%m-%d) ||
+today=$(timvisher_date now +%Y-%m-%d) ||
   die 'could not compute today'
 yesterday=$(timvisher_date add "$today" -1) ||
   die 'could not compute yesterday'
