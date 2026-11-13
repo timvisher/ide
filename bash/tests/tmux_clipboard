@@ -63,6 +63,7 @@ fi
 cat > "${pbcopy_bin}/pbcopy" <<STUB
 #!/bin/sh
 cat > '${pbcopy_out}'
+exit "\${PBCOPY_RC:-0}"
 STUB
 chmod +x "${pbcopy_bin}/pbcopy"
 
@@ -80,12 +81,12 @@ t() {
 # Start a server with the ide tmux.conf whose one client is script(1)'s
 # pty, recording everything tmux writes to it. The server's PATH is
 # <bin>:/bin, so whether pbcopy exists is up to the case.
-workspace=0
+native=1
 start_server() {
   local capture=$1 bin=$2 pane_cmd=$3 i
   local -a cmd=(
     env -u TMUX "TMUX_TMPDIR=${t_dir}" "PATH=${bin}:/bin" TERM=xterm-256color
-    "TIMVISHER_WORKSPACE_CLIPBOARD=${workspace}" ${server_env[@]+"${server_env[@]}"}
+    "TIMVISHER_NATIVE_CLIPBOARD=${native}" ${server_env[@]+"${server_env[@]}"}
     "$real_tmux" -f "$tmux_conf" new-session -x 80 -y 24 "$pane_cmd"
   )
   if [[ $script_style = util-linux ]]
@@ -118,6 +119,18 @@ osc52s() {
 
 b64() {
   printf %s "$1" | base64 | tr -d '\n'
+}
+
+check() {
+  local name=$1
+  shift
+  run_test
+  if "$@"
+  then
+    pass "$name"
+  else
+    fail "$name"
+  fi
 }
 
 check_osc52() {
@@ -196,25 +209,25 @@ else
   fail "no client attached for the C-] y pbcopy case"
 fi
 
-workspace=1
-ws_home="${t_dir}/ws-home"
-ws_copied="${t_dir}/ws-copied"
-if ! mkdir -p "${ws_home}/bin"
+native=0
+nn_home="${t_dir}/no-native-home"
+if ! mkdir -p "${nn_home}/bin" \
+  || ! ln -s "$(cd "$(dirname "$0")/../bin" && pwd)/timvisher_clipboard_copy" \
+    "${nn_home}/bin/timvisher_clipboard_copy"
 then
-  echo "mkdir '${ws_home}/bin' failed" >&2
+  echo "no-native home setup failed under '${t_dir}'" >&2
   exit 1
 fi
-cat > "${ws_home}/bin/timvisher_workspace_clipboard" <<STUB
-#!/bin/sh
-cat >> '${ws_copied}'
-printf '\n' >> '${ws_copied}'
-STUB
-chmod +x "${ws_home}/bin/timvisher_workspace_clipboard"
 
-text=tmux-clipboard-ws-copy-mode
-capture="${t_dir}/ws-copy-mode"
-rm -f -- "$ws_copied"
-if timvisher_tests_with_home "$ws_home" start_server "$capture" "$no_pbcopy_bin" \
+# shellcheck disable=SC2329
+pbcopy_got() {
+  [[ $(cat "$pbcopy_out" 2>/dev/null) = "$1" ]]
+}
+
+text=tmux-clipboard-nn-copy-mode
+capture="${t_dir}/nn-copy-mode"
+rm -f -- "$pbcopy_out"
+if timvisher_tests_with_home "$nn_home" start_server "$capture" "${pbcopy_bin}:/usr/bin" \
   "printf '%s\\n' '${text}'; sleep 30"
 then
   t copy-mode
@@ -222,83 +235,69 @@ then
   t send-keys -X begin-selection
   t send-keys -X end-of-line
   t send-keys -X copy-pipe-and-cancel
-  stop_server
-  check_osc52 "workspace: a copy-mode copy sends no OSC 52" "$capture" ''
-  run_test
-  if grep -q -- "$text" "$ws_copied" 2>/dev/null
-  then
-    pass "workspace: a copy-mode copy goes to timvisher_workspace_clipboard"
-  else
-    fail "workspace: copy-command got '$(cat "$ws_copied" 2>/dev/null)', want '${text}'"
-  fi
-else
-  stop_server
-  run_test
-  fail "no client attached for the workspace copy-mode case"
-fi
-
-text=tmux-clipboard-ws-prefix-y
-capture="${t_dir}/ws-prefix-y"
-rm -f -- "$ws_copied" "$pbcopy_out"
-if timvisher_tests_with_home "$ws_home" start_server "$capture" "$pbcopy_bin" 'sleep 30'
-then
-  t set-buffer "$text"
-  t send-keys -K -c "$client" C-] y
   sleep 0.5
   stop_server
-  check_osc52 "workspace: C-] y sends no OSC 52, pbcopy or not" "$capture" ''
+  check_osc52 "no native clipboard: a copy-mode copy that pbcopy takes sends no OSC 52" "$capture" ''
   run_test
-  if [[ $(cat "$ws_copied" 2>/dev/null) = "$text" && ! -e $pbcopy_out ]]
+  if grep -q -- "$text" "$pbcopy_out" 2>/dev/null
   then
-    pass "workspace: C-] y goes to timvisher_workspace_clipboard, not pbcopy"
+    pass "no native clipboard: a copy-mode copy goes to pbcopy"
   else
-    fail "workspace: C-] y copied '$(cat "$ws_copied" 2>/dev/null)', pbcopy got '$(cat "$pbcopy_out" 2>/dev/null)'"
+    fail "no native clipboard: pbcopy got '$(cat "$pbcopy_out" 2>/dev/null)', want '${text}'"
   fi
 else
   stop_server
   run_test
-  fail "no client attached for the workspace C-] y case"
+  fail "no client attached for the no-native copy-mode case"
 fi
 
-text=tmux-clipboard-ws-pane
-capture="${t_dir}/ws-pane"
-if timvisher_tests_with_home "$ws_home" start_server "$capture" "$no_pbcopy_bin" \
+prefix_y_case() {
+  local name=$1 bin=$2 rc=$3 want=$4
+  text="tmux-clipboard-nn-${name}"
+  capture="${t_dir}/nn-${name}"
+  rm -f -- "$pbcopy_out"
+  server_env=("PBCOPY_RC=${rc}")
+  if timvisher_tests_with_home "$nn_home" start_server "$capture" "$bin" 'sleep 30'
+  then
+    t set-buffer "$text"
+    t send-keys -K -c "$client" C-] y
+    sleep 1
+    stop_server
+    if [[ $want = osc52 ]]
+    then
+      check_osc52 "no native clipboard, ${name}: C-] y sends OSC 52 once" \
+        "$capture" "^[]52;c;$(b64 "$text")^G"
+    else
+      check_osc52 "no native clipboard, ${name}: C-] y sends no OSC 52" "$capture" ''
+    fi
+  else
+    stop_server
+    run_test
+    fail "no client attached for the no-native ${name} case"
+  fi
+  server_env=()
+}
+
+prefix_y_case pbcopy-delivers "${pbcopy_bin}:/usr/bin" 0 none
+check "no native clipboard: C-] y goes to pbcopy" pbcopy_got tmux-clipboard-nn-pbcopy-delivers
+prefix_y_case pbcopy-not-sent "${pbcopy_bin}:/usr/bin" 3 osc52
+prefix_y_case pbcopy-other-failure "${pbcopy_bin}:/usr/bin" 1 osc52
+prefix_y_case pbcopy-unconfirmed "${pbcopy_bin}:/usr/bin" 4 none
+prefix_y_case no-pbcopy "${no_pbcopy_bin}" 0 osc52
+
+text=tmux-clipboard-nn-pane
+capture="${t_dir}/nn-pane"
+if timvisher_tests_with_home "$nn_home" start_server "$capture" "$no_pbcopy_bin" \
   "printf '\\033]52;c;$(b64 "${text}-raw")\\a\\033Ptmux;\\033\\033]52;c;$(b64 "$text")\\a\\033\\\\'; sleep 30"
 then
   stop_server
-  check_osc52 "workspace: only a pane's passthrough OSC 52 reaches the terminal" \
+  check_osc52 "no native clipboard: only a pane's passthrough OSC 52 reaches the terminal" \
     "$capture" "^[]52;c;$(b64 "$text")^G"
 else
   stop_server
   run_test
-  fail "no client attached for the workspace pane case"
+  fail "no client attached for the no-native pane case"
 fi
-
-fallback_home="${t_dir}/fallback-home"
-if ! mkdir -p "${fallback_home}/bin" \
-  || ! ln -s "$(cd "$(dirname "$0")/../bin" && pwd)/timvisher_workspace_clipboard" \
-    "${fallback_home}/bin/timvisher_workspace_clipboard"
-then
-  echo "fallback home setup failed under '${t_dir}'" >&2
-  exit 1
-fi
-text=tmux-clipboard-ws-fallback
-capture="${t_dir}/ws-fallback"
-server_env=("WORKSPACES_DAEMON_SOCKET=${t_dir}/no-daemon.sock" "TIMVISHER_WORKSPACE_CLIPBOARD_XCLIP=/bin/false")
-if timvisher_tests_with_home "$fallback_home" start_server "$capture" "${no_pbcopy_bin}:/usr/bin" 'sleep 30'
-then
-  t set-buffer "$text"
-  t send-keys -K -c "$client" C-] y
-  sleep 2
-  stop_server
-  check_osc52 "workspace: with no daemon, C-] y falls back to OSC 52 once" \
-    "$capture" "^[]52;c;$(b64 "$text")^G"
-else
-  stop_server
-  run_test
-  fail "no client attached for the workspace fallback case"
-fi
-server_env=()
 
 echo
 echo "Results: ${tests} tests, ${failures} failures"
