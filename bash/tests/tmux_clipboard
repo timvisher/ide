@@ -63,6 +63,7 @@ fi
 cat > "${pbcopy_bin}/pbcopy" <<STUB
 #!/bin/sh
 cat > '${pbcopy_out}'
+exit "\${PBCOPY_RC:-0}"
 STUB
 chmod +x "${pbcopy_bin}/pbcopy"
 
@@ -80,10 +81,12 @@ t() {
 # Start a server with the ide tmux.conf whose one client is script(1)'s
 # pty, recording everything tmux writes to it. The server's PATH is
 # <bin>:/bin, so whether pbcopy exists is up to the case.
+native=1
 start_server() {
   local capture=$1 bin=$2 pane_cmd=$3 i
   local -a cmd=(
     env -u TMUX "TMUX_TMPDIR=${t_dir}" "PATH=${bin}:/bin" TERM=xterm-256color
+    "TIMVISHER_NATIVE_CLIPBOARD=${native}" ${server_env[@]+"${server_env[@]}"}
     "$real_tmux" -f "$tmux_conf" new-session -x 80 -y 24 "$pane_cmd"
   )
   if [[ $script_style = util-linux ]]
@@ -116,6 +119,18 @@ osc52s() {
 
 b64() {
   printf %s "$1" | base64 | tr -d '\n'
+}
+
+check() {
+  local name=$1
+  shift
+  run_test
+  if "$@"
+  then
+    pass "$name"
+  else
+    fail "$name"
+  fi
 }
 
 check_osc52() {
@@ -192,6 +207,96 @@ else
   stop_server
   run_test
   fail "no client attached for the C-] y pbcopy case"
+fi
+
+native=0
+nn_home="${t_dir}/no-native-home"
+if ! mkdir -p "${nn_home}/bin" \
+  || ! ln -s "$(cd "$(dirname "$0")/../bin" && pwd)/timvisher_clipboard_copy" \
+    "${nn_home}/bin/timvisher_clipboard_copy"
+then
+  echo "no-native home setup failed under '${t_dir}'" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2329
+pbcopy_got() {
+  [[ $(cat "$pbcopy_out" 2>/dev/null) = "$1" ]]
+}
+
+text=tmux-clipboard-nn-copy-mode
+capture="${t_dir}/nn-copy-mode"
+rm -f -- "$pbcopy_out"
+if timvisher_tests_with_home "$nn_home" start_server "$capture" "${pbcopy_bin}:/usr/bin" \
+  "printf '%s\\n' '${text}'; sleep 30"
+then
+  t copy-mode
+  t send-keys -X history-top
+  t send-keys -X begin-selection
+  t send-keys -X end-of-line
+  t send-keys -X copy-pipe-and-cancel
+  sleep 0.5
+  stop_server
+  check_osc52 "no native clipboard: a copy-mode copy that pbcopy takes sends no OSC 52" "$capture" ''
+  run_test
+  if grep -q -- "$text" "$pbcopy_out" 2>/dev/null
+  then
+    pass "no native clipboard: a copy-mode copy goes to pbcopy"
+  else
+    fail "no native clipboard: pbcopy got '$(cat "$pbcopy_out" 2>/dev/null)', want '${text}'"
+  fi
+else
+  stop_server
+  run_test
+  fail "no client attached for the no-native copy-mode case"
+fi
+
+prefix_y_case() {
+  local name=$1 bin=$2 rc=$3 want=$4
+  text="tmux-clipboard-nn-${name}"
+  capture="${t_dir}/nn-${name}"
+  rm -f -- "$pbcopy_out"
+  server_env=("PBCOPY_RC=${rc}")
+  if timvisher_tests_with_home "$nn_home" start_server "$capture" "$bin" 'sleep 30'
+  then
+    t set-buffer "$text"
+    t send-keys -K -c "$client" C-] y
+    sleep 1
+    stop_server
+    if [[ $want = osc52 ]]
+    then
+      check_osc52 "no native clipboard, ${name}: C-] y sends OSC 52 once" \
+        "$capture" "^[]52;c;$(b64 "$text")^G"
+    else
+      check_osc52 "no native clipboard, ${name}: C-] y sends no OSC 52" "$capture" ''
+    fi
+  else
+    stop_server
+    run_test
+    fail "no client attached for the no-native ${name} case"
+  fi
+  server_env=()
+}
+
+prefix_y_case pbcopy-delivers "${pbcopy_bin}:/usr/bin" 0 none
+check "no native clipboard: C-] y goes to pbcopy" pbcopy_got tmux-clipboard-nn-pbcopy-delivers
+prefix_y_case pbcopy-not-sent "${pbcopy_bin}:/usr/bin" 3 osc52
+prefix_y_case pbcopy-other-failure "${pbcopy_bin}:/usr/bin" 1 osc52
+prefix_y_case pbcopy-unconfirmed "${pbcopy_bin}:/usr/bin" 4 none
+prefix_y_case no-pbcopy "${no_pbcopy_bin}" 0 osc52
+
+text=tmux-clipboard-nn-pane
+capture="${t_dir}/nn-pane"
+if timvisher_tests_with_home "$nn_home" start_server "$capture" "$no_pbcopy_bin" \
+  "printf '\\033]52;c;$(b64 "${text}-raw")\\a\\033Ptmux;\\033\\033]52;c;$(b64 "$text")\\a\\033\\\\'; sleep 30"
+then
+  stop_server
+  check_osc52 "no native clipboard: only a pane's passthrough OSC 52 reaches the terminal" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the no-native pane case"
 fi
 
 echo
