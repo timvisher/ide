@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+
+# A real tmux server with the ide tmux.conf, attached through script(1)
+# so its output to the outer terminal can be read back: the clipboard
+# writes are OSC 52 sequences in that output.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
+
+tmux_conf="$(cd "$(dirname "$0")/.." && pwd)/tmux.conf"
+
+if ! real_tmux=$(command -v tmux) || ! real_script=$(command -v script)
+then
+  echo "tmux and script are required" >&2
+  exit 1
+fi
+
+t_dir=
+# shellcheck disable=SC2329
+cleanup() {
+  if [[ -n $t_dir ]]
+  then
+    env -u TMUX TMUX_TMPDIR="$t_dir" "$real_tmux" kill-server 2>/dev/null
+    rm -rf -- "$t_dir"
+  fi
+}
+trap cleanup EXIT
+
+# Under /tmp, not TMPDIR: the tmux socket path must fit in 104 bytes,
+# and the runner's per-suite TMPDIR is nested too deep for that.
+if ! t_dir=$(mktemp -d /tmp/tmux_clipboard.XXXXXX)
+then
+  echo "mktemp -d failed" >&2
+  exit 1
+fi
+
+no_pbcopy_bin="${t_dir}/no-pbcopy-bin"
+pbcopy_bin="${t_dir}/pbcopy-bin"
+pbcopy_out="${t_dir}/pbcopy.out"
+if ! mkdir "$no_pbcopy_bin" "$pbcopy_bin" \
+  || ! ln -s "$real_tmux" "${no_pbcopy_bin}/tmux" \
+  || ! ln -s "$real_tmux" "${pbcopy_bin}/tmux"
+then
+  echo "stub bin setup failed under '${t_dir}'" >&2
+  exit 1
+fi
+cat > "${pbcopy_bin}/pbcopy" <<STUB
+#!/bin/sh
+cat > '${pbcopy_out}'
+STUB
+chmod +x "${pbcopy_bin}/pbcopy"
+
+if "$real_script" --version 2>/dev/null | grep -q util-linux
+then
+  script_style=util-linux
+else
+  script_style=bsd
+fi
+
+t() {
+  env -u TMUX TMUX_TMPDIR="$t_dir" "$real_tmux" "$@"
+}
+
+# Start a server with the ide tmux.conf whose one client is script(1)'s
+# pty, recording everything tmux writes to it. The server's PATH is
+# <bin>:/bin, so whether pbcopy exists is up to the case.
+start_server() {
+  local capture=$1 bin=$2 pane_cmd=$3 i
+  local -a cmd=(
+    env -u TMUX "TMUX_TMPDIR=${t_dir}" "PATH=${bin}:/bin" TERM=xterm-256color
+    "$real_tmux" -f "$tmux_conf" new-session -x 80 -y 24 "$pane_cmd"
+  )
+  if [[ $script_style = util-linux ]]
+  then
+    local quoted
+    printf -v quoted '%q ' "${cmd[@]}"
+    "$real_script" -q -e -c "$quoted" "$capture" </dev/null >/dev/null 2>&1 &
+  else
+    "$real_script" -q "$capture" "${cmd[@]}" </dev/null >/dev/null 2>&1 &
+  fi
+  script_pid=$!
+  for (( i = 0; i < 50; i += 1 ))
+  do
+    client=$(t list-clients -F '#{client_name}' 2>/dev/null)
+    [[ -n $client ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_server() {
+  sleep 0.5
+  t kill-server 2>/dev/null
+  wait "$script_pid" 2>/dev/null
+}
+
+osc52s() {
+  grep -a -o $'\e\\]52;[^\a]*\a' "$1" | cat -v
+}
+
+b64() {
+  printf %s "$1" | base64 | tr -d '\n'
+}
+
+check_osc52() {
+  local name=$1 capture=$2 want=$3 got
+  got=$(osc52s "$capture")
+  run_test
+  if [[ $got = "$want" ]]
+  then
+    pass "$name"
+  else
+    fail "${name}: want '${want}', got '${got}'"
+  fi
+}
+
+text=tmux-clipboard-set-buffer
+capture="${t_dir}/set-buffer"
+if start_server "$capture" "$no_pbcopy_bin" 'sleep 30'
+then
+  t set-buffer -w "$text"
+  stop_server
+  check_osc52 "a tmux copy reaches the outer terminal as OSC 52 selection c" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the set-buffer case"
+fi
+
+text=tmux-clipboard-primary
+capture="${t_dir}/pane-primary"
+if start_server "$capture" "$no_pbcopy_bin" \
+  "printf '\\033]52;p;$(b64 "$text")\\a'; sleep 30"
+then
+  stop_server
+  check_osc52 "a pane's OSC 52 passes through tmux, as selection c" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the pane OSC 52 case"
+fi
+
+text=tmux-clipboard-prefix-y-osc52
+capture="${t_dir}/prefix-y-osc52"
+if start_server "$capture" "$no_pbcopy_bin" 'sleep 30'
+then
+  t set-buffer "$text"
+  t send-keys -K -c "$client" C-] y
+  stop_server
+  check_osc52 "C-] y without pbcopy copies by OSC 52" \
+    "$capture" "^[]52;c;$(b64 "$text")^G"
+else
+  stop_server
+  run_test
+  fail "no client attached for the C-] y OSC 52 case"
+fi
+
+text=tmux-clipboard-prefix-y-pbcopy
+capture="${t_dir}/prefix-y-pbcopy"
+if start_server "$capture" "$pbcopy_bin" 'sleep 30'
+then
+  t set-buffer "$text"
+  t send-keys -K -c "$client" C-] y
+  stop_server
+  check_osc52 "C-] y with pbcopy sends no OSC 52" "$capture" ''
+  run_test
+  if [[ $(cat "$pbcopy_out" 2>/dev/null) = "$text" ]]
+  then
+    pass "C-] y with pbcopy copies through pbcopy"
+  else
+    fail "pbcopy got '$(cat "$pbcopy_out" 2>/dev/null)', want '${text}'"
+  fi
+else
+  stop_server
+  run_test
+  fail "no client attached for the C-] y pbcopy case"
+fi
+
+echo
+echo "Results: ${tests} tests, ${failures} failures"
+exit "$failures"
