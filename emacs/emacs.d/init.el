@@ -21,6 +21,8 @@
   (display-warning :warning "Please upgrade your emacs version to at least 27.1")
   (package-initialize))
 
+(require 'package)
+
 (add-to-list 'package-archives
              '("melpa-stable" . "https://stable.melpa.org/packages/")
              t)
@@ -616,6 +618,9 @@ over the code-block language minibuffer prompt."
 ;;; Display
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; Kept on Emacs 32, which sizes terminal Emoji sequences itself: the
+;; presentation mode still fixes bare color-only symbols such as 🌩,
+;; and it composes through the width mode's composition function.
 (timvisher-tty-grapheme-width-mode 1)
 (timvisher-tty-emoji-presentation-mode 1)
 

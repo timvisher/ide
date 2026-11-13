@@ -122,6 +122,29 @@ else
   fail "two copies: rc=$rc out='$got'"
 fi
 
+run_test
+mkdir -p "$t/scriptdir" "$t/bindir" || exit 1
+printf '#!/bin/sh\n' > "$t/scriptdir/sdtool" && chmod +x "$t/scriptdir/sdtool"
+printf '\177ELF' > "$t/bindir/sdtool" && chmod +x "$t/bindir/sdtool"
+got=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" timvisher_real_bin_script_dirs sdtool)
+if [[ $got == "$t/scriptdir" ]]
+then
+  pass "script_dirs names the script's directory and not the binary's"
+else
+  fail "script_dirs: got '$got', want '$t/scriptdir'"
+fi
+
+run_test
+got=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" \
+  TIMVISHER_REAL_BIN_SKIP=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" timvisher_real_bin_script_dirs sdtool) \
+  timvisher_real_bin sdtool "$t/elsewhere/sdtool")
+if [[ $got == "$t/bindir/sdtool" ]]
+then
+  pass "with script_dirs skipped, timvisher_real_bin passes another checkout's wrapper"
+else
+  fail "skip another checkout's wrapper: got '$got', want '$t/bindir/sdtool'"
+fi
+
 echo
 echo "Results: $((tests - failures))/${tests} passed"
 (( failures == 0 ))

@@ -326,7 +326,13 @@ _timvisher_git__get_main_branch() {
       echo "master"
       return 0
     fi
-    return 1
+    # A brand-new repo (timvisher_git's init_bare_cache: init, remote add,
+    # fetch) has none of the above yet, so ask the remote. Without this the
+    # refspec setup gives up and the first fetch takes every branch: ~40k
+    # on dd-source, ~15 minutes (cf-m1w0.21).
+    ref=$("$real_git" ls-remote --symref "${_timvisher_git__remote}" HEAD 2>/dev/null |
+      awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }')
+    [[ $ref == refs/heads/* ]] || return 1
   }
   echo "${ref##*/}"
 }

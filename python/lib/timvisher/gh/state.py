@@ -5,6 +5,7 @@ import pathlib
 import sqlite3
 import time
 
+from timvisher.gh import perf
 from timvisher.gh.errors import fail
 
 BUSY_TIMEOUT = 10
@@ -64,20 +65,25 @@ class State:
 
     @contextlib.contextmanager
     def write(self):
+        asked = time.perf_counter()
         try:
             self.db.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as error:
             _busy(self.path, error)
+        taken = time.perf_counter()
         try:
             yield self.db
         except BaseException:
             self.db.execute("ROLLBACK")
+            perf.locked(asked, taken, time.perf_counter())
             self.touched.clear()
             raise
         self.db.execute("COMMIT")
+        perf.locked(asked, taken, time.perf_counter())
         touched, self.touched = self.touched, set()
         if touched and self.after_commit is not None:
-            self.after_commit(touched)
+            with perf.phase("export"):
+                self.after_commit(touched)
 
     def version(self):
         return self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -140,6 +146,11 @@ def _wal(connection, busy_timeout):
 
 
 def open_state(path=None, *, migrations=MIGRATIONS, busy_timeout=BUSY_TIMEOUT):
+    with perf.phase("open_state"):
+        return _open_state(path, migrations, busy_timeout)
+
+
+def _open_state(path, migrations, busy_timeout):
     path = pathlib.Path(path) if path is not None else root() / "state.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=busy_timeout, isolation_level=None)

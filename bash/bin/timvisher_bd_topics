@@ -37,8 +37,10 @@ usage() {
     timvisher_bd_topics resolve <path>
   Notes:
     - Topic paths are absolute or relative to the configured topics root.
-    - set must be run from within a git repo or a directory with todo.org.
-    - new can be run outside a git repo (it skips writing .beads/redirect).
+    - set must be run from within a git repo or a directory with todo.org,
+      and refuses one that contains or lies inside the topics root.
+    - new can be run outside a git repo (it skips writing .beads/redirect),
+      and subscribes no project that overlaps the topics root.
     - root prints the directory that owns the current context: the
       closest topic dir when CWD is inside one, otherwise the git repo
       root (or the directory with todo.org). It exits non-zero when
@@ -133,6 +135,14 @@ require_project_root() {
     die "Must be run from within a git repo or a directory with todo.org"
 
   printf '%s' "$root"
+}
+
+overlaps_topics_root() {
+  local root
+  root=$(cd "$1" && pwd -P) ||
+    return 1
+  [[ $root == "$topics_root_real" || $root == "$topics_root_real"/* ||
+      $topics_root_real == "$root"/* ]]
 }
 
 try_resolve_topic() {
@@ -783,6 +793,11 @@ case $cmd in
     ;;
   set)
     repo_root=$(require_project_root) || exit 1
+    if overlaps_topics_root "$repo_root"
+    then
+      die "'%s' overlaps the topics root '%s'; only projects outside it subscribe to topics" \
+        "$repo_root" "$topics_root_real"
+    fi
 
     if [[ $# -gt 1 ]]
     then
@@ -849,6 +864,10 @@ case $cmd in
     if [[ -z $repo_root ]]
     then
       warn "No project root found (git repo or todo.org); skipping .beads/redirect setup"
+    elif overlaps_topics_root "$repo_root"
+    then
+      warn "'%s' overlaps the topics root; creating the topic without subscribing it" "$repo_root"
+      repo_root=
     fi
 
     if [[ $# -ne 1 ]]
@@ -880,7 +899,7 @@ case $cmd in
       die "Unable to derive prefix from '%s'" "$(basename "$topic_abs")"
 
     BEADS_DIR="$beads_dir" bd init \
-      --prefix "$topic_prefix" --skip-hooks -q </dev/null >&2 ||
+      --prefix "$topic_prefix" --skip-hooks --skip-agents -q </dev/null >&2 ||
       exit 1
 
     if [[ ! -d $beads_dir ]]

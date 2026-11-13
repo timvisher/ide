@@ -135,5 +135,36 @@ FUNC is the composition rule's function, `font-shape-gstring' if nil."
                          (aref composition-function-table #x1F3F3))))
       (timvisher-tty-emoji-presentation-mode (if saved-mode 1 -1)))))
 
+(ert-deftest timvisher-tty-grapheme-width-presentation-char-width-test ()
+  "The mode makes its bases 2 columns wide and restores them when off.
+Emacs 32 pads a wide terminal composition only when its first
+character is wide in `char-width-table'."
+  (let ((saved-mode timvisher-tty-emoji-presentation-mode))
+    (unwind-protect
+        (progn
+          (timvisher-tty-emoji-presentation-mode -1)
+          (should (= 1 (char-width #x1F329)))
+          (timvisher-tty-emoji-presentation-mode 1)
+          (timvisher-tty-emoji-presentation-mode 1)
+          (should (= 2 (char-width #x1F329)))
+          (should (= 1 (char-width #x26A0)))
+          (timvisher-tty-emoji-presentation-mode -1)
+          (should (= 1 (char-width #x1F329))))
+      (timvisher-tty-emoji-presentation-mode (if saved-mode 1 -1)))))
+
+(ert-deftest timvisher-tty-grapheme-width-presentation-text-selector-test ()
+  "A base the mode widens stays 1 column when the text asks for VS15."
+  (let ((saved-mode timvisher-tty-emoji-presentation-mode))
+    (unwind-protect
+        (progn
+          (timvisher-tty-emoji-presentation-mode 1)
+          (let ((gstring (timvisher-tty-grapheme-width-test--compose
+                          "\U0001F3F3︎"
+                          #'timvisher-tty-grapheme-width--present)))
+            (should (equal '(#x1F3F3 #xFE0E)
+                           (timvisher-tty-grapheme-width-test--chars gstring)))
+            (should (= 1 (timvisher-tty-grapheme-width-test--width gstring)))))
+      (timvisher-tty-emoji-presentation-mode (if saved-mode 1 -1)))))
+
 (provide 'timvisher-tty-grapheme-width-test)
 ;;; timvisher-tty-grapheme-width-test.el ends here

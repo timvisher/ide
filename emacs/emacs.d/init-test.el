@@ -389,5 +389,14 @@ starts is deleted afterwards."
           (should (equal "some-other-server" server-name)))
       (delete-process server-process))))
 
+(ert-deftest test-init-tty-grapheme-shim-on-every-emacs ()
+  "init.el turns both tty grapheme shim modes on, Emacs 32 included.
+
+Emacs 32 sizes terminal Emoji sequences itself, but bare color-only
+symbols such as 🌩 still need the presentation mode, which composes
+through the width mode's composition function."
+  (should timvisher-tty-grapheme-width-mode)
+  (should timvisher-tty-emoji-presentation-mode))
+
 (provide 'init-test)
 ;;; init-test.el ends here

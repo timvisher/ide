@@ -1,9 +1,12 @@
+import os
+import signal
 import sys
 
 import functools
 
-from timvisher.gh import info, nouns, repo
-from timvisher.gh.errors import Exit, usage
+from timvisher import aictl
+from timvisher.gh import info, nouns, perf, repo
+from timvisher.gh.errors import ERROR, Exit, usage
 
 HELP = """\
 timvisher_gh - GitHub workflow commands
@@ -87,7 +90,20 @@ def _run(argv):
 
 
 def main(argv):
+    perf.start(argv)
     try:
-        return _run(argv)
+        rc = _run(argv)
     except Exit as stop:
-        return stop.status
+        rc = stop.status
+    except KeyboardInterrupt:
+        perf.finish(130)
+        aictl.notice(code="timvisher_gh_interrupted", message="Interrupted")
+        # Die by SIGINT rather than returning 130 so a calling shell loop sees the interrupt and stops too.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        raise
+    except BaseException:
+        perf.finish(ERROR)
+        raise
+    perf.finish(rc)
+    return rc

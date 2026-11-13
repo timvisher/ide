@@ -1,3 +1,5 @@
+;;; init.el -*- lexical-binding: t -*-
+
 (require 'package)
 (unless (assoc "gnu" package-archives)
   (add-to-list 'package-archives

@@ -24,6 +24,15 @@ source ~/.functions/gh.bash ||
     exit 1
   }
 
+self_real=$(realpath "${BASH_SOURCE[0]}") || self_real=${BASH_SOURCE[0]}
+
+# shellcheck source=/dev/null
+source "${self_real%/*}/../functions/real_bin.bash" ||
+  {
+    echo "Unable to source real_bin functions" >&2
+    exit 1
+  }
+
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
@@ -535,7 +544,7 @@ should_auto_fork() {
 # would strip branch.*.remote=upstream from branches in other worktrees.
 safe_remove_upstream() {
   local real_git
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
 
   local branches_tracking_upstream
   branches_tracking_upstream=$("$real_git" config --get-regexp '^branch\..*\.remote$' 2>/dev/null | grep ' upstream$' || true)
@@ -3406,7 +3415,7 @@ is_branch_ish() {
 
 status__all_published() {
   local real_git dirty=0
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
 
   # @{push} must resolve
   if ! "$real_git" rev-parse --verify '@{push}' >/dev/null 2>&1
@@ -4314,7 +4323,7 @@ push__base_ref() {
 # agent range guard in ~/bin/git refuses comparing pinned SHAs.
 push__same_content() {
   local base_ref=$1 theirs=$2 ours=$3 real_git theirs_fork ours_fork ours_tree replayed
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
   theirs_fork=$("$real_git" merge-base "$base_ref" "$theirs") &&
     ours_fork=$("$real_git" merge-base "$base_ref" "$ours") &&
     ours_tree=$("$real_git" rev-parse "${ours}^{tree}") ||
@@ -4355,7 +4364,7 @@ push__send() {
 
 push__show_changes() {
   local base_ref=$1 real_git
-  real_git="$(brew --prefix)"/bin/git
+  real_git=$(timvisher_real_bin git "$self_real") || die 'No real git found past the ide wrapper'
   if [[ -z $base_ref ]]
   then
     warn "push: couldn't find the base branch to show your changes against"

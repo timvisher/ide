@@ -13,12 +13,19 @@ on activate {}
 	tell application (my currentBrowser()) to activate
 end activate
 
--- Not `tell application (my currentBrowser())`: telling the browser
--- skips the default URL handler (Finicky), which is what picks the
--- browser and profile for a URL. currentBrowser() is only the target
--- for finding and driving tabs.
 on openUrl(u)
-	open location u
+	-- Not `tell application (my currentBrowser())`: telling the browser
+	-- skips the default URL handler (Finicky), which is what picks the
+	-- browser and profile for a URL. currentBrowser() is only the target
+	-- for finding and driving tabs.
+	--
+	-- Can't be raw `open location u` because if the current
+	-- application happens to handle URLs (like Quicksilver) then the
+	-- URL opens there rather than in whatever the default URL handler
+	-- is. `System Events` just happens to be a target that
+	-- doesn't handle `open location` itself. There's nothing
+	-- else special about it.
+	tell application "System Events" to open location u
 end openUrl
 
 on executeJsInActiveTab(js)

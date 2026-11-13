@@ -124,6 +124,11 @@ class MergeTest(GhTestCase):
             self.assertEqual([], self.attempts())
             self.github.update_pull(REPO, 7, **{flag: False})
 
+    def test_waiting_survives_rest_refusing_the_pr_for_too_many_files(self):
+        self.github.update_pull(REPO, 7, in_merge_queue=True, rest_gets_before_too_many_files=1)
+        rc, _ = self.merge(PR, TIMVISHER_GH_PR_MERGE_TIMEOUT="0")
+        self.assertEqual((1, "timvisher_gh_merge_timeout"), (rc, self.codes()[-1]), self.err)
+
     def test_the_comment_repos_config_matches_case_insensitively(self):
         self.comment_repos("TestUser/TestRepo")
         self.assertEqual(1, self.merge(PR, stdin="y\n", TIMVISHER_GH_PR_MERGE_TIMEOUT="0")[0])

@@ -6,6 +6,7 @@ import re
 import subprocess
 
 from timvisher import aictl, browser
+from timvisher.gh import perf
 from timvisher.gh import state as state_db
 from timvisher.gh.errors import USAGE, fail
 
@@ -171,8 +172,8 @@ def _from_file(path, noun, db, creating):
 
 
 def _git(*args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                          text=True).stdout.strip()
+    return perf.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True).stdout.strip()
 
 
 def _context_pr(context, db, noun):
@@ -186,8 +187,8 @@ def _context_pr(context, db, noun):
                          (context.toplevel, owner, repo, branch)).fetchone()
         if row is not None:
             return dataclasses.replace(parse_url(row[1], noun), object_id=row[0], via="context")
-    done = subprocess.run(["gh", "-R", context.spec, "pr", "list", "--head", branch, "--state", "all",
-                           "--json", "number,state"], stdout=subprocess.PIPE, text=True)
+    done = perf.run(["gh", "-R", context.spec, "pr", "list", "--head", branch, "--state", "all",
+                     "--json", "number,state"], stdout=subprocess.PIPE, text=True)
     if done.returncode != 0:
         fail("timvisher_gh_gh_failed", f"Unable to look up the PR for branch '{branch}' in {context.spec}.",
              suggestions=["Check gh's error above, then retry", "Or pass the PR's URL"])

@@ -82,7 +82,7 @@ long tool call and never counts.
 
 Checkout options (dev and agent-shell launch):
   --agent-shell <dir>  default $timvisher_agent_shell_checkout, else agent-shell-plus/main
-  --acp-el <dir>       default $timvisher_acp_el_checkout, else acp.el-plus/main
+  --acp-el <dir>       default $timvisher_acp_el_checkout, else acp.el/main
   --shell-maker <dir>  default $timvisher_shell_maker_checkout, else shell-maker/main
 
 Each checkout is put on the load-path with -L, has its .elc files
@@ -951,7 +951,7 @@ timvisher_emacs__checkout() {
 timvisher_emacs__checkouts() {
   local git_home=${TIMVISHER_GIT_HOME:-${HOME}/git}
   local agent_shell=${timvisher_agent_shell_checkout:-${git_home}/timvisher-dd/agent-shell-plus/main}
-  local acp_el=${timvisher_acp_el_checkout:-${git_home}/timvisher-dd/acp.el-plus/main}
+  local acp_el=${timvisher_acp_el_checkout:-${git_home}/xenodium/acp.el/main}
   local shell_maker=${timvisher_shell_maker_checkout:-${git_home}/xenodium/shell-maker/main}
 
   while (( 0 < $# ))

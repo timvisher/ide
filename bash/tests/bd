@@ -25,6 +25,13 @@ run_test() {
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/bd"
 
 tmpdir=$(mktemp -d)
+
+# GNU stat first: BSD stat has no -c and fails, while GNU stat -f prints
+# file-system information instead of failing.
+file_mode() {
+  stat -c '%a' "$1" 2> /dev/null || /usr/bin/stat -f '%Lp' "$1"
+}
+
 # Canonicalize: macOS /var → /private/var, and the bd wrapper does
 # `pwd -P` so the BEADS_DIR it sets uses the resolved path.
 tmpdir=$(cd "$tmpdir" && pwd -P)
@@ -51,7 +58,7 @@ chmod 0755 "$tmpdir/repo1/.beads"
   cd "$tmpdir/repo1"
   BD_BINARY="$tmpdir/fake-bd" "$script" hello >/dev/null
 )
-perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo1/.beads")
+perms=$(file_mode "$tmpdir/repo1/.beads")
 if [[ $perms == 700 ]]
 then
   pass "chmods .beads from 0755 to 0700 in repo root"
@@ -69,8 +76,8 @@ chmod 0755 "$tmpdir/repo2/.beads" "$tmpdir/target2"
   cd "$tmpdir/repo2"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-local_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo2/.beads")
-target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target2")
+local_perms=$(file_mode "$tmpdir/repo2/.beads")
+target_perms=$(file_mode "$tmpdir/target2")
 if [[ $local_perms == 700 && $target_perms == 700 ]]
 then
   pass "chmods both .beads and the redirect target to 0700"
@@ -116,7 +123,7 @@ result=$(
   cd "$tmpdir/repo5"
   BD_BINARY="$tmpdir/fake-bd" "$script" note 2>&1
 )
-local_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/repo5/.beads")
+local_perms=$(file_mode "$tmpdir/repo5/.beads")
 if [[ $result == "fake-bd note" && $local_perms == 700 ]]
 then
   pass "tolerates missing redirect target; still chmods local and exec's bd"
@@ -134,7 +141,7 @@ chmod 0755 "$tmpdir/repo6/.beads" "$tmpdir/target6"
   cd "$tmpdir/repo6"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target6")
+target_perms=$(file_mode "$tmpdir/target6")
 if [[ $target_perms == 700 ]]
 then
   pass "strips CRLF from redirect target so chmod reaches the real dir"
@@ -152,7 +159,7 @@ chmod 0755 "$tmpdir/repo7/.beads" "$tmpdir/target7"
   cd "$tmpdir/repo7"
   BD_BINARY="$tmpdir/fake-bd" "$script" >/dev/null
 )
-target_perms=$(/usr/bin/stat -f '%Lp' "$tmpdir/target7")
+target_perms=$(file_mode "$tmpdir/target7")
 if [[ $target_perms == 700 ]]
 then
   pass "strips trailing spaces/tabs from redirect target"
@@ -221,6 +228,54 @@ then
   pass "preserves a caller-supplied BEADS_DIR (timvisher_bd_topics bd <topic>)"
 else
   fail "expected explicit BEADS_DIR preserved; got '${result}'"
+fi
+
+mkdir -p "$tmpdir/plain"
+run_bd_in_plain() {
+  (
+    cd "$tmpdir/plain"
+    BD_BINARY="$tmpdir/fake-bd" "$script" "$@"
+  )
+}
+
+# --- init gets --skip-agents right after the subcommand ---
+run_test
+result=$(run_bd_in_plain init --prefix x -- extra)
+if [[ $result == "fake-bd init --skip-agents --prefix x -- extra" ]]
+then
+  pass "adds --skip-agents to bd init"
+else
+  fail "expected --skip-agents after init; got '${result}'"
+fi
+
+# --- global flags before init still get it ---
+run_test
+result=$(run_bd_in_plain -q init)
+if [[ $result == "fake-bd -q init --skip-agents" ]]
+then
+  pass "adds --skip-agents to bd init after leading flags"
+else
+  fail "expected --skip-agents after leading flags; got '${result}'"
+fi
+
+# --- an explicit --skip-agents=false wins ---
+run_test
+result=$(run_bd_in_plain init --skip-agents=false)
+if [[ $result == "fake-bd init --skip-agents=false" ]]
+then
+  pass "leaves a caller's --skip-agents alone"
+else
+  fail "expected caller's --skip-agents untouched; got '${result}'"
+fi
+
+# --- other subcommands, even with an 'init' argument, are untouched ---
+run_test
+result=$(run_bd_in_plain create --title init)
+if [[ $result == "fake-bd create --title init" ]]
+then
+  pass "leaves other subcommands alone"
+else
+  fail "expected create untouched; got '${result}'"
 fi
 
 echo ""

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Operators"
+  short_description: "Start a temporary agent that watches a long operation and reports changes"

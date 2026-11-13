@@ -60,13 +60,14 @@ rotate_one() {
 
   [[ -f $f ]] || return 0
 
-  # GNU stat, then BSD: launchd's PATH has no coreutils gnubin. A size we
-  # can't read is an error, not "small enough".
-  if ! size=$(stat -c %s "$f" 2>/dev/null) && ! size=$(stat -f %z "$f" 2>/dev/null)
+  # wc -c, not stat: BSD and GNU stat take different flags, and
+  # launchd's PATH finds /usr/bin/stat, which rejects GNU's -c.
+  if ! size=$(wc -c < "$f" 2>/dev/null)
   then
     warn "rotate: could not read the size of '%s'" "$f"
     return 1
   fi
+  size=${size//[[:space:]]/}
   if (( size < max_bytes ))
   then
     return 0

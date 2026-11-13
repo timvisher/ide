@@ -7,7 +7,7 @@ import tempfile
 import time
 
 from timvisher import aictl, logging
-from timvisher.gh import fetch, hooks, nouns, pr, record, state, store, targets
+from timvisher.gh import fetch, hooks, nouns, perf, pr, record, state, store, targets
 from timvisher.gh.errors import ERROR, fail, usage
 
 USAGE = """\
@@ -61,9 +61,9 @@ def _refused(lines):
 # records is passed on to the caller's log.
 def _checks(spec, url):
     with tempfile.NamedTemporaryFile("r", prefix="timvisher_gh_pr_ready.", suffix=".jsonl") as log:
-        done = subprocess.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"],
-                              env={**os.environ, "TIMVISHER_AICTL_LOG": log.name},
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        done = perf.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"],
+                        env={**os.environ, "TIMVISHER_AICTL_LOG": log.name},
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         instructions = log.read().splitlines()
     outer = os.environ.get("TIMVISHER_AICTL_LOG")
     if instructions and outer and os.path.isfile(outer):

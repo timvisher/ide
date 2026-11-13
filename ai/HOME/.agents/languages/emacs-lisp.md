@@ -34,12 +34,17 @@ When evaluating code without a file, pass lexical binding explicitly:
     ```bash
     bash/bin/timvisher_tests --shell emacs --batch \
       --eval '(add-to-list (quote load-path) (expand-file-name "~/.config/emacs"))' \
-      --eval "(require 'package)" \
-      --eval "(package-initialize)" \
+      --eval '(package-activate-all)' \
+      --eval '(prepare-user-lisp)' \
       --eval '(load "~/.config/emacs/init.el")' \
       --eval '(load "/path/to/test-file.el")' \
       --eval '(ert-run-tests-batch-and-exit)'
     ```
+    Activate packages with `(package-activate-all)`, as a real startup
+    does. Do not `(require 'package)` or `(package-initialize)` before
+    loading `init.el`: that loads `package.el` early, so the test passes
+    when `init.el` depends on it without requiring it, while a real
+    startup fails. On Emacs 32 that broke `init.el` on `package-archives`.
   - **Testing public libraries** (e.g., `~/git/timvisher-dd/agent-shell-plus/`):
     ```bash
     emacs --batch -Q -L . \
