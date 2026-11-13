@@ -54,10 +54,10 @@ on getTabWithUrl(u)
 	end if
 	
 	tell application "Google Chrome"
-		repeat with w in windows
+		repeat with wRef in (get windows)
 			set t to missing value
 			try
-				set t to get (first tab whose URL is u) of w
+				set t to get (first tab whose URL is u) of (contents of wRef)
 			end try
 			if missing value is not t then
 				exit repeat
@@ -80,30 +80,82 @@ on waitForTabToLoad(t)
 	end tell
 end waitForTabToLoad
 
+-- Windows come from (get windows), which returns id references, and tabs
+-- are addressed by id. Not "repeat with w in windows": it re-resolves
+-- "item N of every window" by z-order on each pass, so it fails or lands
+-- on the wrong window when tabs or windows change mid-scan.
+
+on isGoneError(n)
+	return n is in {-1719, -1728}
+end isGoneError
+
+on tabIdWithUrl(w, u, orWithSlash)
+	tell application "Google Chrome"
+		repeat 3 times
+			try
+				set tabIds to id of tabs of w
+				set tabUrls to URL of tabs of w
+			on error m number n
+				if my isGoneError(n) then return missing value
+				error m number n
+			end try
+			if (count of tabIds) is (count of tabUrls) then
+				repeat with i from 1 to count of tabIds
+					set tabUrl to item i of tabUrls
+					considering case
+						set matched to tabUrl is u or (orWithSlash and tabUrl is (u & "/"))
+					end considering
+					if matched then return item i of tabIds
+				end repeat
+				return missing value
+			end if
+		end repeat
+	end tell
+	return missing value
+end tabIdWithUrl
+
+-- The browser's tabs have no index property and a tab can only be made
+-- active by its position, so the position is looked up from the tab's id
+-- right before it is set, and checked afterwards.
+on activateTab(w, tabId)
+	tell application "Google Chrome"
+		repeat 3 times
+			try
+				set tabIds to id of tabs of w
+				if tabIds does not contain tabId then return false
+				repeat with i from 1 to count of tabIds
+					if item i of tabIds is tabId then exit repeat
+				end repeat
+				set active tab index of w to i
+				if id of active tab of w is tabId then return true
+			on error m number n
+				if my isGoneError(n) then return false
+				error m number n
+			end try
+		end repeat
+	end tell
+	return false
+end activateTab
+
 on focusTabWithUrl(u)
 	if application "Google Chrome" is not running then
 		return false
 	end if
 	
-	tell application "Google Chrome"
-		repeat with w in windows
-			set i to 0
-			repeat with t in tabs of w
-				set i to i + 1
-				set tabUrl to URL of t
-				considering case
-					set matched to tabUrl is u or tabUrl is (u & "/")
-				end considering
-				if matched then
-					set active tab index of w to i
-					set index of w to 1
-					activate
-					my waitForTabToLoad(active tab of front window)
-					return true
-				end if
-			end repeat
-		end repeat
-	end tell
+	tell application "Google Chrome" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		set tabId to my tabIdWithUrl(w, u, true)
+		if missing value is not tabId and my activateTab(w, tabId) then
+			tell application "Google Chrome"
+				set index of w to 1
+				activate
+				set t to tab id tabId of w
+			end tell
+			my waitForTabToLoad(t)
+			return true
+		end if
+	end repeat
 	return false
 end focusTabWithUrl
 
@@ -111,12 +163,13 @@ on openTabWithUrl(u)
 	tell application "Google Chrome"
 		activate
 		if (count of windows) is 0 then
-			make new window
-			set t to active tab of front window
+			set w to make new window
+			set t to active tab of w
 			set URL of t to u
 		else
-			set t to make new tab at end of tabs of front window with properties {URL:u}
-			set active tab index of front window to (count of tabs of front window)
+			set w to window id (id of front window)
+			set t to make new tab at end of tabs of w with properties {URL:u}
+			my activateTab(w, id of t)
 		end if
 	end tell
 	my waitForTabToLoad(t)
@@ -127,17 +180,18 @@ on closeTabWithUrl(u)
 		return false
 	end if
 	
-	tell application "Google Chrome"
-		repeat with w in windows
-			repeat with t in tabs of w
-				considering case
-					if URL of t is u then
-						close t
-						return true
-					end if
-				end considering
-			end repeat
-		end repeat
-	end tell
+	tell application "Google Chrome" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		set tabId to my tabIdWithUrl(w, u, false)
+		if missing value is not tabId then
+			try
+				tell application "Google Chrome" to close tab id tabId of w
+				return true
+			on error m number n
+				if not my isGoneError(n) then error m number n
+			end try
+		end if
+	end repeat
 	return false
 end closeTabWithUrl
