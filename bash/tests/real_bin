@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # the fake wrapper's script expands its own vars
+
+# Tests for bash/functions/real_bin.bash (timvisher_real_bin), the one
+# resolver wrappers use to find the binary they stand in for.
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+funcs="$(cd "$(dirname "$0")/../functions" && pwd -P)/real_bin.bash"
+# shellcheck source=../functions/real_bin.bash
+source "$funcs" || { echo "cannot source $funcs" >&2; exit 1; }
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+t=$(cd "$t" && pwd -P) || exit 1
+
+fake_tool() {
+  mkdir -p "${1%/*}" &&
+    printf '#!/bin/sh\necho "ran %s $*"\n' "$1" > "$1" &&
+    chmod +x "$1"
+}
+fake_brew() {
+  mkdir -p "$t/brewbin" &&
+    printf '#!/bin/sh\necho %q\n' "$1" > "$t/brewbin/brew" &&
+    chmod +x "$t/brewbin/brew"
+}
+
+# A wrapper the way real ones use the helper.
+mkdir -p "$t/wrap" "$t/tools"
+cat > "$t/wrap/tool" <<WRAP
+#!/usr/bin/env bash
+source '$funcs'
+real=\$(timvisher_real_bin tool "\${BASH_SOURCE[0]}" \${PREFER:+"\$PREFER"}) || { echo 'no real tool'; exit 3; }
+timvisher_real_bin_skip_self "\${BASH_SOURCE[0]}"
+exec "\$real" "\$@"
+WRAP
+chmod +x "$t/wrap/tool"
+ln -s "$(command -v bash)" "$t/tools/bash"
+for tool in realpath dirname
+do
+  p=$(command -v "$tool") && ln -sf "$p" "$t/tools/$tool"
+done
+fake_tool "$t/homebrew/bin/tool"
+fake_tool "$t/preferred/bin/tool"
+fake_tool "$t/pathdir/tool"
+
+resolve() {
+  env -u TIMVISHER_REAL_BIN_SKIP PATH="$t/wrap:$t/brewbin:$t/pathdir:$t/tools:/usr/bin:/bin" \
+    bash -c 'source "$1"; shift; timvisher_real_bin "$@"' _ "$funcs" tool "$t/wrap/tool" "$@"
+}
+
+run_test
+fake_brew "$t/homebrew"
+got=$(resolve "$t/preferred/bin")
+if [[ $got == "$t/preferred/bin/tool" ]]
+then
+  pass "a given dir wins over Homebrew"
+else
+  fail "given dir and Homebrew: got '$got'"
+fi
+
+run_test
+got=$(resolve)
+if [[ $got == "$t/homebrew/bin/tool" ]]
+then
+  pass "with no dir given, Homebrew's copy wins over PATH"
+else
+  fail "Homebrew and PATH: got '$got'"
+fi
+
+run_test
+rm -f "$t/brewbin/brew"
+got=$(resolve)
+if [[ $got == "$t/pathdir/tool" ]]
+then
+  pass "without brew, PATH's copy, skipping the wrapper's own entry"
+else
+  fail "no brew: got '$got'"
+fi
+
+run_test
+mkdir -p "$t/selfprefix"
+ln -s "$t/wrap" "$t/selfprefix/bin"
+fake_brew "$t/selfprefix"
+mv "$t/pathdir/tool" "$t/pathdir/tool.off"
+if got=$(resolve)
+then
+  fail "a brew prefix leading back to the wrapper resolved to '$got'"
+else
+  pass "a brew prefix leading back to the wrapper, and nothing else, finds nothing"
+fi
+mv "$t/pathdir/tool.off" "$t/pathdir/tool"
+rm -f "$t/brewbin/brew"
+
+run_test
+cp -R "$t/wrap" "$t/copywrap"
+mv "$t/pathdir/tool" "$t/pathdir/tool.off"
+fake_tool "$t/later/tool"
+got=$(timeout 20 env -u TIMVISHER_REAL_BIN_SKIP \
+        PATH="$t/wrap:$t/copywrap:$t/pathdir:$t/tools:$t/later:/usr/bin:/bin" \
+        "$t/wrap/tool" x 2>&1)
+rc=$?
+if (( rc == 0 )) && [[ $got == "ran $t/later/tool x" ]]
+then
+  pass "two copies of a wrapper skip each other and reach the real tool"
+else
+  fail "two copies: rc=$rc out='$got'"
+fi
+
+run_test
+mkdir -p "$t/scriptdir" "$t/bindir" || exit 1
+printf '#!/bin/sh\n' > "$t/scriptdir/sdtool" && chmod +x "$t/scriptdir/sdtool"
+printf '\177ELF' > "$t/bindir/sdtool" && chmod +x "$t/bindir/sdtool"
+got=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" timvisher_real_bin_script_dirs sdtool)
+if [[ $got == "$t/scriptdir" ]]
+then
+  pass "script_dirs names the script's directory and not the binary's"
+else
+  fail "script_dirs: got '$got', want '$t/scriptdir'"
+fi
+
+run_test
+got=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" \
+  TIMVISHER_REAL_BIN_SKIP=$(PATH="$t/scriptdir:$t/bindir:/usr/bin:/bin" timvisher_real_bin_script_dirs sdtool) \
+  timvisher_real_bin sdtool "$t/elsewhere/sdtool")
+if [[ $got == "$t/bindir/sdtool" ]]
+then
+  pass "with script_dirs skipped, timvisher_real_bin passes another checkout's wrapper"
+else
+  fail "skip another checkout's wrapper: got '$got', want '$t/bindir/sdtool'"
+fi
+
+echo
+echo "Results: $((tests - failures))/${tests} passed"
+(( failures == 0 ))
