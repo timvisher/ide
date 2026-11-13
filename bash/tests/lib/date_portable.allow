@@ -1,0 +1,7 @@
+# Entries: <path> or <path>:<text>, each ending in '# reason'. See
+# timvisher_lint_date --help.
+
+# Claude Code runs this hook on whatever PATH the harness provides, which
+# may have neither ~/bin (so no timvisher_date) nor bash 5 (so no
+# EPOCHSECONDS). It uses only POSIX date -u +FMT and date +%s.
+ai/claude/HOME/.claude/hooks/worktree-lock-pretool.sh  # runs on the harness PATH
