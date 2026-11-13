@@ -1,4 +1,5 @@
 import contextlib
+import cProfile
 import datetime
 import json
 import os
@@ -58,7 +59,7 @@ def _ms(seconds):
 
 
 class Run:
-    def __init__(self, argv):
+    def __init__(self, argv, profile_dir=None):
         self.argv = list(argv)
         self.cwd = os.getcwd()
         self.epoch = time.time()
@@ -67,7 +68,12 @@ class Run:
         self.phases = {}
         self.calls = {}
         self.lock = {"n": 0, "wait": 0.0, "held": 0.0, "max_held": 0.0}
+        self.profile_dir = profile_dir
+        self.profile = None
         self.written = False
+        if profile_dir:
+            self.profile = cProfile.Profile()
+            self.profile.enable()
 
     def _phase(self, path):
         return self.phases.setdefault(path, {"n": 0, "seconds": 0.0, "calls": {}})
@@ -80,6 +86,19 @@ class Run:
 
     def _paths(self):
         return ["/".join(self.stack[:i]) for i in range(1, len(self.stack) + 1)]
+
+    def _dump_profile(self):
+        self.profile.disable()
+        path = pathlib.Path(self.profile_dir) / (
+            f"timvisher_gh.{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}"
+            f".{os.getpid()}.prof")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.profile.dump_stats(path)
+        except OSError as error:
+            sys.stderr.write(f"timvisher_gh: could not write the profile '{path}': {error}\n")
+            return None
+        return str(path)
 
     def line(self, rc):
         seconds = time.perf_counter() - self.started
@@ -104,6 +123,8 @@ class Run:
             return
         self.written = True
         line = self.line(rc)
+        if self.profile is not None:
+            line["profile"] = self._dump_profile()
         path = log_dir() / "timvisher_gh.jsonl"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +136,7 @@ class Run:
 
 def start(argv):
     global _run
-    _run = Run(argv)
+    _run = Run(argv, os.environ.get("TIMVISHER_GH_PROFILE") or None)
     return _run
 
 

@@ -1,4 +1,5 @@
 import json
+import pstats
 import unittest
 
 from support.case import GhTestCase
@@ -44,6 +45,7 @@ class PerfTest(GhTestCase):
         self.assertLessEqual(run["lock"]["max_held_ms"], run["lock"]["held_ms"])
         self.assertLessEqual(run["phases"]["fetch"]["ms"], run["duration_ms"])
         self.assertLessEqual(0, run["unphased_ms"])
+        self.assertNotIn("profile", run)
 
     def test_its_line_matches_the_shims_fields_so_its_gh_calls_join_on_caller_and_time(self):
         self.run_logged("pr", "fetch", PR, CLAUDE_CODE_SESSION_ID="s-1", CLAUDE_PID="")
@@ -63,6 +65,21 @@ class PerfTest(GhTestCase):
         self.run_logged("pr", "fetch", PR)
         self.run_logged("pr", "info", PR, ".title")
         self.assertEqual([["pr", "fetch", PR], ["pr", "info", PR, ".title"]], [r["argv"] for r in self.runs()])
+
+    def test_timvisher_gh_profile_writes_a_loadable_profile_named_in_the_line(self):
+        profiles = self.tmp / "profiles"
+        rc, err = self.run_logged("pr", "fetch", PR, TIMVISHER_GH_PROFILE=str(profiles))
+        self.assertEqual(0, rc, err)
+        [run] = self.runs()
+        [written] = list(profiles.iterdir())
+        self.assertEqual(str(written), run["profile"])
+        self.assertLess(0, pstats.Stats(str(written)).total_calls)
+
+    def test_without_timvisher_gh_profile_no_profile_is_written(self):
+        profiles = self.tmp / "profiles"
+        self.run_logged("pr", "fetch", PR, TIMVISHER_GH_PROFILE="")
+        self.assertFalse(profiles.exists())
+        self.assertNotIn("profile", self.runs()[0])
 
     def test_a_log_dir_it_cant_write_warns_and_keeps_the_result(self):
         self.logs.write_text("not a directory")
