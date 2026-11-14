@@ -1050,9 +1050,14 @@ retire_merged_worktrees() {
                 continue
             fi
 
-            if git -C "$wt" merge-base --is-ancestor HEAD "$merge_ref" 2>/dev/null
+            # One judgment, shared with 'timvisher_git worktree gc': ancestry
+            # alone cannot see a squash merge, so a branch whose PR landed
+            # that way would sit here forever.  The run's pinned commit goes
+            # in so the ancestry leg still measures against the baseline.
+            local landed_reason
+            if landed_reason=$(timvisher_git worktree landed --merge-ref "$merge_ref" "$wt" 2>/dev/null)
             then
-                info "retire: '%s' is fully merged into %s; commenting out" "$wt" "$merge_ref"
+                info "retire: '%s' has landed (%s); commenting out" "$wt" "$landed_reason"
 
                 # Comment out the line in x.active-worktrees.
                 # The file may use ~/... or absolute paths; match either form.

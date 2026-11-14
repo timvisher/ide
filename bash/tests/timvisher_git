@@ -1487,6 +1487,44 @@ else
   fail "expected no auto-fork for git@ URL, got rc=${rc}"
 fi
 
+# ---------------------------------------------------------------------------
+# worktree_gc__reap_reason: which ref the ancestry leg measures against.
+# gc wants the trunk as it is now; a dev_ci run wants the commit it pinned.
+# ---------------------------------------------------------------------------
+
+rr_cache="$tmpdir/reap_cache"
+rr_wt="$tmpdir/reap_wt"
+mkdir -p "$rr_cache" "$rr_wt" || exit 1
+
+# Leg 1 needs a recorded PR URL and leg 3 needs a repo slug; with neither,
+# only the ancestry leg runs.
+rr_branch=refs/heads/feature
+rr_pin=1111111111111111111111111111111111111111
+
+# Reachable from the pinned commit, but not from origin/main.
+mock_respond git --exit 1 -- -C "$rr_cache" merge-base --is-ancestor "$rr_branch" origin/main
+mock_respond git -- -C "$rr_cache" merge-base --is-ancestor "$rr_branch" "$rr_pin"
+
+run_test
+rr_out=$(worktree_gc__reap_reason "$rr_wt" "$rr_cache" "$rr_branch" main "" "$rr_pin")
+rr_rc=$?
+if (( rr_rc == 0 )) && [[ $rr_out == "ancestor of ${rr_pin}" ]]
+then
+  pass "reap_reason: a given ancestry target is the one measured against"
+else
+  fail "pinned target: rc=${rr_rc} out='${rr_out}'"
+fi
+
+run_test
+rr_out=$(worktree_gc__reap_reason "$rr_wt" "$rr_cache" "$rr_branch" main "")
+rr_rc=$?
+if (( rr_rc != 0 ))
+then
+  pass "reap_reason: without one it falls back to origin/<trunk>"
+else
+  fail "default target: expected non-zero, got rc=${rr_rc} out='${rr_out}'"
+fi
+
 mock_finish || (( failures += 1 ))
 
 echo ""

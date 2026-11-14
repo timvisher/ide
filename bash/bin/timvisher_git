@@ -2265,6 +2265,12 @@ Subcommands
     containing .timvisher_dev_ci/protected is never removed.
     Any other 'worktree' invocation passes through to git.
 
+  worktree landed [--merge-ref <commit>] [<path>]
+    Whether the work on a worktree has landed, printing the reason and
+    exiting 0, or printing nothing and exiting 1.  The judgment 'worktree
+    gc' reaps on, without its age tiers.  --merge-ref pins the ancestry
+    check to a commit, for a caller that has already fixed one for a run.
+
   worktree sweep-bogus
     Sweep bogus worktrees across every trunk cache.  Global by nature:
     -C is accepted and ignored, including a -C path that does not
@@ -3639,6 +3645,11 @@ worktree_gc__pr_state() {
 # reliable exactly on the old worktrees gc targets.
 worktree_gc__reap_reason() {
   local wt_path=$1 trunk_cache=$2 branch_ref=$3 trunk_branch=$4 gh_repo=$5
+  # What leg 2 measures against.  gc wants wherever the trunk is now; a
+  # dev_ci run wants the commit it pinned for the whole run, so a branch
+  # cannot retire against an upstream no other phase saw.  Legs 1 and 3
+  # need no equivalent: a merge date on GitHub does not move.
+  local ancestry_target=${6:-origin/${trunk_branch}}
   local have_gh=0
   command -v gh &>/dev/null && have_gh=1
 
@@ -3662,8 +3673,9 @@ worktree_gc__reap_reason() {
   fi
 
   # 2. Branch tip already reachable from trunk (merge/rebase-landed repos).
-  if git -C "$trunk_cache" merge-base --is-ancestor "$branch_ref" "origin/${trunk_branch}" 2>/dev/null; then
-    printf 'ancestor of %s' "$trunk_branch"
+  if git -C "$trunk_cache" merge-base --is-ancestor "$branch_ref" "$ancestry_target" 2>/dev/null
+  then
+    printf 'ancestor of %s' "$ancestry_target"
     return 0
   fi
 
@@ -3682,6 +3694,76 @@ worktree_gc__reap_reason() {
   fi
 
   return 1
+}
+
+# Whether the work on a worktree has landed, with the reason on stdout and
+# nothing on failure -- the judgment gc reaps on, asked as a question.
+#
+# Deliberately without gc's age tiers.  gc answers "is this old enough to
+# delete"; a caller like timvisher_dev_ci's retire_merged_worktrees asks
+# only "is this work in the trunk", and must not inherit a grace window
+# that would keep a landed branch in x.active-worktrees for four days.
+#
+# A merged PR counts only when nothing was committed after the merge: work
+# added later means the worktree was reused and the merge says nothing
+# about what is in it now.
+worktree_landed() {
+  local merge_ref='' wt_path=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --merge-ref)
+        [[ -n ${2:-} ]] || die "worktree landed: --merge-ref requires a value"
+        merge_ref=$2
+        shift 2
+        ;;
+      --merge-ref=*)
+        merge_ref=${1#--merge-ref=}
+        shift
+        ;;
+      -*)
+        die "worktree landed: unknown option '%s'" "$1"
+        ;;
+      *)
+        [[ -z $wt_path ]] || die "worktree landed: one path at a time, got '%s'" "$1"
+        wt_path=$1
+        shift
+        ;;
+    esac
+  done
+
+  wt_path=${wt_path:-.}
+  [[ -d $wt_path ]] || die "worktree landed: no such directory '%s'" "$wt_path"
+  wt_path=$(cd "$wt_path" && pwd -P) ||
+    die "worktree landed: cannot resolve '%s'" "$wt_path"
+
+  local trunk_cache branch_ref trunk_branch gh_repo
+  trunk_cache=$(git -C "$wt_path" rev-parse --git-common-dir 2>/dev/null) ||
+    die "worktree landed: '%s' is not a git worktree" "$wt_path"
+  trunk_cache=$(cd "$wt_path" && cd "$trunk_cache" && pwd -P) ||
+    die "worktree landed: cannot resolve the git dir of '%s'" "$wt_path"
+
+  branch_ref=$(git -C "$wt_path" symbolic-ref -q HEAD 2>/dev/null) || return 1
+  trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache" 2>/dev/null) || return 1
+  gh_repo=$(worktree_gc__gh_repo "$trunk_cache") || gh_repo=""
+
+  local pr_state='' merged_at=''
+  read -r pr_state merged_at < <(worktree_gc__pr_state "$wt_path")
+  if [[ $pr_state == merged ]]
+  then
+    local merged_epoch=0 last_commit_epoch=0
+    merged_epoch=$(timvisher_date epoch "$merged_at" 2>/dev/null) || merged_epoch=0
+    last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null) || last_commit_epoch=0
+    if (( last_commit_epoch <= merged_epoch ))
+    then
+      printf 'PR merged'
+      return 0
+    fi
+  fi
+
+  worktree_gc__reap_reason "$wt_path" "$trunk_cache" "$branch_ref" \
+                           "$trunk_branch" "$gh_repo" "$merge_ref"
 }
 
 worktree_gc() {
@@ -4721,6 +4803,7 @@ case $1 in
   worktree)
     case ${2:-} in
       gc)          in_chdir worktree_gc "${@:3}" ;;
+      landed)      in_chdir worktree_landed "${@:3}" ;;
       sweep-bogus) sweep_bogus_worktrees_in_all_caches ;;
       *)           git_in_chdir "$@" ;;
     esac
