@@ -10,7 +10,8 @@ source "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../functions/logging.bash" 
 show_help() {
   cat <<'EOF'
 Usage: timvisher_tests [--core <path>] [--overlay <path>] [--suite <path>]...
-                       [--integration] [--jobs <n>] [--timeout <seconds>]
+                       [--integration | --no-integration] [--jobs <n>]
+                       [--timeout <seconds>]
        timvisher_tests [--core <path>] [--overlay <path>] --shell [<cmd> [<arg>...]]
 
 Run the test suites of the worktrees under test at their repo roots,
@@ -29,7 +30,10 @@ hold helpers and are skipped), plus, when a root has
 python/tests/, 'python3 -m unittest discover' there and
 python/tests/conformance/run.py. The integration suites, the regular
 files in bash/tests/integration/, test against real repositories and
-tools; they run only with --integration, or when named with --suite.
+tools. They run with --integration, when named with --suite, and
+wherever a run is a verdict rather than a step in a loop: a dev
+integration worktree, the worktree dev_ci integrates in, and a trunk.
+A feature branch keeps the fast loop and opts in.
 The run is refused, naming the file,
 if a suite is executable, or if a line of it looks like it assigns HOME
 or an XDG_* variable for the suite itself. That check is a line-based
@@ -71,6 +75,8 @@ Options:
   --suite <path>      Run only this suite. Repeatable. An integration
                       suite named here runs without --integration.
   --integration       Also run the integration suites.
+  --no-integration    Skip them where they would otherwise be forced.
+  --list-suites       Print the suites this run would execute, and stop.
   --jobs <n>          Run at most <n> suites at once (default: half the
                       online CPUs).
   --timeout <seconds> Kill a suite that runs longer (default: 1200).
@@ -91,6 +97,8 @@ shell=
 cmd=()
 only=()
 integration=
+no_integration=
+list_suites=
 jobs=
 timeout=1200
 
@@ -110,6 +118,14 @@ do
     --suite)
       only+=("${2-}")
       shift 2 || { usage; exit 1; }
+      ;;
+    --no-integration)
+      no_integration=1
+      shift
+      ;;
+    --list-suites)
+      list_suites=1
+      shift
       ;;
     --integration)
       integration=1
@@ -430,6 +446,29 @@ do
   fi
 done
 
+# Where a run is a verdict rather than a step in a loop, the integration
+# suites are not optional. On a feature branch they stay opt-in, so
+# iterating does not cost twice as long for work that is not finished.
+#
+# Three changes to retire reached a trunk in one day, each on a green
+# default run, and each time the suites that covered them had not run
+# (ide-p9x).
+integration_is_forced() {
+  [[ -f $here/x.dev-integration-branch ]] && return 0
+  [[ $here == */x.dev-ci-integrate/* ]] && return 0
+
+  [[ -n $branch ]] || return 1
+  local trunk_ref
+  trunk_ref=$("$real_git" -C "$here" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) ||
+    return 1
+  [[ $branch == "${trunk_ref#*/}" ]]
+}
+
+if [[ -z $integration && -z $no_integration ]] && integration_is_forced
+then
+  integration=1
+fi
+
 if (( 0 < ${#only[@]} ))
 then
   all_labels=("${labels[@]}")
@@ -478,6 +517,15 @@ then
   kinds=("${kinds[@]}")
   targets=("${targets[@]}")
   tiers=("${tiers[@]}")
+fi
+
+# The selection, without running anything: what a run would cover is
+# worth being able to ask, and is the only cheap way to test which tier
+# a worktree gets.
+if [[ -n $list_suites ]]
+then
+  printf '%s\n' "${labels[@]}"
+  exit 0
 fi
 
 (( 0 < ${#labels[@]} )) || die 'No suites found'
