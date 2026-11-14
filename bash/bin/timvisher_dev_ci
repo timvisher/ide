@@ -989,31 +989,11 @@ discover() {
 # Prints the ref (e.g. "origin/main"); prints nothing if none resolves.
 resolve_retire_merge_ref() {
     local wt=$1
-    local ref
 
-    if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
-    then
-        ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || true
-        if [[ -z $ref ]] && git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
-        then
-            ref=origin/main
-        fi
-        printf '%s' "$ref"
-        return 0
-    fi
-
-    ref=$(git -C "$wt" symbolic-ref -q --short refs/remotes/upstream/HEAD 2>/dev/null) || true
-    if [[ -z $ref ]]
-    then
-        if git -C "$wt" show-ref --verify --quiet refs/remotes/upstream/main 2>/dev/null
-        then
-            ref=upstream/main
-        elif git -C "$wt" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
-        then
-            ref=origin/main
-        fi
-    fi
-    printf '%s' "$ref"
+    # timvisher_git owns worktree topology; it answers which remote's
+    # trunk this branch is measured against.  Empty when the worktree has
+    # no managed cache, which callers already treat as "cannot judge".
+    timvisher_git -C "$wt" info .trunk.ref 2>/dev/null
 }
 
 # Check each active worktree to see if its branch has been merged into
@@ -1932,8 +1912,15 @@ baseline_commit() {
 # stale main, which is a silent no-op whenever origin is an ancestor.
 baseline_trunk_commit() {
     local wt=$1
+    local remote
 
-    if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
+    remote=$(timvisher_git -C "$wt" info .trunk.remote 2>/dev/null) || remote=
+
+    # origin covers both a soft fork, whose trunk is its own, and a repo
+    # with no upstream remote at all.  Unknown falls through to the same
+    # order as a fork, so a worktree timvisher_git cannot place still gets
+    # a pin rather than none.
+    if [[ $remote == origin ]]
     then
         baseline_commit "$wt" origin
         return

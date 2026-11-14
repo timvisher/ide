@@ -2452,6 +2452,10 @@ Fields:
                  worktree sits directly at <org>/<repo>)
   .absPath       Absolute path to the worktree root
   .prefixPath    Path relative to TIMVISHER_GIT_HOME (org/repo/branch/…)
+  .trunk.remote  The remote whose trunk this branch is measured against:
+                 origin for a soft fork or a repo with no upstream
+                 remote, upstream for a fork
+  .trunk.ref     That remote's trunk, as <remote>/<branch>
 
 --json emits every field at once as a .timvisher_git object:
 
@@ -2563,10 +2567,33 @@ info__cmd() {
         "$toplevel" "$live_repo_dir"
   fi
 
+  # Resolved once for the trunk fields; null when the worktree has no
+  # managed cache to read a trunk branch from.
+  local info_trunk_cache='' info_trunk_branch='' info_trunk_remote=''
+  if info_trunk_cache=$(git rev-parse --git-common-dir 2>/dev/null) &&
+     info_trunk_cache=$(cd "$info_trunk_cache" && pwd -P 2>/dev/null) &&
+     info_trunk_branch=$(get_trunk_branch_name_from_cache "$info_trunk_cache" 2>/dev/null) &&
+     [[ -n $info_trunk_branch ]]
+  then
+    info_trunk_remote=$(trunk_remote_for "$toplevel" "$info_trunk_cache" "$info_trunk_branch")
+  else
+    info_trunk_branch=''
+  fi
+
   case $field in
     .org)
       get_org "$prefix_path"
       printf '\n'
+      ;;
+    .trunk.remote)
+      [[ -n $info_trunk_remote ]] ||
+        die "info .trunk.remote: no managed trunk cache for '%s'" "$toplevel"
+      printf '%s\n' "$info_trunk_remote"
+      ;;
+    .trunk.ref)
+      [[ -n $info_trunk_remote ]] ||
+        die "info .trunk.ref: no managed trunk cache for '%s'" "$toplevel"
+      printf '%s/%s\n' "$info_trunk_remote" "$info_trunk_branch"
       ;;
     .repo)
       get_repo "$prefix_path"
@@ -2604,10 +2631,17 @@ info__cmd() {
         --arg branchPath "$(info__branch_path "$prefix_path")" \
         --arg absPath "$toplevel" \
         --arg prefixPath "$prefix_path" \
+        --arg trunkRemote "$info_trunk_remote" \
+        --arg trunkBranch "$info_trunk_branch" \
         '{timvisher_git: {org: $org, repo: $repo,
                           branch: (if $branch == "" then null else $branch end),
                           branchPath: $branchPath, absPath: $absPath,
-                          prefixPath: $prefixPath}}' ||
+                          prefixPath: $prefixPath,
+                          trunk: (if $trunkRemote == "" then null
+                                  else {remote: $trunkRemote,
+                                        branch: $trunkBranch,
+                                        ref: ($trunkRemote + "/" + $trunkBranch)}
+                                  end)}}' ||
         die "info --json: unable to render JSON"
       ;;
     *)
@@ -3643,29 +3677,35 @@ worktree_gc__pr_state() {
 # Deliberately NO rebase/cherry/merge-tree squash detection: those replay the
 # branch onto trunk and fail on conflicts once enough time passes — least
 # reliable exactly on the old worktrees gc targets.
-# The ref a worktree's branch is expected to land in: a soft fork's trunk is
-# its own origin, a fork's is the parent's upstream, and a repo with no
-# upstream remote has only origin.
+# The remote whose <trunk> a worktree's branch is measured against: a soft
+# fork's own origin, a fork's parent upstream, and origin for a repo with
+# no upstream remote.
 #
-# The same rule as timvisher_dev_ci's resolve_retire_merge_ref and
-# baseline_trunk_commit.  Three copies is two too many, but they live in
-# different tools; ide-6tc tracks collapsing them.
-worktree_gc__trunk_ref() {
+# One place, exposed as 'info .trunk.remote'.  The retire ref, the run's
+# baseline pin and gc's ancestry leg all need this same answer, and each
+# had grown its own copy of the rule until one of them disagreed
+# (ide-6tc, and ide-a4v for what the disagreement cost).
+trunk_remote_for() {
   local wt_path=$1 trunk_cache=$2 trunk_branch=$3
 
   if [[ -f ${wt_path}/x.timvisher_git.soft-fork ]]
   then
-    printf 'origin/%s' "$trunk_branch"
+    printf origin
     return 0
   fi
 
   if git -C "$trunk_cache" show-ref --verify --quiet "refs/remotes/upstream/${trunk_branch}" 2>/dev/null
   then
-    printf 'upstream/%s' "$trunk_branch"
+    printf upstream
     return 0
   fi
 
-  printf 'origin/%s' "$trunk_branch"
+  printf origin
+}
+
+worktree_gc__trunk_ref() {
+  local wt_path=$1 trunk_cache=$2 trunk_branch=$3
+  printf '%s/%s' "$(trunk_remote_for "$wt_path" "$trunk_cache" "$trunk_branch")" "$trunk_branch"
 }
 
 worktree_gc__reap_reason() {

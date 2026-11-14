@@ -647,78 +647,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# resolve_retire_merge_ref: soft forks measure "merged" against origin,
-# regular forks against upstream.
+# resolve_retire_merge_ref asks timvisher_git which trunk this branch is
+# measured against.  The rule lives there now and is tested there; what
+# matters here is that we ask, and return what we are told.
 # ---------------------------------------------------------------------------
 
-# Load the script's functions by stripping the top-level dispatch.
-rrmr_body=$(sed '/^case \${1:-} in$/,$ d' "$script")
-eval "$rrmr_body"
+mock_command timvisher_git
 
-ref_rules() {
-  local dir=$1 spec
-  shift
-  mkdir -p "$dir" || exit 1
-  mock_respond git --exit 1 -- -C "$dir" symbolic-ref -q --short 'refs/remotes/*/HEAD'
-  mock_respond git --exit 1 -- -C "$dir" show-ref --verify --quiet 'refs/remotes/*'
-  for spec in "$@"
-  do
-    if [[ $spec == *=* ]]
-    then
-      mock_respond git --stdout "${spec#*=}" -- -C "$dir" symbolic-ref -q --short "refs/remotes/${spec%%=*}"
-    else
-      mock_respond git -- -C "$dir" show-ref --verify --quiet "refs/remotes/${spec}"
-    fi
-  done
-}
-
-# soft fork -> origin (cookie present; upstream refs also exist but are ignored)
 run_test
-sf_wt="$tmpdir/rrmr_softfork"
-ref_rules "$sf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
-touch "$sf_wt/x.timvisher_git.soft-fork"
-rrmr_out=$(resolve_retire_merge_ref "$sf_wt")
-if [[ $rrmr_out == "origin/main" ]]
+rrmr_wt="$tmpdir/rrmr_asks"
+mkdir -p "$rrmr_wt" || exit 1
+mock_respond timvisher_git --stdout 'upstream/main' -- -C "$rrmr_wt" info .trunk.ref
+rrmr_out=$(resolve_retire_merge_ref "$rrmr_wt")
+if [[ $rrmr_out == upstream/main ]]
 then
-  pass "resolve_retire_merge_ref: soft fork resolves to origin/<trunk>"
+  pass "resolve_retire_merge_ref: returns the trunk ref timvisher_git reports"
 else
-  fail "soft fork: expected 'origin/main', got '${rrmr_out}'"
+  fail "asks timvisher_git: expected 'upstream/main', got '${rrmr_out}'"
 fi
 
-# regular fork -> upstream (no cookie)
 run_test
-rf_wt="$tmpdir/rrmr_regfork"
-ref_rules "$rf_wt" origin/main upstream/main origin/HEAD=origin/main upstream/HEAD=upstream/main
-rrmr_out=$(resolve_retire_merge_ref "$rf_wt")
-if [[ $rrmr_out == "upstream/main" ]]
-then
-  pass "resolve_retire_merge_ref: regular fork resolves to upstream/<trunk>"
-else
-  fail "regular fork: expected 'upstream/main', got '${rrmr_out}'"
-fi
-
-# no upstream, no cookie -> origin/main fallback
-run_test
-nf_wt="$tmpdir/rrmr_nofork"
-ref_rules "$nf_wt" origin/main
-rrmr_out=$(resolve_retire_merge_ref "$nf_wt")
-if [[ $rrmr_out == "origin/main" ]]
-then
-  pass "resolve_retire_merge_ref: non-fork falls back to origin/main"
-else
-  fail "non-fork: expected 'origin/main', got '${rrmr_out}'"
-fi
-
-# nothing resolvable -> empty
-run_test
-none_wt="$tmpdir/rrmr_none"
-ref_rules "$none_wt"
-rrmr_out=$(resolve_retire_merge_ref "$none_wt")
+rrmr_wt="$tmpdir/rrmr_unplaceable"
+mkdir -p "$rrmr_wt" || exit 1
+mock_respond timvisher_git --exit 1 -- -C "$rrmr_wt" info .trunk.ref
+rrmr_out=$(resolve_retire_merge_ref "$rrmr_wt")
 if [[ -z $rrmr_out ]]
 then
-  pass "resolve_retire_merge_ref: no refs resolves to empty"
+  pass "resolve_retire_merge_ref: empty when timvisher_git cannot place the worktree"
 else
-  fail "no refs: expected empty, got '${rrmr_out}'"
+  fail "unplaceable worktree: expected empty, got '${rrmr_out}'"
 fi
 
 rung_wt_unresolved="$TIMVISHER_GIT_HOME/myorg/rungrepo/feat/x"
@@ -1045,23 +1002,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# baseline_trunk_commit: the pin follows the same trunk resolve_retire_merge_ref
-# does, so a fork rebases onto upstream rather than its own stale origin.
+# baseline_trunk_commit: which manifest entry the run's pin comes from,
+# given the trunk remote timvisher_git reports.  The rule that picks the
+# remote lives in timvisher_git; this is the mapping onto the manifest.
 # ---------------------------------------------------------------------------
 
 btc_baseline="$tmpdir/btc-baseline.json"
 
-# btc_wt <name> [--soft-fork] : a worktree whose repo key is mockable.
 btc_wt() {
   local name=$1 dir
   dir="$tmpdir/btc_$name"
   mkdir -p "$dir/.git" || exit 1
   mock_respond git --stdout "$dir/.git" -- -C "$dir" rev-parse --git-common-dir
-  [[ ${2-} == --soft-fork ]] && touch "$dir/x.timvisher_git.soft-fork"
   printf '%s' "$dir"
 }
 
-# Both sides recorded, and distinguishable.
 btc_manifest() {
   local dir=$1 key
   key=$(cd "$dir" && cd "$dir/.git" && pwd -P) || exit 1
@@ -1073,50 +1028,48 @@ btc_manifest() {
 
 export TIMVISHER_DEV_CI_BASELINE="$btc_baseline"
 
-# regular fork -> upstream (this is the ide-ggl regression: origin-first
-# pinned the fork's own main, which is an ancestor, so the rebase was a no-op)
+# The ide-ggl regression: taking origin regardless pinned a fork to its own
+# main, an ancestor of every branch, so the rebase was a silent no-op.
 run_test
-btc_dir=$(btc_wt regfork)
+btc_dir=$(btc_wt fork)
 btc_manifest "$btc_dir"
+mock_respond timvisher_git --stdout upstream -- -C "$btc_dir" info .trunk.remote
 btc_out=$(baseline_trunk_commit "$btc_dir")
 if [[ $btc_out == 1111upstream ]]
 then
-  pass "baseline_trunk_commit: regular fork pins upstream"
+  pass "baseline_trunk_commit: an upstream trunk pins the upstream commit"
 else
-  fail "regular fork: expected '1111upstream', got '${btc_out}'"
+  fail "upstream trunk: expected '1111upstream', got '${btc_out}'"
 fi
 
-# soft fork -> origin, even though an upstream entry exists
+# origin covers a soft fork and a repo with no upstream remote alike.
 run_test
-btc_dir=$(btc_wt softfork --soft-fork)
+btc_dir=$(btc_wt softfork)
 btc_manifest "$btc_dir"
+mock_respond timvisher_git --stdout origin -- -C "$btc_dir" info .trunk.remote
 btc_out=$(baseline_trunk_commit "$btc_dir")
 if [[ $btc_out == 0000origin ]]
 then
-  pass "baseline_trunk_commit: soft fork pins origin"
+  pass "baseline_trunk_commit: an origin trunk pins the origin commit"
 else
-  fail "soft fork: expected '0000origin', got '${btc_out}'"
+  fail "origin trunk: expected '0000origin', got '${btc_out}'"
 fi
 
-# no upstream entry, no cookie -> origin
 run_test
-btc_dir=$(btc_wt nofork)
-btc_key=$(cd "$btc_dir" && cd "$btc_dir/.git" && pwd -P) || exit 1
-jq -n --arg key "$btc_key" \
-   '{schema: 1, repos: {($key): {origin: {ref: "origin/main", commit: "0000origin"},
-                                 upstream: {ref: "", commit: ""}}}}' \
-   > "$btc_baseline" || exit 1
+btc_dir=$(btc_wt unplaceable)
+btc_manifest "$btc_dir"
+mock_respond timvisher_git --exit 1 -- -C "$btc_dir" info .trunk.remote
 btc_out=$(baseline_trunk_commit "$btc_dir")
-if [[ $btc_out == 0000origin ]]
+if [[ $btc_out == 1111upstream ]]
 then
-  pass "baseline_trunk_commit: non-fork falls back to origin"
+  pass "baseline_trunk_commit: a worktree timvisher_git cannot place still gets a pin"
 else
-  fail "non-fork: expected '0000origin', got '${btc_out}'"
+  fail "unplaceable: expected '1111upstream', got '${btc_out}'"
 fi
 
-# no manifest at all -> failure, so callers fall back to their own resolution
 run_test
 btc_dir=$(btc_wt nobaseline)
+mock_respond timvisher_git --stdout origin -- -C "$btc_dir" info .trunk.remote
 TIMVISHER_DEV_CI_BASELINE="$tmpdir/btc-absent.json" \
   baseline_trunk_commit "$btc_dir" >/dev/null 2>&1
 if (( 0 != $? ))
@@ -1127,10 +1080,6 @@ else
 fi
 
 unset TIMVISHER_DEV_CI_BASELINE
-
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 
 mock_finish || (( failures += 1 ))
 
