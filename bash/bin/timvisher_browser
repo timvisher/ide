@@ -58,16 +58,42 @@ usage() {
 }
 
 timvisher_browser__osascript() {
-  local out
-  if ! out=$(osascript -e "$@" 2>&1)
+  local out err rc=0
+
+  # Not 2>&1.  osascript's stderr carries diagnostics nobody asked for --
+  # macOS complaining that the sandbox could not hand over an optional
+  # config file the library tried to read, say -- and the script's return
+  # value is positional, read line by line by every caller here.  Folded
+  # into stdout, one stray line shifts every field, so an error string
+  # silently becomes the value of `url` or `browser` in a record that is
+  # otherwise well formed and passes its schema check.
+  err=$(mktemp) ||
+    {
+      printf 'timvisher_browser: cannot create a temp file for stderr\n' >&2
+      return 1
+    }
+
+  out=$(osascript -e "$@" 2>"$err") || rc=$?
+
+  if (( rc != 0 ))
   then
     aictl_error \
       --code timvisher_browser_osascript_failed \
       --message "osascript failed talking to the browser." \
-      --reason "$out" \
+      --reason "$(< "$err")" \
       --suggestion "Check that the timvisher Browser AppleScript library is installed (bash ~/git/ide/bash/install.bash) and that the browser is responding, then retry"
+    rm -f -- "$err"
     return 1
   fi
+
+  # A diagnostic on a successful run still goes to stderr, where a caller
+  # reading stdout cannot mistake it for data.
+  if [[ -s $err ]]
+  then
+    cat -- "$err" >&2
+  fi
+  rm -f -- "$err"
+
   printf '%s\n' "$out"
 }
 

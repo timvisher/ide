@@ -36,6 +36,12 @@ then
   echo "execution error: Vivaldi got an error (-1728)" >&2
   exit "$FAKE_OSA_RC"
 fi
+# macOS writes diagnostics of its own on a successful run, such as the
+# sandbox refusing an optional config file the library tried to read.
+if [[ -n ${FAKE_OSA_STDERR-} ]]
+then
+  printf '%s\n' "$FAKE_OSA_STDERR" >&2
+fi
 case $osa_script in
   *closeTabWithUrl*)
     printf '%s\nVivaldi\n' "${FAKE_CLOSE:-closed}"
@@ -92,6 +98,23 @@ check 'tab info: the url is the canonicalized one from getActiveTabUrl' \
       grep -q 'getActiveTabUrl()' "$tmpdir/script"
 check 'tab info: checks the browser is running before reading the tab' \
       eval "awk '/is not running/ { r = NR } /getActiveTabUrl/ { g = NR } END { exit !(r && g && r < g) }' '$tmpdir/script'"
+
+# A diagnostic on a successful run must not reach stdout. Merged in, it
+# shifts every field of a positional payload, so an error string becomes
+# the value of a record field in JSON that still parses and still passes
+# its schema check (ide-rbb).
+FAKE_OSA_STDERR='sandbox_extension_issue_file failed for /x/default_browser: 2 (No such file or directory)' \
+  browser tab info
+rc=$?
+check 'tab info: a diagnostic on stderr does not fail the call' test "$rc" -eq 0
+check 'tab info: a diagnostic on stderr stays out of url' \
+      test "$(field .url)" = 'https://github.com/DataDog/x/pull/7'
+check 'tab info: a diagnostic on stderr stays out of browser' \
+      test "$(field .browser)" = Vivaldi
+check 'tab info: a diagnostic on stderr stays out of title' \
+      test "$(field .title)" = 'Fix the "thing" · Pull Request #7'
+check 'tab info: the diagnostic is still reported, on stderr' \
+      stderr_has 'sandbox_extension_issue_file failed'
 
 browser tab info .url
 check 'tab info: a component prints bare' \
