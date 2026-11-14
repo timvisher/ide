@@ -3643,13 +3643,42 @@ worktree_gc__pr_state() {
 # Deliberately NO rebase/cherry/merge-tree squash detection: those replay the
 # branch onto trunk and fail on conflicts once enough time passes — least
 # reliable exactly on the old worktrees gc targets.
+# The ref a worktree's branch is expected to land in: a soft fork's trunk is
+# its own origin, a fork's is the parent's upstream, and a repo with no
+# upstream remote has only origin.
+#
+# The same rule as timvisher_dev_ci's resolve_retire_merge_ref and
+# baseline_trunk_commit.  Three copies is two too many, but they live in
+# different tools; ide-6tc tracks collapsing them.
+worktree_gc__trunk_ref() {
+  local wt_path=$1 trunk_cache=$2 trunk_branch=$3
+
+  if [[ -f ${wt_path}/x.timvisher_git.soft-fork ]]
+  then
+    printf 'origin/%s' "$trunk_branch"
+    return 0
+  fi
+
+  if git -C "$trunk_cache" show-ref --verify --quiet "refs/remotes/upstream/${trunk_branch}" 2>/dev/null
+  then
+    printf 'upstream/%s' "$trunk_branch"
+    return 0
+  fi
+
+  printf 'origin/%s' "$trunk_branch"
+}
+
 worktree_gc__reap_reason() {
   local wt_path=$1 trunk_cache=$2 branch_ref=$3 trunk_branch=$4 gh_repo=$5
   # What leg 2 measures against.  gc wants wherever the trunk is now; a
   # dev_ci run wants the commit it pinned for the whole run, so a branch
   # cannot retire against an upstream no other phase saw.  Legs 1 and 3
   # need no equivalent: a merge date on GitHub does not move.
-  local ancestry_target=${6:-origin/${trunk_branch}}
+  #
+  # Not origin/<trunk> unconditionally: a fork's trunk is its parent's, and
+  # a fork's own origin can sit hundreds of commits behind it, which made
+  # this leg dead weight for every fork.
+  local ancestry_target=${6:-$(worktree_gc__trunk_ref "$wt_path" "$trunk_cache" "$trunk_branch")}
   local have_gh=0
   command -v gh &>/dev/null && have_gh=1
 
