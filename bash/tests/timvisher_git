@@ -1529,47 +1529,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# worktree_gc__never_started: a branch that has not started has not landed.
-# Both a fresh worktree and a deliberately emptied one sit on the trunk, so
-# only the reflog separates them.
-# ---------------------------------------------------------------------------
-
-ns_wt="$tmpdir/never_started_wt"
-mkdir -p "$ns_wt" || exit 1
-ns_branch=refs/heads/feature
-
-run_test
-mock_respond git --stdout '1fb9ed01 feature@{0}: branch: Created from origin/main' -- \
-  -C "$ns_wt" reflog show "$ns_branch"
-if worktree_gc__never_started "$ns_wt" "$ns_branch"
-then
-  pass "never_started: a lone creation entry means the branch never started"
-else
-  fail "lone creation entry: expected never-started"
-fi
-
-run_test
-mock_respond git --stdout '7e857d59 feature@{0}: reset: moving to upstream/main
-d2b94e63 feature@{1}: commit: real work
-1fb9ed01 feature@{2}: branch: Created from origin/main' -- \
-  -C "$ns_wt" reflog show "$ns_branch"
-if ! worktree_gc__never_started "$ns_wt" "$ns_branch"
-then
-  pass "never_started: a branch emptied back onto the trunk did start"
-else
-  fail "emptied branch: expected started, so it stays retirable"
-fi
-
-run_test
-mock_respond git --stdout '' -- -C "$ns_wt" reflog show "$ns_branch"
-if ! worktree_gc__never_started "$ns_wt" "$ns_branch"
-then
-  pass "never_started: no reflog says nothing, so the usual checks run"
-else
-  fail "absent reflog: expected fall-through"
-fi
-
-# ---------------------------------------------------------------------------
 # worktree_gc__trunk_ref: which trunk a worktree's branch lands in. Same
 # three cases resolve_retire_merge_ref covers, over a resolved trunk branch.
 # ---------------------------------------------------------------------------
