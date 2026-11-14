@@ -3696,6 +3696,24 @@ worktree_gc__reap_reason() {
   return 1
 }
 
+# Whether a branch has never carried work of its own.
+#
+# Bare ancestry cannot separate the two branches that sit on the trunk: one
+# created moments ago and not yet committed to, and one deliberately emptied
+# back onto it because its work landed.  Both are ancestors.  The reflog can:
+# the first has nothing in it but its own creation.
+#
+# Reflogs are local and expire, so their absence says nothing either way --
+# that falls through to the ordinary checks rather than claiming a start.
+worktree_gc__never_started() {
+  local wt_path=$1 branch_ref=$2
+  local -a entries=()
+
+  readarray -t entries < <(git -C "$wt_path" reflog show "$branch_ref" 2>/dev/null)
+
+  (( ${#entries[@]} == 1 )) && [[ ${entries[0]} == *': branch: Created from '* ]]
+}
+
 # Whether the work on a worktree has landed, with the reason on stdout and
 # nothing on failure -- the judgment gc reaps on, asked as a question.
 #
@@ -3745,6 +3763,16 @@ worktree_landed() {
     die "worktree landed: cannot resolve the git dir of '%s'" "$wt_path"
 
   branch_ref=$(git -C "$wt_path" symbolic-ref -q HEAD 2>/dev/null) || return 1
+
+  # Before any of the legs: a branch that has not started has not landed.
+  # Retiring one unlists it from x.active-worktrees, which is also what
+  # keeps gc off it, so the cost of getting this wrong is a worktree
+  # someone is working in becoming reapable.
+  if worktree_gc__never_started "$wt_path" "$branch_ref"
+  then
+    return 1
+  fi
+
   trunk_branch=$(get_trunk_branch_name_from_cache "$trunk_cache" 2>/dev/null) || return 1
   gh_repo=$(worktree_gc__gh_repo "$trunk_cache") || gh_repo=""
 
