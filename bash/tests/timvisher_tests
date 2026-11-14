@@ -69,7 +69,10 @@ out=$(shell_in --overlay "$overlay" --shell bash -c '
   printf "token=%s\n" "${GH_TOKEN-unset}"
   printf "probe=%s\n" "${TIMVISHER_TESTS_PROBE-unset}"
   printf "hooks=%s\n" "$(git config core.hooksPath)"
-  printf "receive_hooks=%s\n" "$(env -u GIT_CONFIG_COUNT git config core.hooksPath)"
+  # Probed from ~, not the repo root: the receive-pack this stands in for
+  # runs in a scratch repo under HOME, so a repo-level core.hooksPath in
+  # the repo under test is not one of the layers it reads.
+  printf "receive_hooks=%s\n" "$(env -u GIT_CONFIG_COUNT git -C ~ config core.hooksPath)"
   printf "trace2=%s\n" "$(git config trace2.eventTarget)"
   printf "author=%s\n" "$(git var GIT_AUTHOR_IDENT | cut -d" " -f1)"
   printf "pwd=%s\n" "$(pwd -P)"
@@ -118,7 +121,8 @@ fresh=$(shell_in --overlay "$overlay" --shell bash -c '
 check 'a fresh HOME made under --shell is made' test -n "$fresh"
 fresh_hooks=$(shell_in --overlay "$overlay" --shell bash -c '
   source ~/git/ide/bash/tests/lib/timvisher_tests.bash || exit 1
-  (timvisher_tests_fresh_home && env -u GIT_CONFIG_COUNT git config core.hooksPath)')
+  # From ~, for the same reason as receive_hooks above.
+  (timvisher_tests_fresh_home && env -u GIT_CONFIG_COUNT git -C ~ config core.hooksPath)')
 check 'a fresh HOME keeps core.hooksPath out of the global config' \
       eval '[[ $fresh_hooks == */fresh_home.*/home/* ]]'
 check 'a fresh HOME made under --shell is removed afterwards' test ! -e "$fresh"
