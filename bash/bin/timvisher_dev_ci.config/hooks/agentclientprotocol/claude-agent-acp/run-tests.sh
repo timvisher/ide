@@ -22,6 +22,13 @@ cd "$root" ||
 # their own mocks.
 export CLAUDE_CODE_EXECUTABLE=/usr/bin/false
 
+# ANTHROPIC_MODEL is the first thing resolveModelPreference consults, so a
+# shell that has one -- every agent shell does -- resolves a model before
+# the allowlist is reached, and the tests that assert on that call fail.
+# CI has no such variable; unset it so a run means the same thing whoever
+# starts it.
+unset ANTHROPIC_MODEL
+
 ci_yaml=.github/workflows/ci.yml
 
 if [[ ! -f $ci_yaml ]]
