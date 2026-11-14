@@ -2106,7 +2106,50 @@ _timvisher_git__maybe_ensure_maintenance_scheduler() {
   timvisher_git ensure-maintenance-scheduler "$trunk" >/dev/null 2>&1 || true
 }
 
+# beads writes core.hooksPath into a repo's config, naming one worktree's
+# .beads/hooks. That config is $GIT_COMMON_DIR/config, shared by every
+# worktree of the repo, and core.hooksPath replaces the default hooks
+# location rather than adding to it -- so once those beads move to a topic
+# and the directory goes with them, every hook in the repo is disabled and
+# nothing says so. Nothing stops bd writing it, so take it back out
+# whenever it reappears.
+#
+# Only a value naming .beads/hooks. Any other core.hooksPath is somebody's
+# deliberate configuration -- an employer's global hooks, say -- and
+# removing it would disable the scanning it exists to run.
+_timvisher_git__strip_beads_hooks_path() {
+  (( _timvisher_git__depth == 0 )) || return 0
+  [[ $PWD == "${HOME}"/git/* ]] || return 0
+
+  local rest=${PWD#"${HOME}"/git/}
+  local org=${rest%%/*}
+  [[ -n $org && $org != "$rest" ]] || return 0
+
+  rest=${rest#*/}
+  local repo=${rest%%/*}
+  [[ -n $repo ]] || return 0
+
+  local config="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}/config"
+  [[ -f $config ]] || return 0
+
+  # Read with a builtin and match in the shell: every run pays this, and
+  # almost none of them find anything, so it must not fork.
+  local -a lines=()
+  mapfile -t lines < "$config" 2>/dev/null || return 0
+
+  local line
+  for line in "${lines[@]}"
+  do
+    if [[ ${line,,} == *hookspath*.beads/hooks* ]]
+    then
+      "$real_git" config --file "$config" --unset-all core.hooksPath 2>/dev/null || true
+      return 0
+    fi
+  done
+}
+
 _timvisher_git__phase guards
+_timvisher_git__strip_beads_hooks_path
 _timvisher_git__maybe_reconcile_repo_config
 _timvisher_git__maybe_register_maintenance
 _timvisher_git__maybe_ensure_maintenance_scheduler

@@ -280,6 +280,83 @@ else
   fail "first fetch: specs='${sf_specs}' refs='${sf_refs}' out='${sf_out}'"
 fi
 
+# ---------------------------------------------------------------------------
+# core.hooksPath: beads writes one into the shared cache config and the
+# wrapper takes it back out on the next full-path command -- but only its
+# own. Read-only plumbing skips the reconcile hooks, so this uses status.
+#
+# The fixture lives under the suite's own HOME: the wrapper sources
+# ~/.functions/git.bash and exits if it is not there, so a made-up HOME
+# would make every one of these pass without running anything.
+# ---------------------------------------------------------------------------
+
+hp_cache_config() {
+  printf '%s' "$HOME/.cache/timvisher_git_worktrees/repo_trunks/$1/$2/config"
+}
+
+hp_fixture() {
+  local org=$1 repo=$2 value=$3
+  local cache="$HOME/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local wt="$HOME/git/${org}/${repo}/branch"
+
+  mkdir -p "$cache" "$wt" || return 1
+  "$real_git" -C "$wt" init -q >/dev/null 2>&1 || return 1
+
+  {
+    printf '[core]\n'
+    printf '\tbare = true\n'
+    if [[ -n $value ]]
+    then
+      printf '\thooksPath = %s\n' "$value"
+    fi
+  } > "$cache/config"
+}
+
+hp_run() {
+  local org=$1 repo=$2
+  ( cd "$HOME/git/${org}/${repo}/branch" &&
+    TIMVISHER_AGENT='' CLAUDECODE='' TIMVISHER_CODEX='' \
+    TIMVISHER_MOCK_DIR="$real_mock_dir" PATH="$test_path_real_git" \
+    bash -c "source '${funcs_dir}/logging.bash'; '$script' status --short" ) >/dev/null 2>&1
+}
+
+hp_value() {
+  "$real_git" config --file "$1" --get core.hooksPath 2>/dev/null
+}
+
+run_test
+hp_fixture beadsorg beadsrepo '/somewhere/wt/.beads/hooks' || fail "beads fixture"
+hp_config=$(hp_cache_config beadsorg beadsrepo)
+hp_run beadsorg beadsrepo
+if [[ -z $(hp_value "$hp_config") ]]
+then
+  pass "wrapper unsets a core.hooksPath naming .beads/hooks"
+else
+  fail "beads hooksPath: still set to '$(hp_value "$hp_config")'"
+fi
+
+run_test
+hp_fixture ddorg ddrepo /usr/local/dd/global_hooks || fail "dd fixture"
+hp_config=$(hp_cache_config ddorg ddrepo)
+hp_run ddorg ddrepo
+if [[ $(hp_value "$hp_config") == /usr/local/dd/global_hooks ]]
+then
+  pass "wrapper leaves a core.hooksPath it did not write alone"
+else
+  fail "foreign hooksPath: expected it untouched, got '$(hp_value "$hp_config")'"
+fi
+
+run_test
+hp_fixture plainorg plainrepo '' || fail "plain fixture"
+hp_config=$(hp_cache_config plainorg plainrepo)
+hp_run plainorg plainrepo
+if [[ -z $(hp_value "$hp_config") ]] && grep -q 'bare = true' "$hp_config"
+then
+  pass "wrapper leaves a config with no hooksPath intact"
+else
+  fail "no hooksPath: the config was disturbed"
+fi
+
 mock_finish || (( failures += 1 ))
 
 echo "Results: $((tests - failures))/${tests} passed"
