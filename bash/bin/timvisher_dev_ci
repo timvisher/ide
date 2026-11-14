@@ -315,7 +315,7 @@ integrate_scratch_begin() {
     # since the baseline, and the whole point is not to depend on that.
     local start=$upstream
     local pinned
-    if pinned=$(baseline_commit "$path" origin) || pinned=$(baseline_commit "$path" upstream)
+    if pinned=$(baseline_trunk_commit "$path")
     then
         if [[ $(git -C "$path" rev-parse "$upstream" 2>/dev/null) != "$pinned" ]]
         then
@@ -1041,14 +1041,8 @@ retire_merged_worktrees() {
             # same commit every other phase targets. Fetching here would let
             # a branch retire against an upstream nothing else saw.
             local merge_ref
-            if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
-            then
-                merge_ref=$(baseline_commit "$wt" origin) ||
-                    merge_ref=$(resolve_retire_merge_ref "$wt")
-            else
-                merge_ref=$(baseline_commit "$wt" upstream) ||
-                    merge_ref=$(resolve_retire_merge_ref "$wt")
-            fi
+            merge_ref=$(baseline_trunk_commit "$wt") ||
+                merge_ref=$(resolve_retire_merge_ref "$wt")
 
             if [[ -z $merge_ref ]]
             then
@@ -1198,8 +1192,7 @@ cmd__sync() {
     # run pinned instead, so every worktree lands on the same one.
     local pull_cmd="git pull --rebase"
     local sync_pin
-    if sync_pin=$(baseline_commit "$worktree_path" origin) ||
-       sync_pin=$(baseline_commit "$worktree_path" upstream)
+    if sync_pin=$(baseline_trunk_commit "$worktree_path")
     then
         pull_cmd="git rebase ${sync_pin}"
         info "sync: rebasing onto the baseline %s" "${sync_pin:0:12}"
@@ -1924,6 +1917,24 @@ baseline_commit() {
              '.repos[$key][$which].commit // ""' "$file" 2>/dev/null) || return 1
     [[ -n $sha ]] || return 1
     printf '%s' "$sha"
+}
+
+# The commit this run pinned for a worktree's trunk.  A soft fork's trunk is
+# its own origin; a fork's is the parent's upstream; a plain repo has only
+# origin.  This mirrors resolve_retire_merge_ref on purpose -- both answer
+# "which trunk is this worktree measured against", and they must not
+# disagree.  Taking origin first regardless rebases a fork onto its own
+# stale main, which is a silent no-op whenever origin is an ancestor.
+baseline_trunk_commit() {
+    local wt=$1
+
+    if [[ -f ${wt}/x.timvisher_git.soft-fork ]]
+    then
+        baseline_commit "$wt" origin
+        return
+    fi
+
+    baseline_commit "$wt" upstream || baseline_commit "$wt" origin
 }
 
 # The ref a worktree's repo resolved 'origin' or 'upstream' to, for messages

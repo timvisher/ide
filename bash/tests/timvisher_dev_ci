@@ -1045,6 +1045,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# baseline_trunk_commit: the pin follows the same trunk resolve_retire_merge_ref
+# does, so a fork rebases onto upstream rather than its own stale origin.
+# ---------------------------------------------------------------------------
+
+btc_baseline="$tmpdir/btc-baseline.json"
+
+# btc_wt <name> [--soft-fork] : a worktree whose repo key is mockable.
+btc_wt() {
+  local name=$1 dir
+  dir="$tmpdir/btc_$name"
+  mkdir -p "$dir/.git" || exit 1
+  mock_respond git --stdout "$dir/.git" -- -C "$dir" rev-parse --git-common-dir
+  [[ ${2-} == --soft-fork ]] && touch "$dir/x.timvisher_git.soft-fork"
+  printf '%s' "$dir"
+}
+
+# Both sides recorded, and distinguishable.
+btc_manifest() {
+  local dir=$1 key
+  key=$(cd "$dir" && cd "$dir/.git" && pwd -P) || exit 1
+  jq -n --arg key "$key" \
+     '{schema: 1, repos: {($key): {origin: {ref: "origin/main", commit: "0000origin"},
+                                   upstream: {ref: "upstream/main", commit: "1111upstream"}}}}' \
+     > "$btc_baseline" || exit 1
+}
+
+export TIMVISHER_DEV_CI_BASELINE="$btc_baseline"
+
+# regular fork -> upstream (this is the ide-ggl regression: origin-first
+# pinned the fork's own main, which is an ancestor, so the rebase was a no-op)
+run_test
+btc_dir=$(btc_wt regfork)
+btc_manifest "$btc_dir"
+btc_out=$(baseline_trunk_commit "$btc_dir")
+if [[ $btc_out == 1111upstream ]]
+then
+  pass "baseline_trunk_commit: regular fork pins upstream"
+else
+  fail "regular fork: expected '1111upstream', got '${btc_out}'"
+fi
+
+# soft fork -> origin, even though an upstream entry exists
+run_test
+btc_dir=$(btc_wt softfork --soft-fork)
+btc_manifest "$btc_dir"
+btc_out=$(baseline_trunk_commit "$btc_dir")
+if [[ $btc_out == 0000origin ]]
+then
+  pass "baseline_trunk_commit: soft fork pins origin"
+else
+  fail "soft fork: expected '0000origin', got '${btc_out}'"
+fi
+
+# no upstream entry, no cookie -> origin
+run_test
+btc_dir=$(btc_wt nofork)
+btc_key=$(cd "$btc_dir" && cd "$btc_dir/.git" && pwd -P) || exit 1
+jq -n --arg key "$btc_key" \
+   '{schema: 1, repos: {($key): {origin: {ref: "origin/main", commit: "0000origin"},
+                                 upstream: {ref: "", commit: ""}}}}' \
+   > "$btc_baseline" || exit 1
+btc_out=$(baseline_trunk_commit "$btc_dir")
+if [[ $btc_out == 0000origin ]]
+then
+  pass "baseline_trunk_commit: non-fork falls back to origin"
+else
+  fail "non-fork: expected '0000origin', got '${btc_out}'"
+fi
+
+# no manifest at all -> failure, so callers fall back to their own resolution
+run_test
+btc_dir=$(btc_wt nobaseline)
+TIMVISHER_DEV_CI_BASELINE="$tmpdir/btc-absent.json" \
+  baseline_trunk_commit "$btc_dir" >/dev/null 2>&1
+if (( 0 != $? ))
+then
+  pass "baseline_trunk_commit: no manifest returns non-zero"
+else
+  fail "no manifest: expected non-zero"
+fi
+
+unset TIMVISHER_DEV_CI_BASELINE
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
