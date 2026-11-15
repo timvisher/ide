@@ -395,6 +395,8 @@ CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send abcd1111-0000 "$tmp
 rc=$?
 check 'agent-shell send, idle shell: submits the trimmed file and prints submitted' \
       eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == submitted ]] && [[ \$(cat '$send_log') == '$expected_insert' ]]"
+check 'agent-shell send: reports on stderr which Emacs it resolved to, leaving stdout the word alone' \
+      eval "stderr_has '\"code\":\"timvisher_emacs_send_resolved\"' && stderr_has 'in Emacs $shell_pid' && stderr_has 'resolved by process'"
 
 touch "$busy_flag"
 : > "$send_log"
@@ -406,16 +408,31 @@ rm -f -- "$busy_flag"
 
 for ref in tvdead-4d "$noname_ref"
 do
-  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 3 "$ref"
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 "$ref"
   rc=$?
-  check "agent-shell get-server: '$ref' (a dead agent process, or a file with no name) still finds its shell by scan, past a busy Emacs" \
+  check "agent-shell get-server: '$ref' (a dead agent process, or a file with no name) finds its shell by scan when every server answers" \
         eval "(( rc == 0 )) && [[ \$(field '[.session_id, .pid, .found_by] | @tsv') == 'abcd1111-0000	$shell_pid	scan' ]]"
 done
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 3 abcd1111-0000
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 abcd1111-0000
 rc=$?
 check 'agent-shell get-server, no session file: scans servers once send has loaded the helper' \
       eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
+
+# A shell found by scan while another Emacs stayed silent is the shape a
+# handed-off session makes: one live shell, one stale, telling apart only
+# by which Emacs holds it. Settling on whichever answered is the bug.
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 1 abcd1111-0000
+rc=$?
+check 'agent-shell get-server, a match plus an Emacs that could not be asked: refuses rather than settling' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_session_scan_ambiguous\""'
+check 'agent-shell get-server, scan ambiguous: names the Emacs that matched and the one that stayed silent' \
+      eval "stderr_has 'Emacs $shell_pid has one' && stderr_has '$busy_pid'"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell send --timeout 1 abcd1111-0000 "$tmpdir/message"
+rc=$?
+check 'agent-shell send, a match plus an Emacs that could not be asked: delivers nothing and says why' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_session_scan_ambiguous\""'
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 nosuch-0000
 rc=$?
@@ -522,7 +539,7 @@ check 'agent-shell ls: without a terminal, lists every shell as JSON joined with
 check 'agent-shell ls: an Emacs that does not answer is listed as unreachable, with the budget it was given' \
       eval "[[ \$(field '.unreachable[] | [(.pid | tostring), (.timeout_seconds | tostring)] | join(\" \")') == '$busy_pid 4' ]]"
 check 'agent-shell ls: an unreachable Emacs says why it could not be probed' \
-      eval "[[ \$(field '.unreachable[].reason') =~ ^(timeout|refused)\$ ]] && [[ -n \$(field '.unreachable[].detail') ]]"
+      eval "[[ \$(field '.unreachable[].reason') =~ ^(timeout|refused)\$ ]] && [[ \$(field '.unreachable[].detail') == *[![:space:]]* ]]"
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --format table --timeout 4
 rc=$?

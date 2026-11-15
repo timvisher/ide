@@ -73,7 +73,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           answer unknown rather than 'not here'
   agent-shell send        queue the file's text in that agent-shell, or submit it if the
                           shell is idle with nothing typed at its prompt; prints queued or
-                          submitted
+                          submitted, and reports on stderr which Emacs it resolved to and
+                          how
   agent-shell is-wedged   print a JSON report on whether that agent-shell is wedged; the
                           answer is .wedged (jq -e .wedged), with the evidence in .reasons;
                           an Emacs that does not answer within --timeout seconds (default 60)
@@ -390,6 +391,12 @@ timvisher_emacs__probe_reason() {
   fi
 }
 
+# emacsclient leads its diagnostics with a blank line often enough that
+# 'head -1' comes back empty, so take the first line that says anything.
+timvisher_emacs__probe_detail() {
+  awk 'NF { print; exit }' "$1"
+}
+
 timvisher_emacs__eval_value() {
   local out
   out=$(timvisher_emacs__emacsclient "$@") || return 1
@@ -567,17 +574,37 @@ timvisher_emacs__agent_shell_server() {
   done < <(timvisher_emacs__probe_servers "$timeout" "$query" "$dir")
   rm -rf -- "$dir"
 
+  local joined=''
+  if (( 0 < ${#unanswered[@]} ))
+  then
+    joined=$(IFS=', '; printf '%s' "${unanswered[*]}")
+  fi
+
   if [[ -n $found ]]
   then
     IFS=$'\t' read -r emacs_pid socket <<< "$found"
-    printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
-    return 0
+    if [[ -z $joined ]]
+    then
+      printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
+      return 0
+    fi
+    # One Emacs claiming the session does not rule out another holding
+    # it too, and a handed-off session has exactly that shape: a live
+    # shell in its new Emacs and a stale one in its old. Delivering to
+    # whichever answered is how a message lands where nobody is reading
+    # and still reports 'submitted'.
+    aictl_error \
+      --code timvisher_emacs_session_scan_ambiguous \
+      --message "Which Emacs hosts an agent-shell for session '${ref}' cannot be settled: Emacs ${emacs_pid} has one, and ${#unanswered[@]} other server(s) could not be asked." \
+      --reason "Emacs ${joined} did not answer, so whether one of them also holds this session is unknown. A session that was handed off has a shell in each, differing only by which Emacs it is in, and the stale one is the one nobody reads." \
+      --suggestion "Wait for Emacs ${joined} to answer and run this again" \
+      --suggestion "See which Emacsen are answering, and what they hold, with 'timvisher_emacs agent-shell ls --format json'" \
+      --suggestion "If you know which Emacs you mean, act on that one directly rather than by session alone"
+    return 1
   fi
 
   if (( 0 < ${#unanswered[@]} ))
   then
-    local joined
-    joined=$(IFS=', '; printf '%s' "${unanswered[*]}")
     aictl_error \
       --code timvisher_emacs_session_scan_unreachable \
       --message "Which Emacs hosts an agent-shell for session '${ref}' is unknown: ${#unanswered[@]} of the live servers could not be probed within ${timeout}s." \
@@ -635,7 +662,7 @@ timvisher_emacs__agent_shell_ls() {
     if (( 0 != rc ))
     then
       reason=$(timvisher_emacs__probe_reason "$dir/$pid.err")
-      detail=$(head -1 "$dir/$pid.err")
+      detail=$(timvisher_emacs__probe_detail "$dir/$pid.err")
       jq -n --argjson pid "$pid" --arg socket "$socket" --argjson timeout "$timeout" \
         --arg reason "$reason" --arg detail "$detail" \
         '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket,
@@ -761,9 +788,9 @@ timvisher_emacs__agent_shell_send() {
   fi
   file=$(cd -- "$(dirname -- "$file")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "$file")") || return 1
 
-  local found emacs_pid socket
+  local found emacs_pid socket found_by
   found=$(timvisher_emacs__agent_shell_server "$session_id") || return 1
-  IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
+  IFS=$'\t' read -r emacs_pid socket found_by session_id _ <<< "$found"
 
   local status
   status=$(timvisher_emacs__emacsclient "$timeout" "$emacs_pid" "$socket" \
@@ -775,6 +802,11 @@ timvisher_emacs__agent_shell_send() {
 
   case $status in
     queued|submitted)
+      # On stderr so stdout stays just the word: 'submitted' is only
+      # worth anything if the caller can see which shell it went to.
+      aictl_info \
+        --code timvisher_emacs_send_resolved \
+        --message "${status} to session ${session_id} in Emacs ${emacs_pid} (${socket##*/}), resolved by ${found_by}."
       printf '%s\n' "$status"
       ;;
     *)
@@ -823,7 +855,7 @@ timvisher_emacs__agent_shell_is_wedged() {
       "(timvisher-agent-shell-wedge-report $(timvisher_emacs__elisp_string "$session_id") $quiet_seconds)")")
   then
     reason=$(timvisher_emacs__probe_reason "$errfile")
-    detail=$(head -1 "$errfile")
+    detail=$(timvisher_emacs__probe_detail "$errfile")
     rm -f -- "$errfile"
 
     # An Emacs that answered with an error was reachable, so that is a
