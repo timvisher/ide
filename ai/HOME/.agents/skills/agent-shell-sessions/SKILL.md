@@ -21,6 +21,20 @@ from Claude Code's session files, so a Codex session has neither:
 reach it by its full session id. An ambiguous name or short ref fails
 with `timvisher_emacs_ambiguous_session`, listing each match.
 
+A full session id is **not** a guarantee of one shell. A session that
+was handed off has a shell in its new Emacs and a stale one in its old,
+both carrying the same id, name and ref, and they differ only by which
+Emacs holds them. When the search falls back to scanning the servers
+and one of them cannot answer, `send` and `get-server` now refuse with
+`timvisher_emacs_session_scan_ambiguous` rather than delivering to
+whichever Emacs replied -- that is how a message used to land in a
+shell nobody was reading and still report `submitted`. Wait for the
+silent Emacs and retry.
+
+`send` reports on stderr which Emacs it resolved to and how
+(`timvisher_emacs_send_resolved`), so `submitted` is checkable without
+a separate `ls` diff.
+
 ## Sending a message
 
 1. Write the message to a file outside any worktree (`/tmp/x.<name>`)
