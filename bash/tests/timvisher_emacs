@@ -348,6 +348,13 @@ cat > "$tmpdir/onlyours/lsof" <<FAKE
 FAKE
 chmod +x "$tmpdir/onlyours/lsof" || exit 1
 
+mkdir -p "$tmpdir/reachable" || exit 1
+cat > "$tmpdir/reachable/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $served_pid $shell_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/reachable/lsof" || exit 1
+
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server abcd1111-0000
 rc=$?
 check "agent-shell get-server: finds the session's Emacs through its process's parents" \
@@ -363,7 +370,7 @@ done
 
 for ref in "tvdup-2b [$shell_ref]" abcd1111 tvstale-9z
 do
-  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server "$ref"
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server "$ref"
   rc=$?
   check "agent-shell get-server: '$ref' (a ref under another name, an id prefix, a dead session whose shell is gone) reaches no shell" \
         eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
@@ -374,7 +381,7 @@ rc=$?
 check 'agent-shell get-server, two live sessions with one name: exits 1 with timvisher_emacs_ambiguous_session naming each' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvdup-2b is session abcd2222-0000" && stderr_has "tvdup-2b is session abcd3333-0000"'
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server abcd1111-0000
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server abcd1111-0000
 rc=$?
 check 'agent-shell get-server, no session file: not found while no server has the helper loaded' \
       eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
@@ -399,23 +406,45 @@ rm -f -- "$busy_flag"
 
 for ref in tvdead-4d "$noname_ref"
 do
-  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server "$ref"
+  CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 3 "$ref"
   rc=$?
-  check "agent-shell get-server: '$ref' (a dead agent process, or a file with no name) still finds its shell by scan" \
+  check "agent-shell get-server: '$ref' (a dead agent process, or a file with no name) still finds its shell by scan, past a busy Emacs" \
         eval "(( rc == 0 )) && [[ \$(field '[.session_id, .pid, .found_by] | @tsv') == 'abcd1111-0000	$shell_pid	scan' ]]"
 done
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server abcd1111-0000
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 3 abcd1111-0000
 rc=$?
 check 'agent-shell get-server, no session file: scans servers once send has loaded the helper' \
       eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 nosuch-0000
+rc=$?
+check 'agent-shell get-server, every server answering: a session no server hosts is timvisher_emacs_no_such_session' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell get-server --timeout 1 nosuch-0000
+rc=$?
+check 'agent-shell get-server, a busy Emacs in the scan: the answer is unknown, not no_such_session' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_session_scan_unreachable\"" && ! stderr_has "timvisher_emacs_no_such_session"'
+check 'agent-shell get-server, a busy Emacs in the scan: the error names the Emacs that did not answer and its budget' \
+      eval "stderr_has 'Emacs $busy_pid could be hosting' && stderr_has 'did not answer within 1s'"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server --timeout soon abcd1111-0000
+rc=$?
+check 'agent-shell get-server with a non-numeric --timeout: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+emacs_tool agent-shell get-server
+rc=$?
+check 'agent-shell get-server without a session: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send abcd1111-0000 "$tmpdir/missing"
 rc=$?
 check 'agent-shell send, missing file: exits 1 with timvisher_emacs_no_such_message_file' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_message_file\""'
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell send nope-9999 "$tmpdir/message"
+CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell send nope-9999 "$tmpdir/message"
 rc=$?
 check 'agent-shell send, unknown session: exits 1 with timvisher_emacs_no_such_session' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
@@ -481,17 +510,51 @@ rc=$?
 check 'agent-shell start without --emacs: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --timeout 4
 rc=$?
 check 'agent-shell ls: without a terminal, lists every shell as JSON joined with its session file' \
       eval "(( rc == 0 )) && [[ \$(field '.sessions[] | select(.buffer == \"shell-sess-1\") | [.name, .ref, .session_id, .agent, .status, .pending_prompts, .emacs_pid] | @tsv') == 'tvshell-1a	$shell_ref	abcd1111-0000	claude-code	ready	2	$shell_pid' ]] && [[ \$(field '.sessions[] | select(.buffer == \"shell-new\") | .name') == tvnew-3c ]]"
-check 'agent-shell ls: an Emacs that does not answer is listed as unreachable' \
-      eval "[[ \$(field '.unreachable[].pid') == $busy_pid ]]"
+check 'agent-shell ls: an Emacs that does not answer is listed as unreachable, with the budget it was given' \
+      eval "[[ \$(field '.unreachable[] | [(.pid | tostring), (.timeout_seconds | tostring)] | join(\" \")') == '$busy_pid 4' ]]"
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --format table
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --format table --timeout 4
 rc=$?
 check 'agent-shell ls --format table: a header and a row per shell' \
-      eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q '^NAME  *REF  *STATUS' && grep -q '^tvshell-1a  *$shell_ref  *ready  *2 ' '$tmpdir/stdout' && grep -q 'unreachable: Emacs $busy_pid' '$tmpdir/stderr'"
+      eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q '^NAME  *REF  *STATUS' && grep -q '^tvshell-1a  *$shell_ref  *ready  *2 ' '$tmpdir/stdout'"
+check 'agent-shell ls --format table: the unreachable warning names the budget and says the rows are missing' \
+      eval "grep -q 'unreachable: Emacs $busy_pid .* did not answer within 4s; its agent-shells are missing from this listing' '$tmpdir/stderr'"
+
+emacs_tool agent-shell ls --timeout soon
+rc=$?
+check 'agent-shell ls with a non-numeric --timeout: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+# The old budget was 3 seconds and could not be raised. A busy Emacs
+# nothing has probed yet blocks the probe for the whole budget, so ls
+# still running well past 3 seconds is the assertion; an Emacs with
+# abandoned probes already queued on its socket starts refusing
+# connections outright and would answer at once.
+start_emacs tvbusy2 '(while t)'
+busy2_pid=$started_pid
+mkdir -p "$tmpdir/onlybusy2" || exit 1
+cat > "$tmpdir/onlybusy2/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $busy2_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/onlybusy2/lsof" || exit 1
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlybusy2:$PATH" TIMVISHER_AGENT=1 \
+  "$script" agent-shell ls > "$tmpdir/default-budget-out" 2> "$tmpdir/default-budget-err" &
+default_budget_pid=$!
+other_pids+=("$default_budget_pid")
+sleep 8
+check 'agent-shell ls: the default probe budget is well past the 3 seconds it used to be' \
+      kill -0 "$default_budget_pid"
+# INT, not KILL: bash reports a job killed by SIGKILL on stderr, which
+# reads like a suite failure.
+kill -INT "$default_budget_pid" 2>/dev/null
+pkill -9 -f "emacsclient -s $socket_dir/tvbusy2" 2>/dev/null
+wait "$default_budget_pid" 2>/dev/null
 
 emacs_tool agent-shell ls --format yaml
 rc=$?
