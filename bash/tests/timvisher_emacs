@@ -534,6 +534,11 @@ check 'agent-shell ls with a non-numeric --timeout: usage on stderr, exit 2' \
 # Two busy Emacsen nothing has probed yet. Serially this costs two
 # budgets; concurrently it costs one. At 27 live servers that is the
 # difference between a listing and a coffee break.
+#
+# The budget is larger than this check needs so the gap either side of
+# the threshold is seconds rather than fractions: suites of this repo
+# and of system-extensions get run concurrently, and at load average 74
+# a 4 second budget put the parallel case within noise of the serial one.
 start_emacs tvpar1 '(while t)'
 par1_pid=$started_pid
 start_emacs tvpar2 '(while t)'
@@ -546,10 +551,10 @@ FAKE
 chmod +x "$tmpdir/onlypar/lsof" || exit 1
 
 SECONDS=0
-CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 4
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 10
 par_elapsed=$SECONDS
 check 'agent-shell ls: two unanswering Emacsen cost one budget between them, not one each' \
-      eval "(( $par_elapsed < 7 )) && [[ \$(field '.unreachable | length') == 2 ]]"
+      eval "(( $par_elapsed < 15 )) && [[ \$(field '.unreachable | length') == 2 ]]"
 
 # The old budget was 3 seconds and could not be raised. A busy Emacs
 # nothing has probed yet blocks the probe for the whole budget, so ls
