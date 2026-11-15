@@ -51,7 +51,11 @@ whatever Tim is typing along with your message.
   answer until it yields. `ls` reports one that does not answer within
   `--timeout` (default 60 seconds) under `.unreachable` and leaves
   **all of its shells out of `.sessions`**, so read `.unreachable`
-  before concluding a session is gone. `get-server` says
+  before concluding a session is gone. `ls` **exits 3** when that
+  happens, so you can tell a complete roster from a partial one
+  without knowing the field exists: 0 every server answered, 3 listed
+  but incomplete, 1 failed, 2 usage. A missing session is only missing
+  if `ls` exited 0. `get-server` says
   `timvisher_emacs_session_scan_unreachable` rather than
   `timvisher_emacs_no_such_session` when a busy Emacs could have been
   hosting the shell it was looking for. Every Emacs is probed at once,
