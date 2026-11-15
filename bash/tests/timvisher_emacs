@@ -177,7 +177,11 @@ case \${@: -1} in
   *) printf '%s\n' "$emacs_victim" ;;
 esac
 FAKE
-chmod +x "$tmpdir/bin/pgrep" || exit 1
+cat > "$tmpdir/bin/lsof" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+chmod +x "$tmpdir/bin/pgrep" "$tmpdir/bin/lsof" || exit 1
 
 PATH="$tmpdir/bin:$PATH" emacs_tool cleanup
 rc=$?
@@ -811,6 +815,7 @@ start_emacs tvwedge "(progn
   (with-temp-file \"$tmpdir/wedge-child-pid\"
     (insert (number-to-string (process-id (start-process \"wedgechild\" nil \"sleep\" \"300\")))))
   (while t))"
+wedge_pid=$started_pid
 SECONDS=0
 until [[ -s $tmpdir/wedge-child-pid ]] || (( 20 < SECONDS ))
 do
@@ -839,6 +844,61 @@ CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --timeout 1 tv
 rc=$?
 check 'agent-shell is-wedged, an Emacs refusing probes: undetermined, and a longer budget is not the advice' \
       eval "(( rc == 1 )) && stderr_has '(refused)' && ! stderr_has 'Retry with a longer budget'"
+
+# cleanup looks like the repair for an unreachable Emacs and is the
+# opposite: it would kill the live sessions it appears to fix. It now
+# asks what each target hosts, and an Emacs it could not ask counts the
+# same as one hosting shells.
+mkdir -p "$tmpdir/cleanupbin" || exit 1
+cat > "$tmpdir/cleanupbin/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $shell_pid $wedge_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/cleanupbin/lsof" || exit 1
+
+cleanup_targets() {
+  cat > "$tmpdir/cleanupbin/pgrep" <<FAKE
+#!/usr/bin/env bash
+[[ \$* == *-il* ]] && exit 1
+case \${@: -1} in
+  *emacsclient*) exit 1 ;;
+  *) printf '%s\n' "$1" ;;
+esac
+FAKE
+  chmod +x "$tmpdir/cleanupbin/pgrep"
+}
+
+cleanup_targets "$shell_pid"
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/cleanupbin:$PATH" emacs_tool cleanup --timeout 3
+rc=$?
+check 'cleanup: a dry run names the Emacs hosting agent-shells and spares it' \
+      eval "(( rc == 0 )) && stderr_has \"Sparing emacsen '$shell_pid': it hosts\" && ! stderr_has 'DRY_RUN: kill $shell_pid'"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/cleanupbin:$PATH" emacs_tool cleanup --no-dry-run --timeout 3
+rc=$?
+check 'cleanup --no-dry-run: leaves an Emacs hosting agent-shells alive' \
+      eval "(( rc == 0 )) && kill -0 '$shell_pid'"
+
+cleanup_targets "$wedge_pid"
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/cleanupbin:$PATH" emacs_tool cleanup --no-dry-run --timeout 1
+rc=$?
+check 'cleanup --no-dry-run: spares an Emacs it could not ask, and says so' \
+      eval "(( rc == 0 )) && kill -0 '$wedge_pid' && stderr_has 'did not answer, so what it hosts is unknown'"
+
+emacs_tool cleanup --timeout soon
+rc=$?
+check 'cleanup with a non-numeric --timeout: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/cleanupbin:$PATH" emacs_tool cleanup --no-dry-run --even-with-agent-shells
+rc=$?
+SECONDS=0
+while kill -0 "$wedge_pid" 2>/dev/null && (( SECONDS < 15 ))
+do
+  sleep 0.2
+done
+check 'cleanup --even-with-agent-shells: kills it anyway, without asking what it hosts' \
+      eval "(( rc == 0 )) && ! kill -0 '$wedge_pid' 2>/dev/null"
 
 emacs_tool session send tvshell-1a "$tmpdir/message"
 rc=$?
