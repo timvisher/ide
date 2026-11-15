@@ -23,6 +23,14 @@ source ~/.functions/tool_log.bash ||
 
 timvisher_emacs__schema_version=1
 
+# The budget, in seconds, for one probe of one Emacs: 'agent-shell ls'
+# and the session scan. Not a liveness verdict -- an Emacs running Lisp
+# cannot service its server until it yields, so the probe measures
+# contention, not health. 60 clears the worst contention measured on a
+# loaded Emacs (36s for '(emacs-pid)', 2026-11-14) rather than the cost
+# of the query itself, which is microseconds whatever the buffer count.
+timvisher_emacs__probe_timeout=60
+
 # Matches the process name of an Emacs (emacs, Emacs, emacs-31.1) and
 # not emacsclient.
 timvisher_emacs__process_re='^emacs(-[0-9.]+)?$'
@@ -32,9 +40,9 @@ show_help() {
 Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server socket <pid>
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
-       timvisher_emacs agent-shell ls [--format json|table]
+       timvisher_emacs agent-shell ls [--format json|table] [--timeout <seconds>]
        timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
-       timvisher_emacs agent-shell get-server <session>
+       timvisher_emacs agent-shell get-server [--timeout <seconds>] <session>
        timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file>
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] <session>
        timvisher_emacs agent-shell recover fork [--message-file <file>] [--timeout <seconds>] <session>
@@ -51,12 +59,18 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   agent-shell ls          list every agent-shell in every live Emacs: name, ref, status,
                           queued prompts, agent, Emacs pid, buffer, directory and, for a
                           blocked shell, its pending permission prompt's title; JSON when
-                          stdout is not a terminal, a table when it is
+                          stdout is not a terminal, a table when it is; every Emacs is
+                          probed at once, and one that does not answer within --timeout
+                          seconds (default 60) is reported under .unreachable, with why, and
+                          none of its shells are listed
   agent-shell start       start a new agent-shell (claude by default) in the Emacs with that
                           pid, submit the prompt file once it is ready, wait for its session,
                           and print it as JSON with the name and ref to message it by; for
                           an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
-  agent-shell get-server  print, as JSON, the Emacs server hosting that session's agent-shell
+  agent-shell get-server  print, as JSON, the Emacs server hosting that session's agent-shell;
+                          when the search falls back to scanning the servers, an Emacs that
+                          does not answer within --timeout seconds (default 60) makes the
+                          answer unknown rather than 'not here'
   agent-shell send        queue the file's text in that agent-shell, or submit it if the
                           shell is idle with nothing typed at its prompt; prints queued or
                           submitted
@@ -311,6 +325,52 @@ timvisher_emacs__emacsclient() {
   printf '%s\n' "$out"
 }
 
+# Probes every live Emacs at once rather than one after another, so a
+# budget that cannot be met is paid once for the whole run instead of
+# once per unanswering Emacs: at 27 servers the serial form took
+# timeout x busy-count. Each probe's stdout, stderr and exit status are
+# left in <dir> under the Emacs's pid; the rows come back in the order
+# timvisher_emacs__server_sockets gave them, so callers that pick the
+# first match still pick the same one the serial scan did.
+timvisher_emacs__probe_servers() {
+  local timeout=$1 query=$2 dir=$3
+
+  local pid socket
+  local -a probe_pids=() probe_rows=()
+  while IFS=$'\t' read -r pid socket
+  do
+    emacsclient -s "$socket" -w "$timeout" --eval "$query" > "$dir/$pid.out" 2> "$dir/$pid.err" &
+    probe_pids+=("$!")
+    probe_rows+=("$pid"$'\t'"$socket")
+  done < <(timvisher_emacs__server_sockets)
+
+  local i rc
+  for (( i = 0; i < ${#probe_pids[@]}; i += 1 ))
+  do
+    rc=0
+    wait "${probe_pids[i]}" || rc=$?
+    printf '%s\t%s\n' "${probe_rows[i]}" "$rc"
+  done
+}
+
+# An Emacs whose server socket already holds a backlog of abandoned
+# probes refuses new connections outright, in milliseconds, instead of
+# timing out -- so 'refused' means busier than 'timeout' does, and a
+# longer budget will not help it.
+timvisher_emacs__probe_reason() {
+  local err=$1
+
+  if grep -qi 'connection refused' -- "$err"
+  then
+    printf 'refused\n'
+  elif grep -qi 'timed out' -- "$err"
+  then
+    printf 'timeout\n'
+  else
+    printf 'error\n'
+  fi
+}
+
 timvisher_emacs__eval_value() {
   local out
   out=$(timvisher_emacs__emacsclient "$@") || return 1
@@ -442,7 +502,11 @@ timvisher_emacs__resolve_session() {
 }
 
 timvisher_emacs__agent_shell_server() {
-  local ref=$1
+  # The scan's budget is its own, not the calling subcommand's
+  # --timeout: that one is how long the target Emacs may take to do the
+  # work, and letting 'send --timeout 10' shrink the probe would buy a
+  # misroute back.
+  local ref=$1 timeout=${2:-$timvisher_emacs__probe_timeout}
   local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
 
   local resolved session_id=$ref session_pid='' name=''
@@ -460,16 +524,50 @@ timvisher_emacs__agent_shell_server() {
     return 0
   fi
 
-  local query
+  local query dir
   query="(and (fboundp (quote timvisher-agent-shell-send-buffer)) (timvisher-agent-shell-send-buffer $(timvisher_emacs__elisp_string "$session_id")) t)"
-  while IFS=$'\t' read -r emacs_pid socket
+  dir=$(mktemp -d) || return 1
+
+  local rc found=''
+  local -a unanswered=()
+  while IFS=$'\t' read -r emacs_pid socket rc
   do
-    if [[ $(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null) == t ]]
+    # A failed probe is kept apart from an answer of nil: both are
+    # empty output, but only nil says the session is not in this Emacs.
+    # Collapsing them resolves a busy Emacs's session to a stale shell
+    # elsewhere.
+    if (( 0 != rc ))
     then
-      printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
-      return 0
+      unanswered+=("${emacs_pid} ($(timvisher_emacs__probe_reason "$dir/$emacs_pid.err"))")
+      continue
     fi
-  done < <(timvisher_emacs__server_sockets)
+    if [[ -z $found && $(< "$dir/$emacs_pid.out") == t ]]
+    then
+      found=$emacs_pid$'\t'$socket
+    fi
+  done < <(timvisher_emacs__probe_servers "$timeout" "$query" "$dir")
+  rm -rf -- "$dir"
+
+  if [[ -n $found ]]
+  then
+    IFS=$'\t' read -r emacs_pid socket <<< "$found"
+    printf '%s\t%s\tscan\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
+    return 0
+  fi
+
+  if (( 0 < ${#unanswered[@]} ))
+  then
+    local joined
+    joined=$(IFS=', '; printf '%s' "${unanswered[*]}")
+    aictl_error \
+      --code timvisher_emacs_session_scan_unreachable \
+      --message "Which Emacs hosts an agent-shell for session '${ref}' is unknown: ${#unanswered[@]} of the live servers could not be probed within ${timeout}s." \
+      --reason "A probe that did not come back is absence of evidence, not evidence of absence: Emacs ${joined} could each be hosting that shell while busy running Lisp. A refused probe means an Emacs busy enough that probes are already queued on it, which a longer budget will not fix." \
+      --suggestion "Raise the budget with 'timvisher_emacs agent-shell get-server --timeout <seconds> ${ref}'" \
+      --suggestion "Tell busy from wedged with 'timvisher_emacs server eval --timeout <seconds> <pid> (emacs-pid)'" \
+      --suggestion "See which Emacsen are answering with 'timvisher_emacs agent-shell ls --format json'"
+    return 1
+  fi
 
   aictl_error \
     --code timvisher_emacs_no_such_session \
@@ -481,7 +579,7 @@ timvisher_emacs__agent_shell_server() {
 }
 
 timvisher_emacs__agent_shell_ls() {
-  local format=table
+  local format=table timeout=$timvisher_emacs__probe_timeout
   [[ -t 1 ]] || format=json
 
   while (( 0 < $# ))
@@ -490,6 +588,11 @@ timvisher_emacs__agent_shell_ls() {
       --format)
         format=${2-}
         [[ $format == json || $format == table ]] || { usage; return 2; }
+        shift 2
+        ;;
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
         shift 2
         ;;
       *)
@@ -502,21 +605,28 @@ timvisher_emacs__agent_shell_ls() {
   local query='(if (not (fboundp (quote agent-shell-buffers))) "[]" (json-serialize (vconcat (delq nil (mapcar (lambda (b) (condition-case nil (with-current-buffer b (let ((st (agent-shell--state))) (list (cons (quote buffer) (buffer-name)) (cons (quote session_id) (or (map-nested-elt st (quote (:session :id))) :null)) (cons (quote agent) (let ((i (map-elt (map-elt st :agent-config) :identifier))) (if i (format "%s" i) :null))) (cons (quote status) (symbol-name (agent-shell-status))) (cons (quote permission_prompt) (if (eq (agent-shell-status) (quote blocked)) (timvisher-agent-shell-permission-summary) :null)) (cons (quote pending_prompts) (length (map-elt st :pending-prompts))) (cons (quote cwd) (or (ignore-errors (agent-shell-cwd)) :null))))) (error nil))) (agent-shell-buffers))))))'
   query=$(timvisher_emacs__with_helpers "$query") || return 1
 
-  local shells unreachable pid socket out
-  shells=$(mktemp) || return 1
-  unreachable=$(mktemp) || { rm -f -- "$shells"; return 1; }
-  while IFS=$'\t' read -r pid socket
+  local dir shells unreachable pid socket rc reason detail
+  dir=$(mktemp -d) || return 1
+  shells=$dir/shells
+  unreachable=$dir/unreachable
+  : > "$shells" || { rm -rf -- "$dir"; return 1; }
+  : > "$unreachable" || { rm -rf -- "$dir"; return 1; }
+  while IFS=$'\t' read -r pid socket rc
   do
-    if ! out=$(emacsclient -s "$socket" -w 3 --eval "$query" 2>/dev/null)
+    if (( 0 != rc ))
     then
-      jq -n --argjson pid "$pid" --arg socket "$socket" \
-        '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket}' >> "$unreachable"
+      reason=$(timvisher_emacs__probe_reason "$dir/$pid.err")
+      detail=$(head -1 "$dir/$pid.err")
+      jq -n --argjson pid "$pid" --arg socket "$socket" --argjson timeout "$timeout" \
+        --arg reason "$reason" --arg detail "$detail" \
+        '{pid: $pid, server_name: ($socket | split("/") | last), socket: $socket,
+          timeout_seconds: $timeout, reason: $reason, detail: $detail}' >> "$unreachable"
       continue
     fi
-    timvisher_emacs__elisp_string_value <<< "$out" |
+    timvisher_emacs__elisp_string_value < "$dir/$pid.out" |
       jq -c --argjson pid "$pid" --arg socket "$socket" \
         '.[] + {emacs_pid: $pid, server_name: ($socket | split("/") | last), socket: $socket}' >> "$shells"
-  done < <(timvisher_emacs__server_sockets)
+  done < <(timvisher_emacs__probe_servers "$timeout" "$query" "$dir")
 
   local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
   local -a session_files=("$sessions_dir"/*.json)
@@ -549,7 +659,7 @@ timvisher_emacs__agent_shell_ls() {
                                  + . + ($claude[.session_id // ""] // {}))
                          | sort_by(.emacs_pid, .buffer)),
       unreachable: $unreachable}')
-  rm -f -- "$shells" "$unreachable"
+  rm -rf -- "$dir"
 
   if [[ $format == json ]]
   then
@@ -565,12 +675,34 @@ timvisher_emacs__agent_shell_ls() {
        ((.permission_prompt // "-") | split("\n") | map(select(test("^```") | not)) | join(" ")
         | gsub("[[:space:]]+"; " ") | if 60 < length then .[0:59] + "…" else . end)] | @tsv' <<< "$listing"
   } | column -t -s $'\t'
-  jq -r '.unreachable[] | "unreachable: Emacs \(.pid) (\(.server_name)) did not answer within 3s"' <<< "$listing" >&2
+  jq -r '.unreachable[] | "unreachable: Emacs \(.pid) (\(.server_name)) " +
+     (if .reason == "refused" then "refused the probe, being busy with probes already queued on it"
+      elif .reason == "timeout" then "did not answer within \(.timeout_seconds)s"
+      else "could not be probed: \(.detail)" end) +
+     "; its agent-shells are missing from this listing"' <<< "$listing" >&2
 }
 
 timvisher_emacs__agent_shell_server_json() {
+  local timeout=$timvisher_emacs__probe_timeout
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (( 1 == $# )) || { usage; return 2; }
+
   local ref=$1 found emacs_pid socket found_by session_id name
-  found=$(timvisher_emacs__agent_shell_server "$ref") || return 1
+  found=$(timvisher_emacs__agent_shell_server "$ref" "$timeout") || return 1
   IFS=$'\t' read -r emacs_pid socket found_by session_id name <<< "$found"
   jq -n \
     --argjson schema_version "$timvisher_emacs__schema_version" \
@@ -1423,8 +1555,9 @@ case ${1-} in
         exit
         ;;
       get-server)
-        (( 3 == $# )) || { usage; exit 2; }
-        timvisher_emacs__agent_shell_server_json "$3" || exit 1
+        shift 2
+        timvisher_emacs__agent_shell_server_json "$@"
+        exit
         ;;
       send)
         shift 2

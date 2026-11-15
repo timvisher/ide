@@ -47,6 +47,23 @@ whatever Tim is typing along with your message.
   title: JSON when you run it (no terminal), a table for Tim.
 - `timvisher_emacs agent-shell get-server <session>` prints the Emacs
   pid and server socket hosting a session, as JSON.
+- Both probe every live Emacs, and an Emacs busy running Lisp cannot
+  answer until it yields. `ls` reports one that does not answer within
+  `--timeout` (default 60 seconds) under `.unreachable` and leaves
+  **all of its shells out of `.sessions`**, so read `.unreachable`
+  before concluding a session is gone. `get-server` says
+  `timvisher_emacs_session_scan_unreachable` rather than
+  `timvisher_emacs_no_such_session` when a busy Emacs could have been
+  hosting the shell it was looking for. Every Emacs is probed at once,
+  so the budget is paid once for the whole run, not once per Emacs.
+- Each `.unreachable` entry says why, and the two reasons want
+  different responses. `timeout` means the Emacs did not yield inside
+  the budget: raise `--timeout` and try again. `refused` means its
+  server socket already holds a backlog of abandoned probes and the
+  kernel is turning new ones away in milliseconds -- a longer budget
+  cannot help that, only waiting can, and probing it again makes it
+  worse for everyone. Either way, check the Emacs itself with
+  `timvisher_emacs server eval --timeout 60 <pid> '(emacs-pid)'`.
 - `timvisher_emacs server ls` lists every live Emacs server by pid.
 - Start a new agent-shell with a first prompt in a given Emacs:
 
