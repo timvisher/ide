@@ -385,11 +385,6 @@ rc=$?
 check 'agent-shell get-server, two live sessions with one name: exits 1 with timvisher_emacs_ambiguous_session naming each' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_ambiguous_session\"" && stderr_has "tvdup-2b is session abcd2222-0000" && stderr_has "tvdup-2b is session abcd3333-0000"'
 
-CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server abcd1111-0000
-rc=$?
-check 'agent-shell get-server, no session file: not found while no server has the helper loaded' \
-      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_emacs_no_such_session\""'
-
 : > "$send_log"
 printf 'From the test agent (session t)\n\nhello "there"\n\n' > "$tmpdir/message"
 expected_insert='insert "From the test agent (session t)
@@ -438,6 +433,27 @@ rc=$?
 check 'agent-shell send, a match plus an Emacs that could not be asked: delivers nothing and says why' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_session_scan_ambiguous\""'
 
+# The bug this fixes: a session copied to another worktree leaves its
+# original process running under its original Emacs, so the process
+# pointer names a host that does not hold the shell. tvserved answers
+# and has no agent-shell, which is exactly that shape.
+stale_child=$(emacsclient -s "$socket_dir/tvserved" --eval '(process-id (start-process "stale" nil "sleep" "300"))' 2>/dev/null)
+other_pids+=("$stale_child")
+printf '{"pid": %s, "sessionId": "abcd1111-0000", "name": "tvstalehost-8s", "messagingSocketPath": "/tmp/stale-host.sock"}\n' \
+       "$stale_child" > "$tmpdir/claude/sessions/$stale_child.json"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 tvstalehost-8s
+rc=$?
+check "agent-shell get-server: a process pointing at an Emacs that does not hold the shell is not taken at its word" \
+      eval "(( rc == 0 )) && [[ \$(field '[.pid, .found_by] | @tsv') == '$shell_pid	scan' ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell send --emacs "$shell_pid" tvstalehost-8s "$tmpdir/message"
+rc=$?
+check 'agent-shell send --emacs: names the host outright, skipping resolution, and says it was directed' \
+      eval "(( rc == 0 )) && [[ \$(cat '$tmpdir/stdout') == submitted ]] && stderr_has 'in Emacs $shell_pid' && stderr_has 'resolved by directed'"
+
+rm -f -- "$tmpdir/claude/sessions/$stale_child.json"
+
 CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/reachable:$PATH" emacs_tool agent-shell get-server --timeout 3 nosuch-0000
 rc=$?
 check 'agent-shell get-server, every server answering: a session no server hosts is timvisher_emacs_no_such_session' \
@@ -459,6 +475,16 @@ emacs_tool agent-shell get-server
 rc=$?
 check 'agent-shell get-server without a session: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send --emacs soon tvshell-1a "$tmpdir/message"
+rc=$?
+check 'agent-shell send with a non-numeric --emacs: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send --emacs "$child_pid" tvshell-1a "$tmpdir/message"
+rc=$?
+check 'agent-shell send --emacs, not an Emacs: exits 1 with timvisher_emacs_not_emacs' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_not_emacs\""'
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell send abcd1111-0000 "$tmpdir/missing"
 rc=$?

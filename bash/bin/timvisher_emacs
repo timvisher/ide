@@ -43,7 +43,7 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs agent-shell ls [--format json|table] [--timeout <seconds>]
        timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
        timvisher_emacs agent-shell get-server [--timeout <seconds>] <session>
-       timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file>
+       timvisher_emacs agent-shell send [--timeout <seconds>] [--emacs <pid>] <session> <message-file>
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell recover fork [--message-file <file>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell permission-prompt [--show] <session>
@@ -76,7 +76,8 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   agent-shell send        queue the file's text in that agent-shell, or submit it if the
                           shell is idle with nothing typed at its prompt; prints queued or
                           submitted, and reports on stderr which Emacs it resolved to and
-                          how
+                          how; --emacs names the Emacs outright, for when resolution
+                          cannot settle it and 'agent-shell ls' can show you which
   agent-shell is-wedged   print a JSON report on whether that agent-shell is wedged; the
                           answer is .wedged (jq -e .wedged), with the evidence in .reasons;
                           an Emacs that does not answer within --timeout seconds (default 60)
@@ -533,11 +534,13 @@ timvisher_emacs__resolve_session() {
 }
 
 timvisher_emacs__agent_shell_server() {
-  # The scan's budget is its own, not the calling subcommand's
-  # --timeout: that one is how long the target Emacs may take to do the
-  # work, and letting 'send --timeout 10' shrink the probe would buy a
-  # misroute back.
-  local ref=$1 timeout=${2:-$timvisher_emacs__probe_timeout}
+  # The probe budget defaults to its own rather than the calling
+  # subcommand's --timeout, which is how long the target may take to do
+  # the work: letting 'send --timeout 10' shrink it would buy a misroute
+  # back. is-wedged passes its own, because there --timeout already
+  # means "how long may this host take to answer" and defaults to this
+  # same budget.
+  local ref=$1 timeout=${2:-$timvisher_emacs__probe_timeout} want_emacs=${3-}
   local sessions_dir=${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/sessions
 
   local resolved session_id=$ref session_pid='' name=''
@@ -548,15 +551,40 @@ timvisher_emacs__agent_shell_server() {
   fi
 
   local emacs_pid socket
-  if [[ -n $session_pid ]] && emacs_pid=$(timvisher_emacs__ancestor_emacs "$session_pid")
+  if [[ -n $want_emacs ]]
   then
-    socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
-    printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
+    timvisher_emacs__check_pid "$want_emacs" || return 1
+    socket=$(timvisher_emacs__socket "$want_emacs") || return 1
+    printf '%s\t%s\tdirected\t%s\t%s\n' "$want_emacs" "$socket" "$session_id" "$name"
     return 0
   fi
 
-  local query dir
+  local query verify dir answer answered process_fallback=''
   query="(and (fboundp (quote timvisher-agent-shell-send-buffer)) (timvisher-agent-shell-send-buffer $(timvisher_emacs__elisp_string "$session_id")) t)"
+
+  if [[ -n $session_pid ]] && emacs_pid=$(timvisher_emacs__ancestor_emacs "$session_pid")
+  then
+    socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
+    # The session's process says where it started, not where its shell
+    # is now: a session copied to another worktree leaves the old
+    # process running under its old Emacs, and sending there is how a
+    # message lands in a shell nobody reads. Ask before believing it.
+    verify=$(timvisher_emacs__with_helpers "$query") || return 1
+    answered=true
+    answer=$(emacsclient -s "$socket" -w "$timeout" --eval "$verify" 2>/dev/null) || answered=false
+    if [[ $answered == true && $answer == t ]]
+    then
+      printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
+      return 0
+    fi
+    # Answered nil: the pointer is stale and the scan is the authority.
+    # Did not answer: unproven rather than disproven, so keep it for
+    # when the scan settles nothing. The subcommand's own error against
+    # the session's real host beats a vague resolution failure, and it
+    # is what lets is-wedged still say 'undetermined' about a busy one.
+    [[ $answered == true ]] || process_fallback=$emacs_pid$'\t'$socket
+  fi
+
   dir=$(mktemp -d) || return 1
 
   local rc found=''
@@ -606,6 +634,13 @@ timvisher_emacs__agent_shell_server() {
       --suggestion "See which Emacsen are answering, and what they hold, with 'timvisher_emacs agent-shell ls --format json'" \
       --suggestion "If you know which Emacs you mean, act on that one directly rather than by session alone"
     return 1
+  fi
+
+  if [[ -n $process_fallback ]]
+  then
+    IFS=$'\t' read -r emacs_pid socket <<< "$process_fallback"
+    printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
+    return 0
   fi
 
   if (( 0 < ${#unanswered[@]} ))
@@ -772,7 +807,7 @@ timvisher_emacs__agent_shell_server_json() {
 }
 
 timvisher_emacs__agent_shell_send() {
-  local timeout=10
+  local timeout=10 emacs=''
 
   while (( 0 < $# ))
   do
@@ -780,6 +815,11 @@ timvisher_emacs__agent_shell_send() {
       --timeout)
         timeout=${2-}
         shift 2 || { usage; return 2; }
+        ;;
+      --emacs)
+        emacs=${2-}
+        [[ $emacs =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
         ;;
       *)
         break
@@ -801,7 +841,7 @@ timvisher_emacs__agent_shell_send() {
   file=$(cd -- "$(dirname -- "$file")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "$file")") || return 1
 
   local found emacs_pid socket found_by
-  found=$(timvisher_emacs__agent_shell_server "$session_id") || return 1
+  found=$(timvisher_emacs__agent_shell_server "$session_id" '' "$emacs") || return 1
   IFS=$'\t' read -r emacs_pid socket found_by session_id _ <<< "$found"
 
   local status
@@ -857,7 +897,7 @@ timvisher_emacs__agent_shell_is_wedged() {
   (( 1 == $# )) || { usage; return 2; }
 
   local found emacs_pid socket session_id
-  found=$(timvisher_emacs__agent_shell_server "$1") || return 1
+  found=$(timvisher_emacs__agent_shell_server "$1" "$timeout") || return 1
   IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
 
   local report errfile reason detail
