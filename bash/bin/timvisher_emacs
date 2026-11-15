@@ -44,7 +44,7 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
        timvisher_emacs agent-shell get-server [--timeout <seconds>] <session>
        timvisher_emacs agent-shell send [--timeout <seconds>] <session> <message-file>
-       timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] <session>
+       timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell recover fork [--message-file <file>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell permission-prompt [--show] <session>
        timvisher_emacs agent-shell permission-prompt approve|approve-always|deny [--timeout <seconds>] <session>
@@ -75,7 +75,10 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           shell is idle with nothing typed at its prompt; prints queued or
                           submitted
   agent-shell is-wedged   print a JSON report on whether that agent-shell is wedged; the
-                          answer is .wedged (jq -e .wedged), with the evidence in .reasons
+                          answer is .wedged (jq -e .wedged), with the evidence in .reasons;
+                          an Emacs that does not answer within --timeout seconds (default 60)
+                          is timvisher_emacs_wedge_undetermined, which is not a verdict and
+                          not grounds for recover fork
   agent-shell recover fork
                           fork that agent-shell into a new one; once it is ready, show it in
                           the old one's windows, kill the old one, and tell the new one it
@@ -306,12 +309,28 @@ timvisher_emacs__eval() {
 }
 
 timvisher_emacs__emacsclient() {
+  # --errfile leaves emacsclient's own diagnostics for the caller and
+  # reports nothing: a subcommand whose failure mode is itself the
+  # answer has to say what the failure means where it knows, not here.
+  local errfile=''
+  if [[ ${1-} == --errfile ]]
+  then
+    errfile=${2-}
+    shift 2
+  fi
+
   local timeout=$1 pid=$2 socket=$3 expression=$4
 
   local out err
   err=$(mktemp) || return 1
   if ! out=$(emacsclient -s "$socket" -w "$timeout" --eval "$expression" 2> "$err")
   then
+    if [[ -n $errfile ]]
+    then
+      cat -- "$err" > "$errfile"
+      rm -f -- "$err"
+      return 1
+    fi
     aictl_error \
       --code timvisher_emacs_eval_failed \
       --message "emacsclient could not evaluate the expression in Emacs ${pid}." \
@@ -770,7 +789,7 @@ timvisher_emacs__agent_shell_send() {
 }
 
 timvisher_emacs__agent_shell_is_wedged() {
-  local quiet_seconds=nil
+  local quiet_seconds=nil timeout=$timvisher_emacs__probe_timeout
 
   while (( 0 < $# ))
   do
@@ -778,6 +797,11 @@ timvisher_emacs__agent_shell_is_wedged() {
       --quiet-seconds)
         quiet_seconds=${2-}
         [[ $quiet_seconds =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
         shift 2
         ;;
       *)
@@ -792,10 +816,46 @@ timvisher_emacs__agent_shell_is_wedged() {
   found=$(timvisher_emacs__agent_shell_server "$1") || return 1
   IFS=$'\t' read -r emacs_pid socket _ session_id _ <<< "$found"
 
-  local report
-  report=$(timvisher_emacs__eval_value 10 "$emacs_pid" "$socket" \
+  local report errfile reason detail
+  errfile=$(mktemp) || return 1
+  if ! report=$(timvisher_emacs__eval_value --errfile "$errfile" "$timeout" "$emacs_pid" "$socket" \
     "$(timvisher_emacs__with_helpers \
-      "(timvisher-agent-shell-wedge-report $(timvisher_emacs__elisp_string "$session_id") $quiet_seconds)")") || return 1
+      "(timvisher-agent-shell-wedge-report $(timvisher_emacs__elisp_string "$session_id") $quiet_seconds)")")
+  then
+    reason=$(timvisher_emacs__probe_reason "$errfile")
+    detail=$(head -1 "$errfile")
+    rm -f -- "$errfile"
+
+    # An Emacs that answered with an error was reachable, so that is a
+    # fault in the expression and not a verdict withheld.
+    if [[ $reason == error ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_eval_failed \
+        --message "emacsclient could not evaluate the wedge report in Emacs ${emacs_pid}." \
+        --reason "$detail" \
+        --suggestion "Check that timvisher-agent-shell-wedge-report loads and evaluates in that Emacs"
+      return 1
+    fi
+
+    local -a retry=()
+    if [[ $reason == refused ]]
+    then
+      retry=(--suggestion "A refused probe means that Emacs already has probes queued on its server socket; a longer --timeout cannot clear them, only waiting for it to yield can")
+    else
+      retry=(--suggestion "Retry with a longer budget: 'timvisher_emacs agent-shell is-wedged --timeout <seconds> ${1}'")
+    fi
+
+    aictl_error \
+      --code timvisher_emacs_wedge_undetermined \
+      --message "Whether session ${session_id} is wedged is unknown: Emacs ${emacs_pid} did not answer the wedge report within ${timeout}s (${reason})." \
+      --reason "A probe that did not come back is absence of evidence, not evidence of wedging: an Emacs running Lisp cannot service its server until it yields, however healthy the shell inside it is." \
+      --suggestion "This is NOT grounds for 'recover fork'. That kills the shell, and nothing here says the shell is broken" \
+      --suggestion "Ask the Emacs something cheap first: 'timvisher_emacs server eval --timeout <seconds> ${emacs_pid} (emacs-pid)'" \
+      "${retry[@]}"
+    return 1
+  fi
+  rm -f -- "$errfile"
 
   if [[ $report != '{'* ]]
   then
@@ -1163,7 +1223,8 @@ timvisher_emacs__agent_shell_turn_cancel() {
         --code timvisher_emacs_turn_cancel_pending \
         --message "Session ${session_id}'s turn was cancelled but it was still $(jq -r .status <<< "$status") after ${timeout}s." \
         --reason "The cancel went to the agent, which ends the turn when it acts on it." \
-        --suggestion "Check on it with 'timvisher_emacs agent-shell is-wedged ${session_id}'; a wedged shell is what 'recover fork' is for"
+        --suggestion "Check the Emacs is answering at all first: 'timvisher_emacs server eval --timeout <seconds> ${emacs_pid} (emacs-pid)'" \
+        --suggestion "Then 'timvisher_emacs agent-shell is-wedged ${session_id}'; only a shell it calls wedged is what 'recover fork' is for"
       return 1
       ;;
     failed)
