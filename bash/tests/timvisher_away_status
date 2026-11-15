@@ -229,7 +229,14 @@ cache_case() {
 }
 
 cache_case "a fresh cache is reused" 10 '' used
-cache_case "a cache at the age limit is still reused" 180 '' used
+# Not seeded at exactly max_age_seconds. The script compares whole
+# seconds against the clock it reads itself, so a cache seeded at the
+# limit is one second older by the time it is read and is correctly
+# ignored -- the test loses a race the script is winning. A reused case
+# has to sit far enough inside that elapsed time cannot carry it out;
+# an ignored case only gets more ignored, so it can sit next to the
+# limit. The pair still pins max_age_seconds to [170, 180].
+cache_case "a cache well inside the age limit is still reused" 170 '' used
 cache_case "a cache past the age limit is ignored" 181 '' ignored
 cache_case "a long-stale cache, as after sleep, is ignored" 86400 '' ignored
 cache_case "a cache timestamped in the future is ignored" -600 '' ignored
