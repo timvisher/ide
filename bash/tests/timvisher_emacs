@@ -474,6 +474,11 @@ rc=$?
 check 'agent-shell is-wedged with a non-numeric --quiet-seconds: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
 
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --timeout soon abcd1111
+rc=$?
+check 'agent-shell is-wedged with a non-numeric --timeout: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
 emacs_tool agent-shell send abcd1111-0000
 rc=$?
 check 'agent-shell send without a file: usage on stderr, exit 2' \
@@ -534,6 +539,11 @@ check 'agent-shell ls with a non-numeric --timeout: usage on stderr, exit 2' \
 # Two busy Emacsen nothing has probed yet. Serially this costs two
 # budgets; concurrently it costs one. At 27 live servers that is the
 # difference between a listing and a coffee break.
+#
+# The budget is larger than this check needs so the gap either side of
+# the threshold is seconds rather than fractions: suites of this repo
+# and of system-extensions get run concurrently, and at load average 74
+# a 4 second budget put the parallel case within noise of the serial one.
 start_emacs tvpar1 '(while t)'
 par1_pid=$started_pid
 start_emacs tvpar2 '(while t)'
@@ -546,10 +556,10 @@ FAKE
 chmod +x "$tmpdir/onlypar/lsof" || exit 1
 
 SECONDS=0
-CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 4
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 10
 par_elapsed=$SECONDS
 check 'agent-shell ls: two unanswering Emacsen cost one budget between them, not one each' \
-      eval "(( $par_elapsed < 7 )) && [[ \$(field '.unreachable | length') == 2 ]]"
+      eval "(( $par_elapsed < 15 )) && [[ \$(field '.unreachable | length') == 2 ]]"
 
 # The old budget was 3 seconds and could not be raised. A busy Emacs
 # nothing has probed yet blocks the probe for the whole budget, so ls
@@ -770,6 +780,43 @@ emacs_tool agent-shell recover spoon abcd1111
 rc=$?
 check 'agent-shell recover with an unknown strategy: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
+
+# An Emacs that hosts a session and can never answer about it. is-wedged
+# sits directly upstream of 'recover fork', which kills the shell, so the
+# one thing it must not do is let a probe it could not finish read as a
+# verdict that the shell is broken.
+start_emacs tvwedge "(progn
+  (with-temp-file \"$tmpdir/wedge-child-pid\"
+    (insert (number-to-string (process-id (start-process \"wedgechild\" nil \"sleep\" \"300\")))))
+  (while t))"
+SECONDS=0
+until [[ -s $tmpdir/wedge-child-pid ]] || (( 20 < SECONDS ))
+do
+  sleep 0.1
+done
+wedge_child=$(< "$tmpdir/wedge-child-pid")
+other_pids+=("$wedge_child")
+printf '{"pid": %s, "sessionId": "wedge000-0000", "name": "tvwedge-7w", "messagingSocketPath": "/tmp/wedge.sock"}\n' \
+       "$wedge_child" > "$tmpdir/claude/sessions/$wedge_child.json"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --timeout 1 tvwedge-7w
+rc=$?
+check 'agent-shell is-wedged, an Emacs that cannot answer: undetermined rather than a verdict' \
+      eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_wedge_undetermined\"" && ! stderr_has "timvisher_emacs_eval_failed"'
+check 'agent-shell is-wedged, undetermined: never says the shell is wedged' \
+      eval '! stderr_has "wedged\":true" && ! stderr_has "is wedged."'
+check 'agent-shell is-wedged, undetermined: forecloses recover fork and names the budget it had' \
+      eval "stderr_has 'NOT grounds for' && stderr_has 'within 1s (timeout)' && stderr_has 'Retry with a longer budget'"
+
+for (( i = 0; i < 12; i += 1 ))
+do
+  emacsclient -s "$socket_dir/tvwedge" -w 1 --eval '(emacs-pid)' > /dev/null 2> "$tmpdir/wedge-backlog-err"
+  grep -qi 'connection refused' "$tmpdir/wedge-backlog-err" && break
+done
+CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell is-wedged --timeout 1 tvwedge-7w
+rc=$?
+check 'agent-shell is-wedged, an Emacs refusing probes: undetermined, and a longer budget is not the advice' \
+      eval "(( rc == 1 )) && stderr_has '(refused)' && ! stderr_has 'Retry with a longer budget'"
 
 emacs_tool session send tvshell-1a "$tmpdir/message"
 rc=$?
