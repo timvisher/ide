@@ -50,7 +50,7 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs agent-shell permission-prompt approve|approve-always|deny [--timeout <seconds>] <session>
        timvisher_emacs agent-shell turn cancel [--timeout <seconds>] <session>
        timvisher_emacs agent-shell launch [<checkout options>] claude|codex [<emacs args>...]
-       timvisher_emacs cleanup [--no-dry-run]
+       timvisher_emacs cleanup [--no-dry-run] [--even-with-agent-shells] [--timeout <seconds>]
        timvisher_emacs dev [<checkout options>] [--] [<emacs args>...]
 
   server ls      print every live Emacs server as JSON (see 'timvisher_emacs server ls --help')
@@ -104,7 +104,10 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
   agent-shell launch      start a new Emacs, through op run, running a claude or codex
                           agent-shell
   cleanup        stop every emacsclient, then every Emacs (TERM, then KILL after 5s);
-                 a dry run unless --no-dry-run
+                 a dry run unless --no-dry-run. An Emacs hosting an agent-shell is
+                 spared and named, as is one that did not answer, since a probe that
+                 did not come back is not permission; --even-with-agent-shells kills
+                 them too
   dev            start Emacs against dev checkouts of agent-shell, acp.el and shell-maker
 
 Servers are found by the pid of the Emacs that owns them, whatever the
@@ -1431,8 +1434,25 @@ timvisher_emacs__agent_shell_start() {
       ref: (if $ref == "" then null else $ref end)}'
 }
 
+# Which Emacsen cleanup must leave alone, as pid<TAB>why lines. An
+# Emacs that did not answer counts the same as one hosting shells: a
+# probe that did not come back is not permission to kill it.
+timvisher_emacs__cleanup_spared() {
+  local timeout=$1 listing rc=0
+  listing=$(timvisher_emacs__agent_shell_ls --format json --timeout "$timeout") || rc=$?
+  if (( 1 == rc || 2 == rc ))
+  then
+    return 1
+  fi
+
+  jq -r '([.sessions[].emacs_pid] | group_by(.)
+            | map("\(.[0])\thosts \(length) agent-shell(s)") | .[]),
+         (.unreachable[] | "\(.pid)\tdid not answer, so what it hosts is unknown")' \
+     <<< "$listing"
+}
+
 timvisher_emacs__kill_each() {
-  local dry_run=$1 label=$2 re=$3
+  local dry_run=$1 label=$2 re=$3 spared=${4-}
 
   local -a pids=()
   local pid
@@ -1441,10 +1461,17 @@ timvisher_emacs__kill_each() {
     pids+=("$pid")
   done < <(pgrep -u "$(id -u)" -i "$re")
 
-  local i
+  local i why
   for i in "${!pids[@]}"
   do
     pid=${pids[$i]}
+    why=''
+    [[ -z $spared ]] || why=$(awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }' <<< "$spared")
+    if [[ -n $why ]]
+    then
+      printf "%s Sparing %s '%s': it %s\n" "$(timvisher_date now -u '+%FT%T%z')" "$label" "$pid" "$why" >&2
+      continue
+    fi
     printf "%s Killing %s %d/%d '%s'\n" "$(timvisher_date now -u '+%FT%T%z')" "$label" "$(( i + 1 ))" "${#pids[@]}" "$pid" >&2
     if [[ $dry_run == true ]]
     then
@@ -1473,22 +1500,47 @@ timvisher_emacs__kill_each() {
 }
 
 timvisher_emacs__cleanup() {
-  local dry_run=true
+  local dry_run=true spare=true timeout=$timvisher_emacs__probe_timeout
 
-  case ${1-} in
-    --no-dry-run)
-      dry_run=false
-      ;;
-    '')
-      ;;
-    *)
-      usage
-      return 2
-      ;;
-  esac
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --no-dry-run)
+        dry_run=false
+        shift
+        ;;
+      --even-with-agent-shells)
+        spare=false
+        shift
+        ;;
+      --timeout)
+        timeout=${2-}
+        [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  # Worked out before any emacsclient is killed, since finding out takes
+  # one.
+  local spared=''
+  if [[ $spare == true ]] && ! spared=$(timvisher_emacs__cleanup_spared "$timeout")
+  then
+    aictl_error \
+      --code timvisher_emacs_cleanup_cannot_tell \
+      --message "Which Emacsen host agent-shells could not be established, so none were killed." \
+      --reason "cleanup spares an Emacs hosting a live agent-shell, and listing them failed; killing on an unknown roster is how a repair destroys the sessions it was meant to fix." \
+      --suggestion "See what 'timvisher_emacs agent-shell ls --format json' reports, and fix that first" \
+      --suggestion "Kill regardless with 'timvisher_emacs cleanup --no-dry-run --even-with-agent-shells', knowing it takes live sessions with it"
+    return 1
+  fi
 
   timvisher_emacs__kill_each "$dry_run" emacsclients '^emacsclient$'
-  timvisher_emacs__kill_each "$dry_run" emacsen "$timvisher_emacs__process_re"
+  timvisher_emacs__kill_each "$dry_run" emacsen "$timvisher_emacs__process_re" "$spared"
 
   echo 'Done' >&2
 }
