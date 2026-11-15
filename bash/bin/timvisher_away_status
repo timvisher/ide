@@ -10,9 +10,15 @@ source ~/.functions/aictl.bash ||
 idle_threshold_seconds=600
 status_file="${XDG_STATE_HOME:-$HOME/.local/state}/timvisher/away-status/status.json"
 
+# How old the cached answer may be before it is recomputed. The idle
+# threshold is ten minutes, so three minutes of staleness cannot change
+# `away` by itself. The daemon refreshes every sixty seconds, which leaves
+# room for one missed run before a reader pays for a live check.
+max_age_seconds=180
+
 show_help() {
   cat <<HELP
-Usage: timvisher_away_status [--write]
+Usage: timvisher_away_status [--live|--write]
 
 Print a JSON object describing whether the human is away:
 
@@ -26,12 +32,26 @@ Print a JSON object describing whether the human is away:
   away                    screensaver_active || screen_locked || idle
   away_reasons            which of screensaver, locked, idle hold
 
---write  write the object to the status file instead of stdout:
+By default the cached answer is reused when it is at most
+${max_age_seconds}s old, and recomputed otherwise. The cache lives at
          ${status_file}
+and is refreshed by the com.twonegatives.away-status LaunchAgent.
+
+--live   always compute a fresh answer, ignoring the cache
+--write  compute a fresh answer and write it to the status file
+         instead of stdout
 HELP
 }
 
+# Callers used to be told to read the status file themselves and fall back
+# to this script when it was missing or stale. That put the freshness rule
+# in prose, where every reader reimplemented it and a reader that checked
+# only for MISSING silently trusted a stale answer -- and a timer does not
+# fire while the Mac sleeps, so "stale" is exactly the state that follows a
+# lid being closed, which is when `away` is most likely to be wrong. The
+# rule lives here now so there is no second implementation to get wrong.
 write=
+live=
 case ${1-} in
   -h|--help)
     show_help
@@ -40,6 +60,9 @@ case ${1-} in
   --write)
     write=1
     ;;
+  --live)
+    live=1
+    ;;
   '')
     ;;
   *)
@@ -47,6 +70,38 @@ case ${1-} in
     exit 1
     ;;
 esac
+
+# The cached object, only if it is parseable and recent. Every failure
+# returns non-zero so the caller recomputes: a cache that cannot be
+# understood must never be preferred over one that can be measured.
+cached_if_fresh() {
+  local body epoch now age
+
+  [[ -r $status_file ]] || return 1
+  body=$(<"$status_file") || return 1
+  [[ -n $body ]] || return 1
+
+  # The writer below emits a fixed key order, so this is a parse of our own
+  # format rather than of arbitrary JSON. Anything else fails to match and
+  # is treated as unusable, which is the safe direction.
+  epoch=${body##*\"checked_at_epoch\":}
+  epoch=${epoch%%,*}
+  [[ $epoch =~ ^[0-9]+$ ]] || return 1
+
+  printf -v now '%(%s)T' -1
+  (( age = now - epoch ))
+
+  # A timestamp in the future means the clock moved, not that the answer is
+  # new, so it is rejected rather than treated as maximally fresh.
+  (( 0 <= age && age <= max_age_seconds )) || return 1
+
+  printf '%s\n' "$body"
+}
+
+if [[ -z $write && -z $live ]] && cached_if_fresh
+then
+  exit 0
+fi
 
 hid=$(ioreg -r -k HIDIdleTime -d 1) ||
   aictl_die \

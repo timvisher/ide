@@ -29,27 +29,35 @@ one, and before relying on a desktop notification being seen.
 
 ## Workflow
 
-1. Read the status, which a LaunchAgent refreshes every 60 seconds:
+1. Read the status:
    ```bash
-   cat ~/.local/state/timvisher/away-status/status.json
+   timvisher_away_status
    ```
    ```json
    {"checked_at":"2026-10-18T07:52:14-0400","checked_at_epoch":1792324334,
     "idle_seconds":0,"idle_threshold_seconds":600,"screensaver_active":false,
     "screen_locked":false,"idle":false,"away":false,"away_reasons":[]}
    ```
-   If the file is missing or `checked_at_epoch` is more than 180
-   seconds old, run `timvisher_away_status` instead. It prints the
-   same object, checked live.
+   It reuses the cached answer a LaunchAgent refreshes every 60
+   seconds when that answer is at most 180 seconds old, and computes
+   a fresh one otherwise. `--live` forces a fresh check.
+
+   **Do not `cat` the status file.** The freshness rule lives in the
+   script so there is only one implementation of it. Read the file
+   yourself and you own that rule: a reader that checks only whether
+   the file EXISTS trusts a stale answer silently, and launchd timers
+   do not fire while the Mac is asleep -- so the state right after a
+   lid opens is a present, stale file saying Tim was here, which is
+   both the easiest case to get wrong and the one that matters most.
 
 2. If `away` is true (`away_reasons` says which of `screensaver`,
    `locked` or `idle`), do not retry the prompting operation: every
    retry can queue another prompt waiting for Tim to come back to.
    Do not halt either. Keep making progress that can be checked or
    finished properly later, using the fallbacks below, and record each
-   one in the bead so it gets backfilled. Only wait (poll the file with
-   a Monitor until-loop for `away` to turn false) when nothing else
-   can move.
+   one in the bead so it gets backfilled. Only wait (poll
+   `timvisher_away_status` with a Monitor until-loop for `away` to
+   turn false) when nothing else can move.
 
 3. If `away` is false, Tim is at the keyboard. Retry once and say a
    prompt is coming, so Tim knows to look for it.
@@ -107,3 +115,12 @@ The script is `bash/bin/timvisher_away_status` in the IDE repo, run by
 `LaunchAgents/com.twonegatives.away-status.plist`. Install or reload it
 with `LaunchAgents/bin/start com.twonegatives.away-status`. Its log is
 `~/Library/Logs/timvisher_away_status.log`.
+
+Installing is a one-time step per machine: `bin/start` templates the
+plist into `~/Library/LaunchAgents`, and launchd loads anything there
+at every login thereafter. Re-run it only after editing the plist.
+
+Nothing installs it automatically, and until it is installed the
+cache simply never exists -- every call computes live and is correct,
+which is why its absence went unnoticed from 2026-10-18 to
+2026-11-15. `LaunchAgents/bin/status` is the check.

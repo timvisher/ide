@@ -143,7 +143,12 @@ else
   fail "--write replaces the status file and leaves no temp files"
 fi
 
-if PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=bogus "$script" >/dev/null 2>&1
+# --live, and an empty state dir, both on purpose: a bare call prefers a
+# fresh cache, so once the daemon is installed this would read a cached
+# answer, exit 0, and stop testing the sensor it names. Verified by
+# constructing a fresh cache and watching the bare form return 0.
+if PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=bogus XDG_STATE_HOME="$tmpdir/empty-state" \
+  "$script" --live >/dev/null 2>&1
 then
   fail "unparsable HIDIdleTime exits non-zero"
 else
@@ -163,6 +168,76 @@ then
 else
   fail "bad argument prints nothing to stdout and exits non-zero"
 fi
+
+
+# --- the freshness contract -------------------------------------------
+#
+# These run with a BROKEN sensor on purpose. ioreg exits non-zero, so a
+# live computation cannot succeed: any run that produces output proves the
+# cached answer was used, and any run that fails proves it was not. That
+# is the whole question, asked so it cannot be answered by accident.
+
+cat > "$tmpdir/bin/broken-ioreg" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+chmod +x "$tmpdir/bin/broken-ioreg" || exit 1
+
+cache_state=
+seed_cache() {
+  local age=$1 body=$2 epoch
+  cache_state=$(mktemp -d "$tmpdir/cache.XXXXXX") || return 1
+  mkdir -p -- "$cache_state/timvisher/away-status" || return 1
+  if [[ -z $body ]]
+  then
+    printf -v epoch '%(%s)T' -1
+    (( epoch -= age ))
+    body=$(printf '{"checked_at":"seeded","checked_at_epoch":%d,"idle_seconds":7,"idle_threshold_seconds":600,"screensaver_active":false,"screen_locked":false,"idle":false,"away":false,"away_reasons":[]}' "$epoch")
+  fi
+  printf '%s\n' "$body" > "$cache_state/timvisher/away-status/status.json"
+}
+
+cache_case() {
+  local name=$1 age=$2 body=$3 want=$4
+  shift 4
+  seed_cache "$age" "$body" || { fail "$name: could not seed"; return; }
+  # Break the sensor for this call only.
+  mv -- "$tmpdir/bin/ioreg" "$tmpdir/bin/ioreg.real"
+  cp -- "$tmpdir/bin/broken-ioreg" "$tmpdir/bin/ioreg"
+  local out rc
+  out=$(PATH="$tmpdir/bin:$PATH" XDG_STATE_HOME="$cache_state" "$script" "$@" 2>/dev/null)
+  rc=$?
+  mv -f -- "$tmpdir/bin/ioreg.real" "$tmpdir/bin/ioreg"
+  case $want in
+    used)
+      if (( 0 == rc )) && [[ $out == *'"checked_at":"seeded"'* ]]
+      then
+        pass "$name"
+      else
+        fail "$name: expected the cached answer, got rc=${rc} '${out}'"
+      fi
+      ;;
+    ignored)
+      if (( 0 != rc ))
+      then
+        pass "$name"
+      else
+        fail "$name: expected the cache to be ignored, got rc=0 '${out}'"
+      fi
+      ;;
+  esac
+}
+
+cache_case "a fresh cache is reused" 10 '' used
+cache_case "a cache at the age limit is still reused" 180 '' used
+cache_case "a cache past the age limit is ignored" 181 '' ignored
+cache_case "a long-stale cache, as after sleep, is ignored" 86400 '' ignored
+cache_case "a cache timestamped in the future is ignored" -600 '' ignored
+cache_case "an unparsable cache is ignored" 0 'not json at all' ignored
+cache_case "a cache with no checked_at_epoch is ignored" 0 '{"away":false}' ignored
+cache_case "an empty cache file is ignored" 0 ' ' ignored
+cache_case "--live ignores a fresh cache" 10 '' ignored --live
+cache_case "--write ignores a fresh cache" 10 '' ignored --write
 
 if (( 0 < failures ))
 then
