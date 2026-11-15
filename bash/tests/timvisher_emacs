@@ -426,8 +426,8 @@ CLAUDE_CONFIG_DIR=$tmpdir/claude-empty PATH="$tmpdir/onlyours:$PATH" emacs_tool 
 rc=$?
 check 'agent-shell get-server, a busy Emacs in the scan: the answer is unknown, not no_such_session' \
       eval '(( rc == 1 )) && stdout_empty && stderr_has "\"code\":\"timvisher_emacs_session_scan_unreachable\"" && ! stderr_has "timvisher_emacs_no_such_session"'
-check 'agent-shell get-server, a busy Emacs in the scan: the error names the Emacs that did not answer and its budget' \
-      eval "stderr_has 'Emacs $busy_pid could be hosting' && stderr_has 'did not answer within 1s'"
+check 'agent-shell get-server, a busy Emacs in the scan: the error names the Emacs, why, and the budget' \
+      eval "grep -qE 'Emacs $busy_pid \((timeout|refused)\)' '$tmpdir/stderr' && stderr_has 'could not be probed within 1s'"
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude emacs_tool agent-shell get-server --timeout soon abcd1111-0000
 rc=$?
@@ -516,18 +516,40 @@ check 'agent-shell ls: without a terminal, lists every shell as JSON joined with
       eval "(( rc == 0 )) && [[ \$(field '.sessions[] | select(.buffer == \"shell-sess-1\") | [.name, .ref, .session_id, .agent, .status, .pending_prompts, .emacs_pid] | @tsv') == 'tvshell-1a	$shell_ref	abcd1111-0000	claude-code	ready	2	$shell_pid' ]] && [[ \$(field '.sessions[] | select(.buffer == \"shell-new\") | .name') == tvnew-3c ]]"
 check 'agent-shell ls: an Emacs that does not answer is listed as unreachable, with the budget it was given' \
       eval "[[ \$(field '.unreachable[] | [(.pid | tostring), (.timeout_seconds | tostring)] | join(\" \")') == '$busy_pid 4' ]]"
+check 'agent-shell ls: an unreachable Emacs says why it could not be probed' \
+      eval "[[ \$(field '.unreachable[].reason') =~ ^(timeout|refused)\$ ]] && [[ -n \$(field '.unreachable[].detail') ]]"
 
 CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlyours:$PATH" emacs_tool agent-shell ls --format table --timeout 4
 rc=$?
 check 'agent-shell ls --format table: a header and a row per shell' \
       eval "(( rc == 0 )) && head -1 '$tmpdir/stdout' | grep -q '^NAME  *REF  *STATUS' && grep -q '^tvshell-1a  *$shell_ref  *ready  *2 ' '$tmpdir/stdout'"
-check 'agent-shell ls --format table: the unreachable warning names the budget and says the rows are missing' \
-      eval "grep -q 'unreachable: Emacs $busy_pid .* did not answer within 4s; its agent-shells are missing from this listing' '$tmpdir/stderr'"
+check 'agent-shell ls --format table: the unreachable warning says the rows are missing' \
+      eval "grep -q 'unreachable: Emacs $busy_pid .*; its agent-shells are missing from this listing' '$tmpdir/stderr'"
 
 emacs_tool agent-shell ls --timeout soon
 rc=$?
 check 'agent-shell ls with a non-numeric --timeout: usage on stderr, exit 2' \
       eval '(( rc == 2 )) && stdout_empty'
+
+# Two busy Emacsen nothing has probed yet. Serially this costs two
+# budgets; concurrently it costs one. At 27 live servers that is the
+# difference between a listing and a coffee break.
+start_emacs tvpar1 '(while t)'
+par1_pid=$started_pid
+start_emacs tvpar2 '(while t)'
+par2_pid=$started_pid
+mkdir -p "$tmpdir/onlypar" || exit 1
+cat > "$tmpdir/onlypar/lsof" <<FAKE
+#!/usr/bin/env bash
+"$real_lsof" "\$@" | awk -v keep=" $par1_pid $par2_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
+FAKE
+chmod +x "$tmpdir/onlypar/lsof" || exit 1
+
+SECONDS=0
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 4
+par_elapsed=$SECONDS
+check 'agent-shell ls: two unanswering Emacsen cost one budget between them, not one each' \
+      eval "(( $par_elapsed < 7 )) && [[ \$(field '.unreachable | length') == 2 ]]"
 
 # The old budget was 3 seconds and could not be raised. A busy Emacs
 # nothing has probed yet blocks the probe for the whole budget, so ls
@@ -555,6 +577,36 @@ check 'agent-shell ls: the default probe budget is well past the 3 seconds it us
 kill -INT "$default_budget_pid" 2>/dev/null
 pkill -9 -f "emacsclient -s $socket_dir/tvbusy2" 2>/dev/null
 wait "$default_budget_pid" 2>/dev/null
+
+# A busy Emacs's server socket holds only a small backlog of abandoned
+# probes; past it the kernel refuses new connections outright and
+# emacsclient fails in milliseconds instead of timing out. The two are
+# different conditions -- a longer budget fixes neither, but only one
+# of them is about the budget at all -- so the listing says which.
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlybusy2:$PATH" emacs_tool agent-shell ls --timeout 1
+check 'agent-shell ls: a busy Emacs with backlog to spare is unreachable by timeout' \
+      eval "[[ \$(field '.unreachable[].reason') == timeout ]]"
+
+backlog_refused=no
+for (( i = 0; i < 12; i += 1 ))
+do
+  emacsclient -s "$socket_dir/tvbusy2" -w 1 --eval '(emacs-pid)' > /dev/null 2> "$tmpdir/backlog-err"
+  if grep -qi 'connection refused' "$tmpdir/backlog-err"
+  then
+    backlog_refused=yes
+    break
+  fi
+done
+check 'a busy Emacs refuses connections outright once its probe backlog is full' \
+      test "$backlog_refused" = yes
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlybusy2:$PATH" emacs_tool agent-shell ls --timeout 1
+check 'agent-shell ls: an Emacs refusing probes is reported refused, not timed out' \
+      eval "[[ \$(field '.unreachable[].reason') == refused ]]"
+
+CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlybusy2:$PATH" emacs_tool agent-shell ls --format table --timeout 1
+check 'agent-shell ls --format table: a refused probe does not claim it waited out the budget' \
+      eval "grep -q 'unreachable: Emacs $busy2_pid .* refused the probe' '$tmpdir/stderr' && ! grep -q 'did not answer within' '$tmpdir/stderr'"
 
 emacs_tool agent-shell ls --format yaml
 rc=$?
