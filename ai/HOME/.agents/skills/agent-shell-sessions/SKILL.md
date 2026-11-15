@@ -33,7 +33,14 @@ silent Emacs and retry.
 
 `send` reports on stderr which Emacs it resolved to and how
 (`timvisher_emacs_send_resolved`), so `submitted` is checkable without
-a separate `ls` diff.
+a separate `ls` diff. `found_by` is `process` when the session's own
+process led there, `scan` when the servers were asked, and `directed`
+when you named the Emacs yourself.
+
+`send --emacs <pid>` names the host outright and skips resolution. Use
+it when resolution refuses and `ls` can show you which Emacs actually
+holds the shell -- that is the supported way through, not a
+hand-built `emacsclient --eval`.
 
 ## Sending a message
 
