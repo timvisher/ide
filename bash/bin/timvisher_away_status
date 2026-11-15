@@ -98,9 +98,42 @@ cached_if_fresh() {
   printf '%s\n' "$body"
 }
 
-if [[ -z $write && -z $live ]] && cached_if_fresh
+# Load-only, and only from the branch that already proved the cache is not
+# being refreshed -- a missing or stale cache IS the signal that the agent
+# is not running. Never boots the agent out first: bootstrap on an
+# already-loaded agent fails harmlessly and leaves the running job and its
+# StartInterval timer untouched, which is what makes it safe to call
+# without checking first. Same shape as
+# timvisher_kctx__agent_bootstrap_and_fire.
+#
+# It cannot deploy the plist, only load one that is already installed:
+# deploying needs the repo, and this script must keep working from a HOME
+# that has no checkout. If the plist is absent there is nothing to heal.
+heal_agent() {
+  # Same override the LaunchAgents/bin wrappers use, so the tests can
+  # point this at a scratch directory.
+  local dest="${TIMVISHER_LAUNCHAGENTS_DIR:-${HOME}/Library/LaunchAgents}"
+  local plist="${dest}/com.twonegatives.away-status.plist"
+  local uid
+
+  [[ -f $plist ]] || return 0
+  uid=$(id -u) || return 0
+
+  # Status and output both ignored on purpose: this is maintenance running
+  # behind an answer the caller already has, and it must not be able to
+  # change that answer or fail the command.
+  launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1
+  return 0
+}
+
+heal=
+if [[ -z $write && -z $live ]]
 then
-  exit 0
+  if cached_if_fresh
+  then
+    exit 0
+  fi
+  heal=1
 fi
 
 hid=$(ioreg -r -k HIDIdleTime -d 1) ||
@@ -162,7 +195,10 @@ json=$(printf '{"checked_at":"%s","checked_at_epoch":%d,"idle_seconds":%d,"idle_
 
 if [[ -z $write ]]
 then
+  # Answer first, heal second. The caller's result must not wait on
+  # launchctl, and a heal that fails must not change what they were told.
   printf '%s\n' "$json"
+  [[ -z $heal ]] || heal_agent
   exit 0
 fi
 

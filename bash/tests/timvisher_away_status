@@ -239,6 +239,115 @@ cache_case "an empty cache file is ignored" 0 ' ' ignored
 cache_case "--live ignores a fresh cache" 10 '' ignored --live
 cache_case "--write ignores a fresh cache" 10 '' ignored --write
 
+
+# --- self-healing the LaunchAgent -------------------------------------
+#
+# launchctl is stubbed rather than suppressed, so these assert what the
+# script DOES rather than that it stays away from launchd. The stub
+# records its arguments; absence of the record is a real answer.
+
+cat > "$tmpdir/bin/launchctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HEAL_LOG"
+FAKE
+chmod +x "$tmpdir/bin/launchctl" || exit 1
+
+heal_home=
+heal_log=
+setup_heal() {
+  local install_plist=$1
+  heal_home=$(mktemp -d "$tmpdir/heal.XXXXXX") || return 1
+  heal_log="$heal_home/launchctl.log"
+  : > "$heal_log" || return 1
+  mkdir -p -- "$heal_home/LaunchAgents" || return 1
+  if [[ -n $install_plist ]]
+  then
+    printf 'plist\n' > "$heal_home/LaunchAgents/com.twonegatives.away-status.plist"
+  fi
+}
+
+# HOME is left alone on purpose: the script sources ~/.functions/aictl.bash
+# before it does anything, so overriding HOME does not isolate the test, it
+# stops the script from starting at all -- which looks exactly like "the
+# heal did not run".
+run_heal() {
+  PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=0 FAKE_SCREENSAVER='' FAKE_LOCK_XML='' \
+    TIMVISHER_LAUNCHAGENTS_DIR="$heal_home/LaunchAgents" \
+    HEAL_LOG="$heal_log" XDG_STATE_HOME="$cache_state" \
+    "$script" "$@" > /dev/null 2>&1
+}
+
+heal_case() {
+  local name=$1 want=$2
+  if [[ $want == bootstrapped ]] && [[ -s $heal_log ]] &&
+    [[ $(< "$heal_log") == bootstrap\ gui/* ]]
+  then
+    pass "$name"
+  elif [[ $want == quiet ]] && [[ ! -s $heal_log ]]
+  then
+    pass "$name"
+  else
+    fail "$name: launchctl log was '$(< "$heal_log")'"
+  fi
+}
+
+# A fresh cache means the agent is doing its job, so nothing should happen.
+setup_heal install || exit 1
+seed_cache 10 '' || exit 1
+run_heal
+heal_case "a fresh cache does not touch launchctl" quiet
+
+# A stale cache is the signal the agent stopped being refreshed.
+setup_heal install || exit 1
+seed_cache 86400 '' || exit 1
+run_heal
+heal_case "a stale cache bootstraps the agent" bootstrapped
+
+setup_heal install || exit 1
+cache_state=$(mktemp -d "$tmpdir/nocache.XXXXXX") || exit 1
+run_heal
+heal_case "a missing cache bootstraps the agent" bootstrapped
+
+# Nothing to load, and no repo to deploy from: silence beats an error.
+setup_heal '' || exit 1
+cache_state=$(mktemp -d "$tmpdir/nocache.XXXXXX") || exit 1
+run_heal
+heal_case "an uninstalled plist is left alone" quiet
+
+# --live and --write are not evidence about the agent.
+setup_heal install || exit 1
+seed_cache 86400 '' || exit 1
+run_heal --live
+heal_case "--live does not bootstrap" quiet
+
+setup_heal install || exit 1
+seed_cache 86400 '' || exit 1
+run_heal --write
+heal_case "--write does not bootstrap" quiet
+
+# The heal runs behind the answer, so a broken launchctl changes nothing.
+cat > "$tmpdir/bin/launchctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HEAL_LOG"
+echo 'launchctl exploded' >&2
+exit 3
+FAKE
+chmod +x "$tmpdir/bin/launchctl" || exit 1
+
+setup_heal install || exit 1
+cache_state=$(mktemp -d "$tmpdir/nocache.XXXXXX") || exit 1
+out=$(PATH="$tmpdir/bin:$PATH" FAKE_IDLE_NS=0 FAKE_SCREENSAVER='' FAKE_LOCK_XML='' \
+  TIMVISHER_LAUNCHAGENTS_DIR="$heal_home/LaunchAgents" \
+  HEAL_LOG="$heal_log" XDG_STATE_HOME="$cache_state" \
+  "$script" 2>/dev/null)
+rc=$?
+if (( 0 == rc )) && [[ $out == *'"away":false'* ]]
+then
+  pass "a failing launchctl does not change the answer or the exit status"
+else
+  fail "a failing launchctl does not change the answer or the exit status: rc=${rc} out='${out}'"
+fi
+
 if (( 0 < failures ))
 then
   exit 1
