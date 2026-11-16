@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+fail() {
+  echo "FAIL: $1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  echo "PASS: $1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+bin_dir="$(cd "$(dirname "$0")/../bin" && pwd)"
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+real_dir=$tmpdir/real
+mkdir -p "$real_dir"
+log=$tmpdir/log
+
+for name in pkill pgrep
+do
+  cat > "$real_dir/$name" <<MOCK
+#!/usr/bin/env bash
+printf '%s' "$name" >> "$log"
+printf ' <%s>' "\$@" >> "$log"
+printf '\n' >> "$log"
+if [[ $name == pgrep && -n \${FAKE_PGREP_COUNT-} ]]
+then
+  for (( i = 1; i <= FAKE_PGREP_COUNT; i += 1 ))
+  do
+    echo \$(( 900000 + i ))
+  done
+fi
+MOCK
+  chmod +x "$real_dir/$name"
+done
+
+run() {
+  local name=$1
+  shift
+  : > "$log"
+  env -u TIMVISHER_AGENT TIMVISHER_PROCTOOLS_REAL_DIR="$real_dir" "$bin_dir/$name" "$@" >/dev/null 2>"$tmpdir/err"
+  rc=$?
+  err=$(< "$tmpdir/err")
+  calls=$(< "$log")
+}
+
+run_agent() {
+  local name=$1
+  shift
+  : > "$log"
+  TIMVISHER_AGENT=claude TIMVISHER_PROCTOOLS_REAL_DIR="$real_dir" "$bin_dir/$name" "$@" >/dev/null 2>"$tmpdir/err"
+  rc=$?
+  err=$(< "$tmpdir/err")
+  calls=$(< "$log")
+}
+
+expect_refused() {
+  local description=$1 code=$2
+  run_test
+  if (( rc == 2 )) && [[ $err == *"$code"* ]] && ! grep -q '^pkill' <<<"$calls"
+  then
+    pass "$description"
+  else
+    fail "$description: rc=$rc calls='$calls' err='$err'"
+  fi
+}
+
+expect_calls() {
+  local description=$1 expected=$2
+  run_test
+  if [[ $calls == "$expected" ]] && (( rc == 0 ))
+  then
+    pass "$description"
+  else
+    fail "$description: rc=$rc expected calls '$expected', got '$calls' (err='$err')"
+  fi
+}
+
+run pgrep -f 'sleep 86400' -U someone
+expect_refused 'pgrep refuses -U after the pattern' proctools_option_after_pattern
+run_test
+if [[ -z $calls ]]
+then
+  pass 'misordered pgrep never reaches the real binary'
+else
+  fail "misordered pgrep reached the real binary: '$calls'"
+fi
+
+run pkill -f 'sleep 86400' -U someone
+expect_refused 'pkill refuses -U after the pattern, even for humans' proctools_option_after_pattern
+
+run_test
+if [[ $err == *"pkill -f -U someone sleep\\ 86400"* ]]
+then
+  pass 'refusal suggests the corrected order'
+else
+  fail "refusal did not suggest the corrected order: '$err'"
+fi
+
+run pkill -KILL foo -f
+expect_refused 'pkill refuses a trailing flag after a signal and pattern' proctools_option_after_pattern
+
+run pgrep -U someone -f 'sleep 86400'
+expect_calls 'well-ordered pgrep passes through' 'pgrep <-U> <someone> <-f> <sleep 86400>'
+
+run pgrep -fU someone 'sleep 86400'
+expect_calls 'bundled value option consumes the next arg' 'pgrep <-fU> <someone> <sleep 86400>'
+
+run pgrep -u504 -x emacs
+expect_calls 'attached option value' 'pgrep <-u504> <-x> <emacs>'
+
+run pgrep -f -- -weird-pattern
+expect_calls 'patterns after -- may start with a dash' 'pgrep <-f> <--> <-weird-pattern>'
+
+run pkill -KILL -f "$tmpdir/"
+expect_calls 'pkill with a leading signal passes through for humans' "pkill <-KILL> <-f> <$tmpdir/>"
+
+run pkill -9 -P 123
+expect_calls 'pkill with a numeric signal and -P passes through' 'pkill <-9> <-P> <123>'
+
+run pkill -U someone -F /tmp/x.pid
+expect_calls 'pkill with only options passes through for humans' 'pkill <-U> <someone> <-F> </tmp/x.pid>'
+
+FAKE_PGREP_COUNT=60 run_agent pkill -TERM -U someone -f foo
+expect_refused 'agent pkill matching 60 processes is refused' proctools_pkill_too_broad
+
+FAKE_PGREP_COUNT=60 run_agent pkill -U someone
+expect_refused 'agent pkill with no pattern is breadth-checked' proctools_pkill_too_broad
+
+run_test
+if [[ $err == *TIMVISHER_PKILL_MAX_MATCHES=60* ]]
+then
+  pass 'breadth refusal names the override'
+else
+  fail "breadth refusal did not name the override: '$err'"
+fi
+
+FAKE_PGREP_COUNT=50 run_agent pkill -TERM -f foo
+expect_calls 'agent pkill at the limit runs' $'pgrep <-f> <foo>\npkill <-TERM> <-f> <foo>'
+
+FAKE_PGREP_COUNT=60 TIMVISHER_PKILL_MAX_MATCHES=60 run_agent pkill -f foo
+expect_calls 'TIMVISHER_PKILL_MAX_MATCHES raises the limit' $'pgrep <-f> <foo>\npkill <-f> <foo>'
+
+FAKE_PGREP_COUNT=1 run_agent pkill -HUP -f -- -dash
+expect_calls 'dry run keeps -- before a dash pattern' $'pgrep <-f> <--> <-dash>\npkill <-HUP> <-f> <--> <-dash>'
+
+FAKE_PGREP_COUNT=60 run pkill -f foo
+expect_calls 'humans are not breadth-checked' 'pkill <-f> <foo>'
+
+TIMVISHER_PKILL_MAX_MATCHES=lots run_agent pkill -f foo
+expect_refused 'a non-numeric limit is refused' proctools_bad_max_matches
+
+if [[ $(uname -s) == Darwin ]]
+then
+  FAKE_PGREP_COUNT=1 run_agent pkill -If foo
+  expect_calls 'dry run drops pkill-only -I' $'pgrep <-f> <foo>\npkill <-If> <foo>'
+fi
+
+echo
+echo "$tests tests, $failures failures"
+(( failures == 0 ))

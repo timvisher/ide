@@ -120,6 +120,22 @@
 - `SIGKILL` and `SIGSTOP` cannot be caught, blocked, or ignored —
   traps will not fire. Design lock files to handle stale locks.
 
+#### Killing Processes
+
+- _**ALWAYS**_ put every `pgrep`/`pkill` option before the pattern. BSD
+  `pkill` (macOS) stops reading options at the first pattern, so
+  `pkill -f 'sleep 86400' -U "$USER"` treats `-U` and the user name as
+  more patterns, and with `-f` that matched and killed about 100 of
+  Tim's processes: shells, browser tabs, Emacs sessions. Write
+  `pkill -U "$USER" -f 'sleep 86400'`.
+- Prefer killing the PID you started (`kill -- "$pid"`) to matching by
+  pattern. When you must match, preview with `pgrep -l` first and use
+  `-x` or an anchored `-f` regex.
+- `~/bin/pkill` and `~/bin/pgrep` enforce this: they refuse an option
+  after the pattern, and for agents refuse a `pkill` that would match
+  more than 50 processes (`TIMVISHER_PKILL_MAX_MATCHES` raises the
+  limit after you have checked the matches).
+
 #### Quote Usage in Bash
 
 - **ALWAYS** replace ‘ (U+2018) and ’ (U+2019) with ' (straight
