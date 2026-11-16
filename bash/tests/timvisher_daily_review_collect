@@ -114,15 +114,19 @@ else
   fail "a failing gather exited $rc: $(< "$tmpdir/err")"
 fi
 
-start=$SECONDS
+# The fake only prints its report lines after its sleep, so their
+# absence says the gather was killed partway rather than waited out.
+# That is the same claim an elapsed-time bound was making, as a fact
+# about what ran instead of an assumption about how loaded the machine
+# is while it runs.
 FAKE_SLEEP=30 TIMVISHER_DAILY_REVIEW_COLLECT_TIMEOUT=1s run
 rc=$?
-elapsed=$(( SECONDS - start ))
-if (( rc != 0 )) && (( elapsed < 10 )) && grep -q 'timed out after 1s' "$tmpdir/err"
+if (( rc != 0 )) && grep -q 'timed out after 1s' "$tmpdir/err" &&
+  ! grep -q 'report_start' "$tmpdir/out"
 then
-  pass 'a hung gather is killed at the timeout'
+  pass 'a hung gather is killed at the timeout, before it can finish'
 else
-  fail "timeout: rc=$rc elapsed=${elapsed}s err=$(< "$tmpdir/err")"
+  fail "timeout: rc=$rc err=$(< "$tmpdir/err") out=$(< "$tmpdir/out")"
 fi
 
 if out=$("$script" --help 2>/dev/null) && [[ $out == Usage:* ]]
