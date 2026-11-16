@@ -83,6 +83,8 @@ The first push creates a draft PR from `pr.md` (`--ready-for-review` for a ready
 
 Under an agent, `timvisher_gh` creates a PR only as a draft and pushes only a draft PR for this worktree's branch. It fetches the PR fresh and grants `timvisher_git push` exactly that one push, which the git wrapper lets through; a plain `git push` is still blocked. If nobody else has pushed to the PR since `timvisher_gh` last did, a rewrite goes out without comparing content (a branch that's behind still stops); if someone has, only a fast-forward or a rewrite with the same changes does, and anything else stops for Tim. Marking a PR ready (`--ready-for-review`, `pr ready`), `pr merge` and `pr release` are refused: hand Tim the one-line invocation.
 
+A branch that is already on origin with no PR can't take its first agent push: `timvisher_gh pr push` stops with `timvisher_git_push_grant_refused` ("the PR's head moved to … since timvisher_gh checked it (-)"), because with no PR there is no head to lease against. Run `timvisher_git push --plan` in the worktree. If it shows a fast-forward, hand Tim `timvisher_git push` from the worktree, then rerun `timvisher_gh pr push`, which now creates the PR. If it shows anything else, stop and tell Tim. Never reach for a plain `git push`.
+
 Changes are three-way: against what was last pushed or agreed, yours and GitHub's. Yours only is pushed; GitHub's only is pulled into your file by `pull` and the bare sync, and refused by `push` (exit 4: pull first). Both, differently, is a decision: exit 3 with the exact reruns for `--ours` (push yours), `--theirs` (take GitHub's) and `--merge` (`git merge-file`). Never write ad hoc `y.*.sh` push scripts; everything they did is a rerun.
 
 ## Where things live
