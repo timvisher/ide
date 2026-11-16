@@ -866,10 +866,14 @@ hand) keeps it under its existing name."
 ;;; Load AI tooling
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defconst timvisher-op-environment-references
+(defvar timvisher-op-environment-references
   '(("OPENAI_API_KEY" . "op://Private/OpenAI API Secret Key/credential")
     ("ANTHROPIC_API_KEY" . "op://Private/Anthropic API Key/credential"))
-  "Environment variables agent-shell's agents read, and their 1Password references.")
+  "Environment variables agent-shell's agents read, and their 1Password references.
+
+A variable rather than a constant so system extensions can append
+their own references, which they must do at load time: that is before
+agent-shell's :config resolves the whole list in one `op run'.")
 
 (defun timvisher-load-op-environment-variables ()
   "Resolve the agents' API keys through 1Password into Emacs's environment.

@@ -17,9 +17,16 @@
 ;;; Tests for timvisher-load-op-environment-variables
 
 (defmacro test-timvisher-op--with-env (bindings &rest body)
-  "Run BODY with the two agent key variables set as in BINDINGS, restored after."
+  "Run BODY with the two agent key variables set as in BINDINGS, restored after.
+
+The reference list is bound to the two core variables as well: the
+system extensions this Emacs loaded have appended their own, and what
+the loader does is not theirs to change."
   (declare (indent 1))
-  `(let ((process-environment (copy-sequence process-environment)))
+  `(let ((process-environment (copy-sequence process-environment))
+         (timvisher-op-environment-references
+          '(("OPENAI_API_KEY" . "op://Private/OpenAI API Secret Key/credential")
+            ("ANTHROPIC_API_KEY" . "op://Private/Anthropic API Key/credential"))))
      (setenv "OPENAI_API_KEY" nil)
      (setenv "ANTHROPIC_API_KEY" nil)
      (dolist (b ,bindings) (setenv (car b) (cdr b)))
@@ -73,6 +80,30 @@
         (should warned)
         (should-not (getenv "ANTHROPIC_API_KEY"))
         (should-not (getenv "OPENAI_API_KEY"))))))
+
+(ert-deftest test-timvisher-load-op-env-resolves-an-appended-reference ()
+  "A reference appended to the list resolves in the same op run.
+
+Appending is how a system extension adds its own secrets. It must not
+cost a second op run, because that is a second 1Password approval."
+  (test-timvisher-op--with-env '()
+    (let ((timvisher-op-environment-references
+           (append timvisher-op-environment-references
+                   '(("TEST_OP_EXTENSION" . "op://Private/extension/credential"))))
+          (runs 0))
+      (setenv "TEST_OP_EXTENSION" nil)
+      (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/op"))
+                ((symbol-function 'call-process-shell-command)
+                 (lambda (_command _infile buffer &rest _)
+                   (setq runs (1+ runs))
+                   (with-current-buffer (if (eq buffer t) (current-buffer) buffer)
+                     (insert "OPENAI_API_KEY=sk-o\n"
+                             "ANTHROPIC_API_KEY=sk-a\n"
+                             "TEST_OP_EXTENSION=ext-secret\n"))
+                   0)))
+        (should (= 3 (timvisher-load-op-environment-variables)))
+        (should (= 1 runs))
+        (should (equal (getenv "TEST_OP_EXTENSION") "ext-secret"))))))
 
 (ert-deftest test-timvisher-agent-shell-authentication-key-or-login ()
   "An API key in the environment is used; without one, login."
