@@ -17,7 +17,12 @@ on doShellScript(commandList)
 	set command to textCommandList as text
 	set text item delimiters to ""
 	
-	do shell script command
+	(*
+	  Homebrew is prepended rather than borrowing the login shell's PATH
+	  (bash -lc) because sourcing the profile on every call is slow and
+	  runs its side effects from GUI contexts.
+	 *)
+	do shell script "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:\"$PATH\"; " & command
 end doShellScript
 
 -- doShellScript({POSIX path of (path to home folder) & "bin/chrome_new_profile_window", "user@example.com"})
