@@ -494,5 +494,13 @@ through the width mode's composition function."
   (should timvisher-tty-grapheme-width-mode)
   (should timvisher-tty-emoji-presentation-mode))
 
+;;; Tests for the agent-shell log buffer caps
+
+(ert-deftest test-agent-shell-log-buffers-are-capped ()
+  "Once agent-shell is configured, acp and agent-shell logs keep at most 2MB each."
+  (require 'agent-shell)
+  (should (<= acp--log-buffer-max-bytes (* 2 1000 1000)))
+  (should (<= agent-shell--log-buffer-max-bytes (* 2 1000 1000))))
+
 (provide 'init-test)
 ;;; init-test.el ends here
