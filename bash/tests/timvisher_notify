@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+failures=0
+tests=0
+
+check() {
+  local description=$1
+  shift
+  (( tests += 1 ))
+  if "$@"
+  then
+    echo "PASS: $description"
+  else
+    echo "FAIL: $description" >&2
+    sed 's/^/    stderr: /' "$tmpdir/stderr" >&2
+    (( failures += 1 ))
+  fi
+}
+
+repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
+tool=$repo_root/bash/bin/timvisher_notify
+
+tmpdir=
+trap '[[ -z $tmpdir ]] || rm -rf -- "$tmpdir"' EXIT
+tmpdir=$(mktemp -d) || { echo 'FAIL: mktemp' >&2; exit 1; }
+mkdir -p "$tmpdir/bin" || exit 1
+
+cat > "$tmpdir/bin/osascript" <<'FAKE'
+#!/usr/bin/env bash
+printf 'osascript %s\n' "$*" >> "$FAKE_DIR/calls"
+FAKE
+cat > "$tmpdir/client" <<'FAKE'
+#!/usr/bin/env bash
+printf 'client %s\n' "$*" >> "$FAKE_DIR/calls"
+exit "${FAKE_CLIENT_RC:-0}"
+FAKE
+chmod +x "$tmpdir/bin/osascript" "$tmpdir/client" || exit 1
+
+run() {
+  rm -f -- "$tmpdir/calls"
+  env -u TERM_PROGRAM -u TMUX -u GHOSTTY_RESOURCES_DIR -u ITERM_SESSION_ID \
+    -u WEZTERM_EXECUTABLE -u KITTY_PID \
+    PATH="$tmpdir/bin:$PATH" FAKE_DIR="$tmpdir" TIMVISHER_NOTIFY_RELAY_CLIENT="$tmpdir/client" \
+    "$@" "$tool" 'build done' 'exit 0 after 41s' 2> "$tmpdir/stderr" < /dev/null
+}
+
+calls() {
+  [[ $(cat -- "$tmpdir/calls" 2> /dev/null) == "$1" ]]
+}
+
+stderr_has() {
+  grep -q -F -- "$1" "$tmpdir/stderr"
+}
+
+run env -u WORKSPACES_DAEMON_SOCKET
+check 'laptop: the OS notification, not the relay' calls "osascript -e display notification \"exit 0 after 41s\" with title \"build done\""
+check 'laptop: the line on stderr' stderr_has 'build done: exit 0 after 41s'
+
+run env WORKSPACES_DAEMON_SOCKET=/home/bits/.local/state/workspaces/daemon.sock
+check 'workspace: through the relay client, title and body' calls 'client --title build done --body exit 0 after 41s'
+check 'workspace: the line on stderr too' stderr_has 'build done: exit 0 after 41s'
+
+run env WORKSPACES_DAEMON_SOCKET=x FAKE_CLIENT_RC=69
+rc=$?
+check 'workspace, laptop unreachable: still exit 0' [ "$rc" = 0 ]
+
+run env WORKSPACES_DAEMON_SOCKET=x TIMVISHER_NOTIFY_RELAY_CLIENT="$tmpdir/no-such-client"
+rc=$?
+check 'workspace, no relay client: exit 0, and says so' [ "$rc" = 0 ]
+check 'workspace, no relay client: nothing else tried' [ ! -e "$tmpdir/calls" ]
+check 'workspace, no relay client: one line saying why' stderr_has 'not shown on the laptop: no agent relay client at'
+
+rm -f -- "$tmpdir/calls"
+env WORKSPACES_DAEMON_SOCKET=x PATH="$tmpdir/bin:$PATH" FAKE_DIR="$tmpdir" TIMVISHER_NOTIFY_RELAY_CLIENT="$tmpdir/client" \
+  "$tool" --silent t m 2> "$tmpdir/stderr" < /dev/null
+check '--silent on a workspace: no relay call' [ ! -e "$tmpdir/calls" ]
+
+printf 'Results: %d tests, %d failures\n' "$tests" "$failures"
+(( failures == 0 ))
