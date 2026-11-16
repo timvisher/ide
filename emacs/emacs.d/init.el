@@ -973,6 +973,7 @@ included only when its executable exists."
   (agent-shell-cwd-function (lambda () command-line-default-directory))
   (agent-shell-preferred-agent-config 'claude-code)
   (agent-shell-file-completion-enabled nil)
+  (agent-shell-command-completion-enabled nil)
   :init
   (setq agent-shell-mcp-servers (timvisher-agent-shell-mcp-servers))
   :config
