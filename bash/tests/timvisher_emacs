@@ -592,10 +592,10 @@ check 'agent-shell ls, every server answering: exits 0 with nothing unreachable'
 # budgets; concurrently it costs one. At 27 live servers that is the
 # difference between a listing and a coffee break.
 #
-# The budget is larger than this check needs so the gap either side of
-# the threshold is seconds rather than fractions: suites of this repo
-# and of system-extensions get run concurrently, and at load average 74
-# a 4 second budget put the parallel case within noise of the serial one.
+# Asserted as overlap rather than as elapsed time. Whether the probes
+# ran at once is a fact about their intervals, true at load average 2
+# or 200; a wall-clock bound is only that fact plus an assumption about
+# the machine, and this suite runs beside others that break it.
 start_emacs tvpar1 '(while t)'
 par1_pid=$started_pid
 start_emacs tvpar2 '(while t)'
@@ -605,13 +605,25 @@ cat > "$tmpdir/onlypar/lsof" <<FAKE
 #!/usr/bin/env bash
 "$real_lsof" "\$@" | awk -v keep=" $par1_pid $par2_pid " '/^p/ { on = index(keep, " " substr(\$0, 2) " ") } on'
 FAKE
-chmod +x "$tmpdir/onlypar/lsof" || exit 1
+cat > "$tmpdir/onlypar/emacsclient" <<FAKE
+#!/usr/bin/env bash
+printf 'start %(%s)T\n' -1 >> "$tmpdir/par-log"
+"$(command -v emacsclient)" "\$@"
+rc=\$?
+printf 'end %(%s)T\n' -1 >> "$tmpdir/par-log"
+exit \$rc
+FAKE
+chmod +x "$tmpdir/onlypar/lsof" "$tmpdir/onlypar/emacsclient" || exit 1
 
-SECONDS=0
+: > "$tmpdir/par-log"
 CLAUDE_CONFIG_DIR=$tmpdir/claude PATH="$tmpdir/onlypar:$PATH" emacs_tool agent-shell ls --timeout 10
-par_elapsed=$SECONDS
-check 'agent-shell ls: two unanswering Emacsen cost one budget between them, not one each' \
-      eval "(( $par_elapsed < 15 )) && [[ \$(field '.unreachable | length') == 2 ]]"
+rc=$?
+check 'agent-shell ls: both Emacsen are probed, and both come back unreachable' \
+      eval "(( rc == 3 )) && [[ \$(field '.unreachable | length') == 2 ]]"
+check 'agent-shell ls: the probes overlap in time, so one budget covers them both' \
+      eval "awk '/^start/ { starts += 1; if (\$2 > latest_start) latest_start = \$2 }
+                 /^end/   { ends += 1; if (earliest_end == 0 || \$2 < earliest_end) earliest_end = \$2 }
+                 END      { exit !(starts == 2 && ends == 2 && latest_start < earliest_end) }' '$tmpdir/par-log'"
 
 # The old budget was 3 seconds and could not be raised. A busy Emacs
 # nothing has probed yet blocks the probe for the whole budget, so ls
