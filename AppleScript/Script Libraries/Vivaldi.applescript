@@ -195,3 +195,71 @@ on closeTabWithUrl(u)
 	end repeat
 	return false
 end closeTabWithUrl
+
+on windowWithTabId(tabId)
+	tell application "Vivaldi" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		try
+			tell application "Vivaldi" to set tabIds to id of tabs of w
+			if tabIds contains tabId then return w
+		on error m number n
+			if not my isGoneError(n) then error m number n
+		end try
+	end repeat
+	return missing value
+end windowWithTabId
+
+on executeJsInTabWithId(tabId, js)
+	-- Not "as integer": tab ids pass AppleScript's integer range (2^29) and
+	-- become reals that match no tab. The browser reports them as text.
+	set tabId to tabId as text
+	if application "Vivaldi" is not running then error "Vivaldi is not running." number -600
+	set w to my windowWithTabId(tabId)
+	if missing value is w then error "Vivaldi has no tab with id " & tabId & "." number -1728
+	tell application "Vivaldi" to execute tab id tabId of w javascript js
+end executeJsInTabWithId
+
+-- One record per tab, fields separated by character id 31 and records by
+-- character id 30: window id, tab id, whether it is its window's active
+-- tab, URL, title. Not linefeeds or tabs: titles can contain either.
+on listTabs()
+	if application "Vivaldi" is not running then return ""
+	set tabRecords to {}
+	tell application "Vivaldi" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		tell application "Vivaldi"
+			repeat 3 times
+				try
+					set windowId to id of w
+					set activeId to id of active tab of w
+					set tabIds to id of tabs of w
+					set tabUrls to URL of tabs of w
+					set tabTitles to title of tabs of w
+				on error m number n
+					if my isGoneError(n) then exit repeat
+					error m number n
+				end try
+				set c to count of tabIds
+				if c is (count of tabUrls) and c is (count of tabTitles) then
+					repeat with i from 1 to c
+						set tabId to item i of tabIds
+						set end of tabRecords to {windowId, tabId, tabId is activeId, item i of tabUrls, item i of tabTitles}
+					end repeat
+					exit repeat
+				end if
+			end repeat
+		end tell
+	end repeat
+	set tabLines to {}
+	set savedDelimiters to AppleScript's text item delimiters
+	set AppleScript's text item delimiters to character id 31
+	repeat with r in tabRecords
+		set end of tabLines to (contents of r) as text
+	end repeat
+	set AppleScript's text item delimiters to character id 30
+	set out to tabLines as text
+	set AppleScript's text item delimiters to savedDelimiters
+	return out
+end listTabs
