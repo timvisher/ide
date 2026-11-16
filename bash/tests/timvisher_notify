@@ -75,5 +75,64 @@ env WORKSPACES_DAEMON_SOCKET=x PATH="$tmpdir/bin:$PATH" FAKE_DIR="$tmpdir" TIMVI
   "$tool" --silent t m 2> "$tmpdir/stderr" < /dev/null
 check '--silent on a workspace: no relay call' [ ! -e "$tmpdir/calls" ]
 
+cat > "$tmpdir/bin/tmux" <<'FAKE'
+#!/usr/bin/env bash
+case "$*" in
+  'show-environment -g TERM_PROGRAM') printf 'TERM_PROGRAM=ghostty\n' ;;
+  'show-option -gv allow-passthrough') printf 'on\n' ;;
+  *'#{pane_tty}'*) printf '/dev/null\n' ;;
+  *'#{session_attached}'*) printf '%s\n' "$FAKE_PANE_VISIBILITY" ;;
+  *) exit 1 ;;
+esac
+FAKE
+cat > "$tmpdir/bin/lsappinfo" <<'FAKE'
+#!/usr/bin/env bash
+[[ -n $FAKE_FRONT_BUNDLE ]] || exit 1
+case $1 in
+  front) printf 'ASN:0x0-0x1:\n' ;;
+  info) printf '[ NULL ]  ASN:0x0-0x1: \n    bundleID="%s"\n' "$FAKE_FRONT_BUNDLE" ;;
+  *) exit 1 ;;
+esac
+FAKE
+chmod +x "$tmpdir/bin/tmux" "$tmpdir/bin/lsappinfo" || exit 1
+
+# An agent tool call inside tmux: no controlling terminal, a writable pane tty.
+# $1 is the frontmost app's bundle id; $2 is the pane's
+# '#{session_attached} #{window_active} #{window_zoomed_flag} #{pane_active}'.
+run_in_pane() {
+  run env -u WORKSPACES_DAEMON_SOCKET TERM_PROGRAM=tmux TMUX=/tmp/x.tmux-fake,1,0 TMUX_PANE=%1 \
+    TIMVISHER_NOTIFY_TTY="$tmpdir/no-controlling-terminal" TIMVISHER_NOTIFY_DEBUG=1 \
+    FAKE_FRONT_BUNDLE="$1" FAKE_PANE_VISIBILITY="$2"
+}
+
+wrote_pane() {
+  stderr_has "wrote to tmux pane tty '/dev/null'" && [ ! -e "$tmpdir/calls" ]
+}
+
+used_osascript() {
+  ! stderr_has "wrote to tmux pane tty" && grep -q '^osascript ' "$tmpdir/calls"
+}
+
+run_in_pane com.apple.Safari '1 1 0 1'
+check 'no ctty, another app frontmost, pane on screen: the pane tty' wrote_pane
+
+run_in_pane com.mitchellh.ghostty '1 1 0 1'
+check 'no ctty, Ghostty frontmost: osascript, since Ghostty hides its banners while focused' used_osascript
+
+run_in_pane com.apple.Safari '0 1 0 1'
+check 'no ctty, detached session: osascript, since tmux drops passthrough nobody sees' used_osascript
+
+run_in_pane com.apple.Safari '1 0 0 1'
+check 'no ctty, pane in a background window: osascript' used_osascript
+
+run_in_pane com.apple.Safari '1 1 1 0'
+check 'no ctty, another pane zoomed over it: osascript' used_osascript
+
+run_in_pane com.apple.Safari '1 1 1 1'
+check 'no ctty, the zoomed pane itself: the pane tty' wrote_pane
+
+run_in_pane '' '1 1 0 1'
+check 'no ctty, frontmost app unknown: osascript' used_osascript
+
 printf 'Results: %d tests, %d failures\n' "$tests" "$failures"
 (( failures == 0 ))
