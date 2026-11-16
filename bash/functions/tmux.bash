@@ -134,6 +134,10 @@ function new_tmux_session {
         # so it costs nothing.
         local -a agent_env_vars=(
             CLAUDECODE
+            CLAUDE_CODE_MESSAGING_SOCKET
+            CLAUDE_CODE_MESSAGING_TOKEN
+            CLAUDE_CODE_SESSION_ID
+            CLAUDE_PID
             TIMVISHER_AGENT
             TIMVISHER_AGENT_NIRMI
             TIMVISHER_AGENT_NIRMI_REASON
@@ -156,19 +160,12 @@ function new_tmux_session {
             echo "# Unable to create tmux session $session_name." >&2
             return 1
         fi
-        if [[ Darwin = $(uname) ]]
+        tmux send-keys -t="$session_name":editor 'emacs'
+        if [[ -n $target_file ]]
         then
-            tmux send-keys -t="$session_name":editor 'emacs'
-            if [[ -n $target_file ]]
-            then
-                tmux send-keys -t="$session_name":editor " '${target_file}'"
-            fi
-            tmux send-keys -t="$session_name":editor 'C-m'
-        else
-            echo 'Do you really still mean to be executing outside of Darwin?' >&2
-            return 1
-            # tmux send-keys 'TERM=xterm-256color emacs' 'C-m'
+            tmux send-keys -t="$session_name":editor " '${target_file}'"
         fi
+        tmux send-keys -t="$session_name":editor 'C-m'
         tmux set-option -g default-command "$default_command"
         tmux new-window -t="$session_name" -n admin
         tmux new-window -t="$session_name" -n services
