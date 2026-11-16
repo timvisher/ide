@@ -104,6 +104,10 @@ When starting a session, read the Beads and Topics section below and use the `be
 - For doc updates, the lint step is a spell check; run it before saying you're
   done.
 - For doc-only changes with no meaningful tests, state that explicitly.
+- _*NEVER*_ build a library, abstraction, or extension point without at least
+  one real caller in the same change. The caller is what proves the design
+  fits; one built ahead of its caller is a guess. Land the first caller with
+  it, and generalize only when a second caller shows what is actually shared.
 - _*NEVER*_ add an explanatory comment on your own initiative — a comment that
   explains _why_ a change was made, narrates your reasoning or investigation,
   cites tickets/PRs/runbooks, or restates what the code plainly does. Why a
