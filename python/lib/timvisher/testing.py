@@ -51,9 +51,10 @@ def _keep_global_hooks_off(home):
 
 
 def _remove_tree(root):
-    for parent, dirs, files in os.walk(root):
-        for name in dirs + files:
-            path = os.path.join(parent, name)
-            if not os.path.islink(path):
-                os.chflags(path, 0)
+    if hasattr(os, "chflags"):
+        for parent, dirs, files in os.walk(root):
+            for name in dirs + files:
+                path = os.path.join(parent, name)
+                if not os.path.islink(path):
+                    os.chflags(path, 0)
     shutil.rmtree(root)
