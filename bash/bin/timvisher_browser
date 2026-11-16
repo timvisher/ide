@@ -18,13 +18,17 @@ timvisher_browser__schema_version=1
 
 show_help() {
   cat <<'EOF'
-Usage: timvisher_browser tab info [--schema-version <N>] [<component>]
-       timvisher_browser tab js <expression>
+Usage: timvisher_browser tabs
+       timvisher_browser tab info [--schema-version <N>] [<component>]
+       timvisher_browser tab js [--tab-id <id>] <expression>
        timvisher_browser tab close <url>
        timvisher_browser tab <url>
 
+  tabs       print every tab as a JSON array of
+             {window_id, tab_id, active, url, title}; url is the raw URL
   tab info   print the active tab's record (see 'timvisher_browser tab info --help')
-  tab js     run a JavaScript expression in the active tab; prints its value
+  tab js     run a JavaScript expression in the active tab, or in the tab
+             with that id; prints its value
   tab close  close the first tab with exactly that URL
   tab <url>  focus a tab with that URL, or open one in the front window,
              once it has loaded; prints the URL
@@ -214,6 +218,70 @@ end run' "$expression") || return 1
   printf '%s\n' "$value"
 }
 
+timvisher_browser__js_in_tab() {
+  local tab_id=$1 expression=$2 out state browser value
+  out=$(timvisher_browser__osascript '
+on run argv
+	set tabId to item 1 of argv
+	set e to item 2 of argv
+	tell script "timvisher Browser" to set b to currentBrowser()
+	if application b is not running then return "not_running" & linefeed & b
+	try
+		tell script "timvisher Browser" to set r to executeJsInTabWithId(tabId, e)
+	on error m number n
+		if n is -1728 then return "no_such_tab" & linefeed & b
+		error m number n
+	end try
+	return "ok" & linefeed & b & linefeed & r
+end run' "$tab_id" "$expression") || return 1
+
+  {
+    IFS= read -r state
+    IFS= read -r browser
+    value=$(cat)
+  } <<< "$out"
+
+  if [[ $state == no_such_tab ]]
+  then
+    aictl_error \
+      --code timvisher_browser_no_such_tab \
+      --message "${browser} has no tab with the id ${tab_id}." \
+      --suggestion "List the tabs and their ids with 'timvisher_browser tabs' and retry"
+    return 1
+  fi
+  timvisher_browser__has_tab "$state" "$browser" || return 1
+  printf '%s\n' "$value"
+}
+
+timvisher_browser__tabs() {
+  local out state browser tabs
+  out=$(timvisher_browser__osascript '
+on run
+	tell script "timvisher Browser" to set b to currentBrowser()
+	if application b is not running then return "not_running" & linefeed & b
+	tell script "timvisher Browser" to set t to listTabs()
+	return "ok" & linefeed & b & linefeed & t
+end run') || return 1
+
+  {
+    IFS= read -r state
+    IFS= read -r browser
+    tabs=$(cat)
+  } <<< "$out"
+
+  timvisher_browser__has_tab "$state" "$browser" || return 1
+  jq -n --arg tabs "$tabs" '
+    $tabs
+    | split("\u001e")
+    | map(select(. != "")
+          | split("\u001f")
+          | {window_id: (.[0] | tonumber),
+             tab_id: (.[1] | tonumber),
+             active: (.[2] == "true"),
+             url: .[3],
+             title: .[4]})'
+}
+
 timvisher_browser__close() {
   local url=$1 out
   out=$(timvisher_browser__osascript '
@@ -262,6 +330,10 @@ case ${1-} in
     show_help
     exit 0
     ;;
+  tabs)
+    (( 1 == $# )) || { usage; exit 2; }
+    timvisher_browser__tabs || exit 1
+    ;;
   tab)
     case ${2-} in
       info)
@@ -270,8 +342,14 @@ case ${1-} in
         exit
         ;;
       js)
-        (( 3 == $# )) || { usage; exit 2; }
-        timvisher_browser__js "$3" || exit 1
+        if [[ ${3-} == --tab-id ]]
+        then
+          (( 5 == $# )) && [[ $4 =~ ^[0-9]+$ ]] || { usage; exit 2; }
+          timvisher_browser__js_in_tab "$4" "$5" || exit 1
+        else
+          (( 3 == $# )) || { usage; exit 2; }
+          timvisher_browser__js "$3" || exit 1
+        fi
         ;;
       close)
         (( 3 == $# )) || { usage; exit 2; }

@@ -107,3 +107,11 @@ end openTabWithUrl
 on closeTabWithUrl(u)
 	tell script (my currentBrowser()) to closeTabWithUrl(u)
 end closeTabWithUrl
+
+on executeJsInTabWithId(tabId, js)
+	tell script (my currentBrowser()) to executeJsInTabWithId(tabId, js)
+end executeJsInTabWithId
+
+on listTabs()
+	tell script (my currentBrowser()) to listTabs()
+end listTabs
