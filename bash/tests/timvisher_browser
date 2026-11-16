@@ -55,6 +55,18 @@ case $osa_script in
       *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
     esac
     ;;
+  *executeJsInTabWithId*)
+    case ${FAKE_STATE:-ok} in
+      ok) printf 'ok\nVivaldi\n%s\n' "$FAKE_JS_VALUE" ;;
+      *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
+    esac
+    ;;
+  *listTabs*)
+    case ${FAKE_STATE:-ok} in
+      ok) printf 'ok\nVivaldi\n%s\n' "$FAKE_TABS" ;;
+      *) printf '%s\nVivaldi\n' "$FAKE_STATE" ;;
+    esac
+    ;;
   *executeJsInActiveTab*)
     case ${FAKE_STATE:-ok} in
       ok) printf 'ok\nVivaldi\n%s\n' "$FAKE_JS_VALUE" ;;
@@ -195,7 +207,66 @@ check 'tab js, no window: exits 1 with timvisher_browser_no_window' \
 browser tab js
 rc=$?
 check 'tab js without an expression: usage on stderr, exit 2' \
-      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab js <expression>' '$tmpdir/stderr'"
+      eval "(( rc == 2 )) && [[ ! -s '$tmpdir/stdout' ]] && grep -q 'tab js \[--tab-id <id>\] <expression>' '$tmpdir/stderr'"
+
+FAKE_JS_VALUE='in tab 42' browser tab js --tab-id 42 "$expression"
+rc=$?
+check 'tab js --tab-id: exits 0' test "$rc" -eq 0
+check "tab js --tab-id: prints the expression's value" test "$(cat "$tmpdir/stdout")" = 'in tab 42'
+check 'tab js --tab-id: hands the id and the expression to the library' \
+      eval "[[ \$(cat '$tmpdir/args') == \$'42\n'\"\$expression\" ]]"
+check 'tab js --tab-id: runs it with executeJsInTabWithId' \
+      grep -q 'executeJsInTabWithId(tabId, e)' "$tmpdir/script"
+
+FAKE_STATE=no_such_tab browser tab js --tab-id 42 "$expression"
+rc=$?
+check 'tab js --tab-id, no such tab: exits 1 with timvisher_browser_no_such_tab naming the id' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_no_such_tab\"" && stderr_has "id 42" && stdout_empty'
+check 'tab js --tab-id, no such tab: suggests timvisher_browser tabs' \
+      stderr_has "timvisher_browser tabs"
+
+FAKE_STATE=not_running browser tab js --tab-id 42 "$expression"
+rc=$?
+check 'tab js --tab-id, not running: exits 1 with timvisher_browser_not_running' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_not_running\""'
+
+browser tab js --tab-id abc "$expression"
+rc=$?
+check 'tab js --tab-id with a non-numeric id: usage on stderr, exit 2' \
+      eval "(( rc == 2 )) && stdout_empty && grep -q 'tab js \[--tab-id <id>\]' '$tmpdir/stderr'"
+
+browser tab js --tab-id 42
+rc=$?
+check 'tab js --tab-id without an expression: usage on stderr, exit 2' \
+      eval '(( rc == 2 )) && stdout_empty'
+
+us=$'\x1f'
+rs=$'\x1e'
+FAKE_TABS="7${us}8${us}true${us}https://a.example/${us}A	tab"$'\n'"title${rs}7${us}9${us}false${us}https://b.example/${us}" \
+  browser tabs
+rc=$?
+check 'tabs: exits 0' test "$rc" -eq 0
+check 'tabs: one record per tab' test "$(field length)" = 2
+check 'tabs: ids are numbers' test "$(field '[.[].tab_id | type] | unique | .[0]')" = number
+check 'tabs: window_id, tab_id and active' \
+      test "$(jq -c '[.[] | [.window_id, .tab_id, .active]]' "$tmpdir/stdout")" = '[[7,8,true],[7,9,false]]'
+check 'tabs: url' test "$(field '.[1].url')" = 'https://b.example/'
+check 'tabs: a title keeps its tab and newline' \
+      test "$(field '.[0].title')" = $'A\ttab\ntitle'
+check 'tabs: an empty title is the empty string' test "$(field '.[1].title')" = ''
+check 'tabs: lists them with listTabs' grep -q 'listTabs()' "$tmpdir/script"
+
+FAKE_TABS='' browser tabs
+check 'tabs: no windows is an empty array' test "$(jq -c . "$tmpdir/stdout")" = '[]'
+
+FAKE_STATE=not_running browser tabs
+rc=$?
+check 'tabs, not running: exits 1 with timvisher_browser_not_running' \
+      eval '(( rc == 1 )) && stderr_has "\"code\":\"timvisher_browser_not_running\"" && stdout_empty'
+
+browser tabs extra
+rc=$?
+check 'tabs with an argument: usage on stderr, exit 2' eval '(( rc == 2 )) && stdout_empty'
 
 browser tab close 'https://example.com/'
 rc=$?
