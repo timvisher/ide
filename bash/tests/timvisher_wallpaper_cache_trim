@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+failures=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+tmpdir=
+cleanup() {
+  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+tmpdir=$(mktemp -d) || exit 1
+
+script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_wallpaper_cache_trim"
+
+run() {
+  local dir=$1 max_bytes=$2 keep=$3
+  TIMVISHER_WALLPAPER_CACHE_DIR=$dir \
+    TIMVISHER_WALLPAPER_CACHE_MAX_BYTES=$max_bytes \
+    TIMVISHER_WALLPAPER_CACHE_KEEP=$keep \
+    timvisher_logging_log_level=ERROR \
+    "$script"
+}
+
+fresh_cache() {
+  local dir=$tmpdir/$1
+  mkdir -- "$dir" || exit 1
+  printf '%s' "$dir"
+}
+
+render() {
+  local i
+  : > "$1" || exit 1
+  for (( i = 0; i < $2; i += 1 ))
+  do
+    printf 'x' >> "$1" || exit 1
+  done
+  /usr/bin/touch -t "$3" "$1" || exit 1
+}
+
+listing() {
+  (cd "$1" && printf '%s ' *)
+}
+
+if run "$tmpdir/does-not-exist" 8 0
+then
+  pass "missing cache dir exits 0"
+else
+  fail "missing cache dir exits non-zero"
+fi
+
+dir=$(fresh_cache cap)
+render "$dir/oldest" 4 202001010000
+render "$dir/middle" 4 202001020000
+render "$dir/newest" 4 202001030000
+if run "$dir" 8 0
+then
+  pass "cap run exits 0"
+else
+  fail "cap run exits non-zero"
+fi
+if [[ -e $dir/newest && -e $dir/middle && ! -e $dir/oldest ]]
+then
+  pass "oldest files go once the newest fill the cap"
+else
+  fail "cap kept the wrong files: $(listing "$dir")"
+fi
+
+dir=$(fresh_cache under)
+render "$dir/a" 4 202001010000
+render "$dir/b" 4 202001020000
+run "$dir" 8 0 || fail "under-cap run exits non-zero"
+if [[ -e $dir/a && -e $dir/b ]]
+then
+  pass "a cache at the cap is left alone"
+else
+  fail "a cache at the cap lost files: $(listing "$dir")"
+fi
+
+dir=$(fresh_cache strict)
+render "$dir/oldest" 1 202001010000
+render "$dir/middle" 6 202001020000
+render "$dir/newest" 6 202001030000
+run "$dir" 8 0 || fail "strict run exits non-zero"
+if [[ -e $dir/newest && ! -e $dir/middle && ! -e $dir/oldest ]]
+then
+  pass "an older file goes once the cap is hit, even if it would fit"
+else
+  fail "trim was not strictly newest-first: $(listing "$dir")"
+fi
+
+dir=$(fresh_cache keep)
+render "$dir/oldest" 4 202001010000
+render "$dir/middle" 4 202001020000
+render "$dir/newest" 4 202001030000
+run "$dir" 0 2 || fail "keep run exits non-zero"
+if [[ -e $dir/newest && -e $dir/middle && ! -e $dir/oldest ]]
+then
+  pass "the newest keep files survive past the cap"
+else
+  fail "keep did not protect the newest files: $(listing "$dir")"
+fi
+
+dir=$(fresh_cache shapes)
+mkdir -- "$dir/sub" || exit 1
+render "$dir/sub/nested" 4 202001010000
+render "$tmpdir/target" 4 202001010000
+ln -s -- "$tmpdir/target" "$dir/link" || exit 1
+run "$dir" 0 0 || fail "shapes run exits non-zero"
+if [[ -e $dir/sub/nested && -L $dir/link && -e $tmpdir/target ]]
+then
+  pass "subdirectories and symlinks are left alone"
+else
+  fail "a subdirectory or symlink was touched"
+fi
+
+dir=$(fresh_cache empty)
+if run "$dir" 0 0
+then
+  pass "empty cache dir exits 0"
+else
+  fail "empty cache dir exits non-zero"
+fi
+
+dir=$(fresh_cache bad)
+render "$dir/old" 4 202001010000
+if run "$dir" 5G 0 2>/dev/null
+then
+  fail "non-integer max bytes accepted"
+else
+  pass "non-integer max bytes rejected"
+fi
+if run "$dir" 0 -1 2>/dev/null
+then
+  fail "negative keep accepted"
+else
+  pass "negative keep rejected"
+fi
+if [[ -e $dir/old ]]
+then
+  pass "rejected settings delete nothing"
+else
+  fail "rejected settings still deleted files"
+fi
+
+if (( 0 < failures ))
+then
+  printf '%d failure(s)\n' "$failures" >&2
+  exit 1
+fi

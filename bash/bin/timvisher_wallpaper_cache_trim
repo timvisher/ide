@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+# Cap the wallpaper agent's cache of rendered wallpaper images by size.
+#
+# With shuffle on for every display across every space, the agent
+# renders a new image per display per space on each change and never
+# drops the old ones. Only current renders are needed; the agent
+# re-renders anything else on demand.
+#
+# Capped by total size rather than by age: render volume is bursty (one
+# day produced five times the usual count), so an age limit bounds the
+# cache only as well as the worst day. Not best-fit: once the cap is
+# reached everything older goes, even a smaller file that would still fit.
+#
+# The newest $keep files are kept even past the cap: a display that has
+# held one wallpaper for weeks has an old render that is still in use,
+# and $keep is sized well above displays x spaces.
+#
+# /usr/bin/find and /usr/bin/stat are named explicitly rather than
+# resolved from PATH: launchd's PATH and an interactive one disagree on
+# whether stat is BSD or GNU, and the format flags differ.
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+cache_dir=${TIMVISHER_WALLPAPER_CACHE_DIR:-$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image}
+max_bytes=${TIMVISHER_WALLPAPER_CACHE_MAX_BYTES:-$((5 * 1024 * 1024 * 1024))}
+keep=${TIMVISHER_WALLPAPER_CACHE_KEEP:-100}
+
+if [[ ! $max_bytes =~ ^[0-9]+$ ]]
+then
+  error "TIMVISHER_WALLPAPER_CACHE_MAX_BYTES must be a non-negative integer, got '%s'" "$max_bytes"
+  exit 1
+fi
+
+if [[ ! $keep =~ ^[0-9]+$ ]]
+then
+  error "TIMVISHER_WALLPAPER_CACHE_KEEP must be a non-negative integer, got '%s'" "$keep"
+  exit 1
+fi
+
+if [[ ! -d $cache_dir ]]
+then
+  info "trim: no cache dir at '%s', nothing to do" "$cache_dir"
+  exit 0
+fi
+
+if ! listing=$(
+  /usr/bin/find "$cache_dir" -mindepth 1 -maxdepth 1 -type f \
+    -exec /usr/bin/stat -f '%m %z %N' {} +
+)
+then
+  error "trim: could not list '%s'" "$cache_dir"
+  exit 1
+fi
+
+rc=0
+seen=0
+kept_bytes=0
+over=0
+removed=0
+freed=0
+
+while read -r _mtime size path
+do
+  [[ -n $path ]] || continue
+  (( seen += 1 ))
+  if (( ! over ))
+  then
+    if (( seen <= keep || kept_bytes + size <= max_bytes ))
+    then
+      (( kept_bytes += size ))
+      continue
+    fi
+    over=1
+  fi
+  if rm -f -- "$path"
+  then
+    (( removed += 1 ))
+    (( freed += size ))
+  else
+    warn "trim: could not remove '%s'" "$path"
+    (( kept_bytes += size ))
+    rc=1
+  fi
+done < <(sort -rn <<<"$listing")
+
+info "trim: removed %d of %d file(s), freed %d bytes, kept %d bytes (cap %d bytes, kept newest %d)" \
+  "$removed" "$seen" "$freed" "$kept_bytes" "$max_bytes" "$keep"
+
+exit "$rc"
