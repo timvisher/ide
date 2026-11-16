@@ -13,7 +13,7 @@ pass() {
 
 tmpdir=
 cleanup() {
-  [[ -z $tmpdir ]] || rm -rf -- "$tmpdir"
+  [[ -z $tmpdir ]] || { chmod -R u+rwx -- "$tmpdir"; rm -rf -- "$tmpdir"; }
 }
 trap cleanup EXIT
 tmpdir=$(mktemp -d) || exit 1
@@ -148,6 +148,58 @@ then
   pass "rejected settings delete nothing"
 else
   fail "rejected settings still deleted files"
+fi
+
+stub_bin=$tmpdir/stub-bin
+mkdir -- "$stub_bin" || exit 1
+cat > "$stub_bin/timvisher_notify" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$NOTIFY_LOG"
+STUB
+chmod +x "$stub_bin/timvisher_notify" || exit 1
+notify_log=$tmpdir/notify.log
+running_bash=$(readlink -f -- "$(command -v bash)") || exit 1
+
+dir=$(fresh_cache denied)
+render "$dir/old" 4 202001010000
+chmod 000 -- "$dir" || exit 1
+: > "$notify_log"
+if NOTIFY_LOG=$notify_log PATH="$stub_bin:$PATH" run "$dir" 0 0 2>"$tmpdir/denied.err"
+then
+  fail "an unlistable cache exits 0"
+else
+  pass "an unlistable cache exits non-zero"
+fi
+chmod 755 -- "$dir" || exit 1
+notice=$(<"$notify_log")
+if [[ $notice == *"Full Disk Access to ${running_bash}"* && $notice == *"$dir"* ]]
+then
+  pass "an unlistable cache notifies, naming the bash to grant and find's error"
+else
+  fail "expected a notification naming ${running_bash} and find's error, got: '${notice}'"
+fi
+if grep -qF -- "$dir" "$tmpdir/denied.err"
+then
+  pass "find's error still reaches the log"
+else
+  fail "find's error is missing from stderr: '$(<"$tmpdir/denied.err")'"
+fi
+if [[ -e $dir/old ]]
+then
+  pass "an unlistable cache deletes nothing"
+else
+  fail "an unlistable cache still lost files"
+fi
+
+dir=$(fresh_cache listable)
+render "$dir/only" 4 202001010000
+: > "$notify_log"
+NOTIFY_LOG=$notify_log PATH="$stub_bin:$PATH" run "$dir" 8 0 || fail "listable run exits non-zero"
+if [[ ! -s $notify_log ]]
+then
+  pass "a successful trim sends no notification"
+else
+  fail "a successful trim notified: '$(<"$notify_log")'"
 fi
 
 if (( 0 < failures ))
