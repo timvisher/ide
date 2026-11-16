@@ -83,6 +83,7 @@ class PrTest(GhTestCase):
         self.assertEqual((False, "dev"), (self.pull_state()["draft"], self.pull_state()["base"]))
         self.assertEqual(0, self.pr("push", "--draft")[0], self.err)
         self.assertTrue(self.pull_state()["draft"])
+        self.assertNotIn("timvisher_gh_pr_draft", self.codes())
 
     def test_a_change_on_github_is_refused_by_push_and_written_by_pull(self):
         self.create()
@@ -322,6 +323,26 @@ class AgentPrTest(GhTestCase):
         self.assertIn("timvisher_gh_agent_refused", self.codes())
         self.assertEqual(pushed, self.remote_head())
 
+    def test_an_agent_moves_its_own_pr_back_to_draft_and_pushes(self):
+        self.agent_create()
+        self.github.update_pull(REPO, 1, draft=False)
+        git("commit", "-q", "--allow-empty", "-m", "more", cwd=self.work)
+        self.assertEqual(0, self.agent("push", "--draft")[0], self.err)
+        self.assertIn("timvisher_gh_pr_draft", self.codes())
+        self.assertTrue(self.pull_state()["draft"])
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+        git("commit", "-q", "--allow-empty", "-m", "again", cwd=self.work)
+        self.assertEqual(0, self.agent("push")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_an_agent_moves_a_pr_tim_marked_ready_back_to_draft(self):
+        (self.work / "pr.md").write_text("Title\n\nBody\n")
+        self.assertEqual(0, self.run_gh_as_tim("pr", "push", "--ready-for-review")[0])
+        git("commit", "-q", "--allow-empty", "-m", "more", cwd=self.work)
+        self.assertEqual(0, self.agent("--draft")[0], self.err)
+        self.assertTrue(self.pull_state()["draft"])
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
     def test_an_agent_cant_sync_a_pr_whose_source_says_ready(self):
         (self.work / "pr.md").write_text("Title\n\nBody\n")
         self.assertEqual(0, self.run_gh_as_tim("pr", "push", "--ready-for-review")[0])
@@ -334,6 +355,12 @@ class AgentPrTest(GhTestCase):
         self.assertEqual(1, self.agent("edit", f"https://github.com/{REPO}/pull/9")[0])
         self.assertIn("timvisher_gh_agent_refused", self.codes())
 
+    def test_an_agent_cant_move_another_branchs_pr_to_draft(self):
+        self.github.add_pull(REPO, 9, head="elsewhere", title="Elsewhere", draft=False)
+        self.assertEqual(1, self.agent("edit", "--draft", f"https://github.com/{REPO}/pull/9")[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+        self.assertFalse(self.github.state["pulls"][REPO]["9"]["draft"])
+
     def test_an_agent_cant_push_a_branch_with_no_pr(self):
         self.assertEqual(1, self.agent("push")[0])
         self.assertIn("timvisher_gh_agent_refused", self.codes())
@@ -341,7 +368,8 @@ class AgentPrTest(GhTestCase):
 
     def test_an_agent_cant_mark_a_pr_ready_merge_or_release_it(self):
         self.agent_create()
-        for args in (["push", "--ready-for-review"], ["ready"], ["merge"], ["release"]):
+        for args in (["push", "--ready-for-review"], ["push", "--draft", "--ready-for-review"], ["ready"],
+                     ["merge"], ["release"]):
             self.assertEqual(1, self.agent(*args)[0], args)
             self.assertIn("timvisher_gh_agent_refused", self.codes(), args)
         self.assertTrue(self.pull_state()["draft"])
