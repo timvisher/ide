@@ -545,10 +545,12 @@ reset_remote_fixture() {
   printf 'github %s bd-topic_\n' "$forge_url" > "$forge_file"
   mock_respond bd --stdout '  Database: alpha' -- dolt show
   mock_respond bd -- dolt remote add origin "$remote_url"
-  mock_respond bd -- sync
+  mock_respond bd -- sync --remote origin
   mock_respond dolt -- log --oneline '*'
   mock_respond gh --exit 1 -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
   mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo create ...
+  mock_respond git -- ls-remote "${remote_url#git+}" refs/dolt/data
+  mock_respond bd -- dolt push --remote origin
 }
 
 # Test: remote creates the repo, adds origin, syncs and reports.
@@ -559,9 +561,10 @@ if [[ $result == "Remote/Alpha One"$'\t'"$remote_url" ]] &&
     mock_called gh -R tim-visher_ddog/bd-topic_remote-alpha-one repo create \
       tim-visher_ddog/bd-topic_remote-alpha-one --private --add-readme ... &&
     mock_called bd dolt remote add origin "$remote_url" &&
-    [[ $(mock_call_count bd sync) == 1 ]]
+    mock_called bd dolt push --remote origin &&
+    [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
-  pass "remote creates the repo with a README, adds origin and syncs"
+  pass "remote creates the repo with a README, adds origin, pushes and syncs"
 else
   fail "remote happy path: result='${result}' calls='$(mock_calls)'"
 fi
@@ -569,9 +572,9 @@ fi
 # Test: remote reruns bd sync once after the schema-migration failure.
 run_test
 reset_remote_fixture
-mock_respond bd --times 1 --exit 1 --stdout 'local changes would be stomped by merge: events' -- sync
+mock_respond bd --times 1 --exit 1 --stdout 'local changes would be stomped by merge: events' -- sync --remote origin
 if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count bd sync) == 2 ]]
+    [[ $(mock_call_count bd sync --remote origin) == 2 ]]
 then
   pass "remote reruns bd sync after the migration's stomped-merge failure"
 else
@@ -581,9 +584,9 @@ fi
 # Test: any other bd sync failure is not retried.
 run_test
 reset_remote_fixture
-mock_respond bd --exit 2 --stdout 'conflict' -- sync
+mock_respond bd --exit 2 --stdout 'conflict' -- sync --remote origin
 if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count bd sync) == 1 ]]
+    [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
   pass "remote stops on a bd sync failure it doesn't recognize"
 else
@@ -596,7 +599,7 @@ reset_remote_fixture
 write_repo_state "$remote_topic/.beads/embeddeddolt/stray" \
   '{"origin": {"name": "origin", "url": "git+ssh://git@github.com/DataDog/dd-source.git"}}'
 if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count gh) == 0 && $(mock_call_count bd sync) == 0 ]]
+    [[ $(mock_call_count gh) == 0 && $(mock_call_count bd sync --remote origin) == 0 ]]
 then
   pass "remote refuses a topic whose other database has a remote"
 else
@@ -609,7 +612,7 @@ reset_remote_fixture
 write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
   '{"origin": {"name": "origin", "url": "file:///elsewhere"}}'
 if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count bd sync) == 0 ]]
+    [[ $(mock_call_count bd sync --remote origin) == 0 ]]
 then
   pass "remote refuses a topic with a different origin"
 else
@@ -621,10 +624,12 @@ run_test
 reset_remote_fixture
 write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
   "{\"origin\": {\"name\": \"origin\", \"url\": \"$remote_url\"}}"
+mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${remote_url#git+}" refs/dolt/data
 if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
     [[ $(mock_call_count gh) == 0 ]] &&
     ! mock_called bd dolt remote add ... &&
-    [[ $(mock_call_count bd sync) == 1 ]]
+    ! mock_called bd dolt push ... &&
+    [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
   pass "remote reruns only bd sync when origin is already set"
 else
@@ -680,6 +685,7 @@ run_test
 reset_remote_fixture
 printf 'github %s\n' "$forge_url" > "$forge_file"
 mock_respond bd -- dolt remote add origin "$forge_url/remote-alpha-one.git"
+mock_respond git -- ls-remote "${forge_url#git+}/remote-alpha-one.git" refs/dolt/data
 mock_respond gh --exit 1 -- -R tim-visher_ddog/remote-alpha-one repo view ...
 mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo create ...
 if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
