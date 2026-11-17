@@ -357,9 +357,8 @@ integrate_scratch_begin() {
         return 1
     fi
 
-    # The agent is told to fall back to 'git reset --hard @{u}', and the
-    # post-merge verification compares against @{u}: both need the scratch
-    # branch to track whatever dev tracks.
+    # The post-merge verification compares against @{u}, so the scratch
+    # branch tracks whatever dev tracks.
     if ! git -C "$wt" branch -q --set-upstream-to "$upstream" "$scratch"
     then
         error "integrate: cannot point '%s' at upstream '%s'" "$scratch" "$upstream"
@@ -1522,7 +1521,8 @@ Run:
 This merges all branches at once. If the octopus merge fails (conflicts),
 fall back to merging the branches one at a time, resolving conflicts as
 you go. When falling back:
-1. Reset to @{u} with 'git reset --hard @{u}'.
+1. Reset to ${integrate_scratch_start} with
+   'git reset --hard ${integrate_scratch_start}'.
 2. Merge each branch individually with 'git merge <branch>'.
 3. If a merge has conflicts, resolve them preserving the intent of both
    sides. Stage resolved files with 'git add' and complete with
