@@ -2595,6 +2595,41 @@ else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
 fi
 
+gc_hooks="$gc_base/hooks"
+gc_hook_log="$gc_base/pre-remove.log"
+mkdir -p "$gc_hooks/gcorg/gcrepo"
+cat > "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir" <<HOOK
+#!/usr/bin/env bash
+if [[ -d \$1 ]]
+then
+  printf 'present %s\\n' "\$1" >> '$gc_hook_log'
+else
+  printf 'absent %s\\n' "\$1" >> '$gc_hook_log'
+fi
+HOOK
+chmod +x "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir"
+
+# shellcheck disable=SC2034
+gc_out=$(
+  repo_trunks_dir=$gc_trunks
+  live_repo_dir=$gc_live
+  hooks_dir=$gc_hooks
+  worktree_gc__protect_dir=$gc_protect
+  worktree_gc__archive_dir="$gc_base/archives"
+  timvisher_logging_log_level=INFO
+  TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" PATH="$gc_bin:$PATH" \
+    worktree_gc 2>&1 <<< y
+)
+
+run_test
+if [[ $(< "$gc_hook_log") == "present $gc_live/gcorg/gcrepo/unpinned" &&
+      ! -e $gc_live/gcorg/gcrepo/unpinned ]]
+then
+  pass "worktree gc runs pre-remove-branch-dir with the worktree path before removing it"
+else
+  fail "worktree gc pre-remove-branch-dir: log '$(cat "$gc_hook_log" 2>&1)' out: ${gc_out}"
+fi
+
 # ---------------------------------------------------------------------------
 # push
 # ---------------------------------------------------------------------------
