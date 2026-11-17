@@ -245,15 +245,19 @@ pr_url_repo() {
   printf '%s' "${spec%%/pull/*}"
 }
 
+pr_info() {
+  local source=$1 field=$2 number
+
+  source=$(normalize_pr_url "$source")
+  number=$(pr_number_from_url "$source") ||
+    return 1
+  timvisher_gh -R "$(pr_url_repo "$source")" info --pr "$number" "$field" 2>/dev/null
+}
+
 pr_head_ref_name() {
   local source=$1 head_ref
 
-  command -v gh >/dev/null 2>&1 || return 1
-
-  source=$(normalize_pr_url "$source")
-  head_ref=$(
-    gh -R "$(pr_url_repo "$source")" pr view "$source" --json headRefName --jq .headRefName 2>/dev/null
-  ) ||
+  head_ref=$(pr_info "$source" .pr.head) ||
     return 1
 
   [[ -n $head_ref ]] || return 1
@@ -264,12 +268,7 @@ pr_head_ref_name() {
 pr_base_ref_name() {
   local source=$1 base_ref
 
-  command -v gh >/dev/null 2>&1 || return 1
-
-  source=$(normalize_pr_url "$source")
-  base_ref=$(
-    gh -R "$(pr_url_repo "$source")" pr view "$source" --json baseRefName --jq .baseRefName 2>/dev/null
-  ) ||
+  base_ref=$(pr_info "$source" .pr.base) ||
     return 1
 
   [[ -n $base_ref ]] || return 1
@@ -306,18 +305,10 @@ pr_base_repo_spec() {
 pr_head_repo_spec() {
   local source=$1 head_repo_spec
 
-  command -v gh >/dev/null 2>&1 || return 1
-
-  source=$(normalize_pr_url "$source")
-  head_repo_spec=$(
-    gh -R "$(pr_url_repo "$source")" pr view "$source" --json headRepository,headRepositoryOwner \
-      --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null
-  ) ||
+  head_repo_spec=$(pr_info "$source" .pr.headRepo) ||
     return 1
 
-  # GitHub returns null for headRepository.name when the fork has been
-  # deleted.  jq renders "owner/" + null as "owner/" — reject that.
-  [[ -n $head_repo_spec && $head_repo_spec != */ ]] || return 1
+  [[ -n $head_repo_spec ]] || return 1
 
   printf '%s' "$head_repo_spec"
 }
@@ -365,13 +356,10 @@ find_pushable_fork() {
   do
     local candidate_spec="${candidate}/${repo_name}"
     local candidate_info
-    candidate_info=$(gh api "/repos/${candidate_spec}" --jq '{
-      push: .permissions.push,
-      parent: (if .fork then .parent.full_name else "" end)
-    }' 2>/dev/null) || continue
+    candidate_info=$(timvisher_gh -R "$candidate_spec" info --json 2>/dev/null) || continue
     local push_access candidate_parent
-    push_access=$(printf '%s' "$candidate_info" | jq -r '.push // false') || continue
-    candidate_parent=$(printf '%s' "$candidate_info" | jq -r '.parent // empty') || continue
+    push_access=$(printf '%s' "$candidate_info" | jq -r '.timvisher_gh.permissions.push // false') || continue
+    candidate_parent=$(printf '%s' "$candidate_info" | jq -r '.timvisher_gh.parent // empty') || continue
     if [[ $push_access == true && $candidate_parent == "$parent_spec" ]]
     then
       printf '%s' "$candidate_spec"
@@ -391,43 +379,32 @@ find_pushable_fork() {
 #   - exit 1: probe failed (gh missing, auth expired, network error,
 #     repo doesn't exist). Caller must distinguish — treating this
 #     as "not a fork" silently caches a wrong negative.
-#
-# `gh api` writes the response body to stdout even on HTTP 4xx (with a
-# non-zero exit code), so we must capture both and only emit stdout
-# when gh exited successfully. Without this guard, a 404 lookup would
-# leak the error JSON ('{"message":"Not Found",...}') into the caller's
-# downstream logic.
 probe_fork_parent() {
   local spec=$1
-  command -v gh >/dev/null 2>&1 || return 1
 
   local out rc
-  out=$(command gh api "/repos/${spec}" --jq '.parent.full_name // empty' 2>/dev/null)
+  out=$(timvisher_gh -R "$spec" info .parent 2>/dev/null)
   rc=$?
   (( rc == 0 )) || return 1
   printf '%s' "$out"
 }
 
-# Resolve the GitHub user of the gh account the gh shim picks for org $1
-# via `gh -R ORG api user`. Caches the result in gh's own response cache
-# for 24h so day-to-day operations don't repeatedly hit the API. Bust
-# manually with `gh -R ORG api user --cache 0` or `rm -rf ~/.cache/gh`.
-# Prints login on stdout; returns non-zero if gh isn't installed or auth
-# fails.
+# Resolve the GitHub login of the gh account the gh shim picks for
+# OWNER/REPO $1. Prints login on stdout; returns non-zero if gh isn't
+# installed or auth fails.
 #
-# Captures stdout separately so a 4xx error body (which gh writes to
-# stdout, not stderr) doesn't leak as a faux "login" to the caller.
+# Deliberately uncached: timvisher_gh info reads .me live, and a cache would
+# have to be keyed per repository owner, since the gh account is chosen per
+# owner, to stay right across contexts.
 current_gh_user() {
-  local org=$1
-  command -v gh >/dev/null 2>&1 ||
-    { error "current_gh_user: gh is not installed"; return 1; }
+  local spec=$1
 
   local out rc
-  out=$(command gh -R "$org" api user --cache 24h --jq .login 2>/dev/null)
+  out=$(timvisher_gh -R "$spec" info .me 2>/dev/null)
   rc=$?
-  if (( rc != 0 ))
+  if (( rc != 0 )) || [[ -z $out ]]
   then
-    error "current_gh_user: failed to resolve gh user (auth?)"
+    error "current_gh_user: failed to resolve gh user for '%s' (auth?)" "$spec"
     return 1
   fi
   printf '%s' "$out"
@@ -461,8 +438,6 @@ should_auto_fork() {
     *) return 1 ;;
   esac
 
-  command -v gh >/dev/null 2>&1 || return 1
-
   local spec_org spec_repo branch
   spec_org=$(get_org "$target") || return 1
   spec_repo=$(get_repo "$target") || return 1
@@ -472,27 +447,13 @@ should_auto_fork() {
 
   # Already operating in our own namespace — push rights guaranteed.
   local gh_user
-  gh_user=$(current_gh_user "$spec_org" 2>/dev/null) || return 1
+  gh_user=$(current_gh_user "${spec_org}/${spec_repo}" 2>/dev/null) || return 1
   [[ $gh_user != "$spec_org" ]] || return 1
 
-  # Branch existence — short cache to avoid hammering the API on
-  # repeated ntmux3 invocations of the same target.  --silent + stdout
-  # redirect both: --silent is the documented gh contract, stdout
-  # redirect is belt-and-suspenders for any wrapper that doesn't honor
-  # --silent.
-  #
-  # URL-encode the branch name so slash-containing branches (e.g.
-  # `feature/foo`) hit `/branches/feature%2Ffoo` instead of being
-  # split into `/branches/feature/foo` (which 404s and would falsely
-  # trigger auto-fork). Plain `printf | jq -sRr @uri` percent-encodes
-  # all reserved chars including `/`.
-  local branch_encoded
-  branch_encoded=$(printf '%s' "$branch" | jq -sRr @uri)
-  if command gh api "/repos/${spec_org}/${spec_repo}/branches/${branch_encoded}" \
-       --cache 60s --silent >/dev/null 2>&1
-  then
+  local branch_exists
+  branch_exists=$(timvisher_gh -R "${spec_org}/${spec_repo}" info --branch "$branch" .branch.exists 2>/dev/null) ||
     return 1
-  fi
+  [[ $branch_exists == false ]] || return 1
 
   # Push rights.
   #
@@ -504,8 +465,7 @@ should_auto_fork() {
   # actual push time. There's no cheap pre-check API, so we accept
   # that and let the eventual `git push` surface the real error.
   local push
-  push=$(command gh api "/repos/${spec_org}/${spec_repo}" \
-           --cache 60s --jq '.permissions.push // false' 2>/dev/null) ||
+  push=$(timvisher_gh -R "${spec_org}/${spec_repo}" info .permissions.push 2>/dev/null) ||
     return 1
   [[ $push != "true" ]] || return 1
 
@@ -1207,7 +1167,7 @@ configure_remotes_and_tracking() {
         git remote add upstream "https://github.com/${override_repo}.git"
       fi
       git fetch upstream >&2 || die "Unable to fetch from upstream remote"
-      default_branch=$(gh -R "$override_repo" repo view "$override_repo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(timvisher_gh -R "$override_repo" info .defaultBranch 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       return
@@ -1223,18 +1183,20 @@ configure_remotes_and_tracking() {
   fi
 
   local repo_info
-  repo_info=$(gh api "/repos/${repo_spec}" --jq '{
-    is_fork: .fork,
-    parent: (if .fork then .parent.full_name else "" end),
-    push: .permissions.push,
-    soft_fork: ([(.topics // [])[]] | any(. == "soft-fork"))
-  }' 2>/dev/null) || true
+  if ! repo_info=$(timvisher_gh -R "$repo_spec" info --json 2>/dev/null) ||
+     [[ $(jq -r '.timvisher_gh.exists' <<<"$repo_info" 2>/dev/null) != true ]]
+  then
+    warn "Unable to read GitHub metadata for '%s'; leaving remotes and tracking unchanged." "$repo_spec"
+    return
+  fi
 
-  local is_fork can_push soft_fork
-  is_fork=$(printf '%s' "$repo_info" | jq -r '.is_fork // false' 2>/dev/null) || true
-  parent=$(printf '%s' "$repo_info" | jq -r '.parent // empty' 2>/dev/null) || true
-  can_push=$(printf '%s' "$repo_info" | jq -r '.push // false' 2>/dev/null) || true
-  soft_fork=$(printf '%s' "$repo_info" | jq -r '.soft_fork // false' 2>/dev/null) || true
+  local is_fork can_push soft_fork repo_default
+  is_fork=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.fork // false' 2>/dev/null) || true
+  parent=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.parent // empty' 2>/dev/null) || true
+  can_push=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.permissions.push // false' 2>/dev/null) || true
+  soft_fork=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.topics // [] | any(. == "soft-fork")' 2>/dev/null) || true
+  repo_default=$(printf '%s' "$repo_info" | jq -r '.timvisher_gh.defaultBranch // "main"' 2>/dev/null) || true
+  [[ -n $repo_default ]] || repo_default=main
 
   if [[ $is_fork == true && -n $parent ]]; then
     # Origin is already a fork.  Set up upstream → parent.
@@ -1247,13 +1209,11 @@ configure_remotes_and_tracking() {
     git fetch upstream >&2 || die "Unable to fetch from upstream remote"
 
     if [[ $soft_fork == true ]]; then
-      local origin_default
-      origin_default=$(gh -R "$repo_spec" repo view "$repo_spec" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || origin_default=main
-      info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${origin_default}'"
-      git branch -u "origin/${origin_default}" >&2 || die "Unable to track origin/${origin_default}"
+      info "Soft fork detected (topic 'soft-fork'). Setting tracking to 'origin/${repo_default}'"
+      git branch -u "origin/${repo_default}" >&2 || die "Unable to track origin/${repo_default}"
       touch x.timvisher_git.soft-fork
     else
-      default_branch=$(gh -R "$parent" repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || default_branch=main
+      default_branch=$(timvisher_gh -R "$parent" info .defaultBranch 2>/dev/null) || default_branch=main
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       rm -f x.timvisher_git.soft-fork
@@ -1287,7 +1247,7 @@ configure_remotes_and_tracking() {
       git fetch origin >&2 || die "Unable to fetch from new origin '${fork_spec}'"
       git fetch upstream >&2 || die "Unable to fetch from upstream"
 
-      default_branch=$(gh api "/repos/${repo_spec}" --jq '.default_branch // "main"' 2>/dev/null) || default_branch=main
+      default_branch=$repo_default
       info "Setting tracking to 'upstream/${default_branch}'"
       git branch -u "upstream/${default_branch}" >&2 || die "Unable to track upstream/${default_branch}"
       rm -f x.timvisher_git.soft-fork
@@ -4349,7 +4309,7 @@ fork() {
   esac
 
   local gh_user
-  gh_user=$(current_gh_user "$parent_org") ||
+  gh_user=$(current_gh_user "${parent_org}/${parent_repo}") ||
     die "fork: unable to determine gh user; ensure 'gh auth login' has been run"
 
   if [[ $gh_user == "$parent_org" ]]
@@ -4359,7 +4319,11 @@ fork() {
   else
     local fork_spec="${gh_user}/${parent_repo}"
 
-    if command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+    local fork_exists
+    fork_exists=$(timvisher_gh -R "$fork_spec" info .exists 2>/dev/null) ||
+      die "fork: unable to check whether %s exists (gh missing, auth expired, or network error)" "$fork_spec"
+
+    if [[ $fork_exists == true ]]
     then
       # Repo exists at the fork name. Confirm it's actually a fork
       # of the requested parent — without this, a same-named repo
@@ -4396,7 +4360,7 @@ fork() {
       # don't burn rate-limit on a stuck fork.
       local attempts=0
       local delay=1
-      until command gh api "/repos/${fork_spec}" >/dev/null 2>&1
+      until [[ $(timvisher_gh -R "$fork_spec" info .exists 2>/dev/null) == true ]]
       do
         ((attempts++))
         if (( 30 < attempts ))
@@ -4639,7 +4603,7 @@ worktree_gc__do_archive() {
   done
 }
 
-# Derive an "owner/repo" slug from a cache's origin remote, for `gh --repo`.
+# Derive an "owner/repo" slug from a cache's origin remote, for `timvisher_gh -R`.
 # Echoes the slug on success; returns 1 if it can't be parsed.
 worktree_gc__gh_repo() {
   local url
@@ -4672,13 +4636,15 @@ worktree_gc__pr_state() {
 # Echoes a short human reason on success (exit 0); echoes nothing, returns 1
 # otherwise. Checks are ordered cheap-and-authoritative first:
 #
-#   1. PR URL (.timvisher_gh/pr/pr.url, or legacy pr.md.url) -> `gh pr view` PR state. Authoritative and time-independent
+#   1. PR URL (.timvisher_gh/pr/pr.url, or legacy pr.md.url) -> live PR state
+#      (`timvisher_gh info .pr.state`). Authoritative and time-independent
 #      (GitHub's mergedAt is permanent), so it catches SQUASH merges that the
 #      ancestor test structurally cannot, and never degrades with branch drift.
 #   2. branch tip is an ancestor of origin/<trunk>. Pure graph reachability —
 #      no replay, immune to staleness — but blind to squash merges.
-#   3. fallback: `gh pr list --head <ref> --state merged` for branches with no
-#      recorded PR URL (e.g. ticket-named branches). Also conflict-free.
+#   3. fallback: a merged PR from a branch of that name
+#      (`timvisher_gh info .branch.mergedPr`) for branches with no recorded PR
+#      URL (e.g. ticket-named branches). Also conflict-free.
 #
 # Deliberately NO rebase/cherry/merge-tree squash detection: those replay the
 # branch onto trunk and fail on conflicts once enough time passes — least
@@ -4725,22 +4691,18 @@ worktree_gc__reap_reason() {
   # a fork's own origin can sit hundreds of commits behind it, which made
   # this leg dead weight for every fork.
   local ancestry_target=${6:-$(worktree_gc__trunk_ref "$wt_path" "$trunk_cache" "$trunk_branch")}
-  local have_gh=0
-  command -v gh &>/dev/null && have_gh=1
 
   # 1. Explicit PR URL -> authoritative PR state.
   local url_file
-  if (( have_gh )) && url_file=$(pr_url_file "$wt_path")
+  if url_file=$(pr_url_file "$wt_path")
   then
     local url pr_num
     url=$(<"$url_file"); url=${url//[$'\t\r\n ']/}
     pr_num=$(grep -oE '/pull/[0-9]+' <<<"$url" | grep -oE '[0-9]+' | head -1)
     if [[ -n $pr_num ]]; then
       local state
-      state=$(
-        gh -R "$(pr_url_repo "$url")" pr view "$url" --json state -q .state 2>/dev/null
-      )
-      if [[ $state == MERGED ]]; then
+      state=$(pr_info "$url" .pr.state)
+      if [[ $state == merged ]]; then
         printf 'PR #%s merged' "$pr_num"
         return 0
       fi
@@ -4755,13 +4717,11 @@ worktree_gc__reap_reason() {
   fi
 
   # 3. No URL recorded: ask GitHub whether a merged PR exists for this head.
-  if (( have_gh )) && [[ -n $gh_repo ]]; then
+  if [[ -n $gh_repo ]]
+  then
     local branch_name="${branch_ref#refs/heads/}"
     local merged_pr
-    merged_pr=$(
-      gh -R "$gh_repo" pr list --head "$branch_name" \
-        --state merged --json number -q '.[0].number' 2>/dev/null
-    )
+    merged_pr=$(timvisher_gh -R "$gh_repo" info --branch "$branch_name" .branch.mergedPr 2>/dev/null)
     if [[ -n $merged_pr ]]; then
       printf 'PR #%s merged' "$merged_pr"
       return 0
