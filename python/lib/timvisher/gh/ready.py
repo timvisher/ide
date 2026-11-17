@@ -11,7 +11,8 @@ from timvisher.gh import fetch, hooks, nouns, perf, pr, record, state, store, ta
 from timvisher.gh.errors import ERROR, fail, usage
 
 USAGE = """\
-Usage: timvisher_gh [-C <path>] pr ready [<target>]
+Usage: timvisher_gh [-C <path>] pr ready [--required-only] [--exclude <regex>]...
+                                         [--force] [<target>]
 
 Wait for the PR's checks to pass, then mark it ready for review. Checks
 matching a pattern in <root>/{orgs/O,repos/O/R}/pr/ready/exclude-checks.txt
@@ -21,6 +22,16 @@ pre-hooks. TIMVISHER_GH_PR_READY_POLL_INTERVAL sets the poll interval in
 seconds (default 10). A PR that still reports no checks at all after
 TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE seconds (default 60) is treated as
 having none, so a repository without CI doesn't wait forever.
+
+Options:
+  --required-only    Consider only the checks the base branch requires to
+                     merge (gh pr checks --required).
+  --exclude <regex>  Also ignore checks whose name matches <regex>, for
+                     this run only. Repeatable.
+  --force            Read the checks once and mark the PR ready even if
+                     some failed, were cancelled or are still pending, or
+                     gh lists none, reporting each one it bypassed. The
+                     pre-hooks still run and can still refuse.
 """
 
 
@@ -59,9 +70,10 @@ def _refused(lines):
 # gh reports a refusal on stderr in JSON only under TIMVISHER_AGENT, so each
 # call gets its own TIMVISHER_AICTL_LOG to read it from, as #6 does; what it
 # records is passed on to the caller's log.
-def _checks(spec, url):
+def _checks(spec, url, required):
     with tempfile.NamedTemporaryFile("r", prefix="timvisher_gh_pr_ready.", suffix=".jsonl") as log:
-        done = perf.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"],
+        done = perf.run(["gh", "-R", spec, "pr", "checks", url, "--json", "name,bucket"]
+                        + (["--required"] if required else []),
                         env={**os.environ, "TIMVISHER_AICTL_LOG": log.name},
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         instructions = log.read().splitlines()
@@ -72,10 +84,14 @@ def _checks(spec, url):
     return done, instructions
 
 
-def wait_for_checks(spec, url, patterns, interval, grace):
+def _none_reported(stderr):
+    return "no checks reported" in stderr or "no required checks reported" in stderr
+
+
+def wait_for_checks(spec, url, patterns, interval, grace, required=False, force=False):
     started = time.monotonic()
     while True:
-        done, instructions = _checks(spec, url)
+        done, instructions = _checks(spec, url, required)
         if _refused(instructions):
             sys.stderr.write(done.stderr)
             fail("timvisher_gh_checks_refused", f"gh refused to check {url}; not retrying.",
@@ -84,10 +100,15 @@ def wait_for_checks(spec, url, patterns, interval, grace):
             checks = json.loads(done.stdout)
         except ValueError:
             checks = None
+        if not isinstance(checks, list) and force:
+            aictl.notice(code="timvisher_gh_checks_bypassed",
+                         message=f"gh listed no checks on {url}; --force marks it ready without them.",
+                         reason=done.stderr.strip() or None)
+            return
         # Checks can take a moment to register after a push, so "none" only
         # counts once it has lasted the grace period; any other failure keeps
         # retrying.
-        if not isinstance(checks, list) and "no checks reported" in done.stderr and (
+        if not isinstance(checks, list) and _none_reported(done.stderr) and (
                 grace <= time.monotonic() - started):
             aictl.notice(code="timvisher_gh_checks_none",
                          message=f"{url} still reports no checks after {grace}s; treating it as having none.")
@@ -98,10 +119,17 @@ def wait_for_checks(spec, url, patterns, interval, grace):
             time.sleep(interval)
             continue
         kept = [c for c in checks if not any(p.search(c["name"]) for p in patterns)]
-        failed = [c["name"] for c in kept if c["bucket"] == "fail"]
+        failed = [c["name"] for c in kept if c["bucket"] in ("fail", "cancel")]
         pending = [c for c in kept if c["bucket"] == "pending"]
         logging.info("Checks: %d total, %d pass, %d pending, %d fail", len(kept),
                      sum(c["bucket"] == "pass" for c in kept), len(pending), len(failed))
+        if force and (failed or pending):
+            aictl.notice(code="timvisher_gh_checks_bypassed",
+                         message=f"--force marks {url} ready despite {len(failed)} failed and "
+                                 f"{len(pending)} pending check(s).",
+                         reason=", ".join(f"{c['name']} ({c['bucket']})" for c in kept
+                                          if c["bucket"] in ("fail", "cancel", "pending")))
+            return
         if failed:
             fail("timvisher_gh_checks_failed", f"CI checks failed on {url}; not marking it ready.",
                  reason=", ".join(failed), suggestions=["Fix the failing checks, then rerun 'timvisher_gh pr ready'"])
@@ -113,13 +141,33 @@ def wait_for_checks(spec, url, patterns, interval, grace):
 
 def run(context, args):
     target = None
-    for arg in args:
-        if arg in ("-h", "--help"):
-            sys.stdout.write(USAGE)
-            return 0
-        if arg.startswith("-") or target is not None:
-            usage(f"pr ready: unexpected argument '{arg}'", "See 'timvisher_gh pr ready --help'")
-        target = arg
+    required = force = False
+    extra = []
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        match arg:
+            case "-h" | "--help":
+                sys.stdout.write(USAGE)
+                return 0
+            # Opt-in rather than the default: many repos rely on checks they
+            # never mark required, and the default would stop waiting on them.
+            case "--required-only":
+                required = True
+            case "--force":
+                force = True
+            case "--exclude":
+                if not rest:
+                    usage("pr ready: --exclude requires a <regex>", "See 'timvisher_gh pr ready --help'")
+                pattern = rest.pop(0)
+                try:
+                    extra.append(re.compile(pattern))
+                except re.error as error:
+                    usage(f"pr ready: --exclude '{pattern}' isn't a valid regex ({error})")
+            case _ if arg.startswith("-") or target is not None:
+                usage(f"pr ready: unexpected argument '{arg}'", "See 'timvisher_gh pr ready --help'")
+            case _:
+                target = arg
     opened = state.open_state()
     try:
         store.exporting(opened, lambda object_id: record.record(opened.db, object_id), nouns.now)
@@ -141,9 +189,10 @@ def run(context, args):
                                   title=lambda: pr.parse_source(source_file.read_text(encoding="utf-8"))["title"]
                                   if source_file.exists() else raw["title"], state_dir=source_file.parent)
         if raw["draft"]:
-            wait_for_checks(spec, url, exclude_patterns(spec),
+            wait_for_checks(spec, url, exclude_patterns(spec) + extra,
                             int(os.environ.get("TIMVISHER_GH_PR_READY_POLL_INTERVAL") or 10),
-                            int(os.environ.get("TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE") or 60))
+                            int(os.environ.get("TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE") or 60),
+                            required=required, force=force)
             if not ready_hooks.pre("ready"):
                 return ERROR
             fetch.api(spec, "graphql", "-f", f"query={pr.MARK_READY}", "-f", f"id={pr_id}")

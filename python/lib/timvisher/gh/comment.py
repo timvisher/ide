@@ -32,7 +32,8 @@ Usage: timvisher_gh [-C <path>] comment [<target>] <file> [--reaction R]...
                              skipped
   delete [--force] <target>  delete the comment on GitHub, then archive our copy;
                              prompts unless --force, and --force refuses someone
-                             else's comment
+                             else's comment; one GitHub already reports missing
+                             is archived only if the account can see the repo
   info <target> [<component>]  the record (see 'comment info --help')
 
 Reactions: +1 -1 laugh confused heart hooray rocket eyes, the emoji
@@ -304,11 +305,23 @@ def _archive_deleted(opened, target, now):
             opened.touch(row[0])
 
 
+def _require_readable(spec, target):
+    try:
+        fetch.api(spec, f"repos/{spec}")
+    except fetch.NotFound:
+        fail("timvisher_gh_delete_repo_unreadable",
+             f"GitHub reports {target.url} missing, but it hides {spec} from this account too, so the comment "
+             "may still be there; our copy is kept.",
+             suggestions=["Check that gh uses an account that can see the repository (an inherited GH_TOKEN?), "
+                          "then rerun"])
+
+
 def _delete(opened, target, force, viewer, now):
     spec, endpoint = _endpoint(target)
     try:
         found = fetch.api(spec, endpoint)
     except fetch.NotFound:
+        _require_readable(spec, target)
         _archive_deleted(opened, target, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{target.url} is already gone from GitHub.")
         return 0

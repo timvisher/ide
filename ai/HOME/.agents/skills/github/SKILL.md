@@ -120,11 +120,14 @@ timvisher_gh pr ready
 ```
 
 - Reports "already ready" (and runs only the ready post-hooks) when the PR is not a draft
-- Polls `gh pr checks` until all non-excluded checks pass, runs the ready pre-hooks (e.g. an ARP gate), then marks the PR ready
-- Fails immediately if any check has `bucket == "fail"`
+- Polls `gh pr checks` until all non-excluded checks pass (just once under `--force`), runs the ready pre-hooks (e.g. an ARP gate), then marks the PR ready
+- Fails immediately if any check has `bucket == "fail"` or `"cancel"` (unless `--force`)
 - Org and repo exclude patterns at `timvisher_gh.config/{orgs/OWNER,repos/OWNER/REPO}/pr/ready/exclude-checks.txt` (either config root) ignore meta-checks (like mergegate) that never complete until all other checks pass
 - One regex pattern per line; `#` comments and blank lines are skipped
 - Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
+- `--exclude <regex>` (repeatable) ignores matching checks for this run only, on top of the exclude files — for a one-off, explained failure on a single PR
+- `--required-only` considers only the checks the base branch requires to merge (`gh pr checks --required`); it's a flag, not the default, because repos often rely on checks they never mark required
+- `--force` reads the checks once and marks the PR ready even if some failed, were cancelled or are pending, or gh lists none, naming each bypassed check; it bypasses checks only, so the pre-hooks still run and can still refuse
 - A PR that still reports no checks at all after 60 seconds (`TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE`) is treated as having none and marked ready, so a repo without CI doesn't wait forever
 
 ## Workflow — reading PR feedback
@@ -159,7 +162,7 @@ timvisher_gh comment delete '<comment URL>'          # prompts first
 timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```
 
-`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone.
+`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy.
 
 ## Workflow — merging and releasing
 
