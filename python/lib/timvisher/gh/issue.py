@@ -116,7 +116,9 @@ Delete the issue on GitHub, permanently, then archive our copy once
 GitHub confirms it's gone. GitHub lets only repository admins delete
 issues; anyone else gets an error and nothing is asked or deleted. It
 prompts first unless --force, and --force refuses someone else's issue.
-An issue already gone is reported, and our copy archived.
+An issue already gone is reported, and our copy archived; one GitHub
+reports missing (404) rather than deleted (410) counts as gone only if
+the account can see the repository.
 """
 
 DELETE_ISSUE = ("mutation DeleteIssue($id: ID!) { deleteIssue(input: {issueId: $id}) "
@@ -154,7 +156,9 @@ def _delete(opened, found, force, plan, now):
     try:
         with opened.write():
             issue_id = fetcher.issue(found.owner, found.repo, found.number)
-    except fetch.NotFound:
+    except fetch.NotFound as missing:
+        if not isinstance(missing, fetch.Gone):
+            fetch.require_readable(f"{found.owner}/{found.repo}", found.url, "issue")
         if not plan:
             _archive(opened, found.url, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url} is already gone from GitHub.")

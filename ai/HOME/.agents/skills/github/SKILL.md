@@ -172,7 +172,7 @@ timvisher_gh thread delete --force '<thread URL>'  # only when every comment in 
 timvisher_gh thread delete --plan '<thread URL>'   # list what it would delete
 ```
 
-GitHub has no thread delete, so this deletes every comment in the thread, replies newest first and the root last, archiving each copy as GitHub confirms it gone, then the thread and any review removed with it. If a delete fails it stops, reports what's left, and a rerun with the same URL finishes; a thread already gone is reported as such.
+GitHub has no thread delete, so this deletes every comment in the thread, replies newest first and the root last, archiving each copy as GitHub confirms it gone, then the thread and any review removed with it. If a delete fails it stops, reports what's left, and a rerun with the same URL finishes; a thread already gone is reported as such. As with `comment delete`, a 404 counts as gone only when the account can also see the repository.
 
 ### Delete or dismiss a review
 
@@ -183,7 +183,7 @@ timvisher_gh review dismiss '<review URL>' why.md     # a submitted approval or 
 timvisher_gh review push '<review URL>'               # apply a dismissal that didn't land
 ```
 
-`review delete` is only for pending (unsubmitted) reviews, and takes their draft comments with it. `review dismiss` is permanent and only for submitted `APPROVED` or `CHANGES_REQUESTED` reviews; it needs write access and a non-empty message file. The message file moves into the review's store directory as `dismissal.md` (leaving a symlink) and DISMISSED becomes the review's wanted state, which push applies; rerunning reports "already dismissed". `--force` refuses reviews someone else wrote, `--plan` shows what would happen, and a review's URL is `<PR URL>#pullrequestreview-<ID>`.
+`review delete` is only for pending (unsubmitted) reviews, and takes their draft comments with it. `review dismiss` is permanent and only for submitted `APPROVED` or `CHANGES_REQUESTED` reviews; it needs write access and a non-empty message file. The message file moves into the review's store directory as `dismissal.md` (leaving a symlink) and DISMISSED becomes the review's wanted state, which push applies; rerunning reports "already dismissed". `--force` refuses reviews someone else wrote, `--plan` shows what would happen, and a review's URL is `<PR URL>#pullrequestreview-<ID>`. A review GitHub already reports missing is archived only when the account can also see the repository.
 
 ## Workflow — closing and reopening
 
@@ -203,7 +203,7 @@ timvisher_gh issue delete '<issue URL>'          # prompts first; permanent
 timvisher_gh issue delete --force '<issue URL>'  # your own issues only
 ```
 
-Only repository admins can delete issues; anyone else gets an error before any prompt, so close it with `--reason not_planned` instead. `--force` refuses issues someone else opened. Our copy is archived once GitHub confirms the issue is gone.
+Only repository admins can delete issues; anyone else gets an error before any prompt, so close it with `--reason not_planned` instead. `--force` refuses issues someone else opened. Our copy is archived once GitHub confirms the issue is gone. An issue GitHub reports deleted (410) is archived; one it reports missing (404) only when the account can also see the repository.
 
 ## Workflow — merging and releasing
 

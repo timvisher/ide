@@ -72,6 +72,15 @@ class ReviewTest(GhTestCase):
         self.assertIn("review dismiss", self.err)
         self.assertEqual("APPROVED", self.reviews()[str(approved)]["state"])
 
+    def test_delete_keeps_our_copy_when_the_repo_is_hidden_from_the_account_too(self):
+        pending = self.github.add_review(REPO, 7, user="testuser", state="PENDING")
+        rc, _, err = self.run_gh("review", "info", self.url(pending))
+        self.assertEqual(0, rc, err)
+        self.github._update(lambda s: (s["reviews"].pop(str(pending)), s["repos"].pop(REPO)))
+        rc, _ = self.review("delete", "--force", self.url(pending))
+        self.assertEqual((1, ["timvisher_gh_delete_repo_unreadable"]), (rc, self.codes()))
+        self.assertNotIn("/archive/", self.run_gh("review", "info", self.url(pending), ".source.path")[1])
+
     def test_delete_of_a_review_already_gone_and_plan(self):
         self.assertEqual((0, ""), self.review("delete", "--force", self.url(4242)), self.err)
         self.assertEqual(["timvisher_gh_already_deleted"], self.codes())

@@ -365,23 +365,12 @@ def _gone(opened, target, payload, now):
         settle(opened, target, {target.comment_id: payload}, now)
 
 
-def _require_readable(spec, target):
-    try:
-        fetch.api(spec, f"repos/{spec}")
-    except fetch.NotFound:
-        fail("timvisher_gh_delete_repo_unreadable",
-             f"GitHub reports {target.url} missing, but it hides {spec} from this account too, so the comment "
-             "may still be there; our copy is kept.",
-             suggestions=["Check that gh uses an account that can see the repository (an inherited GH_TOKEN?), "
-                          "then rerun"])
-
-
 def _delete(opened, target, force, viewer, now):
     spec, endpoint = _endpoint(target)
     try:
         found = fetch.api(spec, endpoint)
     except fetch.NotFound:
-        _require_readable(spec, target)
+        fetch.require_readable(spec, target.url, "comment")
         _gone(opened, target, None, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{target.url} is already gone from GitHub.")
         return 0

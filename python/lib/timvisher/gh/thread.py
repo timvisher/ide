@@ -187,7 +187,7 @@ def _given(opened, spec, found):
     try:
         return fetch.api(spec, _comment_endpoint(spec, found.comment_id)), True
     except fetch.NotFound:
-        pass
+        fetch.require_readable(spec, found.url, "comment")
     row = opened.db.execute("SELECT id FROM objects WHERE url = ? COLLATE NOCASE", (found.url,)).fetchone()
     thread_id = row and comment._thread_of(opened.db, row[0])
     if thread_id is None:

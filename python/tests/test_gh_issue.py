@@ -274,6 +274,14 @@ class IssueTest(GhTestCase):
         self.assertEqual(0, self.issue("delete", "--force", f"https://github.com/{REPO}/issues/99")[0], self.err)
         self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
 
+    def test_delete_keeps_our_copy_when_the_repo_is_hidden_from_the_account_too(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.github._update(lambda s: (s["issues"][REPO].pop("1"), s["repos"].pop(REPO)))
+        rc, _ = self.issue("delete", "--force", ISSUE1)
+        self.assertEqual((1, ["timvisher_gh_delete_repo_unreadable"]), (rc, self.codes()))
+        self.assertNotIn("/archive/", str((self.work / "issue.md").resolve()))
+        self.assertEqual([], self.delete_mutations())
+
     def test_rerunning_delete_leaves_the_archived_copy_where_it_is(self):
         self.assertEqual(0, self.create()[0], self.err)
         self.assertEqual(0, self.issue("delete", "--force")[0], self.err)

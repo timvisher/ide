@@ -101,6 +101,7 @@ def delete(opened, context, positionals, flags, now):
     try:
         review = fetch.api(spec, endpoint)
     except fetch.NotFound:
+        fetch.require_readable(spec, found.url, "review")
         if not flags["plan"]:
             _archive(opened, found.url, now)
         aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url} is already gone from GitHub.")

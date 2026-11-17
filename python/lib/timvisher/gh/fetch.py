@@ -68,6 +68,17 @@ class Gone(NotFound):
     pass
 
 
+def require_readable(spec, url, noun):
+    try:
+        api(spec, f"repos/{spec}")
+    except NotFound:
+        fail("timvisher_gh_delete_repo_unreadable",
+             f"GitHub reports {url} missing, but it hides {spec} from this account too, so the {noun} "
+             "may still be there; our copy is kept.",
+             suggestions=["Check that gh uses an account that can see the repository (an inherited GH_TOKEN?), "
+                          "then rerun"])
+
+
 class Progress:
     def __init__(self, label, total, interval=3.0):
         self.label = label

@@ -234,6 +234,16 @@ class ThreadTest(GhTestCase):
         self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
         self.assertTrue(self.deleted_at("thread", url))
 
+    def test_delete_keeps_our_copy_when_the_repo_is_hidden_from_the_account_too(self):
+        root, _, _ = self.build()
+        url = f"{PR}#discussion_r{root}"
+        self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
+        self.github._update(lambda s: (s["review_comments"].pop(str(root)), s["repos"].pop(REPO)))
+        rc, _ = self.thread("delete", "--force", url)
+        self.assertEqual((1, ["timvisher_gh_delete_repo_unreadable"]), (rc, self.codes()))
+        self.assertEqual([], self.deletes())
+        self.assertFalse(self.deleted_at("thread", url))
+
     def test_a_failed_delete_stops_reports_whats_left_and_a_rerun_finishes(self):
         root, first, second = self.build()
         self.assertEqual(0, self.run_gh("pr", "pull", PR)[0])
