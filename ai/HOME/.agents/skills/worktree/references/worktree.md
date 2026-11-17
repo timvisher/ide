@@ -12,8 +12,8 @@ Examples:
 - `~/git/DataDog/appgate/timvisher/scratch/_trunk_/`
 - `~/git/DataDog/dd-source/main/`
 
-Bare repo caches live at:
-`~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>/`
+Bare repo trunks live at:
+`${XDG_DATA_HOME:-~/.local/share}/timvisher_git/repo_trunks/<org>/<repo>/`
 
 ## Creating worktrees
 

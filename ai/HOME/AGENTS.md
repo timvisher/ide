@@ -260,8 +260,10 @@ The list is not the guide — read the file.
   `timvisher_git clone dd/<repo>` (and `ntmux3`, which clones through
   it) resolves whether it lives in `ddoghq`, `ddoghq-sandbox` or
   `DataDog`. To find an existing clone, `ls -d ~/git/*/<repo>`.
-- Bare repo caches live at
-  `~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>/`
+- Bare repo trunks live at
+  `${XDG_DATA_HOME:-~/.local/share}/timvisher_git/repo_trunks/<org>/<repo>/`.
+  They hold the only copy of unpushed commits and stashes, so they are
+  data, not cache.
 - Examples:
   - `~/git/ddoghq/appgate/master/`
   - `~/git/ddoghq/dd-source/main/`
