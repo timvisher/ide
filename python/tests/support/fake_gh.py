@@ -4,7 +4,8 @@ import re
 import subprocess
 import sys
 
-STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 404: "Not Found", 422: "Unprocessable Entity"}
+STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 403: "Forbidden", 404: "Not Found", 410: "Gone",
+               422: "Unprocessable Entity", 502: "Bad Gateway"}
 REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 PER_PAGE = 30
 
@@ -170,6 +171,13 @@ def find_comment(state, kind, repo, comment_id):
     return comment
 
 
+def find_review(state, repo, number, review_id):
+    found = state["reviews"].get(str(review_id))
+    if found is None or found["repo"] != repo or found["pull_number"] != int(number):
+        raise not_found()
+    return found
+
+
 def pull(state, repo, number):
     found = state["pulls"].get(repo, {}).get(str(number))
     if found is None:
@@ -272,13 +280,20 @@ def rest(state, request):
                          "pull_request": {"url": f"https://api.github.com/repos/{repo}/pulls/{found['number']}"}}
         case "GET", ["issues", number] if number.isdigit():
             found = issue(state, repo, number)
+            if found.get("deleted"):
+                raise Reply(410, {"message": "This issue was deleted"})
             if found.get("moved_to"):
                 repo, number = found["moved_to"]
                 found = issue(state, repo, number)
             return 200, issue_view(repo, found)
         case "PATCH", ["issues", number] if number.isdigit():
             found = issue(state, repo, number)
-            for key in ("title", "body", "state"):
+            if fields.get("state_reason") not in (None, "completed", "not_planned", "reopened"):
+                raise invalid(f"state_reason {fields['state_reason']} is not a valid reason")
+            if fields.get("state") in ("open", "closed") and fields["state"] != found["state"]:
+                found["closed_at"] = state["now"] if fields["state"] == "closed" else None
+                found["state_reason"] = "completed" if fields["state"] == "closed" else "reopened"
+            for key in ("title", "body", "state", "state_reason"):
                 if key in fields:
                     found[key] = fields[key]
             return 200, issue_view(repo, found)
@@ -329,9 +344,25 @@ def rest(state, request):
             return 200, page(request, [review_view(r) for r in state["reviews"].values()
                                        if r["repo"] == repo and r["pull_number"] == int(number)])
         case "GET", ["pulls", number, "reviews", review_id]:
-            found = state["reviews"].get(review_id)
-            if found is None or found["repo"] != repo or found["pull_number"] != int(number):
-                raise not_found()
+            return 200, review_view(find_review(state, repo, number, review_id))
+        case "DELETE", ["pulls", number, "reviews", review_id]:
+            found = find_review(state, repo, number, review_id)
+            if found["state"] != "PENDING":
+                raise invalid("Can not delete a non-pending pull request review")
+            del state["reviews"][review_id]
+            state["deleted"].append(f"review:{review_id}")
+            return 200, review_view(found)
+        case "PUT", ["pulls", number, "reviews", review_id, "dismissals"]:
+            found = find_review(state, repo, number, review_id)
+            require(fields, "message")
+            if state.get("fail_dismissals"):
+                raise Reply(502, {"message": "Server Error"})
+            if not state["repos"][repo].get("permissions", {}).get("push"):
+                raise Reply(403, {"message": "Resource not accessible by integration"})
+            if found["state"] not in ("APPROVED", "CHANGES_REQUESTED"):
+                raise invalid("Can not dismiss a " + found["state"].lower() + " pull request review")
+            found["state"] = "DISMISSED"
+            found["dismissal_message"] = fields["message"]
             return 200, review_view(found)
 
         case "GET", ["pulls", "comments", comment_id]:
@@ -341,18 +372,22 @@ def rest(state, request):
             found["body"] = fields.get("body", found["body"])
             return 200, comment_view(state, "review_comment", found)
         case "DELETE", ["pulls", "comments", comment_id]:
-            find_comment(state, "review_comment", repo, comment_id)
-            del state["review_comments"][str(comment_id)]
-            for thread in state["threads"].values():
-                if int(comment_id) in thread["comments"]:
-                    thread["comments"].remove(int(comment_id))
-            state["deleted"].append(f"review_comment:{comment_id}")
+            found = find_comment(state, "review_comment", repo, comment_id)
+            if int(comment_id) in state.get("fail_deletes", []):
+                raise Reply(502, {"message": "Server Error"})
+            late = state.get("reply_before_delete", {}).pop(str(comment_id), None)
+            if late:
+                created = add_review_comment(state, repo, found["pull_number"], {"body": late["body"]}, found["id"])
+                state["review_comments"][str(created["id"])]["user"] = late["user"]
+            delete_review_comment(state, found)
             return 204, None
 
         case _, [("issues" | "pulls") as table, "comments", comment_id, "reactions", *rid]:
             kind = "issue_comment" if table == "issues" else "review_comment"
             find_comment(state, kind, repo, comment_id)
             reactions = state["reactions"].setdefault(f"{kind}:{comment_id}", [])
+            if method == "GET" and int(comment_id) in state.get("fail_reactions", []):
+                raise Reply(502, {"message": "Server Error"})
             if method == "GET" and not rid:
                 return 200, page(request, [{"id": r["id"], "content": r["content"], "user": user(r["user"])}
                                            for r in reactions])
@@ -401,6 +436,27 @@ def add_review_comment(state, repo, number, fields, reply_to):
     return comment_view(state, "review_comment", created)
 
 
+def delete_review_comment(state, found):
+    comment_id = found["id"]
+    del state["review_comments"][str(comment_id)]
+    for node_id, thread in list(state["threads"].items()):
+        if comment_id in thread["comments"]:
+            thread["comments"].remove(comment_id)
+            if not thread["comments"]:
+                del state["threads"][node_id]
+            elif found.get("in_reply_to_id") is None:
+                promoted = state["review_comments"][str(thread["comments"][0])]
+                promoted.pop("in_reply_to_id", None)
+                for reply_id in thread["comments"][1:]:
+                    state["review_comments"][str(reply_id)]["in_reply_to_id"] = promoted["id"]
+    review_id = found.get("pull_request_review_id")
+    review = state["reviews"].get(str(review_id)) if review_id else None
+    if review and review["state"] == "COMMENTED" and not review["body"] and not any(
+            c.get("pull_request_review_id") == review_id for c in state["review_comments"].values()):
+        del state["reviews"][str(review_id)]
+    state["deleted"].append(f"review_comment:{comment_id}")
+
+
 def review_view(found):
     view = {key: value for key, value in found.items() if key not in ("repo", "pull_number")}
     view["user"] = user(found["user"])
@@ -439,7 +495,7 @@ def issue_view(repo, found):
     return {"id": 800000 + found["number"], "number": found["number"], "node_id": f"I_{repo}#{found['number']}",
             "title": found["title"], "body": found["body"], "state": found["state"],
             "user": user(found["author"]), "created_at": found["created_at"], "updated_at": found["updated_at"],
-            "closed_at": found["closed_at"],
+            "closed_at": found["closed_at"], "state_reason": found.get("state_reason"),
             "html_url": f"https://github.com/{repo}/issues/{found['number']}"}
 
 
@@ -499,6 +555,17 @@ def gql_set_resolved(resolved):
 def pull_by_node(state, node_id):
     repo, _, number = node_id.removeprefix("PR_").partition("#")
     return pull(state, repo, number)
+
+
+def gql_delete_issue(state, fields):
+    repo, _, number = fields["id"].removeprefix("I_").partition("#")
+    found = issue(state, repo, number)
+    if not state["repos"][repo].get("permissions", {}).get("admin"):
+        raise Reply(200, {"errors": [{"type": "FORBIDDEN", "message": f"{state['viewer']} does not have the "
+                                      "correct permissions to execute `DeleteIssue`"}]})
+    found["deleted"] = True
+    state["deleted"].append(f"issue:{repo}#{number}")
+    return {"deleteIssue": {"repository": {"nameWithOwner": repo}}}
 
 
 def gql_set_draft(draft):
@@ -573,6 +640,7 @@ GRAPHQL = {
     "ThreadPage": gql_review_threads,
     "ResolveReviewThread": gql_set_resolved(True),
     "UnresolveReviewThread": gql_set_resolved(False),
+    "DeleteIssue": gql_delete_issue,
     "ConvertPullRequestToDraft": gql_set_draft(True),
     "MarkPullRequestReadyForReview": gql_set_draft(False),
 }

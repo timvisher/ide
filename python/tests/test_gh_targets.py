@@ -82,6 +82,14 @@ class TargetsTest(GhTestCase):
         thread = self.resolve("thread", f"{PR}#discussion_r66")
         self.assertEqual(("thread", 66, f"{PR}#discussion_r66"), (thread.kind, thread.comment_id, thread.url))
 
+    def test_review_urls_are_reviews_only_for_review(self):
+        review = self.resolve("review", f"{PR}/files#pullrequestreview-77")
+        self.assertEqual(("review", 77, 7, f"{PR}#pullrequestreview-77"),
+                         (review.kind, review.review_id, review.number, review.url))
+        for noun in ("pr", "comment", "thread"):
+            target = self.resolve(noun, f"{PR}#pullrequestreview-77")
+            self.assertEqual(("pr", PR), (target.kind, target.url), noun)
+
     def test_a_top_level_comment_is_not_a_thread(self):
         status, instruction = self.refused("thread", f"{PR}#issuecomment-55")
         self.assertEqual((2, "timvisher_gh_target_not_a_thread"), (status, instruction["code"]))

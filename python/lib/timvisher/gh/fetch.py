@@ -36,14 +36,14 @@ THREAD_PAGE = """query ThreadPage($owner: String!, $repo: String!, $number: Int!
 }"""
 
 
-def thread_of_root(spec, owner, repo, number, database_id):
+def _find_thread(spec, owner, repo, number, matches):
     after = []
     while True:
         found = api(spec, "graphql", "-f", f"query={THREAD_PAGE}", "-f", f"owner={owner}", "-f", f"repo={repo}",
                     "-F", f"number={number}", *after)
         connection = found["data"]["repository"]["pullRequest"]["reviewThreads"]
         for node in connection["nodes"]:
-            if node["comments"]["nodes"] and node["comments"]["nodes"][0]["databaseId"] == database_id:
+            if matches(node):
                 return node
         page = connection.get("pageInfo") or {}
         if not page.get("hasNextPage"):
@@ -51,8 +51,32 @@ def thread_of_root(spec, owner, repo, number, database_id):
         after = ["-f", f"after={page['endCursor']}"]
 
 
+def thread_of_root(spec, owner, repo, number, database_id):
+    return _find_thread(spec, owner, repo, number, lambda node: bool(node["comments"]["nodes"]) and
+                        node["comments"]["nodes"][0]["databaseId"] == database_id)
+
+
+def thread_by_id(spec, owner, repo, number, node_id):
+    return _find_thread(spec, owner, repo, number, lambda node: node["id"] == node_id)
+
+
 class NotFound(Exception):
     pass
+
+
+class Gone(NotFound):
+    pass
+
+
+def require_readable(spec, url, noun):
+    try:
+        api(spec, f"repos/{spec}")
+    except NotFound:
+        fail("timvisher_gh_delete_repo_unreadable",
+             f"GitHub reports {url} missing, but it hides {spec} from this account too, so the {noun} "
+             "may still be there; our copy is kept.",
+             suggestions=["Check that gh uses an account that can see the repository (an inherited GH_TOKEN?), "
+                          "then rerun"])
 
 
 class Progress:
@@ -86,6 +110,8 @@ def api(repo, *args):
     if done.returncode != 0:
         if "(HTTP 404)" in done.stderr:
             raise NotFound(args[-1])
+        if "(HTTP 410)" in done.stderr:
+            raise Gone(args[-1])
         fail("timvisher_gh_gh_failed", f"'gh api {' '.join(args)}' failed for {repo}.", reason=done.stderr.strip(),
              suggestions=["Check gh's error, then retry"])
     return json.loads(done.stdout) if done.stdout.strip() else None
@@ -168,8 +194,8 @@ class Fetcher:
                 review_comments = {c["id"]: c for c in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/comments")}
                 threads = api(spec, "graphql", "-f", f"query={REVIEW_THREADS}", "-f", f"owner={owner}", "-f",
                               f"repo={repo}", "-F", f"number={number}")
-                reviews = [review for review in api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews")
-                           if review["state"] != "PENDING"]
+                listed = api(spec, "--paginate", f"repos/{spec}/pulls/{number}/reviews")
+            reviews = [review for review in listed if review["state"] != "PENDING"]
             connection = threads["data"]["repository"]["pullRequest"]["reviewThreads"]
             nodes = connection["nodes"]
             self.partial = (connection.get("pageInfo") or {}).get("hasNextPage", False) or any(
@@ -191,6 +217,8 @@ class Fetcher:
                 for node, ids in threaded:
                     root = review_comments[ids[0]]
                     self.seen.add(node["id"])
+                    if not only_new and self._known(node["id"]):
+                        self._rehead(node["id"], root)
                     if self._fresh(node["id"], only_new):
                         name = store.thread_name(root["created_at"], root["user"]["login"], root.get("path"), root.get("line"))
                         reactions = self._reactions(spec, f"repos/{spec}/pulls/comments/{root['id']}/reactions", root,
@@ -212,8 +240,8 @@ class Fetcher:
                                   database_id=reply["id"], parent_id=node["id"],
                                   key=store.child_key(thread_key, "replies", name), raw=reply, only_new=only_new,
                                   remote={"body": reply["body"], "reactions": reactions})
+                self.seen.update(review["node_id"] for review in listed)
                 for review in reviews:
-                    self.seen.add(review["node_id"])
                     name = store.review_name(review["submitted_at"], review["user"]["login"])
                     self._put(id=review["node_id"], kind="review", url=review["html_url"], owner=owner, repo=repo,
                               database_id=review["id"], parent_id=pr_id, key=store.child_key(pr_key, "reviews", name),
@@ -222,6 +250,33 @@ class Fetcher:
                 with perf.phase("archive"):
                     self._archive_missing(pr_id)
             return pr_id
+
+    # A PR fetch leaves pending reviews out (GitHub shows only the viewer's),
+    # so asking for one review by ID is how the viewer's pending one is found.
+    def review(self, owner, repo, number, review_id):
+        pr_id = self.pr(owner, repo, number, conversation=False)
+        owner, repo, pr_key = self.state.db.execute("SELECT owner, repo, store_path FROM objects WHERE id = ?",
+                                                    (pr_id,)).fetchone()
+        spec = f"{owner}/{repo}"
+        found = api(spec, f"repos/{spec}/pulls/{number}/reviews/{review_id}")
+        name = store.review_name(found["submitted_at"] or self.now, found["user"]["login"])
+        self._put(id=found["node_id"], kind="review", url=found["html_url"], owner=owner, repo=repo,
+                  database_id=found["id"], parent_id=pr_id, key=store.child_key(pr_key, "reviews", name), raw=found,
+                  only_new=True, remote={"body": found.get("body") or "", "state": found["state"]})
+        return found["node_id"]
+
+    def _rehead(self, thread_id, root):
+        db = self.state.db
+        if db.execute("SELECT database_id FROM objects WHERE id = ?", (thread_id,)).fetchone()[0] == root["id"]:
+            return
+        row = db.execute("SELECT id FROM objects WHERE id = ? AND parent_id = ?", (root["node_id"], thread_id)).fetchone()
+        reply_id = row and row[0]
+        apply, old_root = store.rehead(db, thread_id, reply_id, root["id"], root["html_url"], self.now)
+        self.state.defer(apply)
+        self.state.touched.discard(reply_id)
+        self.state.touch(thread_id)
+        if old_root:
+            self.state.touch(old_root)
 
     # PRs and issues share the issue-comments endpoint for their top-level
     # comments.

@@ -32,7 +32,9 @@ FIELDS = {
     ),
     "issue": (
         ("number", "issue number"), ("title", "title"), ("body", "body"), ("state", "open or closed"),
-        ("closed_at", "close time or null"), ("comments", "top-level comment URLs"),
+        ("closed_at", "close time or null"),
+        ("state_reason", "why it's in its state: completed, not_planned, reopened, ... or null"),
+        ("comments", "top-level comment URLs"),
     ),
     "comment": (
         ("comment_kind", "issue_comment or review_comment"),
@@ -121,7 +123,8 @@ def record(db, object_id, children=True):
                               reviews=_children(db, object_id, "review"))
         case "issue":
             result.update(number=row["number"], title=remote.get("title"), body=remote.get("body"),
-                          state=remote.get("state"), closed_at=raw.get("closed_at"))
+                          state=remote.get("state"), closed_at=raw.get("closed_at"),
+                          state_reason=raw.get("state_reason"))
             if children:
                 result.update(comments=_children(db, object_id, "comment"))
         # pr is null only on comments on issues, which had no records before,

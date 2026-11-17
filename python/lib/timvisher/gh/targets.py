@@ -17,12 +17,13 @@ SHAPES = (
     "https://github.com/O/R/issues/N, optionally with a ?query or a #fragment",
     "https://github.com/O/R/pull/N#issuecomment-<ID> or /issues/N#issuecomment-<ID> (a top-level comment)",
     "https://github.com/O/R/pull/N#discussion_r<ID> (a review comment, or its thread with 'thread')",
+    "https://github.com/O/R/pull/N#pullrequestreview-<ID> (a review, with 'review'; the PR otherwise)",
 )
 
 _PULL = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/pull/(\d+)(?:/(?:files|changes|commits))?(?:\?[^#]*)?(?:#(.*))?")
 _ISSUE = re.compile(r"https://github\.com/([^/?#]+)/([^/?#]+)/issues/(\d+)(?:\?[^#]*)?(?:#(.*))?")
 _ISSUE_COMMENT = re.compile(r"issuecomment-(\d+)")
-_ANCHOR = re.compile(r"(issuecomment-|discussion_r)(\d+)")
+_ANCHOR = re.compile(r"(issuecomment-|discussion_r|pullrequestreview-)(\d+)")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,6 +33,7 @@ class Target:
     repo: str | None = None
     number: int | None = None
     comment_id: int | None = None
+    review_id: int | None = None
     source: pathlib.Path | None = None
     object_id: str | None = None
     via: str = "url"
@@ -60,6 +62,8 @@ class Target:
                 return f"{self.parent_url}#issuecomment-{self.comment_id}"
             case "review_comment" | "thread":
                 return f"{self.pr_url}#discussion_r{self.comment_id}"
+            case "review":
+                return f"{self.pr_url}#pullrequestreview-{self.review_id}"
         return None
 
 
@@ -84,6 +88,8 @@ def _match(url, noun):
         if anchor is None:
             return Target("pr", **base)
         prefix, comment_id = anchor.groups()
+        if prefix == "pullrequestreview-":
+            return Target("review", review_id=int(comment_id), **base) if noun == "review" else Target("pr", **base)
         if prefix == "issuecomment-":
             if noun == "thread":
                 fail("timvisher_gh_target_not_a_thread", f"'{url}' is a top-level comment, which has no thread.",
@@ -227,7 +233,7 @@ def resolve(noun, argument, *, context, db=None, creating=False, browser_fallbac
     if context is None:
         fail("timvisher_gh_target_none", f"No {noun} target: none was given, and this isn't a worktree.",
              suggestions=[f"Pass the {noun}'s URL or file", "Or run it in a worktree, or with -C <worktree>"])
-    if noun in ("comment", "thread"):
+    if noun in ("comment", "thread", "review"):
         found = _context_pr(context, db, noun)
         if found is None:
             _nothing("PR", context)

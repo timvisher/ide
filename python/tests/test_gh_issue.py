@@ -2,6 +2,7 @@ import json
 import unittest
 
 from support.case import GhTestCase
+from timvisher.gh import state
 
 REPO = "testuser/testrepo"
 ISSUE1 = f"https://github.com/{REPO}/issues/1"
@@ -20,8 +21,9 @@ class IssueTest(GhTestCase):
         fake.write_text(FAKE_BROWSER)
         fake.chmod(0o755)
 
-    def issue(self, *args):
-        rc, out, err = self.run_gh("issue", *args, TIMVISHER_AGENT="1", FAKE_BROWSER_LOG=str(self.browser_log))
+    def issue(self, *args, stdin=None):
+        rc, out, err = self.run_gh("issue", *args, TIMVISHER_AGENT="1", FAKE_BROWSER_LOG=str(self.browser_log),
+                                   stdin=stdin)
         self.err = err
         return rc, out
 
@@ -223,6 +225,105 @@ class IssueTest(GhTestCase):
         self.assertEqual(0, rc, self.err)
         self.assertIn("+ issue", out)
         self.assertEqual({}, self.github.state["issues"])
+
+    def deleted(self, number=1):
+        return bool(self.on_github(number).get("deleted"))
+
+    def delete_mutations(self):
+        return [c for c in self.github.calls if "DeleteIssue" in c.get("fields", {}).get("query", "")]
+
+    def test_delete_prompts_and_archives_once_github_confirms(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        source = self.work / "issue.md"
+        self.assertEqual((0, ""), self.issue("delete", stdin="n\n"))
+        self.assertIn(f"Permanently delete {ISSUE1} ('Bug')? It can't be undone. [y/N] \n", self.err)
+        self.assertEqual((False, ["timvisher_gh_delete_skipped"]), (self.deleted(), self.codes()))
+        self.assertNotIn("/archive/", str(source.resolve()))
+        self.assertEqual((0, ""), self.issue("delete", stdin="y\n"), self.err)
+        self.assertEqual((True, ["timvisher_gh_deleted"]), (self.deleted(), self.codes()))
+        self.assertIn("/archive/", str(source.resolve()))
+        self.assertEqual("Bug\n\nIt breaks\n", source.read_text())
+
+    def test_delete_force_deletes_yours_and_refuses_someone_elses(self):
+        self.github.add_issue(REPO, 1, title="Mine")
+        self.github.add_issue(REPO, 2, title="Theirs", author="alice")
+        self.assertEqual(0, self.issue("delete", "--force", ISSUE1)[0], self.err)
+        self.assertTrue(self.deleted(1))
+        theirs = f"https://github.com/{REPO}/issues/2"
+        rc, _ = self.issue("delete", theirs, "--force")
+        self.assertEqual((2, ["timvisher_gh_delete_not_yours"], False), (rc, self.codes(), self.deleted(2)))
+        self.assertEqual(0, self.issue("delete", theirs, stdin="y\n")[0], self.err)
+        self.assertIn("by alice", self.err)
+        self.assertTrue(self.deleted(2))
+
+    def test_delete_explains_that_only_admins_can_and_asks_nothing(self):
+        self.github.add_repo(REPO, admin=False)
+        self.github.add_issue(REPO, 1, title="Bug")
+        rc, _ = self.issue("delete", ISSUE1, stdin="y\n")
+        self.assertEqual((1, ["timvisher_gh_issue_delete_not_admin"]), (rc, self.codes()))
+        self.assertNotIn("[y/N]", self.err)
+        self.assertEqual((False, []), (self.deleted(), self.delete_mutations()))
+
+    def test_delete_of_an_issue_already_gone_archives_our_copy(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.github._update(lambda s: s["issues"][REPO]["1"].update(deleted=True))
+        self.assertEqual((0, ""), self.issue("delete", "--force", ISSUE1), self.err)
+        self.assertEqual((["timvisher_gh_already_deleted"], []), (self.codes(), self.delete_mutations()))
+        self.assertIn("/archive/", str((self.work / "issue.md").resolve()))
+        self.assertIn("/archive/", self.run_gh("issue", "info", ISSUE1, ".source.path")[1])
+        self.assertEqual(0, self.issue("delete", "--force", f"https://github.com/{REPO}/issues/99")[0], self.err)
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+
+    def test_delete_keeps_our_copy_when_the_repo_is_hidden_from_the_account_too(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.github._update(lambda s: (s["issues"][REPO].pop("1"), s["repos"].pop(REPO)))
+        rc, _ = self.issue("delete", "--force", ISSUE1)
+        self.assertEqual((1, ["timvisher_gh_delete_repo_unreadable"]), (rc, self.codes()))
+        self.assertNotIn("/archive/", str((self.work / "issue.md").resolve()))
+        self.assertEqual([], self.delete_mutations())
+
+    def test_rerunning_delete_leaves_the_archived_copy_where_it_is(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.assertEqual(0, self.issue("delete", "--force")[0], self.err)
+        before = (self.work / "issue.md").resolve()
+        self.assertEqual((0, ""), self.issue("delete", "--force"), self.err)
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+        self.assertEqual(before, (self.work / "issue.md").resolve())
+        self.assertEqual([], [p for p in state.root().rglob("*") if "archive/archive" in str(p)])
+
+    def test_delete_plan_deletes_nothing(self):
+        self.github.add_issue(REPO, 1, title="Bug")
+        self.assertEqual((0, f"- issue   {ISSUE1}  delete\n"), self.issue("delete", "--plan", "--force", ISSUE1))
+        self.assertEqual((False, []), (self.deleted(), self.delete_mutations()))
+
+    def test_delete_plan_refuses_what_delete_would_refuse(self):
+        self.assertEqual(0, self.create()[0], self.err)
+        self.github.add_issue(REPO, 2, title="Theirs", author="alice")
+        theirs = f"https://github.com/{REPO}/issues/2"
+        self.assertEqual((2, ""), self.issue("delete", "--plan", "--force", theirs))
+        self.assertEqual(["timvisher_gh_delete_not_yours"], self.codes())
+        self.github._update(lambda s: s["issues"][REPO]["1"].update(deleted=True))
+        self.assertEqual((0, ""), self.issue("delete", "--plan"))
+        self.assertEqual(["timvisher_gh_already_deleted"], self.codes())
+        self.assertNotIn("/archive/", str((self.work / "issue.md").resolve()))
+        self.github.add_repo(REPO, admin=False)
+        self.assertEqual((1, ""), self.issue("delete", "--plan", theirs))
+        self.assertEqual(["timvisher_gh_issue_delete_not_admin"], self.codes())
+        self.assertEqual([], self.delete_mutations())
+
+    def test_delete_refuses_a_pr(self):
+        self.github.add_pull(REPO, 7, head="feature", title="A PR")
+        self.assertEqual(2, self.issue("delete", "--force", f"https://github.com/{REPO}/pull/7")[0])
+        rc, _ = self.issue("delete", "--force", f"https://github.com/{REPO}/issues/7")
+        self.assertEqual((2, ["timvisher_gh_issue_is_a_pr"]), (rc, self.codes()))
+        self.assertEqual([], self.delete_mutations())
+
+    def test_delete_documents_itself(self):
+        rc, out = self.issue("delete", "--help")
+        self.assertEqual(0, rc)
+        for words in ("--force", "admin", "permanently", "archive"):
+            self.assertIn(words, out)
+        self.assertIn("delete", self.issue("--help")[1])
 
 
 if __name__ == "__main__":

@@ -35,9 +35,12 @@ Commands:
   issue info [<target>] [<component>]    an issue's record
   comment info [<target>] [<component>]  a comment's record
   thread info [<target>] [<component>]   a review thread's record
+  review info <target> [<component>]     a review's record
 
-A <target> is a github.com PR, issue or comment URL, current-browser-tab,
-or a tracked file; omitted, it comes from the worktree.
+A <target> is a github.com PR, issue, comment or review
+(#pullrequestreview-<ID>) URL, current-browser-tab, or a tracked file;
+omitted, it comes from the worktree, except for review info, which needs
+one.
 
 Exit status: 0 success, 1 error, 2 usage.
 """
