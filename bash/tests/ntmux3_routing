@@ -11,7 +11,7 @@
 # a GitHub repo at all).
 #
 # A *managed* worktree (its git common dir lives under the trunk cache,
-# ~/.cache/timvisher_git_worktrees/repo_trunks) must still go through
+# ${XDG_DATA_HOME:-~/.local/share}/timvisher_git/repo_trunks) must still go through
 # clone so it gets the normal managed handling.  So must org/repo
 # shorthands and stacked-worktree requests (arg2 is not a file).
 #
@@ -100,7 +100,7 @@ mkdir -p "${standalone_wt}" "${standalone_wt}/sub" "${foreign_under_git}" ||
 # lives under the trunk cache.  Built from a cache-backed repo so
 # `rev-parse --git-common-dir` resolves under repo_trunks_dir, which is
 # how ntmux3__is_managed_worktree classifies it.
-cache_repo="${fake_home}/.cache/timvisher_git_worktrees/repo_trunks/someorg/managed"
+cache_repo="${XDG_DATA_HOME:-${fake_home}/.local/share}/timvisher_git/repo_trunks/someorg/managed"
 managed_wt="${fake_home}/git/someorg/managed/main"
 mkdir -p "${cache_repo}" "$(dirname "${managed_wt}")" ||
   { echo "FAIL: setup mkdir managed" >&2; exit 1; }

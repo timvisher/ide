@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib/mock_commands.bash" || exit 1
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
 
 # Tests for git wrapper
 
@@ -1229,7 +1230,7 @@ ln -s ~/.functions "$rc_home/.functions"
 # stay fork-free rather than shelling out to find that out.
 run_test
 rc_out=$(cd "$rc_home/git/myorg/myrepo" &&
-  HOME="$rc_home" TIMVISHER_AGENT=true PATH="$test_path" \
+  timvisher_tests_with_home "$rc_home" env TIMVISHER_AGENT=true PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' status" 2>&1 >/dev/null) || true
 if [[ $rc_out != *reconcile-repo-config* ]]
 then
@@ -1240,7 +1241,7 @@ fi
 
 # Sentinel newer than the hook it names means converged: leave it alone.
 run_test
-rc_trunk="$rc_home/.cache/timvisher_git_worktrees/repo_trunks/myorg/myrepo"
+rc_trunk="$rc_home/.local/share/timvisher_git/repo_trunks/myorg/myrepo"
 mkdir -p "$rc_trunk"
 rc_hook="$rc_home/hook"
 : > "$rc_hook"
@@ -1248,7 +1249,7 @@ printf '%s\n' "$rc_hook" > "$rc_trunk/.timvisher_repo_config_applied"
 touch "$rc_trunk/.timvisher_repo_config_applied"
 rc_before=$(stat -c %Y "$rc_trunk/.timvisher_repo_config_applied")
 (cd "$rc_home/git/myorg/myrepo" &&
-  HOME="$rc_home" TIMVISHER_AGENT=true PATH="$test_path" \
+  timvisher_tests_with_home "$rc_home" env TIMVISHER_AGENT=true PATH="$test_path" \
   bash -c "source '${funcs_dir}/logging.bash'; '$script' status") >/dev/null 2>&1 || true
 rc_after=$(stat -c %Y "$rc_trunk/.timvisher_repo_config_applied")
 if [[ $rc_before == "$rc_after" ]]

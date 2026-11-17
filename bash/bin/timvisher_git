@@ -50,6 +50,23 @@ repo_trunks_dir=$(timvisher_git_trunks_root)
 timvisher_git_trunks_root() {
   printf '%s\n' "$repo_trunks_dir"
 }
+legacy_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
+
+# Whether trunks are still at the old root, which nothing but
+# migrate-trunks reads. False once the new root is that same directory
+# (an adopted root).
+trunks_left_at_legacy_root() {
+  [[ -d $legacy_trunks_dir && ! -L $legacy_trunks_dir ]] || return 1
+  local legacy_real root_real dir
+  legacy_real=$(cd "$legacy_trunks_dir" && pwd -P) || return 1
+  root_real=$(cd "$repo_trunks_dir" 2>/dev/null && pwd -P) || root_real=
+  [[ $legacy_real == "$root_real" ]] && return 1
+  for dir in "$legacy_trunks_dir"/*/*
+  do
+    [[ -d $dir ]] && return 0
+  done
+  return 1
+}
 live_repo_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
 hooks_dir=${config_dir}/bash/bin/timvisher_git_hooks
 
@@ -2828,19 +2845,26 @@ migrate_trunks__usage() {
   cat <<'EOF'
 Usage: timvisher_git migrate-trunks [--dry-run]
 
-Move every trunk from the old root, ~/.cache/timvisher_git_worktrees/
-repo_trunks, to the new one, ${XDG_DATA_HOME:-~/.local/share}/
-timvisher_git/repo_trunks, one at a time. A trunk in use (a process has
-a file open in it, or a git command is running in one of its worktrees)
-is left for a later run. Rerunning picks up where a run stopped.
+The one-time cutover from the old trunk root, ~/.cache/
+timvisher_git_worktrees/repo_trunks, to the new one,
+${XDG_DATA_HOME:-~/.local/share}/timvisher_git/repo_trunks. Nothing
+reads the old root afterwards, and every other timvisher_git command
+refuses to run while trunks are still there.
+
+Run it while nothing is using the trunks. If any trunk is in use (a
+process has a file open in it, or a git command is running in one of
+its worktrees), nothing moves. Anything at the old root that isn't a
+trunk fails the run instead of being left behind: move or delete it,
+then rerun. A rerun after any failure picks up where it stopped. Once
+every trunk is moved, the emptied old root is removed.
 
 When the old root resolves outside ~/.cache, it was put somewhere on
 purpose: nothing moves, and the new root becomes a link to it.
 
   --dry-run   say what would be done, change nothing
 
-Exits 0 when every trunk is moved, 4 when some were busy and nothing
-failed, 3 when another run holds the lock, 1 on any failure.
+Exits 0 when the cutover is done, 4 when a trunk was in use and nothing
+moved, 3 when another run holds the lock, 1 on any other failure.
 EOF
 }
 
@@ -2855,7 +2879,7 @@ migrate_trunks__cmd() {
 
   local root legacy legacy_real cache_real
   root=$(timvisher_git_trunks_root)
-  legacy=$(timvisher_git_legacy_trunks_root)
+  legacy=$legacy_trunks_dir
   if [[ -L $legacy || ! -d $legacy ]]
   then
     printf "nothing to move: '%s' is not a directory\n" "$legacy"
@@ -2934,6 +2958,29 @@ migrate_trunks__cmd() {
     to=$root
   fi
 
+  if [[ -z $dry_run ]]
+  then
+    for dir in "${srcs[@]}"
+    do
+      stop_trunk_fsmonitors "$dir"
+    done
+    open_paths_snapshot > "$snapshot"
+    for dir in "${srcs[@]}"
+    do
+      reasons=$(trunk_busy_reasons "$snapshot" "$dir")
+      if [[ -n $reasons ]]
+      then
+        printf 'busy %s:\n  %s\n' "${dir#"$from"/}" "${reasons//$'\n'/$'\n  '}"
+        (( busy++ ))
+      fi
+    done
+    if (( 0 < busy ))
+    then
+      printf 'nothing moved: %s trunk(s) in use; stop what is using them, then rerun\n' "$busy"
+      return 4
+    fi
+  fi
+
   if [[ -n $dry_run ]]
   then
     open_paths_snapshot > "$snapshot"
@@ -3006,8 +3053,6 @@ migrate_trunks__cmd() {
     esac
   done
 
-  [[ -n $adopt ]] || list_empty_orgs "$legacy"
-
   if [[ -n $dry_run ]]
   then
     if [[ $mode == copy ]]
@@ -3040,7 +3085,14 @@ migrate_trunks__cmd() {
     then
       relink_trunk_references "$root" "$legacy"
     fi
-    migrate_trunks__compat_link "$root" "$legacy" "$dry_run"
+    if (( 0 < skipped ))
+    then
+      printf "not done: %s thing(s) above are still in '%s'; move or delete them, then rerun\n" "$skipped" "$legacy"
+      (( failed++ ))
+    elif (( failed == 0 && busy == 0 ))
+    then
+      migrate_trunks__remove_old_root "$legacy" "$dry_run"
+    fi
   fi
 
   printf 'moved %s, busy %s, skipped %s, failed %s\n' "$moved" "$busy" "$skipped" "$failed"
@@ -3049,19 +3101,18 @@ migrate_trunks__cmd() {
   return 0
 }
 
-# Not when the old root's parent is a link: that belongs to whoever made it.
-migrate_trunks__compat_link() {
-  local root=$1 legacy=$2 dry_run=$3
-  [[ -d ${legacy%/*} && ! -L ${legacy%/*} ]] || return 0
+migrate_trunks__remove_old_root() {
+  local legacy=$1 dry_run=$2
   if [[ -n $dry_run ]]
   then
-    printf "would link '%s' -> '%s' once it is empty\n" "$legacy" "$root"
+    printf "would remove the emptied old root '%s'\n" "$legacy"
     return 0
   fi
+  find "$legacy" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null
   if rmdir "$legacy" 2>/dev/null
   then
-    ln -s "$root" "$legacy" &&
-      printf "linked '%s' -> '%s'\n" "$legacy" "$root"
+    printf "removed the emptied old root '%s'\n" "$legacy"
+    rmdir "${legacy%/*}" 2>/dev/null || true
   fi
 }
 
@@ -5752,6 +5803,16 @@ in_chdir() {
   fi
   "$@"
 }
+
+case ${1:-} in
+  ''|-h|--help|help|migrate-trunks) ;;
+  *)
+    if trunks_left_at_legacy_root
+    then
+      die "Trunks are still at the old root '%s'. Run 'timvisher_git migrate-trunks' (see --help) while nothing is using them." "$legacy_trunks_dir"
+    fi
+    ;;
+esac
 
 case $1 in
   -h|--help)
