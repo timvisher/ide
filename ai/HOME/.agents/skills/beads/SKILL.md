@@ -282,6 +282,7 @@ Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-
 - `bd sync` is the sync step: pull, check for conflicts, recompute `is_blocked`, push. Run it when you finish work in a topic. The git wrapper lets bd push `refs/dolt/` refs and nothing else, so never run a bare `dolt push`; hand Tim the command if one is needed.
 - The first `bd sync` on a topic with pending schema migrations can fail with `local changes would be stomped by merge: events` while `dolt status` is clean. Run the same `bd sync` again; the migration left commits to push, and pushing them heals it.
 - Never remove a configured remote that is on a topic forge.
+- Topics run embedded (`bd dolt show` says `Mode: embedded`). A server-mode topic cannot sync from an agent: its detached `dolt sql-server` pushes with no bd ancestor, so the git wrapper refuses it (`git_push_blocked`). Convert it to embedded rather than loosening the guard.
 
 bd can still adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. When you start working in a topic, check:
 
