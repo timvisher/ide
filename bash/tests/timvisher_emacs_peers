@@ -63,6 +63,10 @@ case $command in
   *'agent-shell ls --local'*)
     cat > /dev/null
     cat "$FAKE_DIR/ssh-listing"
+    if [[ -e $FAKE_DIR/ssh-ls-rc ]]
+    then
+      exit "$(< "$FAKE_DIR/ssh-ls-rc")"
+    fi
     ;;
   *'agent-shell send'*)
     cat > "$FAKE_DIR/ssh-stdin"
@@ -344,6 +348,20 @@ check 'ls --format table, a peer down: ADDRESS header on stdout, unreachable pee
       eval '[[ $(head -1 "$tmpdir/stdout") == ADDRESS* ]] && stderr_has "unreachable: peer ws1 (ssh failed)"'
 check 'ls, a peer down: its stale sessions are left out' \
       eval '! grep -q "ws1:ws-lead" "$tmpdir/stdout"'
+
+rm -f -- "$tmpdir/ssh-down"
+jq '.unreachable = [{pid: 4242, server_name: "busy", socket: "/tmp/busy", timeout_seconds: 60, reason: "timeout", detail: "timed out"}]' \
+  "$tmpdir/ssh-listing" > "$tmpdir/x" && mv "$tmpdir/x" "$tmpdir/ssh-listing"
+echo 3 > "$tmpdir/ssh-ls-rc"
+TIMVISHER_EMACS_NOW=4000 peers_tool agent-shell ls --format json
+rc=$?
+check 'ls, a peer whose ls exited 3: its sessions are still listed and the peer reachable' \
+      eval '[[ $(field "[.sessions[] | .address] | index(\"ws1:ws-lead\") != null") == true && $(field "[.peers[] | select(.name == \"ws1\") | .reachable][0]") == true ]]'
+check 'ls, a peer whose ls exited 3: its unreachable Emacs is under .unreachable with the peer as host, and ls exits 3' \
+      eval '(( rc == 3 )) && [[ $(field "[.unreachable[] | \"\(.host)=\(.pid)\"] | join(\",\")") == ws1=4242 ]]'
+TIMVISHER_EMACS_NOW=4001 peers_tool agent-shell ls --format table
+check 'ls --format table, a peer'"'"'s Emacs unreachable: reported on stderr under the peer'"'"'s name' \
+      eval 'stderr_has "unreachable: Emacs ws1:4242 (busy) did not answer within 60s"'
 
 echo
 echo "$(( tests - failures ))/$tests passed"

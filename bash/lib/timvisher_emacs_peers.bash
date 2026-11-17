@@ -365,7 +365,7 @@ timvisher_emacs_peers__send_ssh() {
 }
 
 timvisher_emacs_peers__fetch() {
-  local peer=$1 config transport now listing='' error='' cache old tmp
+  local peer=$1 config transport now listing='' error='' cache old tmp rc
   now=$(timvisher_emacs_peers__now)
   cache=$(timvisher_emacs_peers__cache_dir)/$peer.json
   mkdir -p -- "${cache%/*}" || return 1
@@ -380,9 +380,17 @@ timvisher_emacs_peers__fetch() {
     transport=$(jq -r .transport <<< "$config")
     case $transport in
       ssh)
+        # 3 is the peer's listing with some of its Emacsen unreachable:
+        # still its sessions, with what is missing under .unreachable.
+        rc=0
         listing=$(timvisher_emacs_peers__ssh "$config" \
                     "$(jq -r .command <<< "$config") agent-shell ls --local --format json" 2>/dev/null < /dev/null) ||
-          { listing=''; error='ssh failed'; }
+          rc=$?
+        if (( 0 != rc && 3 != rc ))
+        then
+          listing=''
+          error='ssh failed'
+        fi
         ;;
       socket)
         if ! timvisher_emacs_peers__ping "$config"
@@ -513,6 +521,9 @@ timvisher_emacs_peers__aggregate() {
                    | (.listing.sessions // [])[]
                    | . + {host: ($p + (if .host then ":" + .host else "" end)),
                           address: ($p + ":" + addr)}]),
-     unreachable: .unreachable,
+     unreachable: ((.unreachable | map(. + {host: null}))
+                   + [$peers[] | select(.reachable) | .name as $p
+                      | (.listing.unreachable // [])[]
+                      | . + {host: ($p + (if .host then ":" + .host else "" end))}]),
      peers: [$peers[] | del(.listing)]}'
 }
