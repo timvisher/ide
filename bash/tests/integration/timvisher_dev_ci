@@ -513,6 +513,7 @@ mkdir -p "$tmpdir/agentbin"
 cat > "$tmpdir/agentbin/claudeshot" <<MOCK
 #!/usr/bin/env bash
 pwd -P >> "$tmpdir/claudeshot-cwd"
+printf '%s' "\$1" > "$tmpdir/claudeshot-prompt"
 status=\$(sed -n "s/^When ALL branches are integrated and tests pass, write 'pass' to '\\(.*\\)'\\.\$/\\1/p" <<<"\$1")
 git merge -q --no-edit feat >/dev/null 2>&1 || exit 1
 printf 'pass\\n' > "\$status"
@@ -569,6 +570,19 @@ else
   else
     fail "pipeline test failure: dev unchanged=$([[ $pipe_bad_after == "$pipe_bad_before" ]] && echo yes || echo no) status='${pipe_bad_status}' agent cwd='${pipe_bad_cwd}' worktree content='${pipe_bad_wt_content}': $(cat "$tmpdir/pipe-bad.log")"
   fi
+fi
+
+# --- the merge agent's prompt resets only to the pinned baseline ---
+run_test
+pipe_prompt=$(cat "$tmpdir/claudeshot-prompt" 2>/dev/null)
+pipe_start=
+[[ $pipe_prompt =~ "If you need to start over, reset to "([^ ]+)" --" ]] && pipe_start=${BASH_REMATCH[1]}
+if [[ -n $pipe_start && $pipe_prompt != *'reset --hard @{u}'* &&
+      $pipe_prompt == *"git reset --hard ${pipe_start}'"* ]]
+then
+  pass "__integrate: the merge agent's fallback resets to the run's start, the one it is told to start over from, never @{u}"
+else
+  fail "merge agent prompt: start='${pipe_start}', expected its fallback to reset there and nowhere to @{u}: ${pipe_prompt}"
 fi
 
 # --- pipeline, success: dev moves once and is what gets pushed ---
