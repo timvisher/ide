@@ -123,6 +123,29 @@ else
   fail "expected 'Topic/Example' from relative, got '${result:-}'"
 fi
 
+# Test: a topic that is a symlink to storage outside the root still
+# resolves under the root, by name and by its path under the root.
+run_test
+mkdir -p "$tmpdir/elsewhere/Linked Topic/.beads" "$tmpdir/topics/Linked" || exit 1
+ln -s "$tmpdir/elsewhere/Linked Topic" "$tmpdir/topics/Linked/Topic" || exit 1
+if by_name=$(run_resolve "Linked/Topic" 2>/dev/null) &&
+    by_path=$(run_resolve "$tmpdir/topics/Linked/Topic/.beads" 2>/dev/null) &&
+    [[ $by_name == "Linked/Topic" && $by_path == "Linked/Topic" ]]
+then
+  pass "resolve keeps a symlinked topic under the root"
+else
+  fail "symlinked topic: by name '${by_name:-}', by path '${by_path:-}'"
+fi
+
+# Test: the symlink's target, named directly, is still outside the root.
+run_test
+if ! run_resolve "$tmpdir/elsewhere/Linked Topic" >/dev/null 2>&1
+then
+  pass "resolve still refuses a path outside the root"
+else
+  fail "resolve accepted a symlinked topic's target outside the root"
+fi
+
 # Test: tilde expansion — overriding HOME requires the script's
 # `source ~/.functions/logging.bash` to still resolve, so symlink it in.
 run_test

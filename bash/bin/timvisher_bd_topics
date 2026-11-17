@@ -120,8 +120,21 @@ else:
 
 # realpath resolves any symlinks in the existing prefix, which keeps
 # results consistent with topics_root_real (which is set via `pwd -P`).
-# Nonexistent suffixes are left as-is.
-print(os.path.realpath(resolved))
+# Nonexistent suffixes are left as-is. Below the root the path stays as
+# written: a topic can be a symlink to storage elsewhere,
+0
+resolved = os.path.normpath(resolved)
+ancestor = resolved
+while True:
+    if os.path.realpath(ancestor) == root:
+        rest = os.path.relpath(resolved, ancestor)
+        print(root if rest == "." else os.path.join(root, rest))
+        break
+    parent = os.path.dirname(ancestor)
+    if parent == ancestor:
+        print(os.path.realpath(resolved))
+        break
+    ancestor = parent
 PY
 }
 
