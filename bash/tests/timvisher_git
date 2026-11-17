@@ -27,10 +27,10 @@ chmod +x "$ms_home/stub/git"
 ms_run() {
   MS_LOG="$ms_home/invocations" MS_RC="${1:-0}" \
     PATH="$ms_home/stub:$PATH" \
-    new_cache_root="$ms_home/cache" \
+    TIMVISHER_GIT_STATE_DIR="$ms_home/state" \
     timvisher_tests_with_home "$ms_home" ensure_maintenance_scheduler "$ms_home/trunk"
 }
-ms_stamp="$ms_home/cache/.timvisher_maintenance_scheduler_attempted"
+ms_stamp="$ms_home/state/maintenance_scheduler_attempted"
 
 # Present scheduler must be a silent no-op -- this is the normal path and
 # runs on every git invocation.

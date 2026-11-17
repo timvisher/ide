@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2016,SC2034 # check's conditions are eval'd when it runs, and read variables shellcheck can't see
+source "$(dirname "$0")/lib/timvisher_tests.bash" || exit 1
+
+# Tests for timvisher_git's trunk roots: migrate-trunks out of ~/.cache,
+# and healing worktrees whose trunk was wiped.
+
+failures=0
+tests=0
+
+check() {
+  local name=$1
+  shift
+  (( tests++ ))
+  if "$@"
+  then
+    echo "PASS: $name"
+  else
+    echo "FAIL: $name" >&2
+    printf '  rc=%s\n  out: %s\n  err: %s\n' "$rc" "$out" "$err" >&2
+    (( failures++ ))
+  fi
+}
+
+script_dir=$(cd "$(dirname "$0")/.." && pwd) || exit 1
+script=$script_dir/bin/timvisher_git
+
+# shellcheck source=/dev/null
+source "$script_dir/functions/real_bin.bash" || exit 1
+test_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$script_dir/bin/git") ||
+  { echo "No real git found" >&2; exit 1; }
+
+tmpdir=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmpdir"' EXIT
+tmpdir=$(cd "$tmpdir" && pwd -P) || exit 1
+unset TIMVISHER_AGENT
+
+mkdir -p "$tmpdir/mockbin" || exit 1
+printf '#!/usr/bin/env bash\nexit 1\n' > "$tmpdir/mockbin/gh"
+chmod +x "$tmpdir/mockbin/gh"
+export PATH=$tmpdir/mockbin:$PATH
+
+tg() {
+  "$test_git" -c user.email=t@t -c user.name=T -c core.hooksPath=/dev/null "$@"
+}
+
+origin=$tmpdir/origin
+tg init -q "$origin" || exit 1
+printf 'one\n' > "$origin/file"
+tg -C "$origin" add file
+tg -C "$origin" commit -q -m initial || exit 1
+tg -C "$origin" branch feature/kept
+
+n=${GIT_CONFIG_COUNT:-0}
+export "GIT_CONFIG_KEY_${n}=url.${origin}.insteadOf"
+export "GIT_CONFIG_VALUE_${n}=https://github.com/testorg/testrepo"
+export GIT_CONFIG_COUNT=$(( n + 1 ))
+
+out='' err='' rc=0
+run() {
+  local h=$1
+  shift
+  out=$(cd "$tmpdir" && timvisher_tests_with_home "$h" "$script" "$@" 2>"$tmpdir/err")
+  rc=$?
+  err=$(< "$tmpdir/err")
+}
+
+legacy_of() { printf '%s\n' "$1/.cache/timvisher_git_worktrees/repo_trunks"; }
+root_of() { printf '%s\n' "$1/.local/share/timvisher_git/repo_trunks"; }
+
+# new_home <name> [legacy|new]: a HOME with a worktree of feature/kept
+# from testorg/testrepo. legacy (the default) leaves the trunk at the old
+# root, as a machine not yet cut over has it, made with plain git since
+# timvisher_git refuses to run there; new clones it at the new root.
+new_home() {
+  local h=$tmpdir/$1 mode=${2:-legacy} trunk wt
+  mkdir -p "$h/git" || return 1
+  ln -s "$HOME/.functions" "$h/.functions" || return 1
+  if [[ $mode == new ]]
+  then
+    run "$h" clone testorg/testrepo/feature/kept
+    (( rc == 0 )) || { printf 'clone failed: %s\n' "$err" >&2; return 1; }
+    printf '%s\n' "$h"
+    return 0
+  fi
+  trunk=$(legacy_of "$h")/testorg/testrepo
+  wt=$h/git/testorg/testrepo/feature/kept
+  mkdir -p "${trunk%/*}" "${wt%/*}" || return 1
+  tg init -q --bare "$trunk" &&
+    tg -C "$trunk" remote add origin https://github.com/testorg/testrepo &&
+    tg -C "$trunk" fetch -q origin &&
+    tg -C "$trunk" remote set-head origin -a >/dev/null &&
+    tg -C "$trunk" worktree add -q -b feature/kept "$wt" origin/feature/kept 2>/dev/null || return 1
+  printf '%s\n' "$h"
+}
+
+wt_head() { tg -C "$1" rev-parse HEAD 2>/dev/null; }
+
+# --- migrate-trunks --------------------------------------------------------
+
+h=$(new_home mig) || exit 1
+wt=$h/git/testorg/testrepo/feature/kept
+head_before=$(wt_head "$wt")
+legacy=$(legacy_of "$h")
+root=$(root_of "$h")
+
+fork=$legacy/forkorg/testrepo
+mkdir -p "${fork%/*}"
+tg init -q --bare "$fork"
+printf '%s\n' "$legacy/testorg/testrepo/objects" > "$fork/objects/info/alternates"
+tg --git-dir="$fork" update-ref refs/heads/kept "$head_before" || exit 1
+mkdir -p "$h/.config/git"
+tg config --file "$h/.config/git/config_machine" --add maintenance.repo "$legacy/testorg/testrepo"
+
+plain=$legacy/plainorg/plainrepo
+plain_wt=$h/git/plainorg/plainrepo/feature/kept
+mkdir -p "${plain%/*}" "${plain_wt%/*}"
+tg clone -q "$origin" "$plain" &&
+  tg -C "$plain" worktree add -q "$plain_wt" feature/kept 2>/dev/null || exit 1
+plain_head=$(wt_head "$plain_wt")
+
+run "$h" clone testorg/testrepo/feature/kept
+check 'before the cutover, other commands refuse and name migrate-trunks' \
+  eval '(( rc != 0 )) && [[ $err == *"still at the old root"*"migrate-trunks"* && ! -e $root/testorg/testrepo ]]'
+check 'the trunk lookup never looks at the old root' \
+  eval '[[ $(HOME=$h XDG_DATA_HOME= bash -c "source \"$script_dir/functions/git_trunks.bash\" && timvisher_git_trunk_dir testorg testrepo") == "$root/testorg/testrepo" ]]'
+
+run "$h" migrate-trunks --dry-run
+check 'dry run: lists the trunk with its worktree' \
+  eval '(( rc == 0 )) && [[ $out == *"move testorg/testrepo: 1 worktree(s)"* ]]'
+check 'dry run: changes nothing' \
+  eval '[[ -d $legacy/testorg/testrepo && ! -e $root/testorg/testrepo ]]'
+
+run "$h" migrate-trunks
+check 'migrate: exits 0' eval '(( rc == 0 ))'
+check 'migrate: the trunk is at the new root, not the old' \
+  eval '[[ -d $root/testorg/testrepo/objects && ( -L $legacy || ! -e $legacy/testorg/testrepo ) ]]'
+check 'migrate: the worktree still works, at the same commit' \
+  eval '[[ $(wt_head "$wt") == "$head_before" ]]'
+check 'migrate: the worktree names the new trunk' \
+  eval '[[ $(cat "$wt/.git") == "gitdir: $root/testorg/testrepo/worktrees/"* ]]'
+check 'migrate: the fork'"'"'s alternates follow its parent' \
+  eval '[[ $(cat "$root/forkorg/testrepo/objects/info/alternates") == "$root/testorg/testrepo/objects" ]]'
+check 'migrate: a non-bare trunk moves too, and its worktree follows' \
+  eval '[[ -d $root/plainorg/plainrepo/.git && $(wt_head "$plain_wt") == "$plain_head" && $(cat "$plain_wt/.git") == "gitdir: $root/plainorg/plainrepo/.git/worktrees/"* ]]'
+check 'migrate: maintenance names the new trunk' \
+  eval '[[ $(tg config --file "$h/.config/git/config_machine" --get-all maintenance.repo | sort -u) == "$root/testorg/testrepo" ]]'
+check 'migrate: the emptied old root is removed, not left as a link' \
+  eval '[[ ! -e $legacy && ! -L $legacy ]]'
+run "$h" info .org
+check 'after the cutover, other commands run' eval '[[ $err != *"still at the old root"* ]]'
+
+run "$h" migrate-trunks
+check 'migrate again: nothing to move' \
+  eval '(( rc == 0 )) && [[ $out == "nothing to move"* ]]'
+
+# --- copy across filesystems ----------------------------------------------
+
+copy_root=
+if [[ -d /dev/shm && -w /dev/shm ]]
+then
+  copy_root=$(mktemp -d /dev/shm/x.test-git-trunks.XXXXXX) || copy_root=
+fi
+if [[ -n $copy_root ]] &&
+   [[ $(stat -c %d "$copy_root" 2>/dev/null) != "$(stat -c %d "$tmpdir" 2>/dev/null)" ]]
+then
+  h=$(new_home copy) || exit 1
+  wt=$h/git/testorg/testrepo/feature/kept
+  head_before=$(wt_head "$wt")
+  out=$(cd "$tmpdir" && timvisher_tests_with_home "$h" env TIMVISHER_GIT_TRUNKS_DIR="$copy_root/repo_trunks" \
+    "$script" migrate-trunks 2>"$tmpdir/err")
+  rc=$?
+  err=$(< "$tmpdir/err")
+  check 'copy: exits 0' eval '(( rc == 0 ))'
+  check 'copy: the trunk is on the other filesystem, and gone from the old root' \
+    eval '[[ -d $copy_root/repo_trunks/testorg/testrepo && ! -e $(legacy_of "$h") ]]'
+  check 'copy: the worktree still works, at the same commit' \
+    eval '[[ $(wt_head "$wt") == "$head_before" ]]'
+  rm -rf "$copy_root"
+else
+  [[ -n $copy_root ]] && rm -rf "$copy_root"
+  echo "SKIP: copy across filesystems (no separate /dev/shm here)"
+fi
+
+# --- busy and conflicting trunks -------------------------------------------
+
+h=$(new_home busy) || exit 1
+trunk=$(legacy_of "$h")/testorg/testrepo
+idle=$(legacy_of "$h")/idleorg/idlerepo
+mkdir -p "${idle%/*}" && tg clone -q --bare "$origin" "$idle" || exit 1
+( exec 3< "$trunk/HEAD" && exec sleep 60 ) &
+holder=$!
+run "$h" migrate-trunks --dry-run
+check 'dry run: a trunk with a file held open is busy, naming the process' \
+  eval '[[ $out == *"busy testorg/testrepo:"*"pid $holder "* ]]'
+run "$h" migrate-trunks
+check 'migrate: one busy trunk stops the cutover before anything moves, exit 4' \
+  eval '(( rc == 4 )) && [[ $out == *"nothing moved"* && -d $trunk/objects && -d $idle/objects && ! -e $(root_of "$h")/testorg/testrepo && ! -e $(root_of "$h")/idleorg/idlerepo ]]'
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+
+mkdir -p "$(root_of "$h")/testorg"
+tg init -q --bare "$(root_of "$h")/testorg/testrepo"
+run "$h" migrate-trunks --dry-run
+check 'dry run: a trunk at both roots with different refs is a conflict' \
+  eval '[[ $out == *"conflict testorg/testrepo"* ]]'
+run "$h" migrate-trunks
+check 'migrate: a conflict leaves both and fails' \
+  eval '(( rc != 0 )) && [[ -d $trunk/objects && -d $(root_of "$h")/testorg/testrepo/objects ]]'
+
+# --- leftovers at the old root ----------------------------------------------
+
+h=$(new_home junk) || exit 1
+junk=$(legacy_of "$h")/Documents/datadog
+tg init -q --bare "$junk"
+run "$h" migrate-trunks
+check 'migrate: something at the old root that is not a trunk fails the cutover, naming it' \
+  eval '(( rc == 1 )) && [[ $out == *"skip Documents/datadog: no refs and no worktrees"* && $out == *"not done"* && -d $junk && -d $(root_of "$h")/testorg/testrepo/objects ]]'
+rm -rf "$junk"
+run "$h" migrate-trunks
+check 'migrate: once the leftover is gone, a rerun finishes and removes the old root' \
+  eval '(( rc == 0 )) && [[ ! -e $(legacy_of "$h") ]]'
+
+# --- adopting an old root that was put somewhere on purpose ----------------
+
+h=$(new_home adopt) || exit 1
+wt=$h/git/testorg/testrepo/feature/kept
+head_before=$(wt_head "$wt")
+mkdir -p "$tmpdir/volume"
+vol=$tmpdir/volume/trunks/repo_trunks
+mv "$h/.cache/timvisher_git_worktrees" "$tmpdir/volume/trunks"
+ln -s "$tmpdir/volume/trunks" "$h/.cache/timvisher_git_worktrees"
+tg init -q --bare "$vol/Documents/datadog"
+mkdir -p "$vol/ide"
+run "$h" migrate-trunks --dry-run
+check 'dry run: an old root outside ~/.cache is adopted, not moved' \
+  eval '[[ $out == *"adopt:"* && $out == *"would link"* && ! -L $(root_of "$h") ]]'
+check 'dry run: adopting would repoint the .git files that go through ~/.cache' \
+  eval '[[ $out == *"would repoint 1 worktree .git file(s)"* ]]'
+check 'dry run: a trunk with no refs and no worktrees, and an empty org dir, are listed as skipped' \
+  eval '[[ $out == *"skip Documents/datadog: no refs and no worktrees"* && $out == *"skip ide: an empty directory"* ]]'
+run "$h" migrate-trunks
+check 'adopt: the new root links to the old root'"'"'s real place' \
+  eval '(( rc == 0 )) && [[ -L $(root_of "$h") && $(cd "$(root_of "$h")" && pwd -P) == "$tmpdir/volume/trunks/repo_trunks" ]]'
+check 'adopt: the trunk did not move and the worktree still works' \
+  eval '[[ -d $vol/testorg/testrepo/objects && $(wt_head "$wt") == "$head_before" ]]'
+check 'adopt: the worktree .git file names the real path, not the link' \
+  eval '[[ $(cat "$wt/.git") == "gitdir: $vol/testorg/testrepo/worktrees/"* ]]'
+check 'adopt: the junk is left exactly where it was' \
+  eval '[[ -d $vol/Documents/datadog/objects && -d $vol/ide ]]'
+run "$h" info .org
+check 'adopt: other commands run, since the old root is the new one' eval '[[ $err != *"still at the old root"* ]]'
+
+# --- heal --------------------------------------------------------------------
+
+h=$(new_home heal new) || exit 1
+wt=$h/git/testorg/testrepo/feature/kept
+head_before=$(wt_head "$wt")
+admin=$(sed 's/^gitdir: //' "$wt/.git")
+trunk=${admin%/worktrees/*}
+
+printf 'gitdir: %s\n' "$tmpdir/gone/worktrees/${admin##*/}" > "$wt/.git"
+run "$h" clone "$wt"
+check 'a worktree whose trunk only moved is relinked, not healed' \
+  eval '(( rc == 0 )) && [[ $err != *HEAL:* && $(wt_head "$wt") == "$head_before" ]]'
+
+printf 'changed\n' > "$wt/file"
+rm -rf "${trunk:?}"
+run "$h" heal --dry-run
+check 'heal --dry-run: an orphan whose trunk is gone would be cloned again' \
+  eval '(( rc == 0 )) && [[ $out == *"would clone testorg/testrepo, then re-attach '"'"'$wt'"'"'"* ]]'
+run "$h" clone "$wt"
+check 'clone heals an orphaned worktree, saying so loudly' \
+  eval '(( rc == 0 )) && [[ $err == *"HEAL: worktree"* && $err == *"never pushed"* && $err == *stashes* ]]'
+check 'healed: on its branch, at origin'"'"'s commit' \
+  eval '[[ $(tg -C "$wt" symbolic-ref --short HEAD) == feature/kept && $(wt_head "$wt") == "$(tg -C "$origin" rev-parse feature/kept)" ]]'
+check 'healed: its files are untouched and show as uncommitted' \
+  eval '[[ $(cat "$wt/file") == changed && $(tg -C "$wt" status --porcelain) == " M file" ]]'
+
+lost=$h/git/testorg/testrepo/feature/never-pushed
+mkdir -p "$lost"
+printf 'gitdir: %s\n' "$tmpdir/gone/worktrees/never-pushed" > "$lost/.git"
+printf 'mine\n' > "$lost/mine"
+run "$h" heal
+check 'heal: a worktree whose branch is on no origin stays orphaned, saying why' \
+  eval '(( rc != 0 )) && [[ $err == *"stays orphaned"*"heal --branch"* && $(cat "$lost/.git") == "gitdir: $tmpdir/gone/worktrees/never-pushed" ]]'
+run "$h" heal --branch feature/never-pushed "$lost"
+check 'heal --branch: re-attached from the trunk branch, files kept' \
+  eval '(( rc == 0 )) && [[ $(tg -C "$lost" symbolic-ref --short HEAD) == feature/never-pushed && $(tg -C "$lost" status --porcelain) == *"?? mine"* && $(cat "$lost/mine") == mine ]]'
+
+echo ""
+echo "Results: $(( tests - failures ))/${tests} passed"
+(( failures == 0 ))

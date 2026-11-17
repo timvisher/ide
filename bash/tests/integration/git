@@ -291,12 +291,12 @@ fi
 # ---------------------------------------------------------------------------
 
 hp_cache_config() {
-  printf '%s' "$HOME/.cache/timvisher_git_worktrees/repo_trunks/$1/$2/config"
+  printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/repo_trunks/$1/$2/config"
 }
 
 hp_fixture() {
   local org=$1 repo=$2 value=$3
-  local cache="$HOME/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local cache="${XDG_DATA_HOME:-$HOME/.local/share}/timvisher_git/repo_trunks/${org}/${repo}"
   local wt="$HOME/git/${org}/${repo}/branch"
 
   mkdir -p "$cache" "$wt" || return 1

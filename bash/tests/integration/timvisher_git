@@ -1138,7 +1138,7 @@ fi
 # trunk cache points at the local source repo.
 cli_home="$tmpdir/cli_home"
 cli_live="$tmpdir/cli_live"
-cli_cache="$cli_home/.cache/timvisher_git_worktrees/repo_trunks/testorg/testrepo"
+cli_cache="$cli_home/.local/share/timvisher_git/repo_trunks/testorg/testrepo"
 mkdir -p "$cli_home" "$cli_live" "${cli_cache%/*}"
 cli_live=$(cd "$cli_live" && pwd -P)
 ln -s "$HOME/.functions" "$cli_home/.functions"

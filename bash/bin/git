@@ -333,6 +333,13 @@ source ~/.functions/aictl.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/git_trunks.bash ||
+  {
+    echo "Unable to source git_trunks functions" >&2
+    exit 1
+  }
+
 # ---------------------------------------------------------------------------
 # Selective-fetch machinery
 #
@@ -2040,7 +2047,8 @@ _timvisher_git__maybe_reconcile_repo_config() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(timvisher_git_trunk_dir "$org" "$repo")
   local sentinel="${trunk}/.timvisher_repo_config_applied"
   [[ -d $trunk ]] || return 0
 
@@ -2073,7 +2081,8 @@ _timvisher_git__maybe_register_maintenance() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(timvisher_git_trunk_dir "$org" "$repo")
   [[ -d $trunk ]] || return 0
   [[ -f ${trunk}/.timvisher_maintenance_registered ]] && return 0
 
@@ -2100,7 +2109,8 @@ _timvisher_git__maybe_ensure_maintenance_scheduler() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local trunk="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}"
+  local trunk
+  trunk=$(timvisher_git_trunk_dir "$org" "$repo")
   [[ -d $trunk ]] || return 0
 
   timvisher_git ensure-maintenance-scheduler "$trunk" >/dev/null 2>&1 || true
@@ -2129,7 +2139,8 @@ _timvisher_git__strip_beads_hooks_path() {
   local repo=${rest%%/*}
   [[ -n $repo ]] || return 0
 
-  local config="${HOME}/.cache/timvisher_git_worktrees/repo_trunks/${org}/${repo}/config"
+  local config
+  config="$(timvisher_git_trunk_dir "$org" "$repo")/config"
   [[ -f $config ]] || return 0
 
   # Read with a builtin and match in the shell: every run pays this, and
