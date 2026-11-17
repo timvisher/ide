@@ -22,10 +22,11 @@ When starting a session, read the Beads and Topics section below and use the `be
   timvisher_bd_topics ls
   timvisher_bd_topics set <topic>
   ```
-- Beads is strictly local. _*NEVER*_ use Dolt remotes: no
-  `bd dolt push`, `bd dolt pull`, `bd sync` or `bd dolt remote add`.
-  If a topic has a Dolt remote configured, remove it (the `beads` skill
-  shows how).
+- Beads topics sync to the NAS over Tailscale. `bd sync` is the
+  federation loop (pull, conflict-check, recompute `is_blocked`, push);
+  a topic's Dolt remote belongs in `.dolt/repo_state.json` under
+  `.remotes.origin.url` and should name `gemedet-git`, not
+  `gemedet-nas`. Do _*NOT*_ remove a configured Dolt remote.
 - Run `bd prime` for workflow context, or install hooks with
   `bd hooks install`.
 - For the full workflow and session completion rules, use the `beads` skill.
@@ -291,6 +292,12 @@ Follow my usual git rules instead:
 - **Finish by pushing.** A unit of work is not done until it is
   committed *and* pushed. Run the session-completion push workflow
   rather than handing off with commits stranded locally.
+- **Dolt sync counts as pushing.** The managed block's "Conservative"
+  profile says not to run Dolt remote sync unless asked; that is
+  rejected here along with the rest of it. A topic with unsynced beads
+  is unfinished work. Agents still may not run the push themselves --
+  the remote-mutation ban is separate and still absolute -- so hand Tim
+  the `bd sync` invocation.
 - Still ask first only for destructive or history-rewriting remote
   operations (force-push, amending or rebasing already-published
   commits) and anything my other standing rules already gate.
