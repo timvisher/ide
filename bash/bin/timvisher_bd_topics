@@ -16,6 +16,7 @@ then
 else
   topics_root=$default_topics_root
 fi
+forge_config="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bd_topics_forge"
 
 usage() {
   cat <<'USAGE' >&2
@@ -28,6 +29,7 @@ usage() {
     timvisher_bd_topics set [<topic>]
     timvisher_bd_topics bd [<topic>] [-- <bd-args>...]
     timvisher_bd_topics new <topic>
+    timvisher_bd_topics remote <topic>
     timvisher_bd_topics deactivate <topic>
     timvisher_bd_topics rm <topic>
     timvisher_bd_topics activate <topic>
@@ -47,6 +49,16 @@ usage() {
       neither exists.
     - resolve prints the topic name for a path under the topics root and
       exits non-zero otherwise. The path does not need to exist.
+    - Each topic's repo name is its path, lowercased, with every run of
+      other characters turned into '-' ('Incidents/123 foo' is
+      'incidents-123-foo'). new, mv and activate refuse a topic whose
+      name another active topic already has.
+    - remote gives a topic a Dolt remote named origin on the forge in
+      ~/.config/timvisher/ide/bd_topics_forge, a line of the form
+      'github git+ssh://<host>/<owner>'. It creates the private repo with
+      a README commit (Dolt will not push to a repo with no refs), adds
+      the remote, runs 'bd sync' and checks that main and origin/main
+      match. It is safe to rerun.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
@@ -552,6 +564,103 @@ list_subscribers() {
   done < "$subs_file"
 }
 
+topic_repo_name() {
+  prefixify "$1"
+}
+
+# Print the repo name for topic $1, or die naming the active topic other
+# than $2 (a topic being moved to $1) that already flattens to the same
+# name. Deactivated topics don't count, so
+# that a duplicate can be folded into its twin and deactivated; activate
+# runs this check before it brings one back.
+require_unique_repo_name() {
+  local topic_rel=$1
+  local moving_rel=${2-}
+  local name other
+
+  name=$(topic_repo_name "$topic_rel")
+  [[ -n $name ]] ||
+    die "Unable to derive a repo name from '%s'" "$topic_rel"
+
+  while IFS= read -r other
+  do
+    [[ $other == "$topic_rel" || $other == "$moving_rel" ]] && continue
+    if [[ $(topic_repo_name "$other") == "$name" ]]
+    then
+      die "Topics '%s' and '%s' would share the repo name '%s'; rename one" \
+        "$topic_rel" "$other" "$name"
+    fi
+  done < <(list_topics_under_dir "$topics_root_real" 0 0)
+
+  printf '%s' "$name"
+}
+
+read_forge() {
+  local -n __forge_kind=$1
+  local -n __forge_base=$2
+
+  [[ -r $forge_config ]] ||
+    die "No topic forge configured; write '<kind> <url-base>' to '%s'" "$forge_config"
+
+  read -r __forge_kind __forge_base < "$forge_config"
+  __forge_base=${__forge_base%/}
+
+  case $__forge_kind in
+    github)
+      ;;
+    *)
+      die "Unknown forge kind '%s' in '%s'" "$__forge_kind" "$forge_config"
+      ;;
+  esac
+
+  [[ $__forge_base == git+ssh://*/* ]] ||
+    die "Forge URL base '%s' in '%s' must be git+ssh://<host>/<owner>" \
+      "$__forge_base" "$forge_config"
+}
+
+topic_bd() {
+  local topic_abs=$1
+  shift
+
+  (cd "$topic_abs" && BEADS_DIR="$topic_abs/.beads" bd "$@")
+}
+
+# Print the data dir of the database bd uses for topic $1. A topic can
+# hold more than one database, so the name comes from bd, never from
+# the directory listing.
+topic_db_dir() {
+  local topic_abs=$1
+  local name dir
+
+  name=$(topic_bd "$topic_abs" dolt show 2>/dev/null | sed -n 's/^  Database: *//p')
+  [[ -n $name ]] ||
+    die "bd reports no database for '%s'" "$topic_abs"
+
+  for dir in "$topic_abs/.beads/embeddeddolt/$name" "$topic_abs/.beads/dolt/$name"
+  do
+    if [[ -d $dir/.dolt ]]
+    then
+      printf '%s' "$dir"
+      return 0
+    fi
+  done
+
+  die "bd's database '%s' for '%s' is not on disk" "$name" "$topic_abs"
+}
+
+# Print '<name>\t<url>' for each Dolt remote of the database in $1.
+db_remotes() {
+  python3 -I - "$1/.dolt/repo_state.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    state = json.load(f)
+for name, remote in sorted(state.get("remotes", {}).items()):
+    print(f"{name}\t{remote.get('url', '')}")
+PY
+}
+
 stop_dolt_server() {
   local topic_abs=$1
   local beads_dir="$topic_abs/.beads"
@@ -914,6 +1023,8 @@ case $cmd in
       die "Topic already initialized: '%s'" "$beads_dir"
     fi
 
+    require_unique_repo_name "$topic_rel" >/dev/null
+
     mkdir -p "$topic_abs" ||
       die "Unable to create '%s'" "$topic_abs"
 
@@ -998,6 +1109,8 @@ case $cmd in
       warn "Topic '%s' is already active" "$topic_rel"
       exit 0
     fi
+
+    require_unique_repo_name "$topic_rel" >/dev/null
 
     reactivate_topic "$topic_abs"
     ;;
@@ -1117,6 +1230,8 @@ case $cmd in
       die "Destination '%s' already exists" "$dst_abs"
     fi
 
+    require_unique_repo_name "$dst_rel" "$src_rel" >/dev/null
+
     # Show subscribers before moving
     info "Subscribers for '%s':" "$src_rel"
     list_subscribers "$src_abs"
@@ -1208,6 +1323,126 @@ case $cmd in
 
     rm -rf -- "$_subscribers_lockdir"
     _subscribers_lockdir=""
+    ;;
+  remote)
+    if [[ $# -ne 1 ]]
+    then
+      usage
+      exit 1
+    fi
+
+    topic_input=$(strip_beads_suffix "$1")
+    [[ -n $topic_input ]] || die "Topic argument is empty"
+
+    resolve_topic "$topic_input" topic_abs topic_rel
+
+    if [[ ! -d $topic_abs/.beads ]]
+    then
+      die "Topic '%s' does not contain .beads" "$topic_abs"
+    fi
+
+    if topic_is_deactivated "$topic_abs"
+    then
+      die "Topic '%s' is deactivated" "$topic_rel"
+    fi
+
+    repo_name=$(require_unique_repo_name "$topic_rel") || exit 1
+    read_forge forge_kind forge_base
+    forge_owner=${forge_base##*/}
+    remote_url="$forge_base/$repo_name.git"
+    db_dir=$(topic_db_dir "$topic_abs") || exit 1
+
+    # bd can adopt an unrelated repo's origin as a Dolt remote, and it
+    # lands on whichever database it was touching at the time, so a
+    # remote on any of the topic's databases stops this.
+    shopt -s nullglob
+    for other_dir in "$topic_abs"/.beads/embeddeddolt/*/ "$topic_abs"/.beads/dolt/*/
+    do
+      other_dir=${other_dir%/}
+      [[ -f $other_dir/.dolt/repo_state.json && $other_dir != "$db_dir" ]] || continue
+      other_remotes=$(db_remotes "$other_dir") ||
+        die "Unable to read the remotes of '%s'" "$other_dir"
+      if [[ -n $other_remotes ]]
+      then
+        die "Database '%s' in topic '%s' has a Dolt remote bd does not use: %s" \
+          "${other_dir##*/}" "$topic_rel" "$other_remotes"
+      fi
+    done
+    shopt -u nullglob
+
+    remotes=$(db_remotes "$db_dir") ||
+      die "Unable to read the remotes of '%s'" "$db_dir"
+    origin_url=$(awk -F'\t' '$1 == "origin" { print $2 }' <<<"$remotes")
+
+    if [[ -n $origin_url && $origin_url != "$remote_url" ]]
+    then
+      die "Topic '%s' already has origin '%s', not '%s'" "$topic_rel" "$origin_url" "$remote_url"
+    elif [[ -z $origin_url && -n $remotes ]]
+    then
+      die "Topic '%s' has Dolt remotes but no origin: %s" "$topic_rel" "$remotes"
+    fi
+
+    if [[ -z $origin_url ]]
+    then
+      if gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
+          --json name >/dev/null 2>&1
+      then
+        # An earlier run may have made the repo and stopped before adding
+        # the remote, but a repo that already holds Dolt data is another
+        # topic's.
+        dolt_ref=$(git ls-remote "${remote_url#git+}" refs/dolt/data 2>/dev/null) ||
+          die "Unable to list the refs of '%s'" "$remote_url"
+        if [[ -n $dolt_ref ]]
+        then
+          die "Repo '%s' already holds Dolt data; it belongs to another topic" "$remote_url"
+        fi
+        info "Reusing the empty repo '%s/%s'" "$forge_owner" "$repo_name"
+      else
+        info "Creating '%s/%s'" "$forge_owner" "$repo_name"
+        gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
+          --private --add-readme --disable-issues --disable-wiki \
+          --description "Dolt remote for the beads topic '${topic_rel}'" >&2 ||
+          die "Unable to create '%s/%s'" "$forge_owner" "$repo_name"
+      fi
+
+      topic_bd "$topic_abs" dolt remote add origin "$remote_url" >&2 ||
+        die "Unable to add origin '%s' to '%s'" "$remote_url" "$topic_rel"
+    fi
+
+    # A topic that has not applied the pending schema migrations has
+    # nothing to push on the first sync, which applies them and then
+    # fails on the events table it just stopped tracking. The commits the
+    # migration left heal it on the second.
+    for attempt in 1 2
+    do
+      sync_out=$(topic_bd "$topic_abs" sync 2>&1)
+      sync_rc=$?
+      printf '%s\n' "$sync_out" >&2
+      if (( sync_rc == 0 ))
+      then
+        break
+      fi
+      if [[ $attempt == 2 || $sync_out != *'would be stomped by merge'* ]]
+      then
+        die "bd sync failed for '%s' (exit %s)" "$topic_rel" "$sync_rc"
+      fi
+      info "Rerunning bd sync for '%s' after its schema migration" "$topic_rel"
+    done
+
+    ahead=$(cd "$db_dir" && set -o pipefail && dolt log --oneline origin/main..main 2>/dev/null | wc -l) ||
+      die "Unable to compare main with origin/main in '%s'" "$db_dir"
+    behind=$(cd "$db_dir" && set -o pipefail && dolt log --oneline main..origin/main 2>/dev/null | wc -l) ||
+      die "Unable to compare origin/main with main in '%s'" "$db_dir"
+    ahead=${ahead//[[:space:]]/}
+    behind=${behind//[[:space:]]/}
+
+    if [[ $ahead != 0 || $behind != 0 ]]
+    then
+      die "Topic '%s' is %s ahead and %s behind origin/main after bd sync" \
+        "$topic_rel" "$ahead" "$behind"
+    fi
+
+    printf '%s\t%s\n' "$topic_rel" "$remote_url"
     ;;
   resolve)
     if [[ $# -ne 1 ]]
