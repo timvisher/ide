@@ -53,6 +53,33 @@ arguments), `shell' (the buffer the stubbed start returns) and
                          inserted)))
       (delete-file prompt))))
 
+(ert-deftest test-timvisher-agent-shell-start-resumes-a-session ()
+  "A session id resumes that session, unfocused, and still gets the prompt."
+  (let ((prompt (make-temp-file "tvass" nil nil "Carry on.\n")))
+    (unwind-protect
+        (test-timvisher-agent-shell-start--with-stubs
+          (timvisher-agent-shell-start "claude" prompt "ae2b057e-a82c-4b6e-9aea-1e4c35927230")
+          (should (equal '((:config claude-config :session-strategy new :new-session t :no-focus t
+                                    :session-id "ae2b057e-a82c-4b6e-9aea-1e4c35927230"))
+                         started))
+          (should (equal `((:shell-buffer ,shell :text "Carry on." :submit t :no-focus t))
+                         inserted)))
+      (delete-file prompt))))
+
+(ert-deftest test-timvisher-agent-shell-start-in-a-given-directory ()
+  "A directory makes the shell start there; without one it starts here."
+  (let ((dir (make-temp-file "tvass" t))
+        (here default-directory)
+        (seen nil))
+    (unwind-protect
+        (test-timvisher-agent-shell-start--with-stubs
+          (cl-letf (((symbol-function 'agent-shell--start)
+                     (lambda (&rest _) (push default-directory seen) shell)))
+            (timvisher-agent-shell-start "claude" nil "some-session-id" dir)
+            (timvisher-agent-shell-start "claude"))
+          (should (equal (list here (file-name-as-directory dir)) seen)))
+      (delete-directory dir))))
+
 (ert-deftest test-timvisher-agent-shell-start-codex-without-prompt ()
   "Codex starts with its own config, and no prompt means nothing inserted."
   (test-timvisher-agent-shell-start--with-stubs

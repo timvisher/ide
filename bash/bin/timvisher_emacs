@@ -21,6 +21,13 @@ source ~/.functions/tool_log.bash ||
     exit 1
   }
 
+# shellcheck source-path=SCRIPTDIR source=../lib/timvisher_emacs_peers.bash
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/timvisher_emacs_peers.bash" ||
+  {
+    echo "Unable to source timvisher_emacs peers functions" >&2
+    exit 1
+  }
+
 timvisher_emacs__schema_version=1
 
 # The budget, in seconds, for one probe of one Emacs: 'agent-shell ls'
@@ -31,6 +38,9 @@ timvisher_emacs__schema_version=1
 # of the query itself, which is microseconds whatever the buffer count.
 timvisher_emacs__probe_timeout=60
 
+timvisher_emacs__prompt_cell_jq='def prompt_cell: (.permission_prompt // "-") | split("\n") | map(select(test("^```") | not)) | join(" ")
+  | gsub("[[:space:]]+"; " ") | if 60 < length then .[0:59] + "…" else . end;'
+
 # Matches the process name of an Emacs (emacs, Emacs, emacs-31.1) and
 # not emacsclient.
 timvisher_emacs__process_re='^emacs(-[0-9.]+)?$'
@@ -40,10 +50,12 @@ show_help() {
 Usage: timvisher_emacs server ls [--schema-version <N>]
        timvisher_emacs server socket <pid>
        timvisher_emacs server eval [--timeout <seconds>] <pid> <expression>
-       timvisher_emacs agent-shell ls [--format json|table] [--timeout <seconds>]
-       timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--timeout <seconds>]
+       timvisher_emacs agent-shell ls [--format json|table] [--timeout <seconds>] [--local] [--refresh]
+       timvisher_emacs agent-shell peers [--format json|table]
+       timvisher_emacs agent-shell start --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--cwd <dir>] [--timeout <seconds>]
+       timvisher_emacs agent-shell resume --emacs <pid> [--agent claude|codex] [--prompt-file <file>] [--cwd <dir>] [--timeout <seconds>] <session-id>
        timvisher_emacs agent-shell get-server [--timeout <seconds>] <session>
-       timvisher_emacs agent-shell send [--timeout <seconds>] [--emacs <pid>] <session> <message-file>
+       timvisher_emacs agent-shell send [--timeout <seconds>] [--emacs <pid>] <session> <message-file|->
        timvisher_emacs agent-shell is-wedged [--quiet-seconds <N>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell recover fork [--message-file <file>] [--timeout <seconds>] <session>
        timvisher_emacs agent-shell permission-prompt [--show] <session>
@@ -64,11 +76,21 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           seconds (default 60) is reported under .unreachable, with why, and
                           none of its shells are listed; exits 3 when any Emacs went
                           unreachable, so an incomplete roster is detectable without
-                          knowing to read .unreachable
+                          knowing to read .unreachable; with peers configured, every
+                          peer's sessions too, as <peer>:<name>, and the Emacsen a peer
+                          could not reach under .unreachable with its host (--local: this
+                          host only; --refresh: skip the peer cache)
+  agent-shell peers       list the configured peers, their transport and target, and
+                          whether each answers now
   agent-shell start       start a new agent-shell (claude by default) in the Emacs with that
                           pid, submit the prompt file once it is ready, wait for its session,
                           and print it as JSON with the name and ref to message it by; for
-                          an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid
+                          an ntmux3 worktree's Emacs, take the pid from ntmux3 get-editor-pid;
+                          --cwd starts it in that directory instead of the Emacs's
+  agent-shell resume      like start, but the new agent-shell resumes <session-id> (its
+                          full id) instead of starting a new session; the agent must be
+                          able to find that session from the shell's directory, which is
+                          that Emacs's unless --cwd names another
   agent-shell get-server  print, as JSON, the Emacs server hosting that session's agent-shell;
                           when the search falls back to scanning the servers, an Emacs that
                           does not answer within --timeout seconds (default 60) makes the
@@ -77,7 +99,10 @@ Usage: timvisher_emacs server ls [--schema-version <N>]
                           shell is idle with nothing typed at its prompt; prints queued or
                           submitted, and reports on stderr which Emacs it resolved to and
                           how; --emacs names the Emacs outright, for when resolution
-                          cannot settle it and 'agent-shell ls' can show you which
+                          cannot settle it and 'agent-shell ls' can show you which; '-'
+                          reads the message from stdin; to a peer's session it can also
+                          print duplicate (already delivered) or deferred (peer
+                          unreachable, kept in its outbox)
   agent-shell is-wedged   print a JSON report on whether that agent-shell is wedged; the
                           answer is .wedged (jq -e .wedged), with the evidence in .reasons;
                           an Emacs that does not answer within --timeout seconds (default 60)
@@ -119,6 +144,19 @@ ListAgents ref (4b1e9a), or both as ListAgents prints them ("ide-3f
 [4b1e9a]"), resolved through the Claude session files. Its Emacs is the
 nearest Emacs ancestor of the session's process, else the server whose
 agent-shell buffers include the session.
+A <session> can also be <peer>:<session>, a session on another host. A
+bare <session> that matches no session here is looked up on the peers,
+and resolves when exactly one has it. Peers are the JSON files in
+${XDG_CONFIG_HOME:-~/.config}/timvisher/agent-shell/peers.d/<peer>.json:
+  {"name": "ws1", "transport": "ssh", "host": "workspace-ws1",
+   "ssh_options": ["-o", "ProxyCommand=none"], "probe": ["<argv>"]}
+  {"name": "laptop", "transport": "socket", "socket": "~/.local/state/x.sock",
+   "outbox": "~/.local/state/x-outbox"}
+command (default ~/bin/timvisher_emacs) is the peer's timvisher_emacs. A
+probe that exits non-zero marks the peer unreachable without connecting.
+A message to an unreachable socket peer with an outbox is deferred into
+that Maildir for its keeper to deliver.
+
 Queued text reads as though Tim typed it, so start a message to another
 agent with a "From the ... agent (session ...)" line.
 
@@ -180,7 +218,7 @@ timvisher_emacs__server_sockets() {
     scope+=(-p "$1")
   fi
 
-  local line pid
+  local line pid socket
   while IFS= read -r line
   do
     case $line in
@@ -188,7 +226,10 @@ timvisher_emacs__server_sockets() {
         pid=${line#p}
         ;;
       n/*)
-        [[ -S ${line#n} ]] && printf '%s\t%s\n' "$pid" "${line#n}"
+        # Linux lsof follows a Unix socket's path with ' type=STREAM'.
+        socket=${line#n}
+        socket=${socket%% type=*}
+        [[ -S $socket ]] && printf '%s\t%s\n' "$pid" "$socket"
         ;;
     esac
   done < <(lsof -a -U -u "$(id -u)" "${scope[@]}" -F pn 2>/dev/null)
@@ -315,6 +356,35 @@ timvisher_emacs__eval() {
   timvisher_emacs__emacsclient "$timeout" "$pid" "$socket" "$expression"
 }
 
+# emacsclient's own -w is not a bound everywhere: emacsclient 31 on Linux
+# waits forever on a server that never answers, so this enforces it,
+# with a second of grace, rather than coreutils timeout, which macOS lacks.
+timvisher_emacs__emacsclient_within() {
+  local limit=$1 out pid i rc
+  shift
+  out=$(mktemp "${TMPDIR:-/tmp}/x.timvisher-emacs.XXXXXX") || return 1
+  emacsclient -w "$limit" "$@" > "$out" < /dev/null &
+  pid=$!
+  for (( i = 0; i < (limit + 1) * 10; i += 1 ))
+  do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null
+  then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f -- "$out"
+    echo "emacsclient: timed out: no answer within ${limit}s" >&2
+    return 124
+  fi
+  wait "$pid"
+  rc=$?
+  cat -- "$out"
+  rm -f -- "$out"
+  return "$rc"
+}
+
 timvisher_emacs__emacsclient() {
   # --errfile leaves emacsclient's own diagnostics for the caller and
   # reports nothing: a subcommand whose failure mode is itself the
@@ -330,7 +400,7 @@ timvisher_emacs__emacsclient() {
 
   local out err
   err=$(mktemp) || return 1
-  if ! out=$(emacsclient -s "$socket" -w "$timeout" --eval "$expression" 2> "$err")
+  if ! out=$(timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$expression" 2> "$err")
   then
     if [[ -n $errfile ]]
     then
@@ -365,7 +435,7 @@ timvisher_emacs__probe_servers() {
   local -a probe_pids=() probe_rows=()
   while IFS=$'\t' read -r pid socket
   do
-    emacsclient -s "$socket" -w "$timeout" --eval "$query" > "$dir/$pid.out" 2> "$dir/$pid.err" &
+    timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$query" > "$dir/$pid.out" 2> "$dir/$pid.err" &
     probe_pids+=("$!")
     probe_rows+=("$pid"$'\t'"$socket")
   done < <(timvisher_emacs__server_sockets)
@@ -571,7 +641,7 @@ timvisher_emacs__agent_shell_server() {
     # message lands in a shell nobody reads. Ask before believing it.
     verify=$(timvisher_emacs__with_helpers "$query") || return 1
     answered=true
-    answer=$(emacsclient -s "$socket" -w "$timeout" --eval "$verify" 2>/dev/null) || answered=false
+    answer=$(timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$verify" 2>/dev/null) || answered=false
     if [[ $answered == true && $answer == t ]]
     then
       printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
@@ -665,7 +735,7 @@ timvisher_emacs__agent_shell_server() {
 }
 
 timvisher_emacs__agent_shell_ls() {
-  local format=table timeout=$timvisher_emacs__probe_timeout
+  local format=table timeout=$timvisher_emacs__probe_timeout local_only='' refresh=''
   [[ -t 1 ]] || format=json
 
   while (( 0 < $# ))
@@ -681,12 +751,56 @@ timvisher_emacs__agent_shell_ls() {
         [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
         shift 2
         ;;
+      --local)
+        local_only=1
+        shift
+        ;;
+      --refresh)
+        refresh=--refresh
+        shift
+        ;;
       *)
         usage
         return 2
         ;;
     esac
   done
+
+  if [[ -n $local_only ]] || ! timvisher_emacs_peers__any
+  then
+    timvisher_emacs__agent_shell_ls_local "$format" "$timeout"
+    return
+  fi
+
+  local listing rc=0
+  listing=$(timvisher_emacs__agent_shell_ls_local json "$timeout") || rc=$?
+  (( 0 == rc || 3 == rc )) || return 1
+  timvisher_emacs_peers__refresh "$refresh"
+  listing=$(timvisher_emacs_peers__aggregate <<< "$listing") || return 1
+
+  rc=0
+  (( 0 == $(jq '.unreachable | length' <<< "$listing") )) || rc=3
+
+  if [[ $format == json ]]
+  then
+    jq . <<< "$listing"
+    return "$rc"
+  fi
+
+  {
+    printf 'ADDRESS\tREF\tSTATUS\tQUEUED\tAGENT\tEMACS\tBUFFER\tCWD\tPROMPT\n'
+    jq -r --arg home "$HOME" "$timvisher_emacs__prompt_cell_jq"' .sessions[] | . as $r |
+      [.address, (.ref // "-"), .status, (.pending_prompts | tostring), (.agent // "-"),
+       ((if $r.host then $r.host + ":" else "" end) + (.emacs_pid | tostring)), .buffer,
+       ((.cwd // "-") | if $r.host then . else sub("^" + $home; "~") end), prompt_cell] | @tsv' <<< "$listing"
+  } | column -t -s $'\t'
+  timvisher_emacs__report_unreachable <<< "$listing"
+  jq -r '.peers[] | select(.reachable | not) | "unreachable: peer \(.name) (\(.error))"' <<< "$listing" >&2
+  return "$rc"
+}
+
+timvisher_emacs__agent_shell_ls_local() {
+  local format=$1 timeout=$2
 
   local query='(if (not (fboundp (quote agent-shell-buffers))) "[]" (json-serialize (vconcat (delq nil (mapcar (lambda (b) (condition-case nil (with-current-buffer b (let ((st (agent-shell--state))) (list (cons (quote buffer) (buffer-name)) (cons (quote session_id) (or (map-nested-elt st (quote (:session :id))) :null)) (cons (quote agent) (let ((i (map-elt (map-elt st :agent-config) :identifier))) (if i (format "%s" i) :null))) (cons (quote status) (symbol-name (agent-shell-status))) (cons (quote permission_prompt) (if (eq (agent-shell-status) (quote blocked)) (timvisher-agent-shell-permission-summary) :null)) (cons (quote pending_prompts) (length (map-elt st :pending-prompts))) (cons (quote cwd) (or (ignore-errors (agent-shell-cwd)) :null))))) (error nil))) (agent-shell-buffers))))))'
   query=$(timvisher_emacs__with_helpers "$query") || return 1
@@ -700,6 +814,7 @@ timvisher_emacs__agent_shell_ls() {
   while IFS=$'\t' read -r pid socket rc
   do
     if (( 0 != rc ))
+
     then
       reason=$(timvisher_emacs__probe_reason "$dir/$pid.err")
       detail=$(timvisher_emacs__probe_detail "$dir/$pid.err")
@@ -761,18 +876,21 @@ timvisher_emacs__agent_shell_ls() {
 
   {
     printf 'NAME\tREF\tSTATUS\tQUEUED\tAGENT\tEMACS\tBUFFER\tCWD\tPROMPT\n'
-    jq -r --arg home "$HOME" '.sessions[] |
+    jq -r --arg home "$HOME" "$timvisher_emacs__prompt_cell_jq"' .sessions[] |
       [(.name // "-"), (.ref // "-"), .status, (.pending_prompts | tostring), (.agent // "-"),
-       (.emacs_pid | tostring), .buffer, ((.cwd // "-") | sub("^" + $home; "~")),
-       ((.permission_prompt // "-") | split("\n") | map(select(test("^```") | not)) | join(" ")
-        | gsub("[[:space:]]+"; " ") | if 60 < length then .[0:59] + "…" else . end)] | @tsv' <<< "$listing"
+       (.emacs_pid | tostring), .buffer, ((.cwd // "-") | sub("^" + $home; "~")), prompt_cell] | @tsv' <<< "$listing"
   } | column -t -s $'\t'
-  jq -r '.unreachable[] | "unreachable: Emacs \(.pid) (\(.server_name)) " +
+  timvisher_emacs__report_unreachable <<< "$listing"
+  return "$rc"
+}
+
+timvisher_emacs__report_unreachable() {
+  jq -r '.unreachable[] | "unreachable: Emacs " + (if .host then .host + ":" else "" end) +
+     "\(.pid) (\(.server_name)) " +
      (if .reason == "refused" then "refused the probe, being busy with probes already queued on it"
       elif .reason == "timeout" then "did not answer within \(.timeout_seconds)s"
       else "could not be probed: \(.detail)" end) +
-     "; its agent-shells are missing from this listing"' <<< "$listing" >&2
-  return "$rc"
+     "; its agent-shells are missing from this listing"' >&2
 }
 
 timvisher_emacs__agent_shell_server_json() {
@@ -829,7 +947,18 @@ timvisher_emacs__agent_shell_send() {
 
   (( 2 == $# )) || { usage; return 2; }
 
-  local session_id=$1 file=$2
+  local address=$1 file=$2 spool='' body='' rc
+  if [[ $file == - ]]
+  then
+    spool=$(mktemp "${TMPDIR:-/tmp}/x.agent-shell-send.XXXXXX") || return 1
+    if ! cat > "$spool"
+    then
+      rm -f -- "$spool"
+      return 1
+    fi
+    file=$spool
+  fi
+
   if [[ ! -f $file || ! -r $file ]]
   then
     aictl_error \
@@ -838,7 +967,60 @@ timvisher_emacs__agent_shell_send() {
       --suggestion "Write the message to a file outside any worktree (e.g. /tmp/x.message) and pass its path"
     return 1
   fi
+
+  local hops=0
+  if timvisher_emacs_peers__is_envelope "$file"
+  then
+    hops=$(awk -F': *' '/^$/ { exit } tolower($1) == "x-hops" { print $2 }' "$file")
+    [[ $hops =~ ^[0-9]+$ ]] || hops=0
+    body=$(mktemp "${TMPDIR:-/tmp}/x.agent-shell-send.XXXXXX") || { rm -f -- "$spool"; return 1; }
+    timvisher_emacs_peers__body "$file" > "$body"
+    file=$body
+  fi
+
+  timvisher_emacs__agent_shell_send_file "$timeout" "$address" "$file" "$hops" "$emacs"
+  rc=$?
+  rm -f -- "$spool" "$body"
+  return "$rc"
+}
+
+timvisher_emacs__agent_shell_send_file() {
+  local timeout=$1 address=$2 file=$3 hops=$4 emacs=$5
   file=$(cd -- "$(dirname -- "$file")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "$file")") || return 1
+
+  local peer session_id
+  IFS=$'\x1f' read -r peer session_id <<< "$(timvisher_emacs_peers__split "$address")"
+  if [[ -n $peer ]]
+  then
+    if [[ -n $emacs ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_peer_unsupported \
+        --message "--emacs names an Emacs on this host, so it cannot pick one for '${address}'." \
+        --suggestion "Drop --emacs, or run the send on the peer: ssh <peer host> timvisher_emacs agent-shell send --emacs <pid> ${session_id} <message-file>"
+      return 1
+    fi
+    timvisher_emacs_peers__send "$peer" "$session_id" "$file" "$hops"
+    return
+  fi
+  if [[ $address == "$session_id" && $address == *:* && ${address%%:*} =~ $timvisher_emacs_peers__name_re ]]
+  then
+    timvisher_emacs_peers__config "${address%%:*}"
+    return 1
+  fi
+
+  local resolved match
+  if [[ -z $emacs ]] &&
+       resolved=$(timvisher_emacs__resolve_session "$session_id" 2>/dev/null) &&
+       [[ -z $resolved ]] && timvisher_emacs_peers__any
+  then
+    match=$(timvisher_emacs_peers__find "$session_id") || return 1
+    if [[ -n $match ]]
+    then
+      timvisher_emacs_peers__send "${match%%$'\t'*}" "${match#*$'\t'}" "$file" "$hops"
+      return
+    fi
+  fi
 
   local found emacs_pid socket found_by
   found=$(timvisher_emacs__agent_shell_server "$session_id" '' "$emacs") || return 1
@@ -870,6 +1052,95 @@ timvisher_emacs__agent_shell_send() {
       return 1
       ;;
   esac
+}
+
+timvisher_emacs__agent_shell_peers() {
+  local format=table
+  [[ -t 1 ]] || format=json
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --format)
+        format=${2-}
+        [[ $format == json || $format == table ]] || { usage; return 2; }
+        shift 2
+        ;;
+      *)
+        usage
+        return 2
+        ;;
+    esac
+  done
+
+  local peer config transport target reachable reason cache fetched age now
+  local -a rows=()
+  now=$(timvisher_emacs_peers__now)
+  while IFS= read -r peer
+  do
+    transport=null target=null reachable=false reason='' age=null
+    if config=$(timvisher_emacs_peers__config "$peer" 2>/dev/null)
+    then
+      transport=$(jq -c .transport <<< "$config")
+      target=$(jq -c 'if .transport == "ssh" then .host else .socket end' <<< "$config")
+      if ! timvisher_emacs_peers__probe "$config"
+      then
+        reason='probe says not reachable'
+      elif [[ $transport == '"socket"' ]]
+      then
+        if timvisher_emacs_peers__ping "$config"
+        then
+          reachable=true
+        else
+          reason='no answer to ping'
+        fi
+      elif timvisher_emacs_peers__ssh "$config" true > /dev/null 2>&1 < /dev/null
+      then
+        reachable=true
+      else
+        reason='ssh failed'
+      fi
+    else
+      reason='bad peer config'
+    fi
+    cache=$(timvisher_emacs_peers__cache_dir)/$peer.json
+    if [[ -f $cache ]]
+    then
+      fetched=$(jq -r '.fetched_at // empty' "$cache" 2>/dev/null)
+      [[ $fetched =~ ^[0-9]+$ ]] && age=$(( now - fetched ))
+    fi
+    rows+=("$(jq -cn --arg name "$peer" --argjson transport "$transport" --argjson target "$target" \
+                --argjson reachable "$reachable" --arg reason "$reason" --argjson age "$age" \
+                '{name: $name, transport: $transport, target: $target, reachable: $reachable,
+                  reason: (if $reason == "" then null else $reason end), cache_age_seconds: $age}')")
+  done < <(timvisher_emacs_peers__names)
+
+  local listing='[]'
+  (( 0 == ${#rows[@]} )) || listing=$(printf '%s\n' "${rows[@]}" | jq -s .)
+  listing=$(jq --argjson schema_version "$timvisher_emacs__schema_version" \
+              '{schema_version: $schema_version, peers: .}' <<< "$listing")
+
+  if [[ $format == json ]]
+  then
+    jq . <<< "$listing"
+    return
+  fi
+  {
+    printf 'PEER\tTRANSPORT\tTARGET\tREACHABLE\tREASON\tCACHE_AGE\n'
+    jq -r '.peers[] | [.name, (.transport // "-"), (.target // "-"), (.reachable | tostring),
+                       (.reason // "-"), ((.cache_age_seconds // "-") | tostring)] | @tsv' <<< "$listing"
+  } | column -t -s $'\t'
+}
+
+timvisher_emacs__local_only() {
+  local op=$1 address=$2 peer session
+  IFS=$'\x1f' read -r peer session <<< "$(timvisher_emacs_peers__split "$address")"
+  [[ -z $peer ]] && return 0
+  aictl_error \
+    --code timvisher_emacs_peer_unsupported \
+    --message "agent-shell ${op} works only on this host's sessions, not '${address}'." \
+    --suggestion "Run it on the peer: ssh <peer host> timvisher_emacs agent-shell ${op} ${session}"
+  return 1
 }
 
 timvisher_emacs__agent_shell_is_wedged() {
@@ -1354,7 +1625,7 @@ timvisher_emacs__ref_for() {
 }
 
 timvisher_emacs__agent_shell_start() {
-  local emacs_pid='' agent=claude prompt_file='' timeout=120
+  local emacs_pid='' agent=claude prompt_file='' timeout=120 resume_id='' kind=new cwd=''
 
   while (( 0 < $# ))
   do
@@ -1375,6 +1646,15 @@ timvisher_emacs__agent_shell_start() {
         timeout=${2-}
         [[ $timeout =~ ^[0-9]+$ ]] || { usage; return 2; }
         shift 2
+        ;;
+      --resume-session-id)
+        resume_id=${2-}
+        kind=resumed
+        shift 2 || { usage; return 2; }
+        ;;
+      --cwd)
+        cwd=${2-}
+        shift 2 || { usage; return 2; }
         ;;
       *)
         usage
@@ -1414,9 +1694,27 @@ timvisher_emacs__agent_shell_start() {
   local socket
   socket=$(timvisher_emacs__socket "$emacs_pid") || return 1
 
+  local resume_arg=nil
+  [[ -n $resume_id ]] && resume_arg=$(timvisher_emacs__elisp_string "$resume_id")
+
+  local cwd_arg=nil
+  if [[ -n $cwd ]]
+  then
+    if [[ ! -d $cwd ]]
+    then
+      aictl_error \
+        --code timvisher_emacs_no_such_directory \
+        --message "'${cwd}' is not a directory." \
+        --suggestion "Pass the directory the shell should work in, such as the session's worktree"
+      return 1
+    fi
+    cwd=$(cd -- "$cwd" && pwd -P) || return 1
+    cwd_arg=$(timvisher_emacs__elisp_string "$cwd")
+  fi
+
   local status
   status=$(timvisher_emacs__eval_value 20 "$emacs_pid" "$socket" \
-    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg)")") || return 1
+    "$(timvisher_emacs__with_helpers "(timvisher-agent-shell-start $(timvisher_emacs__elisp_string "$agent") $prompt_arg $resume_arg $cwd_arg)")") || return 1
 
   local buffer buffer_arg
   buffer=$(jq -r .buffer <<< "$status") || return 1
@@ -1438,12 +1736,12 @@ timvisher_emacs__agent_shell_start() {
     then
       aictl_error \
         --code timvisher_emacs_start_failed \
-        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} went away before opening a session." \
+        --message "The ${kind} ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} went away before opening a session." \
         --suggestion "Look in that Emacs's *Messages* and the agent's stderr buffer for why"
     else
       aictl_error \
         --code timvisher_emacs_start_pending \
-        --message "The new ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} had no session after ${timeout}s; it may still open one." \
+        --message "The ${kind} ${agent} agent-shell '${buffer}' in Emacs ${emacs_pid} had no session after ${timeout}s; it may still open one." \
         --reason "The prompt is submitted when the shell is ready, whether or not this command is waiting." \
         --suggestion "Check on it: timvisher_emacs server eval ${emacs_pid} '(timvisher-agent-shell-start-status ${buffer_arg})'"
     fi
@@ -1479,7 +1777,7 @@ timvisher_emacs__agent_shell_start() {
 # probe that did not come back is not permission to kill it.
 timvisher_emacs__cleanup_spared() {
   local timeout=$1 listing rc=0
-  listing=$(timvisher_emacs__agent_shell_ls --format json --timeout "$timeout") || rc=$?
+  listing=$(timvisher_emacs__agent_shell_ls --local --format json --timeout "$timeout") || rc=$?
   if (( 1 == rc || 2 == rc ))
   then
     return 1
@@ -1489,6 +1787,43 @@ timvisher_emacs__cleanup_spared() {
             | map("\(.[0])\thosts \(length) agent-shell(s)") | .[]),
          (.unreachable[] | "\(.pid)\tdid not answer, so what it hosts is unknown")' \
      <<< "$listing"
+}
+
+timvisher_emacs__agent_shell_resume() {
+  local -a args=()
+  local session_id=''
+
+  while (( 0 < $# ))
+  do
+    case $1 in
+      --emacs|--agent|--prompt-file|--timeout|--cwd)
+        (( 2 <= $# )) || { usage; return 2; }
+        args+=("$1" "$2")
+        shift 2
+        ;;
+      -*)
+        usage
+        return 2
+        ;;
+      *)
+        [[ -z $session_id ]] || { usage; return 2; }
+        session_id=$1
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n $session_id ]] || { usage; return 2; }
+  if [[ ! $session_id =~ ^[A-Za-z0-9][A-Za-z0-9-]{7,63}$ ]]
+  then
+    aictl_error \
+      --code timvisher_emacs_bad_session_id \
+      --message "'${session_id}' is not a session id." \
+      --suggestion "Pass the full session id, as in the session's .jsonl file name or ListAgents"
+    return 2
+  fi
+
+  timvisher_emacs__agent_shell_start "${args[@]}" --resume-session-id "$session_id"
 }
 
 timvisher_emacs__kill_each() {
@@ -1748,9 +2083,20 @@ case ${1-} in
         timvisher_emacs__agent_shell_start "$@"
         exit
         ;;
+      resume)
+        shift 2
+        timvisher_emacs__agent_shell_resume "$@"
+        exit
+        ;;
       get-server)
         shift 2
+        timvisher_emacs__local_only get-server "${!#}" || exit 1
         timvisher_emacs__agent_shell_server_json "$@"
+        exit
+        ;;
+      peers)
+        shift 2
+        timvisher_emacs__agent_shell_peers "$@"
         exit
         ;;
       send)
@@ -1760,12 +2106,14 @@ case ${1-} in
         ;;
       is-wedged)
         shift 2
+        timvisher_emacs__local_only is-wedged "${!#}" || exit 1
         timvisher_emacs__agent_shell_is_wedged "$@"
         exit
         ;;
       recover)
         [[ ${3-} == fork ]] || { usage; exit 2; }
         shift 3
+        timvisher_emacs__local_only 'recover fork' "${!#}" || exit 1
         timvisher_emacs__agent_shell_recover_fork "$@"
         exit
         ;;
