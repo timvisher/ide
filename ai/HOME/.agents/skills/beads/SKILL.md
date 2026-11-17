@@ -55,7 +55,7 @@ Tim's beads databases almost always live in **topics**, not in the repo. A topic
    bd prime
    ```
 
-   Then make sure the topic has no Dolt remote (see Dolt Remotes Are Forbidden below).
+   Then check the topic's Dolt remote is correct (see Dolt Remotes below).
 
    If hooks are installed, `bd prime` may already be injected. Run it manually after compaction, a cleared context, or whenever context is missing. Its output includes the topic's persistent memories.
 
@@ -274,31 +274,57 @@ When ending a session of beads-tracked work:
 5. **Push** a draft PR's branch with `timvisher_gh pr push`, the one push the `git` skill allows agents. For anything else, hand the human the exact `git push` or `timvisher_gh pr` command.
 6. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
 
-Beads changes need no sync step.
+6. **Sync beads.** `bd sync` in each topic you touched. Agents may run it:
+   the git wrapper's `push_guard__is_bd_dolt` permits a push whose refspecs
+   are all under `refs/dolt/` when `bd` is an ancestor process. A bare
+   `dolt push` is NOT covered and stays human-only.
 
-## Dolt Remotes Are Forbidden
+## Dolt Remotes
 
-Beads is strictly local. Never use a Dolt remote, for any topic or repo, even if the user's other instructions or `bd prime` list `bd dolt push` as a session step. Do not run:
-
-- `bd dolt push`, `bd dolt pull`, `bd sync`, or `bd federation …`
-- `bd dolt remote add`, or `bd init --remote`
-
-bd can adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. So whenever you start working in a topic, check for a remote:
+Topics sync to the gemedet-git tailnet node. `bd sync` is the federation loop:
+pull, check conflicts, recompute `is_blocked`, push.
 
 ```bash
 bd dolt remote list
-bd config get sync.remote
+bd dolt remote add origin git+ssh://timvisher@gemedet-git/volume3/git/timvisher_bd_topics/<name>.git
+bd dolt remote add origin-lan git+ssh://timvisher@gemedet-git.local:2223/volume3/git/timvisher_bd_topics/<name>.git
+bd sync
 ```
 
-If either shows anything, unconfigure it, then check again:
+Use `bd dolt remote add`; do not hand-edit `.dolt/repo_state.json`. Put the
+`:2223` in the LAN URL explicitly -- git reads `~/.ssh/config` for the port,
+Dolt may not.
+
+Do **not** remove a configured remote. An earlier revision of this skill said
+to, which would now undo the cutover.
+
+### When a topic refuses to sync
+
+`bd sync` failing with `local changes would be stomped by merge: events`,
+while `dolt status` reads clean, is beads #6368/#6575. The remote ref predates
+the migration that moved `events` onto the `dolt_ignore` plane, so `events` is
+tracked at `origin/main` but absent at local HEAD and any merge toward it
+refuses. Check it with:
 
 ```bash
-bd dolt remote remove <name>
-bd config unset sync.remote
-bd dolt remote list
+cd <topic>/.beads/embeddeddolt/<db>
+dolt sql -q "show tables as of 'origin/main'" | grep -cw events   # 1 = wedged
 ```
 
-Tell the user which remote you removed (name and URL) in your handoff.
+A `dolt push origin main` heals it permanently, because afterwards the merge
+target no longer tracks `events`. That push is human-only. An unmigrated topic
+needs two passes: the first `bd sync` runs the smart gate and fails, leaving
+commits to push; the same command then succeeds.
+
+Do not "fix" it by clearing `dolt_ignore` and committing those tables. It
+unblocks the merge but pushes machine-local state to a shared remote, and bd
+restores the ignore patterns on the next invocation anyway.
+
+### Adding a second machine to an existing topic
+
+Never `bd init` a topic that already exists on a remote -- that is what forked
+the `ide` topic into two unrelated histories with no common ancestor. Point
+the new machine at the existing remote and pull.
 
 ## What Belongs In Beads
 
@@ -320,4 +346,5 @@ Use agent-local planning tools only for the current turn's execution checklist. 
 - Do not close or mutate tasks unless the work is actually complete.
 - Do not claim milestones or epics as work; claim their leaves.
 - Look for a topic first; do not decide beads is not live until you have checked.
-- Never use Dolt remotes. If a topic has one configured, remove it.
+- Topics sync via Dolt remotes on gemedet-git. Never remove a configured remote.
+- Never `bd init` over an existing remote; it forks the history irrecoverably.
