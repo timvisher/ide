@@ -276,7 +276,7 @@ When ending a session of beads-tracked work:
 
 ## Dolt Remotes
 
-Each topic syncs through one Dolt remote, `origin`, on its forge: a private repo under `tim-visher_ddog` on GitHub for work topics, or the home NAS (`gemedet-git`) for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`.
+Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-topic_<name>` repo under `tim-visher_ddog` on GitHub for work topics, or the home NAS (`gemedet-git`) for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`.
 
 - Give a topic its remote with `timvisher_bd_topics remote <topic>`. It names the repo from the topic path, creates it with the seed commit Dolt needs, adds `origin`, runs `bd sync` and checks that `main` matches `origin/main`. It is safe to rerun. Do not hand-roll `bd dolt remote add`, and never edit `.dolt/repo_state.json`.
 - `bd sync` is the sync step: pull, check for conflicts, recompute `is_blocked`, push. Run it when you finish work in a topic. The git wrapper lets bd push `refs/dolt/` refs and nothing else, so never run a bare `dolt push`; hand Tim the command if one is needed.
