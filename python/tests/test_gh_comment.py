@@ -320,7 +320,8 @@ class CommentTest(GhTestCase):
         first = max(int(k) for k in self.github.state["review_comments"])
         before = (root_file.resolve(), first_file.resolve())
         self.assertEqual(0, self.gh("api", "-X", "DELETE", f"repos/{REPO}/pulls/comments/{root}")[0])
-        self.github._update(lambda s: s.update(fail_reactions=[first]))
+        self.github._update(lambda s: (s["reactions"].setdefault(f"review_comment:{first}", []).append(
+            {"id": 999999, "content": "+1", "user": "alice"}), s.update(fail_reactions=[first])))
         self.assertEqual(1, self.run_gh("pr", "pull", PR)[0])
         self.assertEqual((before, "nit\n", "fixed\n"),
                          ((root_file.resolve(), first_file.resolve()), root_file.read_text(), first_file.read_text()))
