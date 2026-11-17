@@ -145,6 +145,37 @@ else
   fail "skip another checkout's wrapper: got '$got', want '$t/bindir/sdtool'"
 fi
 
+fake_tool "$t/suite/deny/tool"
+fake_tool "$t/suite/tmp/fake/tool"
+
+run_test
+fake_brew "$t/homebrew"
+got=$(TIMVISHER_TESTS_DENY_DIR="$t/suite/deny" resolve)
+if [[ $got == "$t/suite/deny/tool" ]]
+then
+  pass "a deny stub replaces a real binary outside the suite's scratch"
+else
+  fail "deny stub over Homebrew: got '$got', want '$t/suite/deny/tool'"
+fi
+
+run_test
+got=$(TIMVISHER_TESTS_DENY_DIR="$t/suite/deny" resolve "$t/suite/tmp/fake")
+if [[ $got == "$t/suite/tmp/fake/tool" ]]
+then
+  pass "a fake in the suite's scratch wins over the deny stub"
+else
+  fail "fake in scratch: got '$got', want '$t/suite/tmp/fake/tool'"
+fi
+
+run_test
+got=$(TIMVISHER_TESTS_DENY_DIR="$t/suite/deny" timvisher_real_bin realpath "$t/wrap/realpath")
+if [[ $got != "$t/suite/deny/"* && -n $got ]]
+then
+  pass "a tool the deny dir has no stub for resolves as usual"
+else
+  fail "tool without a stub: got '$got'"
+fi
+
 echo
 echo "Results: $((tests - failures))/${tests} passed"
 (( failures == 0 ))

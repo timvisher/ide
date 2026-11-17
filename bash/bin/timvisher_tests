@@ -45,6 +45,13 @@ branch if it has one, else its installed trunk (~/git/ide or
 ~/.config/timvisher/ide). A relative --suite path is taken from the
 current directory, or else from the repo root.
 
+Every suite but the integration ones gets a deny dir first on its PATH,
+named by TIMVISHER_TESTS_DENY_DIR, whose gh, curl and ssh print
+'timvisher_tests: unit suite <label> reached a real <tool>; ...' on
+stderr and exit 127. timvisher_real_bin resolves those tools to the
+stubs too, unless it finds a fake in the suite's own scratch. Fakes a
+suite puts ahead of them on PATH still win.
+
 The HOME is a scratch copy, not a sandbox: ~/git/ide and
 ~/.config/timvisher/ide in it link to the real worktrees under test,
 so writes through them land in those worktrees.
@@ -336,7 +343,7 @@ new_home() {
 }
 
 home_env() {
-  local home=$1 tmp=$2 paths path pythonpath var
+  local home=$1 tmp=$2 deny=${3-} paths path pythonpath var
 
   # shellcheck disable=SC2016
   paths=$(env -i HOME="$home" PATH="$base_path" bash -c '
@@ -358,7 +365,7 @@ home_env() {
     TIMVISHER_GIT_HOME="$home/git"
     TIMVISHER_TESTS_TEMPLATE="$template"
     TIMVISHER_TESTS_BASE_PATH="$base_path"
-    PATH="$path"
+    PATH="${deny:+$deny:}$path"
     PYTHONPATH="$pythonpath"
     TMPDIR="$tmp"
     GIT_CONFIG_COUNT=2
@@ -371,6 +378,11 @@ home_env() {
     GIT_COMMITTER_NAME=Test
     GIT_COMMITTER_EMAIL=test@example.com
   )
+
+  if [[ -n $deny ]]
+  then
+    env_args+=(TIMVISHER_TESTS_DENY_DIR="$deny")
+  fi
 
   for var in LANG TERM $(compgen -e LC_)
   do
@@ -584,6 +596,22 @@ show_log() {
   fi
 }
 
+# deny_dir <dir> <label>: stubs in <dir> for the tools a unit suite must
+# never reach for real. The runner puts <dir> first on a unit suite's
+# PATH, ahead of the ide's bin dirs, whose gh shim would run the real gh.
+deny_dir() {
+  local dir=$1 label=$2 tool
+  mkdir -p "$dir" || return 1
+  for tool in gh curl ssh
+  do
+    printf '#!/bin/sh\nprintf '"'%%s\\\\n'"' %q >&2\nexit 127\n' \
+      "timvisher_tests: unit suite $label reached a real $tool; fake it, or move the case to bash/tests/integration" \
+      > "$dir/$tool" &&
+      chmod +x "$dir/$tool" ||
+      return 1
+  done
+}
+
 # Each suite compares the worktrees' content from its own start to its
 # own end, not to one snapshot from before the run: a change made and
 # left by one suite then fails that suite and the suites running
@@ -593,12 +621,21 @@ show_log() {
 run_suite() {
   local i=$1
   local label=${labels[i]} root=${roots[i]} kind=${kinds[i]} target=${targets[i]}
-  local dir=$run_dir/suites/$i
+  local dir=$run_dir/suites/$i deny=
   local -a env_args suite_cmd
   local -A before
 
   mkdir -p "$dir/tmp" || return 1
-  if ! new_home "$dir/home" || ! home_env "$dir/home" "$dir/tmp"
+  if [[ ${tiers[i]} == unit ]]
+  then
+    deny=$dir/deny
+    if ! deny_dir "$deny" "$label"
+    then
+      echo "FAIL: can't build the deny dir for $label"
+      return 1
+    fi
+  fi
+  if ! new_home "$dir/home" || ! home_env "$dir/home" "$dir/tmp" "$deny"
   then
     echo "FAIL: can't build a HOME for $label"
     return 1
@@ -673,10 +710,11 @@ run_suite() {
     "$core" "$overlay" "$run_dir" "$template" "$base_path" "$real_git"
   for i in "${!labels[@]}"
   do
-    printf 'labels[%d]=%q\nroots[%d]=%q\nkinds[%d]=%q\ntargets[%d]=%q\n' \
-      "$i" "${labels[i]}" "$i" "${roots[i]}" "$i" "${kinds[i]}" "$i" "${targets[i]}"
+    printf 'labels[%d]=%q\nroots[%d]=%q\nkinds[%d]=%q\ntargets[%d]=%q\ntiers[%d]=%q\n' \
+      "$i" "${labels[i]}" "$i" "${roots[i]}" "$i" "${kinds[i]}" "$i" "${targets[i]}" \
+      "$i" "${tiers[i]}"
   done
-  declare -f name_of new_home home_env tree_of show_log run_suite
+  declare -f name_of new_home home_env tree_of show_log deny_dir run_suite
 } > "$run_dir/state.bash" || die "Can't write '%s'" "$run_dir/state.bash"
 
 # This checkout's timvisher_date, not PATH's: the runner runs outside the
