@@ -43,63 +43,6 @@ source "${self_real%/*}/../functions/git_trunks.bash" ||
 SELF_DIR=$(cd "$(dirname "$0")" && pwd -P)
 config_dir=${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide
 
-# Migrate old cache root on first use
-old_cache_root=${HOME}/.cache/timvisher_EXP_git_worktrees
-new_cache_root=${HOME}/.cache/timvisher_git_worktrees
-if [[ -d $old_cache_root && ! -d $new_cache_root ]]
-then
-  warn "Migrating cache '%s' → '%s'" "$old_cache_root" "$new_cache_root"
-  mv "$old_cache_root" "$new_cache_root" ||
-    die "Unable to migrate cache '%s' → '%s'" "$old_cache_root" "$new_cache_root"
-
-  # Rewrite worktree .git files that reference the old cache path
-  live_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
-  shopt -s globstar nullglob
-  for gitfile in "$live_dir"/**/.git
-  do
-    [[ -f $gitfile ]] || continue
-    contents=$(< "$gitfile")
-    case $contents in
-      *"$old_cache_root"*)
-        new_contents=${contents//$old_cache_root/$new_cache_root}
-        printf '%s\n' "$new_contents" > "$gitfile"
-        warn "  Rewrote '%s'" "$gitfile"
-        ;;
-    esac
-  done
-  shopt -u globstar nullglob
-elif [[ -d $new_cache_root && ! -d $old_cache_root ]]
-then
-  # Cache already migrated but worktree .git files may still reference old path.
-  # Run a one-shot repair: check a sentinel file to avoid re-scanning every time.
-  sentinel=${new_cache_root}/.gitfile_migration_done
-  if [[ ! -f $sentinel ]]
-  then
-    live_dir=${TIMVISHER_GIT_HOME:-${HOME}/git}
-    repaired=0
-    shopt -s globstar nullglob
-    for gitfile in "$live_dir"/**/.git
-    do
-      [[ -f $gitfile ]] || continue
-      contents=$(< "$gitfile")
-      case $contents in
-        *"$old_cache_root"*)
-          new_contents=${contents//$old_cache_root/$new_cache_root}
-          printf '%s\n' "$new_contents" > "$gitfile"
-          warn "Repaired stale path in '%s'" "$gitfile"
-          repaired=1
-          ;;
-      esac
-    done
-    shopt -u globstar nullglob
-    if (( repaired ))
-    then
-      warn "Worktree .git files repaired after cache migration"
-    fi
-    : > "$sentinel"
-  fi
-fi
-
 # shellcheck disable=SC2218 # the sourced definition, before the override below
 repo_trunks_dir=$(timvisher_git_trunks_root)
 # This script's own code, and its tests, steer the root through
@@ -5273,7 +5216,8 @@ maintenance_trunk_for() {
 ensure_maintenance_scheduler() {
   local trunk=${1:-}
   local plist="${HOME}/Library/LaunchAgents/org.git-scm.git.daily.plist"
-  local stamp="${new_cache_root}/.timvisher_maintenance_scheduler_attempted"
+  local stamp_dir=${TIMVISHER_GIT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/timvisher_git}
+  local stamp=$stamp_dir/maintenance_scheduler_attempted
 
   [[ -f $plist ]] && return 0
   [[ -f $stamp ]] && return 0
@@ -5281,7 +5225,7 @@ ensure_maintenance_scheduler() {
 
   local machine_config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config_machine"
 
-  : > "$stamp"
+  mkdir -p -- "$stamp_dir" && : > "$stamp"
 
   warn 'ensure_maintenance_scheduler: git maintenance scheduler missing; installing via launchctl'
   if command git -C "$trunk" maintenance start \
