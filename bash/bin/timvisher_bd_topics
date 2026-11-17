@@ -380,6 +380,29 @@ write_repo_redirect() {
   mkdir -p "$repo_beads_dir" ||
     die "Unable to create '%s'" "$repo_beads_dir"
 
+  # A topic set on its own directory needs no redirect, because the repo's
+  # beads dir and the redirect target are the same path. Writing one anyway
+  # yields a self-referential redirect: bd follows it, lands back where it
+  # started, sees a redirect again and refuses the chain. It still falls
+  # through to the local database, so nothing breaks -- it just warns on
+  # every single invocation. Remove a stale one here as well as skipping it,
+  # so existing topics heal the next time they are set.
+  local repo_beads_real topic_beads_real
+  repo_beads_real=$(cd "$repo_beads_dir" 2>/dev/null && pwd -P) ||
+    repo_beads_real=$repo_beads_dir
+  topic_beads_real=$(cd "$topic_abs/.beads" 2>/dev/null && pwd -P) ||
+    topic_beads_real="$topic_abs/.beads"
+
+  if [[ $repo_beads_real == "$topic_beads_real" ]]
+  then
+    if [[ -f $redirect_path ]]
+    then
+      rm -f -- "$redirect_path" ||
+        warn "Unable to remove self-referential redirect '%s'" "$redirect_path"
+    fi
+    return 0
+  fi
+
   printf '%s\n' "$topic_abs/.beads" > "$redirect_path" ||
     die "Unable to write '%s'" "$redirect_path"
 }
