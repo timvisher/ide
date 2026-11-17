@@ -356,6 +356,35 @@ timvisher_emacs__eval() {
   timvisher_emacs__emacsclient "$timeout" "$pid" "$socket" "$expression"
 }
 
+# emacsclient's own -w is not a bound everywhere: emacsclient 31 on Linux
+# waits forever on a server that never answers, so this enforces it,
+# with a second of grace, rather than coreutils timeout, which macOS lacks.
+timvisher_emacs__emacsclient_within() {
+  local limit=$1 out pid i rc
+  shift
+  out=$(mktemp "${TMPDIR:-/tmp}/x.timvisher-emacs.XXXXXX") || return 1
+  emacsclient -w "$limit" "$@" > "$out" < /dev/null &
+  pid=$!
+  for (( i = 0; i < (limit + 1) * 10; i += 1 ))
+  do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null
+  then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f -- "$out"
+    echo "emacsclient: timed out: no answer within ${limit}s" >&2
+    return 124
+  fi
+  wait "$pid"
+  rc=$?
+  cat -- "$out"
+  rm -f -- "$out"
+  return "$rc"
+}
+
 timvisher_emacs__emacsclient() {
   # --errfile leaves emacsclient's own diagnostics for the caller and
   # reports nothing: a subcommand whose failure mode is itself the
@@ -371,7 +400,7 @@ timvisher_emacs__emacsclient() {
 
   local out err
   err=$(mktemp) || return 1
-  if ! out=$(emacsclient -s "$socket" -w "$timeout" --eval "$expression" 2> "$err")
+  if ! out=$(timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$expression" 2> "$err")
   then
     if [[ -n $errfile ]]
     then
@@ -406,7 +435,7 @@ timvisher_emacs__probe_servers() {
   local -a probe_pids=() probe_rows=()
   while IFS=$'\t' read -r pid socket
   do
-    emacsclient -s "$socket" -w "$timeout" --eval "$query" > "$dir/$pid.out" 2> "$dir/$pid.err" &
+    timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$query" > "$dir/$pid.out" 2> "$dir/$pid.err" &
     probe_pids+=("$!")
     probe_rows+=("$pid"$'\t'"$socket")
   done < <(timvisher_emacs__server_sockets)
@@ -612,7 +641,7 @@ timvisher_emacs__agent_shell_server() {
     # message lands in a shell nobody reads. Ask before believing it.
     verify=$(timvisher_emacs__with_helpers "$query") || return 1
     answered=true
-    answer=$(emacsclient -s "$socket" -w "$timeout" --eval "$verify" 2>/dev/null) || answered=false
+    answer=$(timvisher_emacs__emacsclient_within "$timeout" -s "$socket" --eval "$verify" 2>/dev/null) || answered=false
     if [[ $answered == true && $answer == t ]]
     then
       printf '%s\t%s\tprocess\t%s\t%s\n' "$emacs_pid" "$socket" "$session_id" "$name"
@@ -785,6 +814,7 @@ timvisher_emacs__agent_shell_ls_local() {
   while IFS=$'\t' read -r pid socket rc
   do
     if (( 0 != rc ))
+
     then
       reason=$(timvisher_emacs__probe_reason "$dir/$pid.err")
       detail=$(timvisher_emacs__probe_detail "$dir/$pid.err")
