@@ -528,7 +528,7 @@ mock_command gh bd dolt
 forge_file="$tmpdir/config/timvisher/ide/bd_topics_forge"
 forge_url='git+ssh://git@ddoghq.github.com/tim-visher_ddog'
 remote_topic="$tmpdir/topics/Remote/Alpha One"
-remote_url="$forge_url/remote-alpha-one.git"
+remote_url="$forge_url/bd-topic_remote-alpha-one.git"
 
 write_repo_state() {
   local dir=$1 remotes=$2
@@ -542,13 +542,13 @@ reset_remote_fixture() {
   mock_git_toplevel
   rm -rf -- "$tmpdir/topics/Remote"
   write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" '{}'
-  printf 'github %s\n' "$forge_url" > "$forge_file"
+  printf 'github %s bd-topic_\n' "$forge_url" > "$forge_file"
   mock_respond bd --stdout '  Database: alpha' -- dolt show
   mock_respond bd -- dolt remote add origin "$remote_url"
   mock_respond bd -- sync
   mock_respond dolt -- log --oneline '*'
-  mock_respond gh --exit 1 -- -R tim-visher_ddog/remote-alpha-one repo view ...
-  mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo create ...
+  mock_respond gh --exit 1 -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
+  mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo create ...
 }
 
 # Test: remote creates the repo, adds origin, syncs and reports.
@@ -556,8 +556,8 @@ run_test
 reset_remote_fixture
 result=$(run_cli remote 'Remote/Alpha One' 2>/dev/null)
 if [[ $result == "Remote/Alpha One"$'\t'"$remote_url" ]] &&
-    mock_called gh -R tim-visher_ddog/remote-alpha-one repo create \
-      tim-visher_ddog/remote-alpha-one --private --add-readme ... &&
+    mock_called gh -R tim-visher_ddog/bd-topic_remote-alpha-one repo create \
+      tim-visher_ddog/bd-topic_remote-alpha-one --private --add-readme ... &&
     mock_called bd dolt remote add origin "$remote_url" &&
     [[ $(mock_call_count bd sync) == 1 ]]
 then
@@ -634,7 +634,7 @@ fi
 # Test: an existing empty repo is reused; one holding Dolt data is not.
 run_test
 reset_remote_fixture
-mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo view ...
+mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
 mock_respond git -- ls-remote "${remote_url#git+}" refs/dolt/data
 reused=0
 run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
@@ -642,7 +642,7 @@ run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
   mock_called bd dolt remote add origin "$remote_url" &&
   reused=1
 reset_remote_fixture
-mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo view ...
+mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
 mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${remote_url#git+}" refs/dolt/data
 if (( reused == 1 )) &&
     ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
@@ -673,6 +673,22 @@ then
   pass "remote fails when dolt log cannot compare the branches"
 else
   fail "remote treated a failed dolt log as in sync"
+fi
+
+# Test: without a prefix the repo is named for the topic alone.
+run_test
+reset_remote_fixture
+printf 'github %s\n' "$forge_url" > "$forge_file"
+mock_respond bd -- dolt remote add origin "$forge_url/remote-alpha-one.git"
+mock_respond gh --exit 1 -- -R tim-visher_ddog/remote-alpha-one repo view ...
+mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo create ...
+if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+    mock_called gh -R tim-visher_ddog/remote-alpha-one repo create ... &&
+    mock_called bd dolt remote add origin "$forge_url/remote-alpha-one.git"
+then
+  pass "remote names the repo for the topic alone when the forge has no prefix"
+else
+  fail "remote without a prefix: calls='$(mock_calls)'"
 fi
 
 # Test: no forge configured.

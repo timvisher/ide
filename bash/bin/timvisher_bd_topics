@@ -55,10 +55,11 @@ usage() {
       name another active topic already has.
     - remote gives a topic a Dolt remote named origin on the forge in
       ~/.config/timvisher/ide/bd_topics_forge, a line of the form
-      'github git+ssh://<host>/<owner>'. It creates the private repo with
-      a README commit (Dolt will not push to a repo with no refs), adds
-      the remote, runs 'bd sync' and checks that main and origin/main
-      match. It is safe to rerun.
+      'github git+ssh://<host>/<owner> [<repo-prefix>]'; the prefix
+      marks topic repos on an account that holds others. It creates the
+      private repo with a README commit (Dolt will not push to a repo
+      with no refs), adds the remote, runs 'bd sync' and checks that main
+      and origin/main match. It is safe to rerun.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
@@ -598,11 +599,12 @@ require_unique_repo_name() {
 read_forge() {
   local -n __forge_kind=$1
   local -n __forge_base=$2
+  local -n __forge_prefix=$3
 
   [[ -r $forge_config ]] ||
     die "No topic forge configured; write '<kind> <url-base>' to '%s'" "$forge_config"
 
-  read -r __forge_kind __forge_base < "$forge_config"
+  read -r __forge_kind __forge_base __forge_prefix < "$forge_config"
   __forge_base=${__forge_base%/}
 
   case $__forge_kind in
@@ -1347,7 +1349,8 @@ case $cmd in
     fi
 
     repo_name=$(require_unique_repo_name "$topic_rel") || exit 1
-    read_forge forge_kind forge_base
+    read_forge forge_kind forge_base forge_prefix
+    repo_name=$forge_prefix$repo_name
     forge_owner=${forge_base##*/}
     remote_url="$forge_base/$repo_name.git"
     db_dir=$(topic_db_dir "$topic_abs") || exit 1
