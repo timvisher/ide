@@ -178,6 +178,57 @@ else
   fail "maybe_execute_hook should succeed when no hook exists"
 fi
 
+printf '#!/usr/bin/env bash\necho "PRE_REMOVE_RAN:$#:$1"\n' \
+  > "$hooks_dir/DataDog/dd-source/pre-remove-branch-dir"
+chmod +x "$hooks_dir/DataDog/dd-source/pre-remove-branch-dir"
+
+run_test
+stderr=$(maybe_execute_hook DataDog dd-source pre-remove-branch-dir '/a b/wt' 2>&1 >/dev/null)
+if [[ $stderr == *"PRE_REMOVE_RAN:1:/a b/wt"* ]]
+then
+  pass "maybe_execute_hook passes trailing arguments to the hook"
+else
+  fail "maybe_execute_hook should pass '/a b/wt' as the hook's only argument, got '${stderr}'"
+fi
+
+pre_remove_saved_repo_trunks_dir=$repo_trunks_dir
+repo_trunks_dir="$tmpdir/pre_remove/repo_trunks"
+mkdir -p "$repo_trunks_dir/ddoghq/dd-source" "$tmpdir/elsewhere/dd-source" "$tmpdir/pre_remove/volume/ddoghq/dd-source"
+ln -s "$tmpdir/pre_remove/volume" "$tmpdir/pre_remove/linked_trunks"
+
+run_test
+stderr=$(timvisher_logging_log_level=WARN \
+  run_pre_remove_hook "$repo_trunks_dir/ddoghq/dd-source" /x/wt 2>&1 >/dev/null)
+if [[ $stderr == *"PRE_REMOVE_RAN:1:/x/wt"* ]]
+then
+  pass "run_pre_remove_hook resolves org/repo from the trunk path"
+else
+  fail "run_pre_remove_hook should run ddoghq/dd-source's hook via its alias org, got '${stderr}'"
+fi
+
+run_test
+stderr=$(timvisher_logging_log_level=WARN \
+  run_pre_remove_hook "$tmpdir/elsewhere/dd-source" /x/wt 2>&1 >/dev/null)
+if [[ $stderr != *PRE_REMOVE_RAN* && $stderr == *"skipping hook"* ]]
+then
+  pass "run_pre_remove_hook skips a trunk outside repo_trunks_dir"
+else
+  fail "run_pre_remove_hook should skip a trunk outside repo_trunks_dir, got '${stderr}'"
+fi
+
+repo_trunks_dir="$tmpdir/pre_remove/linked_trunks"
+run_test
+stderr=$(timvisher_logging_log_level=WARN \
+  run_pre_remove_hook "$tmpdir/pre_remove/volume/ddoghq/dd-source" /x/wt 2>&1 >/dev/null)
+if [[ $stderr == *"PRE_REMOVE_RAN:1:/x/wt"* ]]
+then
+  pass "run_pre_remove_hook finds a trunk named by its real path under a symlinked root"
+else
+  fail "run_pre_remove_hook should resolve a trunk under a symlinked repo_trunks_dir, got '${stderr}'"
+fi
+
+repo_trunks_dir=$pre_remove_saved_repo_trunks_dir
+
 # ---------------------------------------------------------------------------
 # die_if_trunk_cached_under_alias_org tests
 # ---------------------------------------------------------------------------
@@ -259,6 +310,15 @@ hooks_dir=$hook_alias_saved_hooks_dir
 # pr_head_repo_spec tests
 # ---------------------------------------------------------------------------
 
+mock_respond timvisher_gh --stdout fork-owner/repo -- -R upstream/repo info --pr 1 .pr.headRepo
+mock_respond timvisher_gh -- -R upstream/repo info --pr 2 .pr.headRepo
+mock_respond timvisher_gh -- -R upstream/repo info --pr 3 .pr.headRepo
+mock_respond timvisher_gh --stdout fork-owner/repo -- -R upstream/repo info --pr 4 .pr.headRepo
+mock_respond timvisher_gh --stdout 'done' -- -R upstream/repo info --pr 5 .pr.head
+mock_respond timvisher_gh --stdout dev -- -R upstream/repo info --pr 5 .pr.base
+mock_respond timvisher_gh --exit 1 --stderr 'timvisher_gh_gh_failed: Unable to query PR upstream/repo#99' -- \
+  -R upstream/repo info --pr 99 .pr.head
+
 # Test: pr_head_repo_spec returns correct spec for normal PR
 run_test
 result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/1") || true
@@ -279,12 +339,12 @@ else
   fail "pr_head_repo_spec should fail for null headRepository, got rc=${rc} result='${result}'"
 fi
 
-# Test: pr_head_repo_spec fails when headRepository.name is empty string
+# Test: pr_head_repo_spec fails when the head repository has no name
 run_test
 result=$(pr_head_repo_spec "https://github.com/upstream/repo/pull/3" 2>/dev/null) && rc=0 || rc=$?
 if (( 0 < rc ))
 then
-  pass "pr_head_repo_spec fails when headRepository.name is empty"
+  pass "pr_head_repo_spec fails when the head repository has no name"
 else
   fail "pr_head_repo_spec should fail for empty repo name, got rc=${rc} result='${result}'"
 fi
@@ -297,6 +357,26 @@ then
   pass "pr_head_repo_spec normalizes PR URL with trailing path"
 else
   fail "pr_head_repo_spec trailing path: expected 'fork-owner/repo', got '${result}'"
+fi
+
+# Test: pr_head_ref_name and pr_base_ref_name read the PR's branches
+run_test
+result="$(pr_head_ref_name "https://github.com/upstream/repo/pull/5") $(pr_base_ref_name "https://github.com/upstream/repo/pull/5/files")"
+if [[ $result == "done dev" ]]
+then
+  pass "pr_head_ref_name and pr_base_ref_name read the PR's head and base"
+else
+  fail "pr_head_ref_name/pr_base_ref_name: expected 'done dev', got '${result}'"
+fi
+
+# Test: pr_head_ref_name fails for a PR GitHub doesn't have
+run_test
+result=$(pr_head_ref_name "https://github.com/upstream/repo/pull/99" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "pr_head_ref_name fails for a missing PR"
+else
+  fail "pr_head_ref_name missing PR: expected failure, got rc=${rc} result='${result}'"
 fi
 
 # Test: pr_head_repo_spec fails when gh is not found
@@ -437,9 +517,11 @@ fi
 
 # An unresolvable alias (cache miss, no candidate hosts it) dies loudly rather
 # than falling back to a wrong org. With an empty gh config dir the resolver
-# has no account to pin and the mock gh 404s every /repos probe.
+# has no account to pin, and gh 404s each candidate's /repos probe.
 # Called in a subshell, as every real caller does ($(get_org ...)), so the
 # die's exit is contained.
+mock_respond gh --exit 1 --stderr 'gh: Not Found (HTTP 404)' -- api /repos/ddoghq/ghost-repo --silent
+mock_respond gh --exit 1 --stderr 'gh: Not Found (HTTP 404)' -- api /repos/DataDog/ghost-repo --silent
 run_test
 if ( TIMVISHER_GH_CONFIG_DIR="$tmpdir/gh-noaccounts" \
      get_org "dd/ghost-repo/x" ) >/dev/null 2>&1
@@ -714,6 +796,13 @@ fi
 # ---------------------------------------------------------------------------
 # find_pushable_fork tests
 # ---------------------------------------------------------------------------
+
+tg_info_json() {
+  printf '{"timvisher_gh":{"me":"myuser","exists":true,"archived":false,"fork":true,"parent":"parentorg/parentrepo","defaultBranch":"main","permissions":{"push":%s},"topics":[],"forkNetwork":{"mainRepo":"parentorg/parentrepo","mainOwner":"parentorg"}}}' "$1"
+}
+mock_respond timvisher_gh --stdout "$(tg_info_json true)" -- -R altuser/parentrepo info --json
+mock_respond timvisher_gh --stdout "$(tg_info_json true)" -- -R myuser/parentrepo info --json
+mock_respond timvisher_gh --stdout "$(tg_info_json false)" -- -R nopush/parentrepo info --json
 
 # Test: find_pushable_fork finds fork via aliases
 run_test
@@ -1162,8 +1251,12 @@ mock_reset git
 # probe_fork_parent tests
 # ---------------------------------------------------------------------------
 
-# Test: returns parent for a fork (mock gh has myuser/parentrepo as fork
-# of parentorg/parentrepo)
+mock_respond timvisher_gh --stdout parentorg/parentrepo -- -R myuser/parentrepo info .parent
+mock_respond timvisher_gh -- -R parentorg/parentrepo info .parent
+mock_respond timvisher_gh --exit 1 --stderr 'timvisher_gh_no_such_repository: GitHub has no repository definitely-not/a-real-repo' -- \
+  -R definitely-not/a-real-repo info .parent
+
+# Test: returns parent for a fork
 run_test
 result=$(probe_fork_parent "myuser/parentrepo")
 if [[ $result == "parentorg/parentrepo" ]]
@@ -1297,15 +1390,23 @@ fi
 # ---------------------------------------------------------------------------
 # fork command tests
 #
-# Mock gh returns user "myuser" and treats myuser/parentrepo as an
-# existing fork of parentorg/parentrepo, so the gh repo fork code path
-# is skipped.  We stub clone in a subshell to capture what the fork
-# command would have delegated to.
+# The gh user is "myuser", and myuser/parentrepo is an existing fork of
+# parentorg/parentrepo, so the gh repo fork code path is skipped.  We
+# stub clone in a subshell to capture what the fork command would have
+# delegated to.
 # ---------------------------------------------------------------------------
+
+for me_spec in parentorg/parentrepo parentorg/collisionrepo myuser/parentrepo
+do
+  mock_respond timvisher_gh --stdout myuser -- -R "$me_spec" info .me
+done
+mock_respond timvisher_gh --stdout true -- -R myuser/parentrepo info .exists
+mock_respond timvisher_gh --stdout true -- -R myuser/collisionrepo info .exists
+mock_respond timvisher_gh -- -R myuser/collisionrepo info .parent
 
 # Test: current_gh_user returns the mocked login
 run_test
-result=$(current_gh_user parentorg)
+result=$(current_gh_user parentorg/parentrepo)
 if [[ $result == "myuser" ]]
 then
   pass "current_gh_user returns the configured gh login"
@@ -1399,10 +1500,13 @@ fi
 # ---------------------------------------------------------------------------
 # should_auto_fork tests
 #
-# Mock gh: nopush/parentrepo is a fork-of-parent that I lack push to.
 # parentorg/parentrepo is a non-fork I lack push to.  Branch "main"
-# exists on each; "feature-x" does not.
+# exists on it; "feature-x" does not.
 # ---------------------------------------------------------------------------
+
+mock_respond timvisher_gh --stdout true -- -R parentorg/parentrepo info --branch main .branch.exists
+mock_respond timvisher_gh --stdout false -- -R parentorg/parentrepo info --branch feature-x .branch.exists
+mock_respond timvisher_gh --stdout false -- -R parentorg/parentrepo info .permissions.push
 
 # Test: triggers when branch missing AND no push rights AND foreign org
 run_test
@@ -1526,6 +1630,60 @@ then
   pass "reap_reason: without one it falls back to the resolved trunk"
 else
   fail "default target: expected non-zero, got rc=${rr_rc} out='${rr_out}'"
+fi
+
+# ---------------------------------------------------------------------------
+# worktree_gc__reap_reason remote tiers: live PR state, then a merged PR
+# from a branch of the same name
+# ---------------------------------------------------------------------------
+
+rr_dir="$tmpdir/reap_reason"
+rr_remote_cache="$rr_dir/cache"
+mkdir -p "$rr_dir/merged" "$rr_dir/open" "$rr_dir/nourl" "$rr_remote_cache" || exit 1
+echo 'https://github.com/upstream/repo/pull/5' > "$rr_dir/merged/pr.md.url"
+echo 'https://github.com/upstream/repo/pull/1' > "$rr_dir/open/pr.md.url"
+
+mock_respond git --exit 1 -- -C "$rr_remote_cache" show-ref --verify --quiet refs/remotes/upstream/main
+mock_respond git --exit 1 -- -C "$rr_remote_cache" merge-base --is-ancestor '*' origin/main
+mock_respond timvisher_gh --stdout merged -- -R upstream/repo info --pr 5 .pr.state
+mock_respond timvisher_gh --stdout open -- -R upstream/repo info --pr 1 .pr.state
+mock_respond timvisher_gh --stdout 9 -- -R upstream/repo info --branch merged-branch .branch.mergedPr
+mock_respond timvisher_gh -- -R upstream/repo info --branch unmerged .branch.mergedPr
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/merged" "$rr_remote_cache" refs/heads/done main "" 2>/dev/null)
+if [[ $result == "PR #5 merged" ]]
+then
+  pass "worktree_gc__reap_reason reaps a worktree whose recorded PR merged"
+else
+  fail "worktree_gc__reap_reason merged PR: expected 'PR #5 merged', got '${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/open" "$rr_remote_cache" refs/heads/feature main "" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "worktree_gc__reap_reason keeps a worktree whose recorded PR is open"
+else
+  fail "worktree_gc__reap_reason open PR: expected rc>0 and no reason, got rc=${rc} result='${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/nourl" "$rr_remote_cache" refs/heads/merged-branch main upstream/repo 2>/dev/null)
+if [[ $result == "PR #9 merged" ]]
+then
+  pass "worktree_gc__reap_reason finds a merged PR from the branch without a recorded URL"
+else
+  fail "worktree_gc__reap_reason branch fallback: expected 'PR #9 merged', got '${result}'"
+fi
+
+run_test
+result=$(worktree_gc__reap_reason "$rr_dir/nourl" "$rr_remote_cache" refs/heads/unmerged main upstream/repo 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]]
+then
+  pass "worktree_gc__reap_reason keeps a branch with no merged PR"
+else
+  fail "worktree_gc__reap_reason no merged PR: expected rc>0 and no reason, got rc=${rc} result='${result}'"
 fi
 
 # ---------------------------------------------------------------------------

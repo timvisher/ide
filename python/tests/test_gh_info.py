@@ -22,12 +22,40 @@ fi
 if [[ $1 == api && $2 == user && -n $target_repo ]]
 then
   echo testuser
+elif [[ $1 == api && $2 == repos/archivedorg/*/branches/* ]]
+then
+  echo "gh: Branch not found (HTTP 404)" >&2
+  exit 1
+elif [[ $1 == api && $2 == repos/*/branches/feature%2Fx ]]
+then
+  :
+elif [[ $1 == api && $2 == repos/*/branches/* ]]
+then
+  echo "gh: Branch not found (HTTP 404)" >&2
+  exit 1
+elif [[ $1 == api && $2 == repos/*/pulls/7 ]]
+then
+  echo '{"state":"closed","merged":true,"head":{"ref":"feature/x","repo":{"full_name":"forkorg/testrepo"}},"base":{"ref":"main"}}'
+elif [[ $1 == api && $2 == repos/*/pulls/8 ]]
+then
+  echo '{"state":"open","merged":false,"head":{"ref":"gone","repo":null},"base":{"ref":"dev"}}'
+elif [[ $1 == api && $2 == repos/missingorg/* ]]
+then
+  echo '{"message":"Not Found","status":"404"}'
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
 elif [[ $1 == api && $2 == repos/archivedorg/* ]]
 then
-  echo '{"fork":false,"source":null,"archived":true}'
+  echo '{"fork":false,"parent":null,"source":null,"archived":true,"default_branch":"trunk","permissions":{"push":false},"topics":[]}'
 elif [[ $1 == api && $2 == repos/* ]]
 then
-  echo '{"fork":true,"source":"upstreamorg/testrepo","archived":false}'
+  echo '{"fork":true,"parent":{"full_name":"midorg/testrepo"},"source":{"full_name":"upstreamorg/testrepo"},"archived":false,"default_branch":"main","permissions":{"push":true},"topics":["soft-fork"]}'
+elif [[ $1 == pr && $2 == list && $target_repo != archivedorg/* && $4 == feature/x ]]
+then
+  echo 7
+elif [[ $1 == pr && $2 == list ]]
+then
+  :
 else
   exit 1
 fi
@@ -132,7 +160,13 @@ class InfoTest(unittest.TestCase):
         self.assertEqual(
             {
                 "me": "testuser",
+                "exists": True,
                 "archived": False,
+                "fork": True,
+                "parent": "midorg/testrepo",
+                "defaultBranch": "main",
+                "permissions": {"push": True},
+                "topics": ["soft-fork"],
                 "forkNetwork": {"mainRepo": "upstreamorg/testrepo", "mainOwner": "upstreamorg"},
             },
             blob["timvisher_gh"],
@@ -257,9 +291,105 @@ class InfoTest(unittest.TestCase):
         for args in (["info"], ["info", "--json"]):
             rc, out, err = self.run_gh("-R", "archivedorg/oldrepo", *args, cwd=self.tmp)
             self.assertEqual(0, rc, err)
-            self.assertEqual({"timvisher_gh": {"me": "testuser", "archived": True,
+            self.assertEqual({"timvisher_gh": {"me": "testuser", "exists": True, "archived": True, "fork": False,
+                                               "parent": None, "defaultBranch": "trunk",
+                                               "permissions": {"push": False}, "topics": [],
                                                "forkNetwork": {"mainRepo": "archivedorg/oldrepo",
                                                                "mainOwner": "archivedorg"}}}, json.loads(out))
+
+    def test_info_repository_fields(self):
+        for name, expected in ((".fork", "true"), (".parent", "midorg/testrepo"), (".defaultBranch", "main"),
+                               (".permissions.push", "true"), (".topics", '["soft-fork"]'), (".exists", "true")):
+            self.assertEqual((0, expected + "\n"), self.run_gh("info", name)[:2], name)
+
+    def test_parent_is_the_immediate_parent_not_the_network_root(self):
+        self.assertEqual("midorg/testrepo\n", self.run_gh("info", ".parent")[1])
+        self.assertEqual("upstreamorg/testrepo\n", self.run_gh("info", ".forkNetwork.mainRepo")[1])
+
+    def test_parent_of_a_repository_that_is_not_a_fork_is_empty_or_null(self):
+        self.assertEqual((0, "\n"), self.run_gh("-R", "archivedorg/oldrepo", "info", ".parent", cwd=self.tmp)[:2])
+        self.assertEqual((0, "null\n"),
+                         self.run_gh("-R", "archivedorg/oldrepo", "info", "--json", ".parent", cwd=self.tmp)[:2])
+
+    def test_exists_is_false_for_a_missing_repository(self):
+        rc, out, err = self.run_gh("-R", "missingorg/nope", "info", ".exists", cwd=self.tmp)
+        self.assertEqual((0, "false\n"), (rc, out))
+        self.assertNotIn("HTTP 404", err)
+
+    def test_other_repository_fields_fail_for_a_missing_repository(self):
+        rc, out, err = self.run_gh("-R", "missingorg/nope", "info", ".parent", cwd=self.tmp)
+        self.assertEqual((1, ""), (rc, out))
+        self.assertIn("GitHub has no repository missingorg/nope", err)
+
+    def test_block_of_a_missing_repository_says_it_does_not_exist(self):
+        rc, out, err = self.run_gh("-R", "missingorg/nope", "info", cwd=self.tmp)
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"timvisher_gh": {"me": "testuser", "exists": False}}, json.loads(out))
+
+    def test_pr_fields(self):
+        for name, expected in ((".pr.head", "feature/x"), (".pr.base", "main"), (".pr.headRepo", "forkorg/testrepo"),
+                               (".pr.state", "merged")):
+            self.assertEqual((0, expected + "\n"), self.run_gh("info", "--pr", "7", name)[:2], name)
+        self.assertIn("gh api repos/testuser/testrepo/pulls/7", self.gh_calls())
+
+    def test_pr_head_repo_is_empty_once_the_head_repository_is_deleted(self):
+        self.assertEqual((0, "\n"), self.run_gh("info", "--pr", "8", ".pr.headRepo")[:2])
+        self.assertEqual((0, "open\n"), self.run_gh("info", "--pr", "8", ".pr.state")[:2])
+
+    def test_pr_fields_need_a_pr_number(self):
+        rc, _, err = self.run_gh("info", ".pr.head")
+        self.assertEqual(2, rc)
+        self.assertIn("needs --pr <number>", err)
+        rc, _, err = self.run_gh("info", "--pr", "seven", ".pr.head")
+        self.assertEqual(2, rc)
+        self.assertIn("takes a PR number", err)
+
+    def test_branch_exists_url_encodes_the_branch(self):
+        self.assertEqual((0, "true\n"), self.run_gh("info", "--branch", "feature/x", ".branch.exists")[:2])
+        self.assertIn("gh api repos/testuser/testrepo/branches/feature%2Fx --silent", self.gh_calls())
+
+    def test_branch_exists_is_false_for_a_missing_branch(self):
+        rc, out, err = self.run_gh("info", "--branch", "nope", ".branch.exists")
+        self.assertEqual((0, "false\n"), (rc, out))
+        self.assertNotIn("HTTP 404", err)
+
+    def test_branch_merged_pr(self):
+        self.assertEqual((0, "7\n"), self.run_gh("info", "--branch", "feature/x", ".branch.mergedPr")[:2])
+        self.assertIn("gh -R testuser/testrepo pr list --head feature/x --state merged --json number "
+                      "--jq .[0].number // empty", self.gh_calls())
+        self.assertEqual((0, "\n"), self.run_gh("info", "--branch", "other", ".branch.mergedPr")[:2])
+
+    def test_branch_does_not_take_a_flag_as_its_value(self):
+        rc, _, err = self.run_gh("info", "--branch", "--json", ".branch.exists")
+        self.assertEqual(2, rc)
+        self.assertIn("--branch requires a value", err)
+        self.assertEqual([], self.gh_calls())
+
+    def test_branch_fields_need_a_branch(self):
+        rc, _, err = self.run_gh("info", ".branch.exists")
+        self.assertEqual(2, rc)
+        self.assertIn("needs --branch <name>", err)
+
+    def test_pr_and_branch_add_objects_to_the_block(self):
+        rc, out, err = self.run_gh("-R", "someorg/testrepo", "info", "--pr", "7", "--branch", "feature/x",
+                                   cwd=self.tmp)
+        self.assertEqual(0, rc, err)
+        gh = json.loads(out)["timvisher_gh"]
+        self.assertEqual({"head": "feature/x", "base": "main", "headRepo": "forkorg/testrepo", "state": "merged"},
+                         gh["pr"])
+        self.assertEqual({"exists": True, "mergedPr": 7}, gh["branch"])
+
+    def test_pr_without_a_repository_fails(self):
+        rc, out, err = self.run_gh("info", "--pr", "7", cwd=self.elsewhere)
+        self.assertEqual((1, ""), (rc, out))
+        self.assertIn("needs a repository", err)
+
+    def test_a_missing_gh_is_an_error_not_a_traceback(self):
+        (self.bin / "gh").unlink()
+        rc, out, err = self.run_gh("info", ".archived", PATH=f"{self.bin}:/usr/bin:/bin")
+        self.assertEqual((1, ""), (rc, out))
+        self.assertIn("gh is not installed", err)
+        self.assertNotIn("Traceback", err)
 
     def test_r_without_an_argument_is_a_usage_error(self):
         rc, _, err = self.run_gh("-R", cwd=self.tmp)

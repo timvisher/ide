@@ -99,7 +99,7 @@ timvisher_gh pr info --schema-version 1 .url   # in scripts: pin the record's co
 timvisher_gh pr info --help             # every field
 ```
 
-`issue info`, `comment info` and `thread info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue or comment URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR.
+`issue info`, `comment info`, `thread info` and `review info` work the same way. `info` reads the state and fetches only objects it doesn't know yet; `timvisher_gh pr fetch` refreshes. A `<target>` is a github.com PR, issue, comment or review (`#pullrequestreview-<ID>`, for `review` only) URL (optionally with `/files`, `/changes`, `/commits`, a `?query` or a `#fragment`), `current-browser-tab`, or a tracked file; with none, it's the worktree's PR, except for `review info`, which needs the review's URL or a file in its store directory.
 
 ## Workflow — creating an issue
 
@@ -120,11 +120,14 @@ timvisher_gh pr ready
 ```
 
 - Reports "already ready" (and runs only the ready post-hooks) when the PR is not a draft
-- Polls `gh pr checks` until all non-excluded checks pass, runs the ready pre-hooks (e.g. an ARP gate), then marks the PR ready
-- Fails immediately if any check has `bucket == "fail"`
+- Polls `gh pr checks` until all non-excluded checks pass (just once under `--force`), runs the ready pre-hooks (e.g. an ARP gate), then marks the PR ready
+- Fails immediately if any check has `bucket == "fail"` or `"cancel"` (unless `--force`)
 - Org and repo exclude patterns at `timvisher_gh.config/{orgs/OWNER,repos/OWNER/REPO}/pr/ready/exclude-checks.txt` (either config root) ignore meta-checks (like mergegate) that never complete until all other checks pass
 - One regex pattern per line; `#` comments and blank lines are skipped
 - Override the default 10-second poll interval with `TIMVISHER_GH_PR_READY_POLL_INTERVAL`
+- `--exclude <regex>` (repeatable) ignores matching checks for this run only, on top of the exclude files — for a one-off, explained failure on a single PR
+- `--required-only` considers only the checks the base branch requires to merge (`gh pr checks --required`); it's a flag, not the default, because repos often rely on checks they never mark required
+- `--force` reads the checks once and marks the PR ready even if some failed, were cancelled or are pending, or gh lists none, naming each bypassed check; it bypasses checks only, so the pre-hooks still run and can still refuse
 - A PR that still reports no checks at all after 60 seconds (`TIMVISHER_GH_PR_READY_NO_CHECKS_GRACE`) is treated as having none and marked ready, so a repo without CI doesn't wait forever
 
 ## Workflow — reading PR feedback
@@ -133,7 +136,7 @@ timvisher_gh pr ready
 timvisher_gh pr pull
 ```
 
-Mirrors the whole conversation into the PR's store directory (`.timvisher_gh/pr/`): top-level comments under `comments/<ts>-<author>-<slug>/comment.md`, each review thread under `threads/<ts>-<author>-<path>-L<line>/` with its `root-comment.md` and `replies/<ts>-<author>-<slug>/comment.md`, and reviews under `reviews/` (read-only). Each object's `<kind>.json` beside it is its record. Safe to rerun: GitHub's edits flow into files you haven't changed, your unpushed edits to your own comments are kept and reported, and other people's comments are read-only. Filter ARP threads by the root comment's author starting with `dd-agentic-review-platform`.
+Mirrors the whole conversation into the PR's store directory (`.timvisher_gh/pr/`): top-level comments under `comments/<ts>-<author>-<slug>/comment.md`, each review thread under `threads/<ts>-<author>-<path>-L<line>/` with its `root-comment.md` and `replies/<ts>-<author>-<slug>/comment.md`, and reviews under `reviews/` (their bodies are read-only; see below for deleting and dismissing them). Each object's `<kind>.json` beside it is its record. Safe to rerun: GitHub's edits flow into files you haven't changed, your unpushed edits to your own comments are kept and reported, and other people's comments are read-only. Filter ARP threads by the root comment's author starting with `dd-agentic-review-platform`.
 
 ## Workflow — answering PR feedback
 
@@ -159,7 +162,48 @@ timvisher_gh comment delete '<comment URL>'          # prompts first
 timvisher_gh comment delete --force '<comment URL>'  # your own comments only
 ```
 
-`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone.
+`--force` refuses comments someone else wrote; delete those interactively. Our copy is archived once GitHub confirms the comment is gone. A comment GitHub already reports missing (404) is archived only when the account can also see the repository; otherwise the 404 may just mean the wrong account, so it stops with `timvisher_gh_delete_repo_unreadable` and keeps our copy. Deleting a thread's root doesn't delete the thread: GitHub promotes its first reply to root and keeps the thread, and `comment delete` refetches the PR so our copy follows. A review GitHub removes along with its only comment (an empty one, as every single REST-posted review comment has) is archived too.
+
+### Delete a review thread
+
+```bash
+timvisher_gh thread delete '<thread URL>'          # prompts first
+timvisher_gh thread delete --force '<thread URL>'  # only when every comment in it is yours
+timvisher_gh thread delete --plan '<thread URL>'   # list what it would delete
+```
+
+GitHub has no thread delete, so this deletes every comment in the thread, replies newest first and the root last, archiving each copy as GitHub confirms it gone, then the thread and any review removed with it. If a delete fails it stops, reports what's left, and a rerun with the same URL finishes; a thread already gone is reported as such. As with `comment delete`, a 404 counts as gone only when the account can also see the repository.
+
+### Delete or dismiss a review
+
+```bash
+timvisher_gh review delete                            # your pending review on the worktree's PR; prompts first
+timvisher_gh review delete --force '<review URL>'     # your own pending reviews only
+timvisher_gh review dismiss '<review URL>' why.md     # a submitted approval or change request; prompts first
+timvisher_gh review push '<review URL>'               # apply a dismissal that didn't land
+```
+
+`review delete` is only for pending (unsubmitted) reviews, and takes their draft comments with it. `review dismiss` is permanent and only for submitted `APPROVED` or `CHANGES_REQUESTED` reviews; it needs write access and a non-empty message file. The message file moves into the review's store directory as `dismissal.md` (leaving a symlink) and DISMISSED becomes the review's wanted state, which push applies; rerunning reports "already dismissed". `--force` refuses reviews someone else wrote, `--plan` shows what would happen, and a review's URL is `<PR URL>#pullrequestreview-<ID>`. A review GitHub already reports missing is archived only when the account can also see the repository.
+
+## Workflow — closing and reopening
+
+```bash
+timvisher_gh pr close            # the worktree's PR, or pass a PR URL
+timvisher_gh pr reopen '<PR URL>'
+timvisher_gh issue close '<issue URL>' --reason not_planned   # or completed; no target: the worktree's issue.md
+timvisher_gh issue reopen '<issue URL>'
+```
+
+Each changes GitHub only when it doesn't already match, reporting "already closed" or "already open" otherwise, and refreshes the stored record (`timvisher_gh pr info .state`, `timvisher_gh issue info .state_reason`). Closing a closed issue with a different `--reason` changes only the reason. A merged PR is already closed and can't be reopened. `--plan` shows what it would do. GitHub can't delete a PR; close it instead.
+
+### Delete an issue
+
+```bash
+timvisher_gh issue delete '<issue URL>'          # prompts first; permanent
+timvisher_gh issue delete --force '<issue URL>'  # your own issues only
+```
+
+Only repository admins can delete issues; anyone else gets an error before any prompt, so close it with `--reason not_planned` instead. `--force` refuses issues someone else opened. Our copy is archived once GitHub confirms the issue is gone. An issue GitHub reports deleted (410) is archived; one it reports missing (404) only when the account can also see the repository.
 
 ## Workflow — merging and releasing
 

@@ -95,6 +95,17 @@ def _row(db, object_id):
                      "deleted_at"), row))
 
 
+def live(db, url):
+    row = db.execute("SELECT id, kind, database_id, raw.payload FROM objects LEFT JOIN raw ON raw.object_id = id "
+                     "WHERE url = ? COLLATE NOCASE AND deleted_at IS NULL AND store_path NOT LIKE 'archive/%'",
+                     (url,)).fetchone()
+    if row is None:
+        return None
+    object_id, kind, database_id, payload = row
+    raw = json.loads(payload) if payload else {}
+    return {"id": object_id, "kind": kind, "database_id": database_id, "raw": raw.get("root") or raw}
+
+
 def register(db, *, id, kind, url, owner, repo, store_path, number=None, database_id=None, parent_id=None):
     db.execute("INSERT INTO objects (id, kind, url, owner, repo, number, database_id, parent_id, store_path) "
                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET url = excluded.url",
@@ -137,6 +148,13 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
+def _write_bytes_atomic(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def _link(link, target):
     link.parent.mkdir(parents=True, exist_ok=True)
     tmp = link.with_name(f".{link.name}.tmp-link")
@@ -168,22 +186,32 @@ def merge_move(source, target):
 
 def promote(db, object_id, source):
     source = pathlib.Path(source).absolute()
-    target = store_file(db, object_id)
-    if not (source.is_symlink() and source.resolve() == target.resolve()):
+    target = place(source, store_file(db, object_id))
+    db.execute("DELETE FROM authored WHERE path = ? AND object_id != ?", (str(source), object_id))
+    db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
+    return target
+
+
+def _same(source, target):
+    return source.resolve() == target.resolve() or (
+        source.exists() and target.exists() and os.path.samefile(source, target))
+
+
+def place(source, target):
+    source = pathlib.Path(source).absolute()
+    if not _same(source, target):
         if target.exists() and target.read_bytes() != source.read_bytes():
             fail("timvisher_gh_store_conflict",
                  f"'{source}' and its store file '{target}' differ, so neither replaces the other.",
                  reason="The store already holds this object's source, from another worktree or an earlier run.",
                  suggestions=[f"Fold what you want from '{source}' into '{target}', then remove '{source}' and rerun",
                               f"Or replace it: 'ln -sf {target} {source}' after copying your text there"])
-        if target.exists():
-            source.unlink()
-        else:
+        if source.is_symlink() and not target.exists():
+            _write_bytes_atomic(target, source.read_bytes())
+        elif not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(source, target)
         _link(source, target)
-    db.execute("DELETE FROM authored WHERE path = ? AND object_id != ?", (str(source), object_id))
-    db.execute("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)", (object_id, str(source)))
     return target
 
 
@@ -216,10 +244,94 @@ def archive(db, object_id, now):
                f"WHERE id IN ({', '.join('?' * len(moved))})", moved)
     db.execute("UPDATE objects SET deleted_at = ? WHERE id = ?", (now, object_id))
     for moved_id in moved:
-        for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (moved_id,)).fetchall():
-            if pathlib.Path(path).is_symlink():
-                _link(pathlib.Path(path), store_file(db, moved_id))
+        _relink(db, moved_id, store_file(db, moved_id))
     return new
+
+
+def _relink(db, object_id, target):
+    _relink_paths([path for (path,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (object_id,))],
+                  target)
+
+
+def _relink_paths(paths, target):
+    for path in paths:
+        if pathlib.Path(path).is_symlink():
+            _link(pathlib.Path(path), target)
+
+
+# A thread keeps its node ID when GitHub promotes its first reply to root, so
+# the thread object stays and takes over the reply's copy, rather than being
+# archived and refetched under a new store path. The deleted root becomes an
+# archived comment of the thread under its own roots/ directory, where a later
+# archive of the thread can't land on it. The file changes are returned as an
+# action to run once the SQL commits, so a fetch that fails later leaves the
+# files as they were.
+def rehead(db, thread_id, reply_id, database_id, url, now):
+    thread = _row(db, thread_id)
+    head = root() / thread["store_path"] / FILES["thread"]
+    raw = db.execute("SELECT payload FROM raw WHERE object_id = ?", (thread_id,)).fetchone()
+    old = (json.loads(raw[0]) if raw else {}).get("root") or {}
+    old_paths = [p for (p,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (thread_id,))]
+    reply_fields = reply_paths = []
+    reply = directory = reply_archive = None
+    if reply_id is not None:
+        reply = store_file(db, reply_id)
+        directory = reply.parent
+        reply_archive = root() / "archive" / _row(db, reply_id)["store_path"]
+        reply_fields = db.execute("SELECT name, base, base_at, remote, remote_at FROM fields WHERE object_id = ?",
+                                  (reply_id,)).fetchall()
+        reply_paths = [p for (p,) in db.execute("SELECT path FROM authored WHERE object_id = ?", (reply_id,))]
+        db.execute("DELETE FROM fields WHERE object_id = ?", (reply_id,))
+        db.execute("DELETE FROM authored WHERE object_id = ?", (reply_id,))
+        db.execute("DELETE FROM raw WHERE object_id = ?", (reply_id,))
+        db.execute("DELETE FROM objects WHERE id = ?", (reply_id,))
+    db.execute("UPDATE objects SET url = ?, database_id = ? WHERE id = ?", (url, database_id, thread_id))
+    # Without the old root's REST payload there's no node ID to key its
+    # record by, and a made-up one would pass for GitHub's; its copy is
+    # still kept, untracked.
+    if old.get("node_id"):
+        name = comment_name(old["created_at"], old["user"]["login"], old["body"])
+        key = unique(root(), child_key(f"archive/{thread['store_path']}", "roots", name))
+        register(db, id=old["node_id"], kind="comment", url=thread["url"], owner=thread["owner"],
+                 repo=thread["repo"], database_id=thread["database_id"], parent_id=thread_id, store_path=key)
+        db.execute("UPDATE objects SET deleted_at = ? WHERE id = ?", (now, old["node_id"]))
+        db.execute("INSERT INTO raw VALUES (?, ?, ?) ON CONFLICT (object_id) DO UPDATE SET "
+                   "payload = excluded.payload, fetched_at = excluded.fetched_at", (old["node_id"], json.dumps(old), now))
+        db.execute("DELETE FROM fields WHERE object_id = ?", (old["node_id"],))
+        db.execute("UPDATE fields SET object_id = ? WHERE object_id = ? AND name IN ('body', 'reactions')",
+                   (old["node_id"], thread_id))
+        db.execute("UPDATE authored SET object_id = ? WHERE object_id = ?", (old["node_id"], thread_id))
+        kept = root() / key / FILES["comment"]
+    else:
+        db.execute("DELETE FROM authored WHERE object_id = ?", (thread_id,))
+        db.execute("DELETE FROM fields WHERE object_id = ? AND name IN ('body', 'reactions')", (thread_id,))
+        kept = free(root() / "archive" / thread["store_path"] / "roots" / str(thread["database_id"]) / FILES["comment"])
+    db.executemany("INSERT INTO fields (object_id, name, base, base_at, remote, remote_at) VALUES (?, ?, ?, ?, ?, ?)",
+                   [(thread_id, *row) for row in reply_fields])
+    db.executemany("INSERT OR IGNORE INTO authored (object_id, path) VALUES (?, ?)",
+                   [(thread_id, path) for path in reply_paths])
+
+    def apply():
+        if head.exists():
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(head, kept)
+        _relink_paths(old_paths, kept)
+        if reply is None:
+            return
+        if reply.exists():
+            head.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(reply, head)
+        _relink_paths(reply_paths, head)
+        for name in ("comment.json", "comment.url"):
+            if (directory / name).exists():
+                (directory / name).unlink()
+        if directory.is_dir():
+            if any(directory.iterdir()):
+                merge_move(directory, reply_archive)
+            else:
+                directory.rmdir()
+
+    return apply, old.get("node_id")
 
 
 def export(db, object_ids, record_for, now):

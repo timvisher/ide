@@ -43,12 +43,14 @@ class FakeGitHub:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def add_repo(self, repo, default_branch="main", fork=False, source=None, archived=False,
-                 merge=True, squash=False, rebase=False):
+                 merge=True, squash=False, rebase=False, admin=True, push=True):
         def change(state):
             state["repos"][repo] = {"default_branch": default_branch, "fork": fork,
                                     "source": source and {"full_name": source}, "archived": archived,
                                     "allow_merge_commit": merge, "allow_squash_merge": squash,
-                                    "allow_rebase_merge": rebase}
+                                    "allow_rebase_merge": rebase,
+                                    "permissions": {"admin": admin, "maintain": admin, "push": push, "triage": True,
+                                                    "pull": True}}
         # GitHub's REST repos/O/R reports the allow_* settings as null below
         # admin, so the fake serves them only through 'gh repo view'.
         self._update(change)
@@ -72,11 +74,12 @@ class FakeGitHub:
         self._update(change)
 
     def add_issue(self, repo, number, *, title="", body="", state="open", author=None, closed_at=None,
-                  moved_to=None):
+                  moved_to=None, state_reason=None):
         def change(s):
             s["issues"].setdefault(repo, {})[str(number)] = {
                 "number": number, "title": title, "body": body, "state": state, "author": author or s["viewer"],
-                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at, "moved_to": moved_to}
+                "created_at": s["now"], "updated_at": s["now"], "closed_at": closed_at, "moved_to": moved_to,
+                "state_reason": state_reason}
         self._update(change)
 
     def add_issue_comment(self, repo, number, body, *, user=None):
@@ -91,13 +94,21 @@ class FakeGitHub:
         return self._update(change)
 
     def add_review_comment(self, repo, number, body, *, path="README.md", line=1, side="RIGHT",
-                           reply_to=None, user=None):
+                           reply_to=None, user=None, review=False):
         def change(s):
+            review_id = None
+            if review:
+                s["next_id"] += 1
+                review_id = s["next_id"]
+                s["reviews"][str(review_id)] = {
+                    "id": review_id, "node_id": f"PRR_{review_id}", "repo": repo, "pull_number": number,
+                    "user": user or s["viewer"], "state": "COMMENTED", "body": "", "submitted_at": s["now"],
+                    "html_url": f"https://github.com/{repo}/pull/{number}#pullrequestreview-{review_id}"}
             s["next_id"] += 1
             comment_id = s["next_id"]
             comment = {"id": comment_id, "node_id": f"PRRC_{comment_id}", "repo": repo, "pull_number": number,
                        "body": body, "user": user or s["viewer"], "created_at": s["now"], "updated_at": s["now"],
-                       "pull_request_review_id": None,
+                       "pull_request_review_id": review_id,
                        "html_url": f"https://github.com/{repo}/pull/{number}#discussion_r{comment_id}"}
             if reply_to is None:
                 comment.update(path=path, line=line, start_line=None, side=side, commit_id="0" * 40)
@@ -118,7 +129,8 @@ class FakeGitHub:
             review_id = s["next_id"]
             s["reviews"][str(review_id)] = {
                 "id": review_id, "node_id": f"PRR_{review_id}", "repo": repo, "pull_number": number,
-                "user": user, "state": state, "body": body, "submitted_at": s["now"],
+                "user": user, "state": state, "body": body,
+                "submitted_at": None if state == "PENDING" else s["now"],
                 "html_url": f"https://github.com/{repo}/pull/{number}#pullrequestreview-{review_id}"}
             return review_id
         return self._update(change)

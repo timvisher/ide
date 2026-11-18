@@ -6,9 +6,22 @@ source "$(dirname "$0")/../lib/timvisher_git.bash" || exit 1
 # submodules, remotes and pushes, against real repositories. git is
 # mocked with a passthrough to the real git, so the unit never runs the
 # ~/bin/git wrapper (its own suite covers it). Fixtures are built with
-# "$real_git" directly.
+# "$real_git" directly. gh and timvisher_gh are mocked with no
+# passthrough, except in the fit section at the end, which runs the
+# real timvisher_gh.
 
 mock_passthrough git "$real_git"
+
+# The fixtures' remotes are local paths or repositories GitHub doesn't
+# have; tests that need GitHub to know a repository say so.
+mock_respond gh -- -R '/*' repo set-default '/*'
+mock_respond timvisher_gh --exit 2 --stderr "timvisher_gh_usage: Option -R: not OWNER/REPO" -- -R '/*' info --json
+mock_respond timvisher_gh --exit 1 --stderr "timvisher_gh_no_such_repository: GitHub has no such repository" -- \
+  -R '*/*' info .parent
+mock_respond timvisher_gh --stdout myuser -- -R testorg/testrepo info .me
+mock_respond timvisher_gh --stdout false -- -R testorg/testrepo info --branch master .branch.exists
+mock_respond timvisher_gh --exit 1 --stderr "timvisher_gh_no_such_repository: GitHub has no repository testorg/testrepo" -- \
+  -R testorg/testrepo info .permissions.push
 
 source_timvisher_git
 
@@ -575,6 +588,11 @@ then
 else
   fail "resolve_stack_base: agent notice: got '${result}', stderr: $(cat "$stack_base_err")"
 fi
+
+mock_respond timvisher_gh --stdout true -- -R oldorg/testrepo info .archived
+mock_respond timvisher_gh --stdout false -- -R liveorg/testrepo info .archived
+mock_respond timvisher_gh --exit 1 --stderr "timvisher_gh_no_such_repository: GitHub has no repository ghostorg/testrepo" -- \
+  -R ghostorg/testrepo info .archived
 
 stack_base_with_siblings() {
   (
@@ -2261,9 +2279,12 @@ fi
 # ---------------------------------------------------------------------------
 # cache_trunk auto-migration of existing fork caches to alternates
 #
-# The mock gh recognizes myuser/parentrepo as a fork of parentorg/parentrepo
-# and parentorg/parentrepo as a non-fork, so we use those for these tests.
+# myuser/parentrepo is a fork of parentorg/parentrepo, and
+# parentorg/parentrepo is a non-fork.
 # ---------------------------------------------------------------------------
+
+mock_respond timvisher_gh --stdout parentorg/parentrepo -- -R myuser/parentrepo info .parent
+mock_respond timvisher_gh -- -R parentorg/parentrepo info .parent
 
 # Helper: pre-create a bare cache like cache_trunk would have on the
 # pre-3252cca branch (no x.fork-parent, no alternates).  Origin URL is
@@ -2304,13 +2325,13 @@ else
 fi
 
 # Test: cache_trunk on an existing non-fork cache writes empty
-# x.fork-parent so future calls don't re-probe.  Mock gh returns no
-# parent for parentorg/parentrepo, so the marker should be empty and no
-# alternates should be set.
+# x.fork-parent so future calls don't re-probe.  parentorg/parentrepo
+# has no parent, so the marker should be empty and no alternates
+# should be set.
 run_test
 nonfork_cache=$(preexisting_cache parentorg2 nonfork)
-# parentorg2/nonfork isn't in the mock; mock will exit 1 → empty.
-# Use parentorg/parentrepo which mock recognizes as a non-fork.
+# parentorg2/nonfork isn't on GitHub, so the probe fails → empty.
+# Use parentorg/parentrepo, a non-fork.
 rm -rf "$cache_dir/repo_trunks/parentorg2"
 nonfork_cache=$(preexisting_cache parentorg parentrepo)
 # Remove the auto-created alt/marker files we may have left over from
@@ -2593,6 +2614,41 @@ then
   pass "worktree gc warns about a legacy keep file"
 else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
+fi
+
+gc_hooks="$gc_base/hooks"
+gc_hook_log="$gc_base/pre-remove.log"
+mkdir -p "$gc_hooks/gcorg/gcrepo"
+cat > "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir" <<HOOK
+#!/usr/bin/env bash
+if [[ -d \$1 ]]
+then
+  printf 'present %s\\n' "\$1" >> '$gc_hook_log'
+else
+  printf 'absent %s\\n' "\$1" >> '$gc_hook_log'
+fi
+HOOK
+chmod +x "$gc_hooks/gcorg/gcrepo/pre-remove-branch-dir"
+
+# shellcheck disable=SC2034
+gc_out=$(
+  repo_trunks_dir=$gc_trunks
+  live_repo_dir=$gc_live
+  hooks_dir=$gc_hooks
+  worktree_gc__protect_dir=$gc_protect
+  worktree_gc__archive_dir="$gc_base/archives"
+  timvisher_logging_log_level=INFO
+  TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" PATH="$gc_bin:$PATH" \
+    worktree_gc 2>&1 <<< y
+)
+
+run_test
+if [[ $(< "$gc_hook_log") == "present $gc_live/gcorg/gcrepo/unpinned" &&
+      ! -e $gc_live/gcorg/gcrepo/unpinned ]]
+then
+  pass "worktree gc runs pre-remove-branch-dir with the worktree path before removing it"
+else
+  fail "worktree gc pre-remove-branch-dir: log '$(cat "$gc_hook_log" 2>&1)' out: ${gc_out}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2992,6 +3048,73 @@ main_before=$(pg -C "$pf/origin.git" rev-parse refs/heads/main)
 grant_run "$pf/work" "main $(head_of "$pf") $main_before unmoved"
 check_push "a grant never pushes the default branch" \
   eval '(( push_rc != 0 )) && [[ $push_err == *"default branch"* && $(pg -C "$pf/origin.git" rev-parse refs/heads/main) == "$main_before" ]]'
+
+# ---------------------------------------------------------------------------
+# timvisher_git and timvisher_gh fit together: the real timvisher_gh
+# answers timvisher_git's questions over a mocked gh. Everywhere else
+# timvisher_gh is mocked at its CLI, so only these catch timvisher_git
+# asking for something timvisher_gh doesn't answer that way.
+# ---------------------------------------------------------------------------
+
+fit_bin="$tmpdir/fit_bin"
+fit_home="$tmpdir/fit_home"
+mkdir -p "$fit_bin" "$fit_home" ||
+  die "cannot create fit dirs"
+fit_python=$(python3 -c 'import sys; print(sys.executable)') ||
+  die "cannot resolve python3"
+# The mocks' bin and the system dirs only, so the mocked gh is the only
+# gh timvisher_gh can reach.
+printf '#!%s\nPATH=%q exec %q %q "$@"\n' \
+  "$BASH" "$TIMVISHER_MOCK_DIR/bin:/usr/bin:/bin" "$fit_python" \
+  "${script_dir%/bash}/python/bin/timvisher_gh" > "$fit_bin/timvisher_gh" ||
+  die "cannot write the fit timvisher_gh"
+chmod +x "$fit_bin/timvisher_gh" ||
+  die "cannot make the fit timvisher_gh executable"
+
+fit_run() {
+  PATH="$fit_bin:$PATH" timvisher_tests_with_home "$fit_home" "$@"
+}
+
+mock_respond gh --stdout fituser -- -R fitorg/fitrepo api user --jq .login
+mock_respond gh --stdout '{"state":"closed","merged":true,"head":{"ref":"done","repo":{"full_name":"fitorg/fitrepo"}},"base":{"ref":"main"}}' -- \
+  api repos/fitorg/fitrepo/pulls/5
+mock_respond gh --stdout '{"state":"open","merged":false,"head":{"ref":"feature","repo":{"full_name":"fitorg/fitrepo"}},"base":{"ref":"main"}}' -- \
+  api repos/fitorg/fitrepo/pulls/6
+
+run_test
+result=$(fit_run current_gh_user fitorg/fitrepo 2>/dev/null)
+if [[ $result == fituser ]] && mock_called gh -R fitorg/fitrepo api user --jq .login
+then
+  pass "fit: current_gh_user reads the login through the real timvisher_gh"
+else
+  fail "fit: current_gh_user: expected 'fituser', got '${result}'"
+fi
+
+fit_wt="$tmpdir/fit_reap"
+mkdir -p "$fit_wt/merged" "$fit_wt/open" "$fit_wt/cache" ||
+  die "cannot create fit worktrees"
+echo 'https://github.com/fitorg/fitrepo/pull/5' > "$fit_wt/merged/pr.md.url"
+echo 'https://github.com/fitorg/fitrepo/pull/6' > "$fit_wt/open/pr.md.url"
+
+run_test
+result=$(fit_run worktree_gc__reap_reason "$fit_wt/merged" "$fit_wt/cache" refs/heads/done main "" 2>/dev/null)
+if [[ $result == "PR #5 merged" ]] && mock_called gh api repos/fitorg/fitrepo/pulls/5
+then
+  pass "fit: worktree gc reaps on the merged state the real timvisher_gh reads"
+else
+  fail "fit: reap merged PR: expected 'PR #5 merged', got '${result}'"
+fi
+
+run_test
+result=$(fit_run worktree_gc__reap_reason "$fit_wt/open" "$fit_wt/cache" refs/heads/feature main "" 2>/dev/null) && rc=0 || rc=$?
+if (( 0 < rc )) && [[ -z $result ]] && mock_called gh api repos/fitorg/fitrepo/pulls/6
+then
+  pass "fit: worktree gc keeps a worktree whose PR the real timvisher_gh reads as open"
+else
+  fail "fit: reap open PR: expected rc>0 and no reason, got rc=${rc} result='${result}'"
+fi
+
+mock_finish || (( failures += 1 ))
 
 echo ""
 echo "Results: $((tests - failures))/${tests} passed"

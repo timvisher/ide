@@ -59,9 +59,13 @@ class State:
         self.db = connection
         self.touched = set()
         self.after_commit = None
+        self.deferred = []
 
     def touch(self, object_id):
         self.touched.add(object_id)
+
+    def defer(self, action):
+        self.deferred.append(action)
 
     @contextlib.contextmanager
     def write(self):
@@ -77,9 +81,13 @@ class State:
             self.db.execute("ROLLBACK")
             perf.locked(asked, taken, time.perf_counter())
             self.touched.clear()
+            self.deferred.clear()
             raise
         self.db.execute("COMMIT")
         perf.locked(asked, taken, time.perf_counter())
+        deferred, self.deferred = self.deferred, []
+        for action in deferred:
+            action()
         touched, self.touched = self.touched, set()
         if touched and self.after_commit is not None:
             with perf.phase("export"):

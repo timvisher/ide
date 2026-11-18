@@ -56,6 +56,16 @@ export "GIT_CONFIG_KEY_${n}=url.${origin}.insteadOf"
 export "GIT_CONFIG_VALUE_${n}=https://github.com/testorg/testrepo"
 export GIT_CONFIG_COUNT=$(( n + 1 ))
 
+# Matches ~/.config/git/gitignore, which the isolated HOME does not pick up.
+# Without it the x.* markers timvisher_git drops in a worktree it configures
+# show as untracked here and nowhere else, so a status assertion fails for a
+# reason that has nothing to do with what it tests.
+printf 'x.*\n' > "$tmpdir/gitignore" || exit 1
+n=${GIT_CONFIG_COUNT:-0}
+export "GIT_CONFIG_KEY_${n}=core.excludesFile"
+export "GIT_CONFIG_VALUE_${n}=${tmpdir}/gitignore"
+export GIT_CONFIG_COUNT=$(( n + 1 ))
+
 out='' err='' rc=0
 run() {
   local h=$1

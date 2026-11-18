@@ -3,8 +3,8 @@ import pathlib
 import sys
 
 from timvisher import aictl, browser
-from timvisher.gh import adopt, fetch, nouns, pr, record, state, store, sync, targets
-from timvisher.gh.errors import ERROR, fail, usage
+from timvisher.gh import adopt, close, fetch, nouns, pr, record, state, store, sync, targets
+from timvisher.gh.errors import ERROR, USAGE as USAGE_STATUS, fail, usage
 
 USAGE = """\
 Usage: timvisher_gh [-C <path>] issue [fetch|pull|push|edit] [<target>] [options]
@@ -17,6 +17,11 @@ Usage: timvisher_gh [-C <path>] issue [fetch|pull|push|edit] [<target>] [options
   issue push         fetch, then push the title and body, creating the issue
                      from the source if there is none
   issue edit         as push, but an error if the issue doesn't exist
+  issue close        close the issue, optionally --reason completed|not_planned
+                     (see 'issue close --help')
+  issue reopen       reopen a closed issue
+  issue delete       delete the issue on GitHub, then archive our copy (see
+                     'issue delete --help')
 
 Options: --plan, --ours, --theirs, --merge, --open
 
@@ -104,6 +109,112 @@ def _create(opened, context, source, flags):
     return 0, created["html_url"]
 
 
+DELETE_USAGE = """\
+Usage: timvisher_gh [-C <path>] issue delete [--force] [--plan] [<target>]
+
+Delete the issue on GitHub, permanently, then archive our copy once
+GitHub confirms it's gone. GitHub lets only repository admins delete
+issues; anyone else gets an error and nothing is asked or deleted. It
+prompts first unless --force, and --force refuses someone else's issue.
+An issue already gone is reported, and our copy archived; one GitHub
+reports missing (404) rather than deleted (410) counts as gone only if
+the account can see the repository.
+"""
+
+DELETE_ISSUE = ("mutation DeleteIssue($id: ID!) { deleteIssue(input: {issueId: $id}) "
+                "{ repository { nameWithOwner } } }")
+
+
+def _parse_delete(args):
+    target, flags = None, {"force": False, "plan": False}
+    for arg in args:
+        match arg:
+            case "-h" | "--help":
+                sys.stdout.write(DELETE_USAGE)
+                return None
+            case "--force" | "-f":
+                flags["force"] = True
+            case "--plan":
+                flags["plan"] = True
+            case _ if arg.startswith("-") or target is not None:
+                usage(f"issue delete: unexpected argument '{arg}'", "See 'timvisher_gh issue delete --help'")
+            case _:
+                target = arg
+    return target, flags
+
+
+def _archive(opened, url, now):
+    found = store.live(opened.db, url)
+    if found is not None:
+        with opened.write() as db:
+            store.archive(db, found["id"], now)
+            opened.touch(found["id"])
+
+
+def _delete(opened, found, force, plan, now):
+    fetcher = fetch.Fetcher(opened, now)
+    try:
+        with opened.write():
+            issue_id = fetcher.issue(found.owner, found.repo, found.number)
+    except fetch.NotFound as missing:
+        if not isinstance(missing, fetch.Gone):
+            fetch.require_readable(f"{found.owner}/{found.repo}", found.url, "issue")
+        if not plan:
+            _archive(opened, found.url, now)
+        aictl.info(code="timvisher_gh_already_deleted", message=f"{found.url} is already gone from GitHub.")
+        return 0
+    url, number, owner, repo = opened.db.execute("SELECT url, number, owner, repo FROM objects WHERE id = ?",
+                                                 (issue_id,)).fetchone()
+    spec = f"{owner}/{repo}"
+    raw = json.loads(opened.db.execute("SELECT payload FROM raw WHERE object_id = ?", (issue_id,)).fetchone()[0])
+    author = raw["user"]["login"]
+    theirs = author.lower() != fetcher.viewer(spec).lower()
+    if force and theirs:
+        fail("timvisher_gh_delete_not_yours", f"{url} is {author}'s issue, so --force won't delete it.",
+             status=USAGE_STATUS, suggestions=["Rerun without --force to confirm deleting someone else's issue"])
+    if not (fetch.api(spec, f"repos/{spec}").get("permissions") or {}).get("admin"):
+        fail("timvisher_gh_issue_delete_not_admin", f"Only an admin of {spec} can delete {url}, and you aren't one.",
+             reason="GitHub lets only repository admins delete issues; nothing was deleted.",
+             suggestions=[f"Close it instead: 'timvisher_gh issue close {url} --reason not_planned'",
+                          f"Or ask an admin of {spec} to delete it"])
+    if plan:
+        print(f"- issue   {url}  delete")
+        return 0
+    by = f" by {author}" if theirs else ""
+    if not force and not nouns.confirm(f"Permanently delete {url} ('{raw['title']}'{by})? It can't be undone."):
+        aictl.info(code="timvisher_gh_delete_skipped", message=f"Kept {url}.")
+        return 0
+    fetch.api(spec, "graphql", "-f", f"query={DELETE_ISSUE}", "-f", f"id={issue_id}")
+    try:
+        fetch.api(spec, f"repos/{spec}/issues/{number}")
+    except fetch.NotFound:
+        with opened.write() as db:
+            store.archive(db, issue_id, now)
+            opened.touch(issue_id)
+        aictl.info(code="timvisher_gh_deleted", message=f"Deleted {url}.")
+        return 0
+    fail("timvisher_gh_delete_unconfirmed", f"GitHub still shows {url} after deleting it; our copy is kept.",
+         suggestions=["Rerun the delete"])
+
+
+def delete(context, args):
+    parsed = _parse_delete(args)
+    if parsed is None:
+        return 0
+    target, flags = parsed
+    opened = state.open_state()
+    try:
+        store.exporting(opened, lambda object_id: record.record(opened.db, object_id), nouns.now)
+        found = targets.resolve("issue", target, context=context, db=opened.db, creating=True)
+        if found.kind == "source":
+            fail("timvisher_gh_issue_missing", f"There's no issue for {found.source} to delete.")
+        if found.kind != "issue":
+            usage(f"'{found.url}' names a {found.kind}, so issue delete can't use it.")
+        return _delete(opened, found, flags["force"], flags["plan"], nouns.now())
+    finally:
+        opened.close()
+
+
 def _finish(url, flags):
     print(url)
     if flags["open"]:
@@ -111,6 +222,10 @@ def _finish(url, flags):
 
 
 def run(context, args):
+    if args[:1] in (["close"], ["reopen"]):
+        return close.run("issue", args[0], context, args[1:])
+    if args[:1] == ["delete"]:
+        return delete(context, args[1:])
     parsed = parse(args)
     if parsed is None:
         return 0

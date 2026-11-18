@@ -55,7 +55,7 @@ Tim's beads databases almost always live in **topics**, not in the repo. A topic
    bd prime
    ```
 
-   Then check the topic's Dolt remote (see Dolt Remotes below).
+   Then check the topic's Dolt remote is correct (see Dolt Remotes below).
 
    If hooks are installed, `bd prime` may already be injected. Run it manually after compaction, a cleared context, or whenever context is missing. Its output includes the topic's persistent memories.
 
@@ -272,26 +272,48 @@ When ending a session of beads-tracked work:
 3. **Update status.** Close what is actually finished (`bd close <id1> <id2> …`). For unfinished work, `bd note` where you stopped, and `bd unclaim` anything you won't come back to.
 4. **Commit** per the `git` skill.
 5. **Push** a draft PR's branch with `timvisher_gh pr push`, the one push the `git` skill allows agents. For anything else, hand the human the exact `git push` or `timvisher_gh pr` command.
-6. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
+6. **Sync beads.** `bd sync` in each topic you touched. Agents may run it: the git wrapper's `push_guard__is_bd_dolt` permits a push whose refspecs are all under `refs/dolt/` when `bd` is an ancestor process. A bare `dolt push` is NOT covered and stays human-only.
+7. **Hand off.** Summarize changes, validation, issue status, and anything that still needs pushing.
 
 ## Dolt Remotes
 
-Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-topic_<name>` repo under `tim-visher_ddog` on GitHub for work topics, or the home NAS (`gemedet-git`) for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`.
+Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-topic_<name>` repo under `tim-visher_ddog` on GitHub for work topics, or the `gemedet-git` tailnet node for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`. `bd sync` is the federation loop: pull, check conflicts, recompute `is_blocked`, push.
 
-- Give a topic its remote with `timvisher_bd_topics remote <topic>`. It names the repo from the topic path, creates it with the seed commit Dolt needs, adds `origin`, runs `bd sync` and checks that `main` matches `origin/main`. It is safe to rerun. Do not hand-roll `bd dolt remote add`, and never edit `.dolt/repo_state.json`.
-- `bd sync` is the sync step: pull, check for conflicts, recompute `is_blocked`, push. Run it when you finish work in a topic. The git wrapper lets bd push `refs/dolt/` refs and nothing else, so never run a bare `dolt push`; hand Tim the command if one is needed.
-- The first `bd sync` on a topic with pending schema migrations can fail with `local changes would be stomped by merge: events` while `dolt status` is clean. Run the same `bd sync` again; the migration left commits to push, and pushing them heals it.
-- Never remove a configured remote that is on a topic forge.
+- On a GitHub forge, give a topic its remote with `timvisher_bd_topics remote <topic>`. It names the repo from the topic path, creates it with the seed commit Dolt needs, adds `origin`, pushes a fresh remote, runs `bd sync --remote origin` and checks that `main` matches `origin/main`. It is safe to rerun.
 - Topics run embedded (`bd dolt show` says `Mode: embedded`). A server-mode topic cannot sync from an agent: its detached `dolt sql-server` pushes with no bd ancestor, so the git wrapper refuses it (`git_push_blocked`). Convert it to embedded rather than loosening the guard.
+- Do **not** remove a configured remote. An earlier revision of this skill said to, which would now undo the cutover.
 
-bd can still adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. When you start working in a topic, check:
+bd can still adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. If a remote points anywhere other than the topic's forge, do not sync that topic; report the remote (database, name and URL) to Tim and leave it alone.
+
+`timvisher_bd_topics remote` does not know the NAS yet, so add a NAS topic's remotes by hand:
 
 ```bash
 bd dolt remote list
-bd config get sync.remote
+bd dolt remote add origin git+ssh://timvisher@gemedet-git/volume3/git/timvisher_bd_topics/<name>.git
+bd dolt remote add origin-lan git+ssh://timvisher@gemedet-git.local:2223/volume3/git/timvisher_bd_topics/<name>.git
+bd sync
 ```
 
-If a remote points anywhere other than the topic's forge, do not sync that topic. Report the remote (database, name and URL) to Tim and leave it alone.
+Use `bd dolt remote add`; do not hand-edit `.dolt/repo_state.json`. Put the `:2223` in the LAN URL explicitly -- git reads `~/.ssh/config` for the port, Dolt may not.
+
+Those are the home Mac's URLs. The work Mac reaches `gemedet-git` as a node shared into another tailnet, which resolves only by its full name and has no LAN route: `git+ssh://timvisher-dd@gemedet-git.tailaac45d.ts.net/volume3/git/timvisher_bd_topics/<name>.git`, and no `origin-lan`.
+
+### When a topic refuses to sync
+
+`bd sync` failing with `local changes would be stomped by merge: events`, while `dolt status` reads clean, is beads #6368/#6575. The remote ref predates the migration that moved `events` onto the `dolt_ignore` plane, so `events` is tracked at `origin/main` but absent at local HEAD and any merge toward it refuses. Check it with:
+
+```bash
+cd <topic>/.beads/embeddeddolt/<db>
+dolt sql -q "show tables as of 'origin/main'" | grep -cw events   # 1 = wedged
+```
+
+A `dolt push origin main` heals it permanently, because afterwards the merge target no longer tracks `events`. That push is human-only. An unmigrated topic needs two passes: the first `bd sync` runs the smart gate and fails, leaving commits to push; the same command then succeeds.
+
+Do not "fix" it by clearing `dolt_ignore` and committing those tables. It unblocks the merge but pushes machine-local state to a shared remote, and bd restores the ignore patterns on the next invocation anyway.
+
+### Adding a second machine to an existing topic
+
+Never `bd init` a topic that already exists on a remote -- that is what forked the `ide` topic into two unrelated histories with no common ancestor. Point the new machine at the existing remote and pull.
 
 ## What Belongs In Beads
 
@@ -314,3 +336,5 @@ Use agent-local planning tools only for the current turn's execution checklist. 
 - Do not claim milestones or epics as work; claim their leaves.
 - Look for a topic first; do not decide beads is not live until you have checked.
 - Sync a topic with `bd sync` when you finish work in it. Never sync one whose remote is off its forge; report it.
+- Never remove a configured remote.
+- Never `bd init` over an existing remote; it forks the history irrecoverably.
