@@ -26,10 +26,12 @@ When starting a session, read the Beads and Topics section below and use the `be
   forge: GitHub under `tim-visher_ddog` for work topics (the default
   in `~/.config/timvisher/ide/bd_topics_forge`), the NAS over
   Tailscale (`gemedet-git`, never `gemedet-nas`) for personal-config
-  topics such as `ide`. Set one up with `timvisher_bd_topics remote
-  <topic>`. `bd sync` is the federation loop (pull, conflict-check,
-  recompute `is_blocked`, push). Do _*NOT*_ remove a configured Dolt
-  remote; one pointing off the topic's forge gets reported, not synced.
+  topics such as `ide`. Only topics in the replication registry
+  (`timvisher_bd_topics.config/replicated.json`) sync;
+  `timvisher_bd_topics sync` pulls, pushes and syncs them. `bd sync`
+  is the federation loop (pull, conflict-check, recompute
+  `is_blocked`, push). Do _*NOT*_ remove a configured Dolt remote; one
+  pointing off the topic's forge gets reported, not synced.
 - Run `bd prime` for workflow context, or install hooks with
   `bd hooks install`.
 - For the full workflow and session completion rules, use the `beads` skill.

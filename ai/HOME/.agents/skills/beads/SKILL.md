@@ -279,13 +279,16 @@ When ending a session of beads-tracked work:
 
 Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-topic_<name>` repo under `tim-visher_ddog` on GitHub for work topics, or the `gemedet-git` tailnet node for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`. `bd sync` is the federation loop: pull, check conflicts, recompute `is_blocked`, push.
 
-- Give a topic its remote with `timvisher_bd_topics remote <topic>`, or `timvisher_bd_topics remote --forge nas <topic>` for one that belongs on the NAS. `--forge` is recorded in the topic's `.timvisher_bd_topics/forge` (the kind, not a URL; each machine's `bd_topics_forge` says how it reaches that kind), and later runs reuse it. It names the repo from the topic path, creates it with the seed commit Dolt needs (`gh repo create`, which agents must hand to Tim, or `ssh … new-topic` on the NAS), adds `origin`, pushes a fresh remote, runs `bd sync --remote origin` and checks that `main` matches `origin/main`. It is safe to rerun.
+- Only topics in the replication registry sync. The registry is `replicated.json` under `timvisher_bd_topics.config/` in `~/git/ide/bash/bin/` (personal topics, NAS forge, on every machine) and in `~/.config/timvisher/ide/bash/bin/` (work topics, GitHub forge, Datadog machines only). It is tracked: changes to it are commits, landed through a PR.
+- `timvisher_bd_topics sync [<topic>...]` is the workflow: per replicated topic it pulls one that isn't here yet, pushes one that has no `origin`, then syncs it. `sync --plan` and `timvisher_bd_topics remote status` show what each topic would get and change nothing. Run `sync` when you finish work in a topic.
+- The steps are also commands of their own, each taking `[<topic>...]` (none means every replicated topic): `remote replicate [--forge <kind>]` and `remote unreplicate` edit the registry; `remote push` creates the repo if it's missing (`gh repo create`, which agents must hand to Tim, or `ssh … new-topic` on the NAS, which agents may run), adds `origin` and pushes; `remote pull` clones a missing topic or pulls one with `origin`; `remote sync` runs `bd sync --remote origin` and checks that `main` matches `origin/main`.
+- A topic here with no `origin`, whose repo already holds Dolt history, is refused by `push`, `pull` and `sync`. That is two histories with no common ancestor (how `ide` once forked); reconciling them is Tim's call.
 - Topics run embedded (`bd dolt show` says `Mode: embedded`). A server-mode topic cannot sync from an agent: its detached `dolt sql-server` pushes with no bd ancestor, so the git wrapper refuses it (`git_push_blocked`). Convert it to embedded rather than loosening the guard.
 - Do **not** remove a configured remote. An earlier revision of this skill said to, which would now undo the cutover.
 
 bd can still adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. If a remote points anywhere other than the topic's forge, do not sync that topic; report the remote (database, name and URL) to Tim and leave it alone.
 
-On the home Mac, a NAS topic also gets a LAN remote, which `timvisher_bd_topics remote` does not add. By hand, the pair is:
+On the home Mac, a NAS topic also gets a LAN remote, which `timvisher_bd_topics remote push` does not add. By hand, the pair is:
 
 ```bash
 bd dolt remote list
