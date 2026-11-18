@@ -634,6 +634,63 @@ over the code-block language minibuffer prompt."
 (timvisher-tty-grapheme-width-mode 1)
 (timvisher-tty-emoji-presentation-mode 1)
 
+;; Scoped by platform, not by a <system-name>.el host file: workspace
+;; host names vary. Not by pbcopy either: a pbcopy shim (workspaces get one)
+;; doesn't make a native clipboard, so a pbcopy on PATH doesn't mean macOS.
+(defun ide-no-native-clipboard-p ()
+  "Non-nil where Emacs has no native clipboard (Linux with no display)."
+  (not (or (eq system-type 'darwin)
+           (getenv "DISPLAY")
+           (getenv "WAYLAND_DISPLAY"))))
+
+;; Through tmux's passthrough rather than as plain OSC 52: with no native
+;; clipboard, tmux has set-clipboard off, so it would drop a plain one.
+(defun ide-tty-clipboard--osc-52 (text frame)
+  "Send TEXT to FRAME's terminal clipboard by OSC 52."
+  (when (and (frame-live-p frame) (eq t (framep frame)))
+    (let ((osc (format "\e]52;c;%s\a"
+                       (base64-encode-string
+                        (encode-coding-string text 'utf-8-unix) t))))
+      (send-string-to-terminal
+       (if (getenv "TMUX" frame)
+           (concat "\ePtmux;" (string-replace "\e" "\e\e" osc) "\e\\")
+         osc)
+       (frame-terminal frame)))))
+
+;; Only kills made by a command: this-command is nil in timers, process
+;; filters and emacsclient --eval, which is how packages and agents call
+;; kill-new. Exit 4 (from i-s-e's workspace pbcopy shim) is never resent
+;; by OSC 52: the copy may have landed, and one copy must not go both
+;; ways. Not getSelection: mosh can't answer an OSC 52 query.
+(defun ide-pbcopy-cut (text)
+  "Copy TEXT with pbcopy asynchronously, or by OSC 52 when it can't.
+Returns pbcopy's process, if one was started."
+  (when this-command
+    (let ((frame (selected-frame))
+          (pbcopy (executable-find "pbcopy")))
+      (if (not pbcopy)
+          (progn (ide-tty-clipboard--osc-52 text frame) nil)
+        (let ((proc (make-process
+                     :name "ide-pbcopy"
+                     :command (list pbcopy)
+                     :connection-type 'pipe
+                     :coding 'utf-8-unix
+                     :noquery t
+                     :stderr (get-buffer-create " *ide-pbcopy*")
+                     :sentinel
+                     (lambda (p _event)
+                       (when (memq (process-status p) '(exit signal))
+                         (pcase (process-exit-status p)
+                           (0 nil)
+                           (4 (message "clipboard: copy not confirmed; not resent"))
+                           (_ (ide-tty-clipboard--osc-52 text frame))))))))
+          (process-send-string proc text)
+          (process-send-eof proc)
+          proc)))))
+
+(when (ide-no-native-clipboard-p)
+  (setq interprogram-cut-function #'ide-pbcopy-cut))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; dired-x
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
