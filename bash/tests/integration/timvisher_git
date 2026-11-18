@@ -3098,9 +3098,12 @@ remote_before=$(remote_feature "$pf")
 grant_run "$pf/work" "feature $(head_of "$pf") $remote_before moved"
 check_push 'a moved grant stops at a decision (exit 3) and pushes nothing' \
   eval '(( push_rc == 3 )) && [[ $push_err == *timvisher_git_push_grant_decision* && $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") $(pg -C "$pf/origin.git" rev-parse main) moved" --ours
+check_push "a granted --ours is refused when origin's head isn't the granted one" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *"head moved"* && $(remote_feature "$pf") == "$remote_before" ]]'
 grant_run "$pf/work" "feature $(head_of "$pf") $remote_before moved" --ours
-check_push 'a grant never allows --ours' \
-  eval '(( push_rc != 0 )) && [[ $push_err == *timvisher_git_push_grant_refused* && $(remote_feature "$pf") == "$remote_before" ]]'
+check_push 'a moved grant with --ours pushes the decision over origin, with a lease' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
 
 pf=$(push_fixture grant_behind)
 push_commit "$pf/work" a2 && push_run "$pf/work"
@@ -3110,6 +3113,9 @@ remote_before=$(remote_feature "$pf")
 grant_run "$pf/work" "feature $(head_of "$pf") $remote_before unmoved"
 check_push 'a grant stops when behind (exit 4), even unmoved' \
   eval '(( push_rc == 4 )) && [[ $(remote_feature "$pf") == "$remote_before" ]]'
+grant_run "$pf/work" "feature $(head_of "$pf") $remote_before moved" --ours
+check_push 'a grant with --ours pushes a branch that is behind, dropping commits on purpose' \
+  eval '(( push_rc == 0 )) && [[ $(remote_feature "$pf") == $(head_of "$pf") ]]'
 
 pf=$(push_fixture grant_mismatch)
 push_run "$pf/work"
@@ -3135,6 +3141,9 @@ pg -C "$pf/work" switch -q main && push_commit "$pf/work" m2 || die 'commit on m
 main_before=$(pg -C "$pf/origin.git" rev-parse refs/heads/main)
 grant_run "$pf/work" "main $(head_of "$pf") $main_before unmoved"
 check_push "a grant never pushes the default branch" \
+  eval '(( push_rc != 0 )) && [[ $push_err == *"default branch"* && $(pg -C "$pf/origin.git" rev-parse refs/heads/main) == "$main_before" ]]'
+grant_run "$pf/work" "main $(head_of "$pf") $main_before unmoved" --ours
+check_push "a grant never pushes the default branch, even with --ours" \
   eval '(( push_rc != 0 )) && [[ $push_err == *"default branch"* && $(pg -C "$pf/origin.git" rev-parse refs/heads/main) == "$main_before" ]]'
 
 # ---------------------------------------------------------------------------
