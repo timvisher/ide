@@ -279,13 +279,13 @@ When ending a session of beads-tracked work:
 
 Each topic syncs through one Dolt remote, `origin`, on its forge: a private `bd-topic_<name>` repo under `tim-visher_ddog` on GitHub for work topics, or the `gemedet-git` tailnet node for personal-config topics such as `ide`. The machine's default forge is in `~/.config/timvisher/ide/bd_topics_forge`. One repo holds one database, because Dolt keeps its data at the single ref `refs/dolt/data`. `bd sync` is the federation loop: pull, check conflicts, recompute `is_blocked`, push.
 
-- On a GitHub forge, give a topic its remote with `timvisher_bd_topics remote <topic>`. It names the repo from the topic path, creates it with the seed commit Dolt needs, adds `origin`, pushes a fresh remote, runs `bd sync --remote origin` and checks that `main` matches `origin/main`. It is safe to rerun.
+- Give a topic its remote with `timvisher_bd_topics remote <topic>`, or `timvisher_bd_topics remote --forge nas <topic>` for one that belongs on the NAS. `--forge` is recorded in the topic's `.timvisher_bd_topics/forge` (the kind, not a URL; each machine's `bd_topics_forge` says how it reaches that kind), and later runs reuse it. It names the repo from the topic path, creates it with the seed commit Dolt needs (`gh repo create`, which agents must hand to Tim, or `ssh … new-topic` on the NAS), adds `origin`, pushes a fresh remote, runs `bd sync --remote origin` and checks that `main` matches `origin/main`. It is safe to rerun.
 - Topics run embedded (`bd dolt show` says `Mode: embedded`). A server-mode topic cannot sync from an agent: its detached `dolt sql-server` pushes with no bd ancestor, so the git wrapper refuses it (`git_push_blocked`). Convert it to embedded rather than loosening the guard.
 - Do **not** remove a configured remote. An earlier revision of this skill said to, which would now undo the cutover.
 
 bd can still adopt the current git repo's origin as a topic's Dolt remote on its own, which has pointed topics at unrelated work repos. If a remote points anywhere other than the topic's forge, do not sync that topic; report the remote (database, name and URL) to Tim and leave it alone.
 
-`timvisher_bd_topics remote` does not know the NAS yet, so add a NAS topic's remotes by hand:
+On the home Mac, a NAS topic also gets a LAN remote, which `timvisher_bd_topics remote` does not add. By hand, the pair is:
 
 ```bash
 bd dolt remote list
