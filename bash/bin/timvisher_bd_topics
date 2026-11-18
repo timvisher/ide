@@ -622,7 +622,7 @@ read_forge() {
   __forge_base=${__forge_base%/}
 
   case $__forge_kind in
-    github)
+    github|git-shell)
       ;;
     *)
       die "Unknown forge kind '%s' in '%s'" "$__forge_kind" "$forge_config"
@@ -1366,6 +1366,8 @@ case $cmd in
     read_forge forge_kind forge_base forge_prefix
     repo_name=$forge_prefix$repo_name
     forge_owner=${forge_base##*/}
+    forge_host=${forge_base#git+ssh://}
+    forge_host=${forge_host%%/*}
     remote_url="$forge_base/$repo_name.git"
     db_dir=$(topic_db_dir "$topic_abs") || exit 1
 
@@ -1401,8 +1403,23 @@ case $cmd in
 
     if [[ -z $origin_url ]]
     then
-      if gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
-          --json name >/dev/null 2>&1
+      # Only existence and creation are forge-specific. The Dolt-data guard
+      # below, and everything after it, already work against any git+ssh
+      # remote, so a second forge is a second case rather than a plugin
+      # layer: there are two, and no third in prospect.
+      case $forge_kind in
+        github)
+          gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
+            --json name >/dev/null 2>&1
+          repo_exists=$?
+          ;;
+        git-shell)
+          git ls-remote "${remote_url#git+}" >/dev/null 2>&1
+          repo_exists=$?
+          ;;
+      esac
+
+      if (( repo_exists == 0 ))
       then
         # An earlier run may have made the repo and stopped before adding
         # the remote, but a repo that already holds Dolt data is another
@@ -1416,10 +1433,22 @@ case $cmd in
         info "Reusing the empty repo '%s/%s'" "$forge_owner" "$repo_name"
       else
         info "Creating '%s/%s'" "$forge_owner" "$repo_name"
-        gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
-          --private --add-readme --disable-issues --disable-wiki \
-          --description "Dolt remote for the beads topic '${topic_rel}'" >&2 ||
-          die "Unable to create '%s/%s'" "$forge_owner" "$repo_name"
+        case $forge_kind in
+          github)
+            gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
+              --private --add-readme --disable-issues --disable-wiki \
+              --description "Dolt remote for the beads topic '${topic_rel}'" >&2 ||
+              die "Unable to create '%s/%s'" "$forge_owner" "$repo_name"
+            ;;
+          git-shell)
+            # new-topic also seeds the repo and sets the group ownership and
+            # setgid bits a second identity needs in order to push to it
+            # later; gh repo create does neither, and the generic push below
+            # cannot supply them.
+            ssh "$forge_host" new-topic "$repo_name" >&2 ||
+              die "Unable to create '%s' on '%s'" "$repo_name" "$forge_host"
+            ;;
+        esac
       fi
 
       topic_bd "$topic_abs" dolt remote add origin "$remote_url" >&2 ||
