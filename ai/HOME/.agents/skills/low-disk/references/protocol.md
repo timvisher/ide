@@ -89,8 +89,9 @@ deleted inside a worktree (`make clean`) still counts for that worktree.
 A relative session path (`tmux new -c .`) is ignored rather than resolved
 against where `activity` runs; the session's panes still place it.
 
-Caches are found where timvisher_git keeps them:
-`~/.cache/timvisher_git_worktrees/repo_trunks/<org>/<repo>`.
+Trunks are found where `~/.functions/git_trunks.bash` says they live
+(`timvisher_git_trunks_root`), with the root resolved first, so a root
+linked onto another volume works. low-disk fails if that file is missing.
 
 Until something records detach times, "no client attached right now" is
 the only idle signal.
@@ -140,7 +141,7 @@ runs: `timvisher_dev_ci`, `tmux` and the plugins' own tools are outside it.
 
 ## Bundled plugins
 
-- `worktrees`: timvisher_git worktrees (bare and not-yet-migrated caches)
+- `worktrees`: timvisher_git worktrees (bare and not-yet-migrated trunks)
   with their activity and size. A worktree nested in another on the same
   filesystem is counted only in itself. Refuses every reclaim: removing
   worktrees is `timvisher_git worktree gc`'s job, in an agent session.

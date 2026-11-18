@@ -70,7 +70,7 @@ export MOCK_DEV_CI_ACTIVE='' MOCK_DEV_CI_RC=0
 export LOW_DISK_BIGGEST_ROOTS=$home
 
 overlay="${home}/.config/timvisher/ide/low-disk/plugins"
-trunks="${home}/.cache/timvisher_git_worktrees/repo_trunks"
+trunks="${home}/.local/share/timvisher_git/repo_trunks"
 
 add_plugin() { # name body
   mkdir -p "$overlay"
@@ -81,9 +81,9 @@ add_plugin() { # name body
 reset_overlay() { rm -rf "$overlay"; }
 
 add_worktree() { # org/repo name worktree-path bytes
-  local cache="${trunks}/$1" wt=$3
-  mkdir -p "${cache}/worktrees/$2" "$wt"
-  printf '%s/.git\n' "$wt" > "${cache}/worktrees/$2/gitdir"
+  local trunk="${trunks}/$1" wt=$3
+  mkdir -p "${trunk}/worktrees/$2" "$wt"
+  printf '%s/.git\n' "$wt" > "${trunk}/worktrees/$2/gitdir"
   head -c "$4" /dev/zero > "${wt}/payload"
 }
 
@@ -186,7 +186,7 @@ do
   check "a jq that is too old or unrecognisable ('$version') is refused" "$(expect_failure)"
 done
 
-# --- worktrees plugin with no caches ---
+# --- worktrees plugin with no trunks ---
 out=$(ld measure worktrees); rc=$?
 check "measure with no worktrees reports empty worktrees targets" \
   "$(expect '.plugins.worktrees == {targets: {}}')"
@@ -212,17 +212,33 @@ rm -rf "${trunks}/other"
 
 rel_wt="${home}/git/rel/repo/branch"
 mkdir -p "${trunks}/rel/repo/worktrees/branch" "$rel_wt"
-printf '../../../../../../../git/rel/repo/branch/.git\n' > "${trunks}/rel/repo/worktrees/branch/gitdir"
+printf '../../../../../../../../git/rel/repo/branch/.git\n' > "${trunks}/rel/repo/worktrees/branch/gitdir"
 out=$( cd / && ld activity ); rc=$?
 check "a relative gitdir is resolved against its own directory, not the caller's" \
   "$(expect --arg p "$rel_wt" '.worktrees[$p].repo == "rel/repo"')"
 rm -rf "${trunks}/rel" "${home}/git/rel"
 
+vol="${tmpdir}/vol"
+mkdir -p "${vol}/trunks/org/repo/worktrees/b" "${vol}/wt/b"
+printf '../../../../../wt/b/.git\n' > "${vol}/trunks/org/repo/worktrees/b/gitdir"
+ln -s "${vol}/trunks" "${home}/trunks-link"
+out=$(TIMVISHER_GIT_TRUNKS_DIR="${home}/trunks-link" ld activity); rc=$?
+check "trunks are found where git_trunks.bash says, and relative gitdirs resolve from the linked root's target" \
+  "$(expect --arg p "${vol}/wt/b" '(.worktrees | keys) == [$p] and .worktrees[$p].repo == "org/repo"')"
+rm -rf "$vol" "${home}/trunks-link"
+
+no_trunks_home="${tmpdir}/no-trunks-home"
+mkdir -p "${no_trunks_home}/.functions"
+ln -s "${repo_root}/bash/functions/logging.bash" "${no_trunks_home}/.functions/logging.bash"
+err=$(timvisher_tests_with_home "$no_trunks_home" "$low_disk" activity 2>&1 >/dev/null); rc=$?
+check "without git_trunks.bash low-disk fails rather than guess where the trunks are" \
+  "$( (( rc != 0 )) && [[ $err == *git_trunks.bash* ]] && echo ok || echo "rc=$rc err='$err'")"
+rm -rf "$no_trunks_home"
 
 mkdir -p "${trunks}/sealed/repo"
 chmod 000 "${trunks}/sealed/repo"
 out=$(ld activity 2>/dev/null); rc=$?
-check "a cache that cannot be read makes activity fail rather than omit its worktrees" "$(expect_failure)"
+check "a trunk that cannot be read makes activity fail rather than omit its worktrees" "$(expect_failure)"
 chmod 700 "${trunks}/sealed/repo"
 rm -rf "${trunks}/sealed"
 
@@ -230,14 +246,14 @@ dot_wt="${home}/git/org/.github/main"
 mkdir -p "${trunks}/org/.github/worktrees/main" "$dot_wt"
 printf '%s/.git' "$dot_wt" > "${trunks}/org/.github/worktrees/main/gitdir"
 out=$(ld activity); rc=$?
-check "a dot-named cache is found, even with no newline after its gitdir" \
+check "a dot-named trunk is found, even with no newline after its gitdir" \
   "$(expect --arg p "$dot_wt" '.worktrees[$p].repo == "org/.github"')"
 rm -rf "${trunks}/org/.github" "${home}/git/org/.github"
 
 mkdir -p "${trunks}/hidden/repo/.git/worktrees"
 chmod 000 "${trunks}/hidden/repo/.git"
 out=$(ld activity 2>/dev/null); rc=$?
-check "a legacy cache whose .git cannot be searched makes activity fail" "$(expect_failure)"
+check "a legacy trunk whose .git cannot be searched makes activity fail" "$(expect_failure)"
 chmod 700 "${trunks}/hidden/repo/.git"
 rm -rf "${trunks}/hidden"
 
@@ -247,9 +263,9 @@ mkdir -p "${trunks}/legacy/repo/.git/worktrees/main" "${trunks}/legacy/repo/work
 printf '%s/.git\n' "$legacy_wt" > "${trunks}/legacy/repo/.git/worktrees/main/gitdir"
 printf '%s/.git\n' "$mixed_wt" > "${trunks}/legacy/repo/worktrees/feature/gitdir"
 out=$(ld activity); rc=$?
-check "worktrees of a not-yet-migrated non-bare cache are found too" \
+check "worktrees of a not-yet-migrated non-bare trunk are found too" \
   "$(expect --arg p "$legacy_wt" '.worktrees[$p].repo == "legacy/repo"')"
-check "a cache with both layouts reports the worktrees of each" \
+check "a trunk with both layouts reports the worktrees of each" \
   "$(expect --arg p "$mixed_wt" '.worktrees[$p].repo == "legacy/repo"')"
 rm -rf "${trunks}/legacy" "${home}/git/legacy"
 
@@ -402,10 +418,10 @@ chmod 700 "${wt}/locked"
 rm -rf "${wt}/locked"
 MOCK_DEV_CI_ACTIVE=''
 
-chmod 000 "${home}/.cache/timvisher_git_worktrees"
+chmod 000 "${home}/.local/share/timvisher_git"
 out=$(ld activity 2>/dev/null); rc=$?
-check "caches below a directory that cannot be searched make activity fail" "$(expect_failure)"
-chmod 700 "${home}/.cache/timvisher_git_worktrees"
+check "trunks below a directory that cannot be searched make activity fail" "$(expect_failure)"
+chmod 700 "${home}/.local/share/timvisher_git"
 
 MOCK_DEV_CI_ACTIVE='relative/worktree'$'\n'
 out=$(ld activity 2>/dev/null); rc=$?

@@ -7,6 +7,10 @@ source ~/.functions/logging.bash ||
     exit 1
   }
 
+# shellcheck source=/dev/null
+source ~/.functions/git_trunks.bash ||
+  die 'Unable to source ~/.functions/git_trunks.bash, which says where the trunks live'
+
 script_path=$(realpath "${BASH_SOURCE[0]}") ||
   die "Unable to resolve the low-disk script path"
 script_dir=${script_path%/*}
@@ -15,10 +19,6 @@ plugin_dirs=(
   "${script_dir}/plugins"
   "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/low-disk/plugins"
 )
-
-# Matches timvisher_git's own cache location, which does not follow
-# XDG_CACHE_HOME.
-repo_trunks_dir=${HOME}/.cache/timvisher_git_worktrees/repo_trunks
 
 tmux_socket_dir=${TMUX_TMPDIR:-/tmp}/tmux-${UID}
 tmux_pane_format=$'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}'
@@ -202,29 +202,38 @@ canonical_or_gone() {
   return 1
 }
 
-# Worktree paths come from each cache's worktrees/*/gitdir file rather than
+# Worktree paths come from each trunk's worktrees/*/gitdir file rather than
 # `git worktree list`: plain reads, no git process, no git wrapper log write.
-# Every directory on the way is checked, so one we cannot read fails the
-# command instead of quietly leaving its worktrees out.
+# The trunks are walked here rather than with timvisher_git_trunks_each,
+# which skips dot-named orgs and repos and any directory it cannot list:
+# one we cannot read fails the command instead of quietly leaving its
+# worktrees out.
 list_worktrees() {
   local -n __worktrees=$1 __repos=$2
-  if [[ ! -e $repo_trunks_dir ]]
+  local trunks_root
+  trunks_root=$(timvisher_git_trunks_root) ||
+    die 'Cannot tell where the trunks live'
+  if [[ ! -e $trunks_root ]]
   then
-    require_missing "$repo_trunks_dir"
+    require_missing "$trunks_root"
     return 0
   fi
-  require_listable "$repo_trunks_dir"
-  local org_dir cache admin entry gitdir_file worktree_git worktree
+  require_listable "$trunks_root"
+  # Resolved first because a relative gitdir is relative to the physical
+  # trunk, and the root may be a link onto another volume.
+  trunks_root=$(canonical "$trunks_root") ||
+    die "Cannot resolve the trunk root '%s'" "$trunks_root"
+  local org_dir trunk admin entry gitdir_file worktree_git worktree
   shopt -s dotglob
-  for org_dir in "$repo_trunks_dir"/*
+  for org_dir in "$trunks_root"/*
   do
     [[ -d $org_dir ]] || continue
     require_listable "$org_dir"
-    for cache in "$org_dir"/*
+    for trunk in "$org_dir"/*
     do
-      [[ -d $cache ]] || continue
-      require_listable "$cache"
-      for admin in "${cache}/worktrees" "${cache}/.git/worktrees"
+      [[ -d $trunk ]] || continue
+      require_listable "$trunk"
+      for admin in "${trunk}/worktrees" "${trunk}/.git/worktrees"
       do
         if [[ ! -e $admin ]]
         then
@@ -248,7 +257,7 @@ list_worktrees() {
             2) die "Cannot inspect the worktree '%s'; refusing to report without it" "${worktree_git%/.git}" ;;
           esac
           [[ -z ${__repos[$worktree]+x} ]] || continue
-          __repos["$worktree"]=${org_dir##*/}/${cache##*/}
+          __repos["$worktree"]=${org_dir##*/}/${trunk##*/}
           __worktrees+=("$worktree")
         done
       done
