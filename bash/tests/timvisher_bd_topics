@@ -720,6 +720,81 @@ else
   fail "remote without a prefix: calls='$(mock_calls)'"
 fi
 
+nas_base='git+ssh://me@nas.example/volume3/git/topics'
+nas_url="$nas_base/remote-alpha-one.git"
+
+reset_nas_fixture() {
+  reset_remote_fixture
+  mock_reset ssh
+  printf 'github %s bd-topic_\nnas %s\n' "$forge_url" "$nas_base" > "$forge_file"
+  rm -f -- "$remote_topic/.timvisher_bd_topics/forge"
+  mock_respond bd -- dolt remote add origin "$nas_url"
+  mock_respond git --exit 128 -- ls-remote "${nas_url#git+}"
+  mock_respond git -- ls-remote "${nas_url#git+}" refs/dolt/data
+  mock_respond ssh -- -o BatchMode=yes me@nas.example new-topic remote-alpha-one
+}
+
+# Test: --forge nas creates the repo on the NAS, records the choice, and
+# reuses it on the next run without the flag.
+run_test
+reset_nas_fixture
+first=$(run_cli remote --forge nas 'Remote/Alpha One' 2>/dev/null)
+recorded=$(cat "$remote_topic/.timvisher_bd_topics/forge" 2>/dev/null)
+created_on_nas=0
+mock_called ssh -o BatchMode=yes me@nas.example new-topic remote-alpha-one && created_on_nas=1
+write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
+  "{\"origin\": {\"name\": \"origin\", \"url\": \"$nas_url\"}}"
+mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${nas_url#git+}" refs/dolt/data
+second=$(run_cli remote 'Remote/Alpha One' 2>/dev/null)
+if [[ $first == "Remote/Alpha One"$'\t'"$nas_url" && $second == "$first" &&
+    $recorded == nas && $created_on_nas == 1 ]] &&
+    [[ $(mock_call_count gh) == 0 ]] &&
+    mock_called bd dolt remote add origin "$nas_url"
+then
+  pass "remote --forge nas creates the NAS repo and the topic remembers its forge"
+else
+  fail "remote --forge nas: first='${first}' second='${second}' recorded='${recorded}' calls='$(mock_calls)'"
+fi
+
+# Test: an existing NAS repo without Dolt data is reused, not recreated.
+run_test
+reset_nas_fixture
+mock_respond git -- ls-remote "${nas_url#git+}"
+if run_cli remote --forge nas 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! mock_called ssh ... &&
+    mock_called bd dolt remote add origin "$nas_url"
+then
+  pass "remote reuses an empty NAS repo"
+else
+  fail "remote empty NAS repo: calls='$(mock_calls)'"
+fi
+
+# Test: a topic recorded on one forge refuses another.
+run_test
+reset_nas_fixture
+mkdir -p "$remote_topic/.timvisher_bd_topics" || exit 1
+printf 'nas\n' > "$remote_topic/.timvisher_bd_topics/forge"
+if ! run_cli remote --forge github 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ $(mock_call_count gh) == 0 && $(mock_call_count ssh) == 0 ]]
+then
+  pass "remote refuses a forge other than the one the topic recorded"
+else
+  fail "remote forge switch: calls='$(mock_calls)'"
+fi
+
+# Test: a forge kind missing from the config is refused, and nothing is
+# recorded.
+run_test
+reset_nas_fixture
+printf 'github %s bd-topic_\n' "$forge_url" > "$forge_file"
+if ! run_cli remote --forge nas 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ ! -e $remote_topic/.timvisher_bd_topics/forge ]]
+then
+  pass "remote refuses a forge the config doesn't have"
+else
+  fail "remote unknown forge: calls='$(mock_calls)'"
+fi
+
 # Test: no forge configured.
 run_test
 reset_remote_fixture

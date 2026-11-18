@@ -29,7 +29,7 @@ usage() {
     timvisher_bd_topics set [<topic>]
     timvisher_bd_topics bd [<topic>] [-- <bd-args>...]
     timvisher_bd_topics new <topic>
-    timvisher_bd_topics remote <topic>
+    timvisher_bd_topics remote [--forge <kind>] <topic>
     timvisher_bd_topics deactivate <topic>
     timvisher_bd_topics rm <topic>
     timvisher_bd_topics activate <topic>
@@ -53,14 +53,19 @@ usage() {
       other characters turned into '-' ('Incidents/123 foo' is
       'incidents-123-foo'). new, mv and activate refuse a topic whose
       name another active topic already has.
-    - remote gives a topic a Dolt remote named origin on the forge in
-      ~/.config/timvisher/ide/bd_topics_forge, a line of the form
-      'github git+ssh://<host>/<owner> [<repo-prefix>]'; the prefix
-      marks topic repos on an account that holds others. It creates the
-      private repo with a README commit (Dolt will not push to a repo
-      with no refs), adds the remote, pushes if the remote has no Dolt
-      data yet, runs 'bd sync --remote origin' and checks that main and
-      origin/main match. It is safe to rerun.
+    - remote gives a topic a Dolt remote named origin on a forge from
+      ~/.config/timvisher/ide/bd_topics_forge, one per line:
+      'github git+ssh://<host>/<owner> [<repo-prefix>]' or
+      'nas git+ssh://<user>@<host>/<dir>'. The first line is the
+      default; 'remote --forge <kind>' picks another and records it in
+      the topic's .timvisher_bd_topics/forge, which later runs reuse.
+      The prefix marks topic repos on an account that holds others. It
+      creates the repo seeded with a commit (Dolt will not push to a
+      repo with no refs): a private GitHub repo with a README, or 'ssh
+      <user>@<host> new-topic <name>' on the NAS. It then adds the
+      remote, pushes if the remote has no Dolt data yet, runs 'bd sync
+      --remote origin' and checks that main and origin/main match. It is
+      safe to rerun.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
@@ -611,18 +616,33 @@ require_unique_repo_name() {
 }
 
 read_forge() {
-  local -n __forge_kind=$1
-  local -n __forge_base=$2
-  local -n __forge_prefix=$3
+  local wanted=$1
+  local -n __forge_kind=$2
+  local -n __forge_base=$3
+  local -n __forge_prefix=$4
+  local kind base prefix
 
   [[ -r $forge_config ]] ||
     die "No topic forge configured; write '<kind> <url-base>' to '%s'" "$forge_config"
 
-  read -r __forge_kind __forge_base __forge_prefix < "$forge_config"
-  __forge_base=${__forge_base%/}
+  __forge_kind=
+  while read -r kind base prefix
+  do
+    [[ -z $kind || $kind == '#'* ]] && continue
+    if [[ -z $wanted || $kind == "$wanted" ]]
+    then
+      __forge_kind=$kind
+      __forge_base=${base%/}
+      __forge_prefix=$prefix
+      break
+    fi
+  done < "$forge_config"
+
+  [[ -n $__forge_kind ]] ||
+    die "No '%s' forge in '%s'" "${wanted:-default}" "$forge_config"
 
   case $__forge_kind in
-    github)
+    github|nas)
       ;;
     *)
       die "Unknown forge kind '%s' in '%s'" "$__forge_kind" "$forge_config"
@@ -630,8 +650,12 @@ read_forge() {
   esac
 
   [[ $__forge_base == git+ssh://*/* ]] ||
-    die "Forge URL base '%s' in '%s' must be git+ssh://<host>/<owner>" \
+    die "Forge URL base '%s' in '%s' must be git+ssh://<host>/<path>" \
       "$__forge_base" "$forge_config"
+}
+
+topic_forge_file() {
+  printf '%s' "$1/.timvisher_bd_topics/forge"
 }
 
 topic_bd() {
@@ -1341,6 +1365,14 @@ case $cmd in
     _subscribers_lockdir=""
     ;;
   remote)
+    wanted_forge=
+    if [[ ${1-} == --forge ]]
+    then
+      [[ -n ${2-} ]] || die "--forge needs a forge kind"
+      wanted_forge=$2
+      shift 2
+    fi
+
     if [[ $# -ne 1 ]]
     then
       usage
@@ -1363,9 +1395,32 @@ case $cmd in
     fi
 
     repo_name=$(require_unique_repo_name "$topic_rel") || exit 1
-    read_forge forge_kind forge_base forge_prefix
+
+    # The topic records the forge's kind, not its URL: the topic tree can
+    # move between machines whose configs reach that forge differently.
+    forge_file=$(topic_forge_file "$topic_abs")
+    recorded_forge=
+    if [[ -f $forge_file ]]
+    then
+      recorded_forge=$(< "$forge_file")
+      recorded_forge=${recorded_forge//[[:space:]]/}
+    fi
+    if [[ -n $wanted_forge && -n $recorded_forge && $wanted_forge != "$recorded_forge" ]]
+    then
+      die "Topic '%s' is on the '%s' forge, not '%s'" "$topic_rel" "$recorded_forge" "$wanted_forge"
+    fi
+    read_forge "${wanted_forge:-$recorded_forge}" forge_kind forge_base forge_prefix
+    if [[ -n $wanted_forge && -z $recorded_forge ]]
+    then
+      mkdir -p "${forge_file%/*}" &&
+        printf '%s\n' "$forge_kind" > "$forge_file" ||
+        die "Unable to write '%s'" "$forge_file"
+    fi
+
     repo_name=$forge_prefix$repo_name
     forge_owner=${forge_base##*/}
+    forge_login=${forge_base#git+ssh://}
+    forge_login=${forge_login%%/*}
     remote_url="$forge_base/$repo_name.git"
     db_dir=$(topic_db_dir "$topic_abs") || exit 1
 
@@ -1401,8 +1456,16 @@ case $cmd in
 
     if [[ -z $origin_url ]]
     then
-      if gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
-          --json name >/dev/null 2>&1
+      case $forge_kind in
+        github)
+          gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
+            --json name >/dev/null 2>&1
+          ;;
+        nas)
+          git ls-remote "${remote_url#git+}" >/dev/null 2>&1
+          ;;
+      esac
+      if (( $? == 0 ))
       then
         # An earlier run may have made the repo and stopped before adding
         # the remote, but a repo that already holds Dolt data is another
@@ -1415,11 +1478,18 @@ case $cmd in
         fi
         info "Reusing the empty repo '%s/%s'" "$forge_owner" "$repo_name"
       else
-        info "Creating '%s/%s'" "$forge_owner" "$repo_name"
-        gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
-          --private --add-readme --disable-issues --disable-wiki \
-          --description "Dolt remote for the beads topic '${topic_rel}'" >&2 ||
-          die "Unable to create '%s/%s'" "$forge_owner" "$repo_name"
+        info "Creating '%s' on the '%s' forge" "$repo_name" "$forge_kind"
+        case $forge_kind in
+          github)
+            gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
+              --private --add-readme --disable-issues --disable-wiki \
+              --description "Dolt remote for the beads topic '${topic_rel}'" >&2
+            ;;
+          nas)
+            ssh -o BatchMode=yes "$forge_login" new-topic "$repo_name" </dev/null >&2
+            ;;
+        esac ||
+          die "Unable to create '%s' on the '%s' forge" "$repo_name" "$forge_kind"
       fi
 
       topic_bd "$topic_abs" dolt remote add origin "$remote_url" >&2 ||
