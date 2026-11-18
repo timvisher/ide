@@ -234,10 +234,8 @@ def _push_branch(context, flags, grant=None):
         return perf.run(args, cwd=context.toplevel, env=env).returncode
 
 
-# An agent's --ours settles the PR's title and body, never its branch:
-# timvisher_git refuses --ours under a grant.
 def _ours(flags):
-    return flags["resolution"] == "ours" and not _agent()
+    return flags["resolution"] == "ours"
 
 
 def _record_head(opened, object_id, sha):
