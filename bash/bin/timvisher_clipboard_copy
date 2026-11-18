@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+show_help() {
+  cat <<'HELP'
+Usage: timvisher_clipboard_copy
+
+tmux's copy-command (and C-] y) where there's no native clipboard: put
+stdin on the clipboard with pbcopy, or by OSC 52 through 'tmux load-buffer
+-w' when pbcopy can't have done it.
+
+pbcopy's exit code decides, so a copy is never sent both ways:
+  0              delivered; nothing else to do
+  4              sent but not confirmed; shows a message and doesn't
+                 resend
+  3, any other   not sent; falls back to OSC 52
+no pbcopy        OSC 52
+The workspace pbcopy shim (i-s-e timvisher_EXP_workspace_clipboard)
+produces 3 and 4.
+HELP
+}
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  '')
+    ;;
+  *)
+    show_help >&2
+    exit 1
+    ;;
+esac
+
+unconfirmed=4
+
+tmp=
+# shellcheck disable=SC2329
+cleanup() {
+  [[ -z $tmp ]] || rm -f -- "$tmp"
+}
+trap cleanup EXIT
+
+if ! tmp=$(mktemp "${TMPDIR:-/tmp}/timvisher_clipboard_copy.XXXXXX")
+then
+  echo "timvisher_clipboard_copy: mktemp failed" >&2
+  exit 1
+fi
+if ! cat > "$tmp"
+then
+  echo "timvisher_clipboard_copy: couldn't read stdin" >&2
+  exit 1
+fi
+
+if command -v pbcopy >/dev/null
+then
+  pbcopy < "$tmp"
+  rc=$?
+  if (( 0 == rc ))
+  then
+    exit 0
+  elif (( unconfirmed == rc ))
+  then
+    tmux display-message "clipboard: copy not confirmed; not resent"
+    exit "$rc"
+  fi
+fi
+
+if ! tmux load-buffer -w - < "$tmp"
+then
+  tmux display-message "clipboard: pbcopy and OSC 52 both failed"
+  exit 1
+fi
