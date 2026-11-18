@@ -2512,8 +2512,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# worktree gc: pinned, frozen and legacy-keep worktrees survive a dry run
-# that reaps an otherwise identical unpinned worktree
+# worktree gc: pinned, frozen, legacy-keep and tmux-attached worktrees
+# survive a dry run that reaps an otherwise identical unpinned worktree
 # ---------------------------------------------------------------------------
 
 gc_base="$(cd "$tmpdir" && pwd -P)/gc"
@@ -2545,7 +2545,7 @@ case ${2##*/} in
 esac
 FAKE
 chmod +x "$gc_bin/timvisher_gh"
-for gc_name in unpinned pinned frozen legacy recent open reused
+for gc_name in unpinned pinned frozen legacy recent open reused attached
 do
   gc_wt="$gc_live/gcorg/gcrepo/$gc_name"
   "$test_git" -C "$gc_cache" worktree add -b "$gc_name" "$gc_wt" "origin/$gc_trunk" >/dev/null 2>&1
@@ -2563,15 +2563,55 @@ mkdir -p "$gc_protect/gcorg/gcrepo/frozen" "$gc_protect/gcorg/gcrepo/legacy"
 : > "$gc_protect/gcorg/gcrepo/frozen/frozen"
 : > "$gc_protect/gcorg/gcrepo/legacy/keep"
 
+# Unix socket paths are limited to ~104 bytes on macOS, which a path
+# under $TMPDIR can exceed, so the tmux sockets live under /tmp.
+gc_low_disk="$script_dir/../ai/HOME/.agents/skills/low-disk/scripts/low-disk"
+gc_tmux_tmpdir=$(mktemp -d /tmp/x.timvisher-git-gc.XXXXXX) ||
+  die "mktemp failed"
+trap 'rm -rf "$tmpdir" "$gc_tmux_tmpdir"' EXIT
+gc_sockets="$gc_tmux_tmpdir/tmux-$UID"
+# shellcheck disable=SC2016 # the mock's code expands its own arguments
+mock_respond tmux --run '
+  rc=$(< "$2.rc")
+  if (( rc == 0 ))
+  then
+    cat -- "$2.out"
+  else
+    cat -- "$2.out" >&2
+  fi
+  exit "$rc"' -- -S '*' list-panes -a -F $'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}'
+
+# gc_socket <name> <exit status> <list-panes output>
+gc_socket() {
+  mkdir -p "$gc_sockets" &&
+    python3 -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' \
+      "$gc_sockets/$1" &&
+    printf '%s' "$3" > "$gc_sockets/$1.out" &&
+    printf '%s' "$2" > "$gc_sockets/$1.rc"
+}
+
+# gc_pane <attached clients> <session> <path>
+gc_pane() {
+  printf '%s\x1f%s\x1f%s\x1f%s\n' "$1" "$2" "$3" "$3"
+}
+
+gc_socket default 0 "$(gc_pane 1 attached-session "$gc_live/gcorg/gcrepo/attached"
+  gc_pane 0 detached-session "$gc_live/gcorg/gcrepo/unpinned")"
+
 # shellcheck disable=SC2034
-gc_out=$(
-  repo_trunks_dir=$gc_trunks
-  live_repo_dir=$gc_live
-  worktree_gc__protect_dir=$gc_protect
-  timvisher_logging_log_level=INFO
-  export TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry"
-  PATH="$gc_bin:$PATH" worktree_gc --dry-run 2>&1
-)
+gc_dry_run() {
+  (
+    repo_trunks_dir=$gc_trunks
+    live_repo_dir=$gc_live
+    worktree_gc__protect_dir=$gc_protect
+    worktree_gc__low_disk=${gc_low_disk_override-$gc_low_disk}
+    timvisher_logging_log_level=INFO
+    TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" TIMVISHER_GIT_TRUNKS_DIR=$gc_trunks \
+      TMUX_TMPDIR=$gc_tmux_tmpdir PATH="$gc_bin:$PATH" worktree_gc --dry-run 2>&1
+  )
+}
+
+gc_out=$(gc_dry_run)
 
 run_test
 if [[ $gc_out =~ MERGED[^$'\n']*' unpinned ' ]]
@@ -2589,7 +2629,7 @@ else
   fail "worktree gc should reap by timvisher_gh's merged state: ${gc_out}"
 fi
 
-for gc_name in pinned frozen legacy recent open reused
+for gc_name in pinned frozen legacy recent open reused attached
 do
   run_test
   if [[ $gc_out =~ MERGED[^$'\n']*" ${gc_name} " ]]
@@ -2616,6 +2656,15 @@ else
   fail "worktree gc did not warn about the legacy keep file: ${gc_out}"
 fi
 
+run_test
+if [[ $gc_out == *'Protected worktrees: 1 (tmux client attached)'* &&
+      $gc_out == *'ATTACHED  gcorg/gcrepo/attached'* ]]
+then
+  pass "worktree gc reports the worktree with an attached tmux client as protected"
+else
+  fail "worktree gc did not report the attached worktree: ${gc_out}"
+fi
+
 gc_hooks="$gc_base/hooks"
 gc_hook_log="$gc_base/pre-remove.log"
 mkdir -p "$gc_hooks/gcorg/gcrepo"
@@ -2637,9 +2686,10 @@ gc_out=$(
   hooks_dir=$gc_hooks
   worktree_gc__protect_dir=$gc_protect
   worktree_gc__archive_dir="$gc_base/archives"
+  worktree_gc__low_disk=$gc_low_disk
   timvisher_logging_log_level=INFO
-  TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" PATH="$gc_bin:$PATH" \
-    worktree_gc 2>&1 <<< y
+  TIMVISHER_DEV_CI_REGISTRY="$gc_base/no-registry" TIMVISHER_GIT_TRUNKS_DIR=$gc_trunks \
+    TMUX_TMPDIR=$gc_tmux_tmpdir PATH="$gc_bin:$PATH" worktree_gc 2>&1 <<< y
 )
 
 run_test
@@ -2649,6 +2699,44 @@ then
   pass "worktree gc runs pre-remove-branch-dir with the worktree path before removing it"
 else
   fail "worktree gc pre-remove-branch-dir: log '$(cat "$gc_hook_log" 2>&1)' out: ${gc_out}"
+fi
+
+run_test
+if [[ -d $gc_live/gcorg/gcrepo/attached ]]
+then
+  pass "worktree gc leaves a worktree with an attached tmux client in place"
+else
+  fail "worktree gc removed the attached worktree: ${gc_out}"
+fi
+
+rm -rf -- "$gc_sockets"
+gc_out=$(gc_dry_run)
+run_test
+if [[ $gc_out =~ MERGED[^$'\n']*' attached ' ]]
+then
+  pass "worktree gc reaps the same worktree once no tmux client is attached"
+else
+  fail "worktree gc should reap the detached worktree: ${gc_out}"
+fi
+
+gc_socket default 1 'error connecting to /tmp/tmux-504/default (Permission denied)'
+gc_out=$(gc_dry_run) && gc_rc=0 || gc_rc=$?
+run_test
+if (( gc_rc != 0 )) && [[ $gc_out == *'refusing to gc'* && $gc_out != *MERGED* ]]
+then
+  pass "worktree gc refuses to run when low-disk cannot tell which worktrees are attached"
+else
+  fail "worktree gc should refuse when low-disk activity fails: rc=${gc_rc} out: ${gc_out}"
+fi
+rm -rf -- "$gc_sockets"
+
+gc_out=$(gc_low_disk_override="$gc_base/no-low-disk" gc_dry_run) && gc_rc=0 || gc_rc=$?
+run_test
+if (( gc_rc != 0 )) && [[ $gc_out == *'low-disk is not installed'* && $gc_out != *MERGED* ]]
+then
+  pass "worktree gc refuses to run when low-disk is not installed"
+else
+  fail "worktree gc should refuse without low-disk: rc=${gc_rc} out: ${gc_out}"
 fi
 
 # ---------------------------------------------------------------------------
