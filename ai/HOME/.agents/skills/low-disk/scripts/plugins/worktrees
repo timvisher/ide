@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+[[ -n ${LOW_DISK-} && -x $LOW_DISK ]] ||
+  die 'LOW_DISK is not set; run this plugin through low-disk'
+
+measure() {
+  local activity sizes paths=()
+  activity=$("$LOW_DISK" activity) || die 'low-disk activity failed'
+  mapfile -d '' -t paths < <(printf '%s' "$activity" | jq -j '.worktrees | keys[] | . + "\u0000"')
+  (( ${#paths[@]} == $(printf '%s' "$activity" | jq '.worktrees | length') )) ||
+    die 'Could not read the worktree list from low-disk activity'
+  sizes=$("$LOW_DISK" size "${paths[@]}") || die 'low-disk size failed'
+  # A worktree nested inside another is counted once, in itself: its bytes
+  # come off the worktree directly containing it, but only when both are on
+  # the same device, since du -x never counted it in the parent otherwise.
+  # Hard links shared with a nested worktree can still skew the difference,
+  # so a parent with nested worktrees is always reported incomplete.
+  {
+    printf '%s\n' "$activity"
+    printf '%s\n' "$sizes"
+  } | jq -s '
+    .[0].worktrees as $activity
+    | .[1].sizes as $sizes
+    | ($activity | keys) as $paths
+    | def inside($outer): startswith($outer + "/");
+      (reduce $paths[] as $c ({};
+          ([$paths[] | select(. as $o | $c | inside($o))] | max_by(length)) as $parent
+          | if $parent == null then . else .[$parent] += [$c] end)) as $children_of
+      | def direct_children($p): $children_of[$p] // [];
+      {targets: ($paths
+        | map(. as $p
+          | ($sizes[$p] // {bytes: null, incomplete: true, device: null}) as $size
+          | [direct_children($p)[] | $sizes[.] // {bytes: null, incomplete: true, device: null}] as $children
+          | [$children[] | select(.device == $size.device)] as $same_device
+          | ([$same_device[] | .bytes // 0] | add // 0) as $nested
+          | (if $size.bytes == null then null else $size.bytes - $nested end) as $bytes
+          | {($p): ($activity[$p] + {
+              path: $p,
+              bytes: (if $bytes != null and $bytes < 0 then 0 else $bytes end),
+              incomplete: ($size.incomplete
+                or (0 < ($children | length))
+                or any($children[]; .incomplete or .bytes == null))})})
+        | add // {})}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+}
+
+# Removing a worktree is left to `timvisher_git worktree gc` in an agent
+# session: it archives workflow files and asks before removing, which an
+# unattended reclaim cannot do.
+reclaim() {
+  jq -n --arg reason 'worktree removal is agent-driven: use timvisher_git worktree gc' \
+    '{targets: ($ARGS.positional | map({(.): {reclaimed: false, reason: $reason}}) | add // {})}' \
+    --args -- "$@"
+}
+
+case ${1-} in
+  measure)
+    measure
+    ;;
+  reclaim)
+    shift
+    reclaim "$@"
+    ;;
+  *)
+    die "Usage: worktrees measure | worktrees reclaim <target>..."
+    ;;
+esac
