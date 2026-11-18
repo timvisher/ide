@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "forges": [
+    "nas"
+  ],
+  "topics": [
+    {
+      "topic": "ide/ai/airc",
+      "forge": "nas",
+      "repo": "ide-ai-airc"
+    }
+  ]
+}

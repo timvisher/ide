@@ -17,6 +17,11 @@ else
   topics_root=$default_topics_root
 fi
 forge_config="${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bd_topics_forge"
+script_dir=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd -P) ||
+  {
+    echo "Unable to find the directory of '${BASH_SOURCE[0]}'" >&2
+    exit 1
+  }
 
 usage() {
   cat <<'USAGE' >&2
@@ -29,7 +34,13 @@ usage() {
     timvisher_bd_topics set [<topic>]
     timvisher_bd_topics bd [<topic>] [-- <bd-args>...]
     timvisher_bd_topics new <topic>
-    timvisher_bd_topics remote [--forge <kind>] <topic>
+    timvisher_bd_topics remote status [<topic>...]
+    timvisher_bd_topics remote replicate [--forge <kind>] <topic>...
+    timvisher_bd_topics remote unreplicate <topic>...
+    timvisher_bd_topics remote push [<topic>...]
+    timvisher_bd_topics remote pull [<topic>...]
+    timvisher_bd_topics remote sync [<topic>...]
+    timvisher_bd_topics sync [--plan] [<topic>...]
     timvisher_bd_topics deactivate <topic>
     timvisher_bd_topics rm <topic>
     timvisher_bd_topics activate <topic>
@@ -53,19 +64,31 @@ usage() {
       other characters turned into '-' ('Incidents/123 foo' is
       'incidents-123-foo'). new, mv and activate refuse a topic whose
       name another active topic already has.
-    - remote gives a topic a Dolt remote named origin on a forge from
+    - Replicated topics are listed in replicated.json under
+      timvisher_bd_topics.config/, next to this script (the core ide
+      repo) and in ~/.config/timvisher/ide/bash/bin/ (the overlay). Each
+      file holds the forge kinds in its 'forges' list, and each entry
+      names a topic, its forge kind and its repo. Forges are defined in
       ~/.config/timvisher/ide/bd_topics_forge, one per line:
       'github git+ssh://<host>/<owner> [<repo-prefix>]' or
-      'nas git+ssh://<user>@<host>/<dir>'. The first line is the
-      default; 'remote --forge <kind>' picks another and records it in
-      the topic's .timvisher_bd_topics/forge, which later runs reuse.
-      The prefix marks topic repos on an account that holds others. It
-      creates the repo seeded with a commit (Dolt will not push to a
-      repo with no refs): a private GitHub repo with a README, or 'ssh
-      <user>@<host> new-topic <name>' on the NAS. It then adds the
-      remote, pushes if the remote has no Dolt data yet, runs 'bd sync
-      --remote origin' and checks that main and origin/main match. It is
-      safe to rerun.
+      'nas git+ssh://<user>@<host>/<dir>'; the first is the default.
+    - remote replicate adds a local topic to the registry that holds its
+      forge, naming its repo from the topic path and the forge's prefix.
+      It edits a tracked file; commit it like any other change.
+    - remote push creates the topic's repo if it is missing (a private
+      GitHub repo with a README, or 'ssh <user>@<host> new-topic <name>'
+      on the NAS), adds origin, and pushes. It refuses a repo that
+      already holds Dolt history the topic does not share.
+    - remote pull clones a topic that is not here yet from its repo, or
+      pulls one that already has origin.
+    - remote sync runs 'bd sync --remote origin' and checks that main
+      and origin/main match.
+    - sync does, per topic, whichever of pull (not here) or push (no
+      origin) applies, then remote sync. --plan prints each topic's
+      step and changes nothing. remote status prints the step and the
+      ahead/behind counts.
+    - Every remote verb and sync acts on all replicated topics when given
+      none, and keeps going past a topic that fails.
     - deactivate (alias: rm) hides topics from ls/set unless --all is used.
     - set prompts to reactivate deactivated topics.
     - activate re-enables a deactivated topic without setting it.
@@ -654,10 +677,6 @@ read_forge() {
       "$__forge_base" "$forge_config"
 }
 
-topic_forge_file() {
-  printf '%s' "$1/.timvisher_bd_topics/forge"
-}
-
 topic_bd() {
   local topic_abs=$1
   shift
@@ -699,6 +718,420 @@ with open(sys.argv[1]) as f:
 for name, remote in sorted(state.get("remotes", {}).items()):
     print(f"{name}\t{remote.get('url', '')}")
 PY
+}
+
+registry_files=(
+  "$script_dir/timvisher_bd_topics.config/replicated.json"
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/bash/bin/timvisher_bd_topics.config/replicated.json"
+)
+
+registry_py() {
+  python3 -I - "$@" <<'PY'
+import json
+import os
+import sys
+
+
+def load(path):
+    with open(path) as f:
+        reg = json.load(f)
+    if reg.get("schema") != 1:
+        sys.exit(f"{path}: unsupported schema {reg.get('schema')!r}")
+    forges, topics = reg.get("forges"), reg.get("topics")
+    if not isinstance(forges, list) or not isinstance(topics, list):
+        sys.exit(f"{path}: needs 'forges' and 'topics' lists")
+    for entry in topics:
+        for key in ("topic", "forge", "repo"):
+            if not isinstance(entry.get(key), str) or not entry[key]:
+                sys.exit(f"{path}: an entry has no {key!r}")
+        if entry["forge"] not in forges:
+            sys.exit(f"{path}: {entry['topic']!r} is on forge {entry['forge']!r}, which this registry does not hold")
+    return reg
+
+
+def save(path, reg):
+    reg["topics"].sort(key=lambda entry: entry["topic"])
+    tmp = path + ".x.tmp"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(reg, indent=2, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+cmd, args = sys.argv[1], sys.argv[2:]
+if cmd == "list":
+    files, repos = {}, {}
+    for path in args:
+        if not os.path.exists(path):
+            continue
+        for entry in load(path)["topics"]:
+            topic, key = entry["topic"], (entry["forge"], entry["repo"])
+            if topic in files:
+                sys.exit(f"{topic!r} is in both {files[topic]} and {path}")
+            if key in repos:
+                sys.exit(f"{repos[key]!r} and {topic!r} share the repo {entry['repo']!r} on the {entry['forge']!r} forge")
+            files[topic], repos[key] = path, topic
+            print("\t".join((topic, entry["forge"], entry["repo"], path)))
+elif cmd == "file-for":
+    kind, paths = args[0], args[1:]
+    hits = [p for p in paths if os.path.exists(p) and kind in load(p)["forges"]]
+    if len(hits) != 1:
+        sys.exit(f"{len(hits)} registries hold the {kind!r} forge")
+    print(hits[0])
+elif cmd == "add":
+    path, topic, forge, repo = args
+    reg = load(path)
+    reg["topics"].append({"topic": topic, "forge": forge, "repo": repo})
+    save(path, reg)
+elif cmd == "remove":
+    path, topic = args
+    reg = load(path)
+    kept = [entry for entry in reg["topics"] if entry["topic"] != topic]
+    if len(kept) == len(reg["topics"]):
+        sys.exit(f"{path}: no {topic!r}")
+    reg["topics"] = kept
+    save(path, reg)
+else:
+    sys.exit(f"unknown registry command {cmd!r}")
+PY
+}
+
+declare -A reg_forge_of=() reg_repo_of=() reg_file_of=()
+reg_order=()
+
+load_registry() {
+  local listing topic forge repo file
+
+  listing=$(registry_py list "${registry_files[@]}") ||
+    die "Unable to read the replication registry"
+
+  reg_order=()
+  reg_forge_of=()
+  reg_repo_of=()
+  reg_file_of=()
+  while IFS=$'\t' read -r topic forge repo file
+  do
+    [[ -n $topic ]] || continue
+    reg_order+=("$topic")
+    reg_forge_of[$topic]=$forge
+    reg_repo_of[$topic]=$repo
+    reg_file_of[$topic]=$file
+  done <<<"$listing"
+}
+
+topic_forge_context() {
+  local topic_rel=$1
+
+  [[ -n ${reg_forge_of[$topic_rel]-} ]] ||
+    die "Topic '%s' is not replicated; add it with 'timvisher_bd_topics remote replicate %s'" \
+      "$topic_rel" "$topic_rel"
+
+  read_forge "${reg_forge_of[$topic_rel]}" forge_kind forge_base forge_prefix
+  repo_name=${reg_repo_of[$topic_rel]}
+  forge_owner=${forge_base##*/}
+  forge_login=${forge_base#git+ssh://}
+  forge_login=${forge_login%%/*}
+  remote_url="$forge_base/$repo_name.git"
+}
+
+forge_repo_exists() {
+  case $forge_kind in
+    github)
+      gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
+        --json name >/dev/null 2>&1
+      ;;
+    nas)
+      git ls-remote "${remote_url#git+}" >/dev/null 2>&1
+      ;;
+  esac
+}
+
+forge_repo_create() {
+  local topic_rel=$1
+
+  info "Creating '%s' on the '%s' forge" "$repo_name" "$forge_kind"
+  case $forge_kind in
+    github)
+      gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
+        --private --add-readme --disable-issues --disable-wiki \
+        --description "Dolt remote for the beads topic '${topic_rel}'" >&2
+      ;;
+    nas)
+      ssh -o BatchMode=yes "$forge_login" new-topic "$repo_name" </dev/null >&2
+      ;;
+  esac
+}
+
+remote_dolt_ref() {
+  git ls-remote "${remote_url#git+}" refs/dolt/data 2>/dev/null
+}
+
+require_local_topic() {
+  local topic_rel=$1
+
+  [[ -d $topic_abs/.beads ]] ||
+    die "Topic '%s' does not contain .beads" "$topic_abs"
+  ! topic_is_deactivated "$topic_abs" ||
+    die "Topic '%s' is deactivated" "$topic_rel"
+}
+
+# Sets db_dir and origin_url.
+read_topic_origin() {
+  local topic_rel=$1
+  local other_dir other_remotes remotes
+
+  db_dir=$(topic_db_dir "$topic_abs") || exit 1
+
+  # bd can adopt an unrelated repo's origin as a Dolt remote, and it
+  # lands on whichever database it was touching at the time, so a
+  # remote on any of the topic's databases stops this.
+  shopt -s nullglob
+  for other_dir in "$topic_abs"/.beads/embeddeddolt/*/ "$topic_abs"/.beads/dolt/*/
+  do
+    other_dir=${other_dir%/}
+    [[ -f $other_dir/.dolt/repo_state.json && $other_dir != "$db_dir" ]] || continue
+    other_remotes=$(db_remotes "$other_dir") ||
+      die "Unable to read the remotes of '%s'" "$other_dir"
+    if [[ -n $other_remotes ]]
+    then
+      die "Database '%s' in topic '%s' has a Dolt remote bd does not use: %s" \
+        "${other_dir##*/}" "$topic_rel" "$other_remotes"
+    fi
+  done
+  shopt -u nullglob
+
+  remotes=$(db_remotes "$db_dir") ||
+    die "Unable to read the remotes of '%s'" "$db_dir"
+  origin_url=$(awk -F'\t' '$1 == "origin" { print $2 }' <<<"$remotes")
+
+  if [[ -n $origin_url && $origin_url != "$remote_url" ]]
+  then
+    die "Topic '%s' already has origin '%s', not '%s'" "$topic_rel" "$origin_url" "$remote_url"
+  elif [[ -z $origin_url && -n $remotes ]]
+  then
+    die "Topic '%s' has Dolt remotes but no origin: %s" "$topic_rel" "$remotes"
+  fi
+}
+
+topic_ahead_behind() {
+  local ahead behind
+
+  ahead=$(cd "$db_dir" && set -o pipefail && dolt log --oneline origin/main..main 2>/dev/null | wc -l) ||
+    return 1
+  behind=$(cd "$db_dir" && set -o pipefail && dolt log --oneline main..origin/main 2>/dev/null | wc -l) ||
+    return 1
+  printf '%s/%s' "${ahead//[[:space:]]/}" "${behind//[[:space:]]/}"
+}
+
+topic_push() {
+  local topic_rel=$1
+  local dolt_ref
+
+  require_local_topic "$topic_rel"
+  read_topic_origin "$topic_rel"
+
+  if [[ -z $origin_url ]]
+  then
+    if forge_repo_exists
+    then
+      # An earlier run may have made the repo and stopped before adding
+      # the remote, but a repo that already holds Dolt data has a history
+      # this topic does not share.
+      dolt_ref=$(remote_dolt_ref) ||
+        die "Unable to list the refs of '%s'" "$remote_url"
+      [[ -z $dolt_ref ]] ||
+        die "Repo '%s' already holds Dolt history that topic '%s' does not share; pull it or reconcile them by hand" \
+          "$remote_url" "$topic_rel"
+      info "Reusing the empty repo '%s'" "$remote_url"
+    else
+      forge_repo_create "$topic_rel" ||
+        die "Unable to create '%s' on the '%s' forge" "$repo_name" "$forge_kind"
+    fi
+
+    topic_bd "$topic_abs" dolt remote add origin "$remote_url" >&2 ||
+      die "Unable to add origin '%s' to '%s'" "$remote_url" "$topic_rel"
+  fi
+
+  topic_bd "$topic_abs" dolt push --remote origin >&2 ||
+    die "Unable to push '%s' to '%s'" "$topic_rel" "$remote_url"
+  printf '%s\t%s\n' "$topic_rel" "$remote_url"
+}
+
+topic_pull() {
+  local topic_rel=$1
+  local dolt_ref had_gitignore=0
+
+  if [[ -d $topic_abs/.beads ]]
+  then
+    require_local_topic "$topic_rel"
+    read_topic_origin "$topic_rel"
+    [[ -n $origin_url ]] ||
+      die "Topic '%s' exists here without origin; push it, or reconcile it with '%s' by hand" \
+        "$topic_rel" "$remote_url"
+    topic_bd "$topic_abs" dolt pull --remote origin >&2 ||
+      die "Unable to pull '%s' from '%s'" "$topic_rel" "$remote_url"
+    printf '%s\t%s\n' "$topic_rel" "$remote_url"
+    return 0
+  fi
+
+  dolt_ref=$(remote_dolt_ref) ||
+    die "Unable to list the refs of '%s'" "$remote_url"
+  [[ -n $dolt_ref ]] ||
+    die "Repo '%s' has no Dolt data to pull" "$remote_url"
+
+  mkdir -p "$topic_abs" ||
+    die "Unable to create '%s'" "$topic_abs"
+  [[ -e $topic_abs/.gitignore ]] && had_gitignore=1
+
+  # GIT_CEILING_DIRECTORIES keeps bd from adopting the topics tree's own
+  # git origin, which has refs/dolt/data of its own.
+  (cd "$topic_abs" &&
+    GIT_CEILING_DIRECTORIES=$topics_root_real BEADS_DIR="$topic_abs/.beads" \
+      bd init --remote "$remote_url" --skip-hooks --skip-agents --non-interactive </dev/null >&2) ||
+    die "Unable to clone '%s' into '%s'" "$remote_url" "$topic_abs"
+
+  # bd init's .gitignore ignores .dolt/ and *.db, which would stop the
+  # topics tree's git repo tracking this topic's database the way it
+  # tracks every other topic's.
+  if (( had_gitignore == 0 ))
+  then
+    rm -f -- "$topic_abs/.gitignore"
+  fi
+
+  read_topic_origin "$topic_rel"
+  [[ $origin_url == "$remote_url" ]] ||
+    die "Cloning '%s' left origin '%s'" "$topic_rel" "${origin_url:-unset}"
+  printf '%s\t%s\n' "$topic_rel" "$remote_url"
+}
+
+topic_remote_sync() {
+  local topic_rel=$1
+  local attempt sync_out sync_rc counts
+
+  require_local_topic "$topic_rel"
+  read_topic_origin "$topic_rel"
+  [[ -n $origin_url ]] ||
+    die "Topic '%s' has no origin; push or pull it first" "$topic_rel"
+
+  # A topic that has not applied the pending schema migrations has
+  # nothing to push on the first sync, which applies them and then
+  # fails on the events table it just stopped tracking. The commits the
+  # migration left heal it on the second.
+  for attempt in 1 2
+  do
+    sync_out=$(topic_bd "$topic_abs" sync --remote origin 2>&1)
+    sync_rc=$?
+    printf '%s\n' "$sync_out" >&2
+    if (( sync_rc == 0 ))
+    then
+      break
+    fi
+    if [[ $attempt == 2 || $sync_out != *'would be stomped by merge'* ]]
+    then
+      die "bd sync failed for '%s' (exit %s)" "$topic_rel" "$sync_rc"
+    fi
+    info "Rerunning bd sync for '%s' after its schema migration" "$topic_rel"
+  done
+
+  counts=$(topic_ahead_behind) ||
+    die "Unable to compare main with origin/main in '%s'" "$db_dir"
+  [[ $counts == 0/0 ]] ||
+    die "Topic '%s' is %s (ahead/behind) origin/main after bd sync" "$topic_rel" "$counts"
+
+  printf '%s\t%s\n' "$topic_rel" "$remote_url"
+}
+
+# Print the step sync takes for a topic: pull, push, sync, or refuse.
+topic_plan() {
+  local topic_rel=$1
+  local dolt_ref
+
+  if [[ ! -d $topic_abs/.beads ]]
+  then
+    if dolt_ref=$(remote_dolt_ref) && [[ -n $dolt_ref ]]
+    then
+      printf 'pull'
+    else
+      printf 'refuse'
+    fi
+    return 0
+  fi
+
+  if topic_is_deactivated "$topic_abs" || ! (read_topic_origin "$topic_rel") >/dev/null 2>&1
+  then
+    printf 'refuse'
+    return 0
+  fi
+  read_topic_origin "$topic_rel" 2>/dev/null
+
+  if [[ -n $origin_url ]]
+  then
+    printf 'sync'
+  elif forge_repo_exists && dolt_ref=$(remote_dolt_ref) && [[ -n $dolt_ref ]]
+  then
+    printf 'refuse'
+  else
+    printf 'push'
+  fi
+}
+
+topic_status() {
+  local topic_rel=$1
+  local step counts=-
+
+  step=$(topic_plan "$topic_rel")
+  if [[ $step == sync ]]
+  then
+    read_topic_origin "$topic_rel" 2>/dev/null
+    counts=$(topic_ahead_behind) || counts='?'
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$topic_rel" "$forge_kind" "$repo_name" "$step" "$counts"
+  [[ $step != refuse ]]
+}
+
+topic_workflow() {
+  local topic_rel=$1
+  local step
+
+  step=$(topic_plan "$topic_rel")
+  case $step in
+    pull)
+      topic_pull "$topic_rel" >/dev/null || exit 1
+      ;;
+    push)
+      topic_push "$topic_rel" >/dev/null || exit 1
+      ;;
+    sync)
+      ;;
+    *)
+      die "Topic '%s' needs a human; see 'timvisher_bd_topics remote status %s'" "$topic_rel" "$topic_rel"
+      ;;
+  esac
+  topic_remote_sync "$topic_rel"
+}
+
+topic_plan_line() {
+  printf '%s\t%s\n' "$1" "$(topic_plan "$1")"
+}
+
+for_each_topic() {
+  local step=$1
+  shift
+  local input failures=0
+
+  for input in "$@"
+  do
+    if ! (
+        resolve_topic "$(strip_beads_suffix "$input")" topic_abs topic_rel &&
+          topic_forge_context "$topic_rel" &&
+          "$step" "$topic_rel"
+      )
+    then
+      error "'%s' failed for '%s'" "${step#topic_}" "$input"
+      (( failures += 1 ))
+    fi
+  done
+
+  (( failures == 0 ))
 }
 
 stop_dolt_server() {
@@ -1365,182 +1798,100 @@ case $cmd in
     _subscribers_lockdir=""
     ;;
   remote)
-    wanted_forge=
-    if [[ ${1-} == --forge ]]
-    then
-      [[ -n ${2-} ]] || die "--forge needs a forge kind"
-      wanted_forge=$2
-      shift 2
-    fi
-
-    if [[ $# -ne 1 ]]
+    verb=${1-}
+    if [[ -z $verb ]]
     then
       usage
       exit 1
     fi
+    shift
+    load_registry
 
-    topic_input=$(strip_beads_suffix "$1")
-    [[ -n $topic_input ]] || die "Topic argument is empty"
-
-    resolve_topic "$topic_input" topic_abs topic_rel
-
-    if [[ ! -d $topic_abs/.beads ]]
-    then
-      die "Topic '%s' does not contain .beads" "$topic_abs"
-    fi
-
-    if topic_is_deactivated "$topic_abs"
-    then
-      die "Topic '%s' is deactivated" "$topic_rel"
-    fi
-
-    repo_name=$(require_unique_repo_name "$topic_rel") || exit 1
-
-    # The topic records the forge's kind, not its URL: the topic tree can
-    # move between machines whose configs reach that forge differently.
-    forge_file=$(topic_forge_file "$topic_abs")
-    recorded_forge=
-    if [[ -f $forge_file ]]
-    then
-      recorded_forge=$(< "$forge_file")
-      recorded_forge=${recorded_forge//[[:space:]]/}
-    fi
-    if [[ -n $wanted_forge && -n $recorded_forge && $wanted_forge != "$recorded_forge" ]]
-    then
-      die "Topic '%s' is on the '%s' forge, not '%s'" "$topic_rel" "$recorded_forge" "$wanted_forge"
-    fi
-    read_forge "${wanted_forge:-$recorded_forge}" forge_kind forge_base forge_prefix
-    if [[ -n $wanted_forge && -z $recorded_forge ]]
-    then
-      mkdir -p "${forge_file%/*}" &&
-        printf '%s\n' "$forge_kind" > "$forge_file" ||
-        die "Unable to write '%s'" "$forge_file"
-    fi
-
-    repo_name=$forge_prefix$repo_name
-    forge_owner=${forge_base##*/}
-    forge_login=${forge_base#git+ssh://}
-    forge_login=${forge_login%%/*}
-    remote_url="$forge_base/$repo_name.git"
-    db_dir=$(topic_db_dir "$topic_abs") || exit 1
-
-    # bd can adopt an unrelated repo's origin as a Dolt remote, and it
-    # lands on whichever database it was touching at the time, so a
-    # remote on any of the topic's databases stops this.
-    shopt -s nullglob
-    for other_dir in "$topic_abs"/.beads/embeddeddolt/*/ "$topic_abs"/.beads/dolt/*/
-    do
-      other_dir=${other_dir%/}
-      [[ -f $other_dir/.dolt/repo_state.json && $other_dir != "$db_dir" ]] || continue
-      other_remotes=$(db_remotes "$other_dir") ||
-        die "Unable to read the remotes of '%s'" "$other_dir"
-      if [[ -n $other_remotes ]]
-      then
-        die "Database '%s' in topic '%s' has a Dolt remote bd does not use: %s" \
-          "${other_dir##*/}" "$topic_rel" "$other_remotes"
-      fi
-    done
-    shopt -u nullglob
-
-    remotes=$(db_remotes "$db_dir") ||
-      die "Unable to read the remotes of '%s'" "$db_dir"
-    origin_url=$(awk -F'\t' '$1 == "origin" { print $2 }' <<<"$remotes")
-
-    if [[ -n $origin_url && $origin_url != "$remote_url" ]]
-    then
-      die "Topic '%s' already has origin '%s', not '%s'" "$topic_rel" "$origin_url" "$remote_url"
-    elif [[ -z $origin_url && -n $remotes ]]
-    then
-      die "Topic '%s' has Dolt remotes but no origin: %s" "$topic_rel" "$remotes"
-    fi
-
-    if [[ -z $origin_url ]]
-    then
-      case $forge_kind in
-        github)
-          gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
-            --json name >/dev/null 2>&1
-          ;;
-        nas)
-          git ls-remote "${remote_url#git+}" >/dev/null 2>&1
-          ;;
-      esac
-      if (( $? == 0 ))
-      then
-        # An earlier run may have made the repo and stopped before adding
-        # the remote, but a repo that already holds Dolt data is another
-        # topic's.
-        dolt_ref=$(git ls-remote "${remote_url#git+}" refs/dolt/data 2>/dev/null) ||
-          die "Unable to list the refs of '%s'" "$remote_url"
-        if [[ -n $dolt_ref ]]
+    case $verb in
+      status|push|pull|sync)
+        if (( $# == 0 ))
         then
-          die "Repo '%s' already holds Dolt data; it belongs to another topic" "$remote_url"
+          set -- "${reg_order[@]}"
         fi
-        info "Reusing the empty repo '%s/%s'" "$forge_owner" "$repo_name"
-      else
-        info "Creating '%s' on the '%s' forge" "$repo_name" "$forge_kind"
-        case $forge_kind in
-          github)
-            gh -R "$forge_owner/$repo_name" repo create "$forge_owner/$repo_name" \
-              --private --add-readme --disable-issues --disable-wiki \
-              --description "Dolt remote for the beads topic '${topic_rel}'" >&2
-            ;;
-          nas)
-            ssh -o BatchMode=yes "$forge_login" new-topic "$repo_name" </dev/null >&2
-            ;;
-        esac ||
-          die "Unable to create '%s' on the '%s' forge" "$repo_name" "$forge_kind"
-      fi
+        (( 0 < $# )) || die "No topics are replicated"
+        case $verb in
+          sync) for_each_topic topic_remote_sync "$@" ;;
+          *) for_each_topic "topic_$verb" "$@" ;;
+        esac
+        exit
+        ;;
+      replicate)
+        wanted_forge=
+        if [[ ${1-} == --forge ]]
+        then
+          [[ -n ${2-} ]] || die "--forge needs a forge kind"
+          wanted_forge=$2
+          shift 2
+        fi
+        (( 0 < $# )) || { usage; exit 1; }
 
-      topic_bd "$topic_abs" dolt remote add origin "$remote_url" >&2 ||
-        die "Unable to add origin '%s' to '%s'" "$remote_url" "$topic_rel"
-    fi
+        read_forge "$wanted_forge" forge_kind forge_base forge_prefix
+        registry_file=$(registry_py file-for "$forge_kind" "${registry_files[@]}") ||
+          die "No replication registry holds the '%s' forge" "$forge_kind"
 
-    # bd sync pulls before it pushes, and the pull fails on a remote with
-    # no Dolt branches, so a fresh remote gets its first push on its own.
-    dolt_ref=$(git ls-remote "${remote_url#git+}" refs/dolt/data 2>/dev/null) ||
-      die "Unable to list the refs of '%s'" "$remote_url"
-    if [[ -z $dolt_ref ]]
+        for topic_input in "$@"
+        do
+          resolve_topic "$(strip_beads_suffix "$topic_input")" topic_abs topic_rel
+          require_local_topic "$topic_rel"
+          if [[ -n ${reg_forge_of[$topic_rel]-} ]]
+          then
+            [[ ${reg_forge_of[$topic_rel]} == "$forge_kind" ]] ||
+              die "Topic '%s' is replicated on the '%s' forge, not '%s'" \
+                "$topic_rel" "${reg_forge_of[$topic_rel]}" "$forge_kind"
+            warn "Topic '%s' is already replicated" "$topic_rel"
+            continue
+          fi
+          repo_name=$forge_prefix$(require_unique_repo_name "$topic_rel") || exit 1
+          registry_py add "$registry_file" "$topic_rel" "$forge_kind" "$repo_name" ||
+            die "Unable to add '%s' to '%s'" "$topic_rel" "$registry_file"
+          load_registry
+          printf '%s\t%s\t%s\t%s\n' "$topic_rel" "$forge_kind" "$repo_name" "$registry_file"
+        done
+        ;;
+      unreplicate)
+        (( 0 < $# )) || { usage; exit 1; }
+        for topic_input in "$@"
+        do
+          resolve_topic "$(strip_beads_suffix "$topic_input")" topic_abs topic_rel
+          [[ -n ${reg_file_of[$topic_rel]-} ]] ||
+            die "Topic '%s' is not replicated" "$topic_rel"
+          registry_py remove "${reg_file_of[$topic_rel]}" "$topic_rel" ||
+            die "Unable to remove '%s' from '%s'" "$topic_rel" "${reg_file_of[$topic_rel]}"
+          printf '%s\t%s\n' "$topic_rel" "${reg_file_of[$topic_rel]}"
+          load_registry
+        done
+        ;;
+      *)
+        usage
+        exit 1
+        ;;
+    esac
+    ;;
+  sync)
+    plan=0
+    if [[ ${1-} == --plan ]]
     then
-      info "Pushing '%s' to its empty remote" "$topic_rel"
-      topic_bd "$topic_abs" dolt push --remote origin >&2 ||
-        die "Unable to push '%s' to '%s'" "$topic_rel" "$remote_url"
+      plan=1
+      shift
     fi
-
-    # A topic that has not applied the pending schema migrations has
-    # nothing to push on the first sync, which applies them and then
-    # fails on the events table it just stopped tracking. The commits the
-    # migration left heal it on the second.
-    for attempt in 1 2
-    do
-      sync_out=$(topic_bd "$topic_abs" sync --remote origin 2>&1)
-      sync_rc=$?
-      printf '%s\n' "$sync_out" >&2
-      if (( sync_rc == 0 ))
-      then
-        break
-      fi
-      if [[ $attempt == 2 || $sync_out != *'would be stomped by merge'* ]]
-      then
-        die "bd sync failed for '%s' (exit %s)" "$topic_rel" "$sync_rc"
-      fi
-      info "Rerunning bd sync for '%s' after its schema migration" "$topic_rel"
-    done
-
-    ahead=$(cd "$db_dir" && set -o pipefail && dolt log --oneline origin/main..main 2>/dev/null | wc -l) ||
-      die "Unable to compare main with origin/main in '%s'" "$db_dir"
-    behind=$(cd "$db_dir" && set -o pipefail && dolt log --oneline main..origin/main 2>/dev/null | wc -l) ||
-      die "Unable to compare origin/main with main in '%s'" "$db_dir"
-    ahead=${ahead//[[:space:]]/}
-    behind=${behind//[[:space:]]/}
-
-    if [[ $ahead != 0 || $behind != 0 ]]
+    load_registry
+    if (( $# == 0 ))
     then
-      die "Topic '%s' is %s ahead and %s behind origin/main after bd sync" \
-        "$topic_rel" "$ahead" "$behind"
+      set -- "${reg_order[@]}"
     fi
-
-    printf '%s\t%s\n' "$topic_rel" "$remote_url"
+    (( 0 < $# )) || die "No topics are replicated"
+    if (( plan == 1 ))
+    then
+      for_each_topic topic_plan_line "$@"
+    else
+      for_each_topic topic_workflow "$@"
+    fi
+    exit
     ;;
   resolve)
     if [[ $# -ne 1 ]]
