@@ -22,11 +22,14 @@ When starting a session, read the Beads and Topics section below and use the `be
   timvisher_bd_topics ls
   timvisher_bd_topics set <topic>
   ```
-- Beads topics sync to the NAS over Tailscale. `bd sync` is the
-  federation loop (pull, conflict-check, recompute `is_blocked`, push);
-  a topic's Dolt remote belongs in `.dolt/repo_state.json` under
-  `.remotes.origin.url` and should name `gemedet-git`, not
-  `gemedet-nas`. Do _*NOT*_ remove a configured Dolt remote.
+- Beads topics sync through a Dolt remote, `origin`, on the topic's
+  forge: GitHub under `tim-visher_ddog` for work topics (the default
+  in `~/.config/timvisher/ide/bd_topics_forge`), the NAS over
+  Tailscale (`gemedet-git`, never `gemedet-nas`) for personal-config
+  topics such as `ide`. Set one up with `timvisher_bd_topics remote
+  <topic>`. `bd sync` is the federation loop (pull, conflict-check,
+  recompute `is_blocked`, push). Do _*NOT*_ remove a configured Dolt
+  remote; one pointing off the topic's forge gets reported, not synced.
 - Run `bd prime` for workflow context, or install hooks with
   `bd hooks install`.
 - For the full workflow and session completion rules, use the `beads` skill.
@@ -295,9 +298,9 @@ Follow my usual git rules instead:
 - **Dolt sync counts as pushing.** The managed block's "Conservative"
   profile says not to run Dolt remote sync unless asked; that is
   rejected here along with the rest of it. A topic with unsynced beads
-  is unfinished work. Agents still may not run the push themselves --
-  the remote-mutation ban is separate and still absolute -- so hand Tim
-  the `bd sync` invocation.
+  is unfinished work, so run `bd sync` in it. The git wrapper permits
+  only bd's own `refs/dolt/` pushes; any other Dolt push, such as a bare
+  `dolt push`, goes to Tim.
 - Still ask first only for destructive or history-rewriting remote
   operations (force-push, amending or rebasing already-published
   commits) and anything my other standing rules already gate.
