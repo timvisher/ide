@@ -427,13 +427,29 @@ else
 fi
 
 # Topic anchoring: the hook asks `timvisher_bd_topics root` for the
-# lock root. Run the repo's copy of the tool, pointed at a sandboxed
-# topics root that is itself one git repo, like the real one.
+# lock root. A fake answers it over a sandboxed topics root that is
+# itself one git repo, like the real one: the nearest directory holding
+# .beads, else the topics root.
 wlock_bin="$tmpdir/wlock-bin"
-mkdir -p "$wlock_bin" "$wlock_home/.config/timvisher/ide"
-ln -sf "${repo_root}/bash/bin/timvisher_bd_topics" "$wlock_bin/timvisher_bd_topics"
+mkdir -p "$wlock_bin"
 TOPICS=$(wlock_init_worktree "$tmpdir/topics")
-printf '%s\n' "$TOPICS" > "$wlock_home/.config/timvisher/ide/bd_topics_root"
+cat > "$wlock_bin/timvisher_bd_topics" <<FAKE
+#!/usr/bin/env bash
+[[ \$1 == root ]] || exit 2
+dir=\$(pwd -P)
+while [[ \$dir == "$TOPICS"/* ]]
+do
+  if [[ -d \$dir/.beads ]]
+  then
+    printf '%s\\n' "\$dir"
+    exit 0
+  fi
+  dir=\${dir%/*}
+done
+[[ \$dir == "$TOPICS" ]] || exit 1
+printf '%s\\n' "$TOPICS"
+FAKE
+chmod +x "$wlock_bin/timvisher_bd_topics"
 mkdir -p "$TOPICS/T1/.beads" "$TOPICS/T1/sub/.beads" "$TOPICS/T2/.beads"
 wlock_run_pre_topics() { PATH="$wlock_bin:$PATH" wlock_run_pre; }
 LOCK_T1="$(wlock_lockdir "$TOPICS/T1")"

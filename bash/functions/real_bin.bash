@@ -17,6 +17,16 @@
 # TIMVISHER_REAL_BIN_SKIP, so a wrapper never resolves to itself or to
 # another copy of itself. It returns 1 when nothing is found.
 #
+# Under timvisher_tests, a unit suite's TIMVISHER_TESTS_DENY_DIR holds
+# stubs for tools a unit suite must never reach for real (gh, curl, ssh).
+# When it holds <name>, a candidate outside the suite's own scratch (the
+# deny dir's parent, which holds its HOME and TMPDIR) resolves to the
+# stub instead. Skipping the deny dir would let a wrapper under test
+# reach Homebrew's gh, which comes before PATH; returning the stub
+# unconditionally would beat the fakes suites put on PATH or behind a
+# mocked brew --prefix. A fake lives in the suite's scratch; a real
+# binary never does.
+#
 # timvisher_real_bin_skip_self adds the wrapper's directory to the exported
 # TIMVISHER_REAL_BIN_SKIP. With two checkouts of the wrappers on PATH (e.g.
 # during a move of ~/git) each copy then skips the other instead of the two
@@ -35,6 +45,7 @@ timvisher_real_bin() {
   local name=$1 self=$2
   shift 2
   local self_real self_dir prefix dir candidate candidate_real skip skipped
+  local deny=${TIMVISHER_TESTS_DENY_DIR-}
   local -a candidates=() path_entries=() skip_dirs=()
 
   self_real=$(realpath "$self" 2>/dev/null) || self_real=$self
@@ -74,6 +85,10 @@ timvisher_real_bin() {
       fi
     done
     [[ $skipped == true ]] && continue
+    if [[ -n $deny && -x $deny/$name && $candidate_real != "${deny%/*}"/* ]]
+    then
+      candidate=$deny/$name
+    fi
     printf '%s\n' "$candidate"
     return 0
   done

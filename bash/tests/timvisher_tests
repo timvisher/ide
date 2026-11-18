@@ -266,6 +266,47 @@ HOME=/nonexistent \
   bash -c 'true' &&
   echo 'PASS: a continued HOME prefix for a child is allowed'
 SUITE
+suite "$fcore/bash/tests/calls_gh" <<'SUITE'
+gh api user
+SUITE
+suite "$fcore/bash/tests/fakes_gh" <<'SUITE'
+mkdir -p "$TMPDIR/fake" &&
+  printf '#!/bin/sh\necho faked\n' > "$TMPDIR/fake/gh" &&
+  chmod +x "$TMPDIR/fake/gh" || exit 1
+if [[ $(PATH=$TMPDIR/fake:$PATH gh) == faked ]]
+then
+  echo 'PASS: a fake ahead on PATH wins over the deny stub'
+else
+  echo 'FAIL: the deny stub beat a fake ahead on PATH'
+  exit 1
+fi
+source ~/.functions/real_bin.bash || exit 1
+got=$(timvisher_real_bin gh /nonexistent/gh)
+if [[ $got == "$TIMVISHER_TESTS_DENY_DIR/gh" ]]
+then
+  echo 'PASS: timvisher_real_bin resolves a real gh to the deny stub'
+else
+  echo "FAIL: timvisher_real_bin resolved gh to '$got'"
+  exit 1
+fi
+got=$(timvisher_real_bin gh /nonexistent/gh "$TMPDIR/fake")
+if [[ $got == "$TMPDIR/fake/gh" ]]
+then
+  echo "PASS: timvisher_real_bin resolves to a suite's own fake"
+else
+  echo "FAIL: timvisher_real_bin resolved the fake gh to '$got'"
+  exit 1
+fi
+SUITE
+suite "$fcore/bash/tests/integration/no_deny" <<'SUITE'
+if [[ -z ${TIMVISHER_TESTS_DENY_DIR-} && :$PATH: != */deny:* ]]
+then
+  echo 'PASS: no deny dir'
+else
+  echo "FAIL: deny dir '${TIMVISHER_TESTS_DENY_DIR-}' on '$PATH'"
+  exit 1
+fi
+SUITE
 suite "$fover/bash/tests/overlay_pass" <<'SUITE'
 echo 'PASS: overlay'
 SUITE
@@ -373,6 +414,14 @@ check 'a suite runs at its repo root' test "$(env_of home_a pwd)" = "$fcore"
 check 'a suite reads stdin from /dev/null' eval '! grep -q "^stdin=" "$tmpdir/home_a.env"'
 check 'a suite runs in its own process group' \
       test "$(env_of home_a pgid)" = "$(env_of home_a pid)"
+check "a unit suite's PATH starts with its deny dir" \
+      eval '[[ -n $(env_of home_a TIMVISHER_TESTS_DENY_DIR) && $(env_of home_a PATH) == "$(env_of home_a TIMVISHER_TESTS_DENY_DIR):"* ]]'
+check 'a unit suite that calls gh unfaked fails' \
+      has_result 'test: ide/bash/tests/calls_gh fail'
+check 'the deny stub names the suite and the tool' \
+      grep -qF 'ide/bash/tests/calls_gh	timvisher_tests: unit suite ide/bash/tests/calls_gh reached a real gh; fake it, or move the case to bash/tests/integration' "$tmpdir/out"
+check "a unit suite's own fakes win over the deny stubs" \
+      has_result 'test: ide/bash/tests/fakes_gh pass'
 check 'timvisher_tests_fresh_home gives a fresh HOME' has_result 'test: ide/bash/tests/fresh pass'
 check 'directories in a test directory are not suites' \
       eval '! grep -q -e "bash/tests/fixtures" -e "bash/tests/lib" "$results"'
@@ -414,6 +463,8 @@ check "--integration runs the overlay's integration suites" \
       has_result 'test: system-extensions/bash/tests/integration/overlay_real pass'
 check '--integration still runs the other suites' \
       has_result 'test: ide/bash/tests/pass pass'
+check 'an integration suite gets no deny dir' \
+      has_result 'test: ide/bash/tests/integration/no_deny pass'
 
 run_fixture --suite bash/tests/integration/real
 rc=$?

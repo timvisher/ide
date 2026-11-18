@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+
+show_help() {
+  cat <<'EOF'
+Usage: timvisher_lint_test_isolation [--allow <file>] <root>...
+
+Print <file>:<line>: rule <n>: <what>: <text> for each place the unit
+tests under each git worktree <root> break test isolation, and exit 1
+if there are any. With more than one <root>, <file> is prefixed with
+its root.
+
+Unit-tier test code is what timvisher_tests runs as unit suites, and
+what they source: the regular files directly in bash/tests/,
+bash/tests/lib/*.bash, ai/HOME/.agents/skills/*/scripts/tests/,
+LaunchAgents/tests/ and bash/bin/tests/*.bash, tracked or untracked
+but not ignored. bash/tests/integration/ is the integration tier and
+is not checked: testing two units together belongs there.
+
+Rule 1: a unit's suite never fakes the unit itself. A suite's units
+are its file name (bash/tests/X, or bash/tests/lib/X.bash) and the
+file names its script= and tool= assignments point at; rule 1 checks
+those with a bash/bin/X or python/bin/X in <root>. The suite fakes
+unit X with:
+
+  - mock_command, mock_respond or mock_passthrough naming X
+  - a fake named X: a file written by heredoc or redirection, or a
+    symlink to anything but X, whose path, or heredoc delimiter, says
+    mock, stub, fake, spoof or bin
+  - a function definition X()
+
+A unit that stands in for a real binary of the same name (its
+bash/bin/X calls timvisher_real_bin, runs "$real..." "$@", or names a
+/bin/X of its own) is a wrapper; faking X there fakes the binary it
+wraps, so rule 1 skips it.
+
+Rule 2: a fake never runs real code from the repo. A fake body (the
+heredoc or line writing a fake as above, the source of a symlink
+fake, a mock_respond line, or a mock_passthrough line) must not name
+timvisher_real_bin or a tool under bash/bin/ or python/bin/, under
+the bin/ of $script_dir, $repo_root, $repo, $core, $root, $bin_dir or
+$here, or under ~/bin/ or $HOME/bin/. The suite's own units are
+exempt: a fake that calls back into the unit under test couples no
+second unit.
+
+Whole-line comments are skipped. This checker and its tests are
+exempt.
+
+The allow file exempts more. Each entry is a <path>, or <path>:<text>
+for only the lines containing <text>, and must end in a # comment
+giving the reason. Lines that are only a comment are skipped. An entry
+that matches no finding is an error, so the list cannot go stale.
+Exit status: 0 clean, 1 findings or stale entries, 2 usage or a bad
+allow file.
+EOF
+}
+
+usage() {
+  show_help >&2
+}
+
+die_usage() {
+  printf 'timvisher_lint_test_isolation: %s\n' "$1" >&2
+  exit 2
+}
+
+allow_file=
+roots=()
+while (( 0 < $# ))
+do
+  case $1 in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --allow)
+      [[ -n ${2-} ]] ||
+        die_usage '--allow needs a file'
+      allow_file=$2
+      shift 2
+      ;;
+    --allow=*)
+      allow_file=${1#--allow=}
+      shift
+      ;;
+    -*)
+      usage
+      exit 2
+      ;;
+    *)
+      roots+=("$1")
+      shift
+      ;;
+  esac
+done
+
+(( 0 < ${#roots[@]} )) ||
+  { usage; exit 2; }
+for root in "${roots[@]}"
+do
+  [[ -d $root ]] ||
+    die_usage "not a directory: $root"
+done
+
+exempt=(
+  bash/bin/timvisher_lint_test_isolation
+  bash/tests/test_isolation
+)
+
+allow_paths=()
+allow_texts=()
+allow_lines=()
+allow_used=()
+if [[ -n $allow_file ]]
+then
+  [[ -r $allow_file ]] ||
+    die_usage "cannot read allow file: $allow_file"
+  n=0
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    (( n += 1 ))
+    [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+    if ! [[ $line =~ ^([^[:space:]][^#]*[^[:space:]])[[:space:]]+#[[:space:]]*[^[:space:]] ]]
+    then
+      die_usage "$allow_file:$n: an entry needs a '# reason' comment: $line"
+    fi
+    entry=${BASH_REMATCH[1]}
+    if [[ $entry == *:* ]]
+    then
+      allow_paths+=("${entry%%:*}")
+      allow_texts+=("${entry#*:}")
+    else
+      allow_paths+=("$entry")
+      allow_texts+=('')
+    fi
+    allow_lines+=("$n")
+    allow_used+=('')
+  done < "$allow_file"
+fi
+
+allowed() {
+  local path=$1 text=$2 i
+  for i in "${!allow_paths[@]}"
+  do
+    [[ ${allow_paths[i]} == "$path" ]] || continue
+    if [[ -z ${allow_texts[i]} || $text == *"${allow_texts[i]}"* ]]
+    then
+      allow_used[i]=1
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_unit_test() {
+  case $1 in
+    bash/tests/integration/*)
+      return 1
+      ;;
+    bash/tests/lib/*/*)
+      return 1
+      ;;
+    bash/tests/lib/*.bash)
+      return 0
+      ;;
+    bash/tests/*/*)
+      return 1
+      ;;
+    bash/tests/*)
+      return 0
+      ;;
+    ai/HOME/.agents/skills/*/scripts/tests/*/*)
+      return 1
+      ;;
+    ai/HOME/.agents/skills/*/scripts/tests/*)
+      [[ ${1#ai/HOME/.agents/skills/} != */*/*/*/* ]]
+      return
+      ;;
+    LaunchAgents/tests/*/*)
+      return 1
+      ;;
+    LaunchAgents/tests/*)
+      return 0
+      ;;
+    bash/bin/tests/*/*)
+      return 1
+      ;;
+    bash/bin/tests/*.bash)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+fake_word='([Mm][Oo][Cc][Kk]|[Ss][Tt][Uu][Bb]|[Ff][Aa][Kk][Ee]|[Ss][Pp][Oo][Oo][Ff])'
+heredoc_re='(^|[^<])<<(-?)[[:space:]]*(["'"'"']?)([A-Za-z_][A-Za-z0-9_]*)'
+redirect_re='(^|[^<>&0-9])[12]?>>?[[:space:]]*("([^"]*)"|'"'"'([^'"'"']*)'"'"'|([^[:space:]<>;&|)]+))'
+tee_re='(^|[^A-Za-z0-9_])tee[[:space:]]+(-a[[:space:]]+)?("([^"]*)"|'"'"'([^'"'"']*)'"'"'|([^[:space:]<>;&|)]+))'
+repo_vars='(script_dir|repo_root|repo|core|root|bin_dir|here)'
+repo_bin_re='((^|[^A-Za-z0-9_.-])(bash|python)/bin/|\$\{?'"$repo_vars"'\}?/((bash|python)/)?bin/|(^|[^A-Za-z0-9_])(~|\$\{?HOME\}?)/bin/)([A-Za-z0-9_][A-Za-z0-9_.-]*)'
+mock_re='(^|[;&|({[:space:]])mock_(command|respond|passthrough)([[:space:]]+(.*))?$'
+ln_re='(^|[;&|({[:space:]])ln[[:space:]]+((-[A-Za-z]+[[:space:]]+)*[^;&|)]*)'
+assign_re='^[[:space:]]*(local[[:space:]]+)?(script|tool)=(.*)$'
+
+# fake_target <line> <delimiter>: when the line writes a fake, set target
+# to its path and succeed.
+fake_target() {
+  local line=$1 delim=$2
+  target=
+  if [[ $line =~ $redirect_re ]]
+  then
+    target=${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}
+  elif [[ $line =~ $tee_re ]]
+  then
+    target=${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}
+  fi
+  [[ -n $target && $target != /dev/* ]] || return 1
+  [[ $delim =~ $fake_word ]] || is_fake_path "$target"
+}
+
+is_fake_path() {
+  local base=${1##*/} dir=
+  [[ $1 == */* ]] && dir=${1%/*}
+  [[ $dir =~ $fake_word || $dir =~ [Bb][Ii][Nn] || $base =~ ^${fake_word}[-_] ]]
+}
+
+# link_fake <line>: when the line links into a fake directory, set
+# link_source to what it links and target to the link, and succeed.
+link_fake() {
+  local -a words
+  [[ $1 =~ $ln_re ]] || return 1
+  read -ra words <<< "${BASH_REMATCH[2]}"
+  (( 2 <= ${#words[@]} )) || return 1
+  target=${words[-1]//[\"\']/}
+  link_source=${words[-2]//[\"\']/}
+  [[ $link_source != -* ]] && is_fake_path "$target"
+}
+
+is_wrapper() {
+  local file=$1/bash/bin/$2 line
+  [[ -f $file ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]
+  do
+    [[ $line == *timvisher_real_bin* ]] && return 0
+    [[ $line =~ \"\$\{?[A-Za-z_]*real[A-Za-z_]*\}?\"[[:space:]]+\"\$(@|\{[A-Za-z_]*args) ]] && return 0
+    [[ $line == *"/bin/$2"[\"\}[:space:]]* ]] && return 0
+  done < "$file"
+  return 1
+}
+
+# runs_repo_code <text>: the text names repo code other than the suite's
+# own units (in the caller's is_unit). A fake that calls back into the
+# unit under test couples no second unit, so it is not flagged.
+runs_repo_code() {
+  local rest=$1 tool
+  [[ $rest == *timvisher_real_bin* ]] && return 0
+  while [[ $rest =~ $repo_bin_re ]]
+  do
+    tool=${BASH_REMATCH[9]}
+    [[ -n ${is_unit[$tool]-} ]] || return 0
+    rest=${rest#*"${BASH_REMATCH[0]}"}
+  done
+  return 1
+}
+
+hits=0
+
+report() {
+  local shown=$1 path=$2 n=$3 rule=$4 what=$5 text=$6
+  allowed "$path" "$text" && return
+  text=${text#"${text%%[![:space:]]*}"}
+  printf '%s:%d: rule %d: %s: %s\n' "$shown" "$n" "$rule" "$what" "$text"
+  (( hits += 1 ))
+}
+
+lint_file() {
+  local root=$1 path=$2 shown=$3
+  local -a lines=() units=() rule1_units=() words=()
+  local -A is_unit=()
+  local i j n line text delim strip end base u word value fake
+  local name=${path##*/}
+
+  mapfile -t lines < "$root/$path"
+
+  name=${name%.bash}
+  units=("$name")
+  for line in "${lines[@]}"
+  do
+    [[ $line =~ $assign_re ]] || continue
+    value=${BASH_REMATCH[3]}
+    value=${value%%[[:space:]]|*}
+    value=${value%%[[:space:]]&*}
+    value=${value%%[[:space:]]#*}
+    value=${value%[\"\']}
+    value=${value%[\"\']}
+    base=${value##*/}
+    base=${base%\"}
+    [[ $base =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] && units+=("$base")
+  done
+  for u in "${units[@]}"
+  do
+    [[ -n ${is_unit[$u]-} ]] && continue
+    is_unit[$u]=1
+    [[ -f $root/bash/bin/$u || -f $root/python/bin/$u ]] || continue
+    is_wrapper "$root" "$u" || rule1_units+=("$u")
+  done
+
+  i=0
+  while (( i < ${#lines[@]} ))
+  do
+    line=${lines[i]}
+    n=$(( i + 1 ))
+    (( i += 1 ))
+    [[ $line =~ ^[[:space:]]*# ]] && continue
+
+    if [[ $line =~ $mock_re ]]
+    then
+      read -ra words <<< "${BASH_REMATCH[4]}"
+      if [[ ${BASH_REMATCH[2]} == command ]]
+      then
+        for word in "${words[@]}"
+        do
+          word=${word//[\"\']/}
+          for u in "${rule1_units[@]}"
+          do
+            [[ $word == "$u" ]] && report "$shown" "$path" "$n" 1 "fakes its unit '$u'" "$line"
+          done
+        done
+      else
+        for j in "${!words[@]}"
+        do
+          [[ ${words[j]} == --* ]] && continue
+          word=${words[j]//[\"\']/}
+          for u in "${rule1_units[@]}"
+          do
+            [[ $word == "$u" ]] && report "$shown" "$path" "$n" 1 "fakes its unit '$u'" "$line"
+          done
+          break
+        done
+        runs_repo_code "$line" &&
+          report "$shown" "$path" "$n" 2 'fake runs repo code' "$line"
+      fi
+    fi
+
+    for u in "${rule1_units[@]}"
+    do
+      if [[ $line =~ ^[[:space:]]*(function[[:space:]]+)?([A-Za-z0-9_.-]+)[[:space:]]*\(\) ]] &&
+         [[ ${BASH_REMATCH[2]} == "$u" ]]
+      then
+        report "$shown" "$path" "$n" 1 "redefines its unit '$u'" "$line"
+      fi
+    done
+
+    delim=
+    strip=
+    end=
+    if [[ $line =~ $heredoc_re ]]
+    then
+      delim=${BASH_REMATCH[4]}
+      strip=${BASH_REMATCH[2]}
+      for (( j = i; j < ${#lines[@]}; j += 1 ))
+      do
+        text=${lines[j]}
+        [[ -n $strip ]] && text=${text#"${text%%[!$'\t']*}"}
+        if [[ $text == "$delim" ]]
+        then
+          end=$j
+          break
+        fi
+      done
+      [[ -n $end ]] || delim=
+    fi
+
+    if link_fake "$line"
+    then
+      base=${target##*/}
+      for u in "${rule1_units[@]}"
+      do
+        [[ $link_source == "\$script" || $link_source == "\${script}" || ${link_source##*/} == "$u" ]] &&
+          continue
+        [[ $base == "$u" ]] && report "$shown" "$path" "$n" 1 "fakes its unit '$u'" "$line"
+      done
+      runs_repo_code "$link_source" &&
+        report "$shown" "$path" "$n" 2 'fake runs repo code' "$line"
+    fi
+
+    fake=
+    if fake_target "$line" "$delim"
+    then
+      fake=1
+      base=${target##*/}
+      for u in "${rule1_units[@]}"
+      do
+        [[ $base == "$u" ]] && report "$shown" "$path" "$n" 1 "fakes its unit '$u'" "$line"
+      done
+      if [[ -z $delim && ! $line =~ $mock_re ]] && runs_repo_code "${line/"$target"/}"
+      then
+        report "$shown" "$path" "$n" 2 'fake runs repo code' "$line"
+      fi
+    fi
+
+    if [[ -n $delim ]]
+    then
+      if [[ -n $fake ]]
+      then
+        for (( j = i; j < end; j += 1 ))
+        do
+          text=${lines[j]}
+          [[ $text =~ ^[[:space:]]*# ]] && continue
+          runs_repo_code "$text" &&
+            report "$shown" "$path" "$(( j + 1 ))" 2 'fake runs repo code' "$text"
+        done
+      fi
+      i=$(( end + 1 ))
+    fi
+  done
+}
+
+for root in "${roots[@]}"
+do
+  files=()
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 ||
+    die_usage "not a git worktree: $root"
+  if ! mapfile -d '' -t files < <(git -C "$root" ls-files -z -co --exclude-standard -- \
+       bash/tests ai/HOME/.agents/skills LaunchAgents/tests bash/bin/tests 2>/dev/null)
+  then
+    die_usage "cannot list files under $root"
+  fi
+  if (( 1 < ${#roots[@]} ))
+  then
+    prefix=${root%/}/
+  else
+    prefix=
+  fi
+  for path in "${files[@]}"
+  do
+    for e in "${exempt[@]}"
+    do
+      [[ $path == "$e" ]] && continue 2
+    done
+    is_unit_test "$path" || continue
+    [[ -f $root/$path && ! -L $root/$path ]] || continue
+    lint_file "$root" "$path" "$prefix$path"
+  done
+done
+
+for i in "${!allow_paths[@]}"
+do
+  if [[ -z ${allow_used[i]} ]]
+  then
+    printf '%s:%d: allow entry matches no finding: %s%s\n' \
+      "$allow_file" "${allow_lines[i]}" "${allow_paths[i]}" \
+      "${allow_texts[i]:+:${allow_texts[i]}}"
+    (( hits += 1 ))
+  fi
+done
+
+(( hits == 0 ))

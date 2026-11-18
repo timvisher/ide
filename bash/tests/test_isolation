@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # the planted suites hold literal $vars
+
+failures=0
+tests=0
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  (( failures += 1 ))
+}
+
+pass() {
+  printf 'PASS: %s\n' "$1"
+}
+
+run_test() {
+  (( tests += 1 ))
+}
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P) || exit 1
+lint=$repo_root/bash/bin/timvisher_lint_test_isolation
+
+# shellcheck disable=SC1091
+source "$repo_root/bash/functions/real_bin.bash" || exit 1
+real_git=$(TIMVISHER_REAL_BIN_SKIP=$(timvisher_real_bin_script_dirs git) timvisher_real_bin git "$repo_root/bash/bin/git") ||
+  { echo 'no real git' >&2; exit 1; }
+
+t=
+trap '[[ -z $t ]] || rm -rf -- "$t"' EXIT
+t=$(mktemp -d) || { echo 'mktemp failed' >&2; exit 1; }
+mkdir -p "$t/bin" "$t/repo" || exit 1
+ln -s "$real_git" "$t/bin/git" || exit 1
+
+run_test
+if out=$("$lint" --allow "$repo_root/bash/tests/lib/test_isolation.allow" "$repo_root" 2>&1)
+then
+  pass 'no unit suite in this repo fakes its unit or runs repo code from a fake'
+else
+  fail $'unit suites break test isolation (fake the dependency properly, move the case to bash/tests/integration, or add a commented entry to bash/tests/lib/test_isolation.allow):\n'"$out"
+fi
+
+scratch() {
+  rm -rf -- "$t/repo" &&
+    mkdir -p "$t/repo/bash/bin" "$t/repo/python/bin" &&
+    printf '#!/usr/bin/env bash\necho foo\n' > "$t/repo/bash/bin/foo" &&
+    printf '#!/usr/bin/env python3\nprint("bar")\n' > "$t/repo/python/bin/bar" ||
+    return 1
+  while (( 0 < $# ))
+  do
+    mkdir -p "$t/repo/${1%/*}" &&
+      printf '%s\n' "$2" > "$t/repo/$1" ||
+      return 1
+    shift 2
+  done
+  "$real_git" -C "$t/repo" init -q &&
+    "$real_git" -C "$t/repo" -c core.excludesFile=/dev/null add -A
+}
+
+lint_scratch() {
+  PATH="$t/bin:$PATH" "$lint" "$@" "$t/repo"
+}
+
+flags() {
+  local name=$1 expected=$2 out
+  shift 2
+  run_test
+  scratch "$@" || { fail "$name: scratch repo"; return; }
+  if out=$(lint_scratch 2>&1)
+  then
+    fail "$name: not flagged"
+  elif [[ $out == "$expected" ]]
+  then
+    pass "$name"
+  else
+    fail "$name: expected '$expected', got '$out'"
+  fi
+}
+
+clean() {
+  local name=$1 out
+  shift
+  run_test
+  scratch "$@" || { fail "$name: scratch repo"; return; }
+  if out=$(lint_scratch 2>&1)
+  then
+    pass "$name"
+  else
+    fail "$name: flagged: '$out'"
+  fi
+}
+
+sh=$'#!/usr/bin/env bash\n'
+
+flags 'rule 1: a suite that mock_commands its own unit' \
+  "bash/tests/foo:3: rule 1: fakes its unit 'foo': mock_command foo" \
+  bash/tests/foo "${sh}"$'mock_init\nmock_command foo\nfoo --flag'
+flags 'rule 1: a suite that mock_responds its unit named by script=' \
+  "bash/tests/foo_cases:3: rule 1: fakes its unit 'foo': mock_respond foo --stdout x -- run" \
+  bash/tests/foo_cases "${sh}"$'script="$repo_root/bash/bin/foo"\nmock_respond foo --stdout x -- run'
+flags 'rule 1: a fake named after the unit in a bin dir' \
+  "bash/tests/foo:2: rule 1: fakes its unit 'foo': cat > \"\$tmpdir/bin/foo\" <<'FAKE'" \
+  bash/tests/foo "${sh}"$'cat > "$tmpdir/bin/foo" <<\'FAKE\'\n#!/usr/bin/env bash\necho fake\nFAKE'
+flags 'rule 1: a suite that redefines its unit' \
+  "bash/tests/foo:2: rule 1: redefines its unit 'foo': foo() { echo fake; }" \
+  bash/tests/foo "${sh}"$'foo() { echo fake; }'
+flags 'rule 2: a fake that execs python/bin/...' \
+  "bash/tests/baz:4: rule 2: fake runs repo code: exec python3 \"\${script_dir%/bash}/python/bin/bar\" \"\\\$@\"" \
+  bash/tests/baz "${sh}"$'mkdir -p "$tmpdir/mockbin"\ncat > "$tmpdir/mockbin/bar" <<MOCK\nexec python3 "${script_dir%/bash}/python/bin/bar" "\\$@"\nMOCK'
+flags 'rule 2: a fake that execs bash/bin/...' \
+  'bash/tests/baz:5: rule 2: fake runs repo code: exec "$repo_root/bash/bin/foo" "$@"' \
+  bash/tests/baz "${sh}"$'repo_root=$(pwd)\ncat > "$stub_bin/foo" <<\'STUB\'\n#!/usr/bin/env bash\nexec "$repo_root/bash/bin/foo" "$@"\nSTUB'
+flags 'rule 2: a lib sourced by unit suites' \
+  'bash/tests/lib/baz.bash:3: rule 2: fake runs repo code: exec ~/bin/foo "$@"' \
+  bash/tests/lib/baz.bash $'cat > "$tmpdir/bin/foo" <<\'FAKE\'\n#!/usr/bin/env bash\nexec ~/bin/foo "$@"\nFAKE'
+flags 'rule 2: a mock_respond --run that runs repo code' \
+  "bash/tests/baz:2: rule 2: fake runs repo code: mock_respond foo --run '\"\$script_dir/bin/foo\" \"\$@\"' -- ..." \
+  bash/tests/baz "${sh}"$'mock_respond foo --run \'"$script_dir/bin/foo" "$@"\' -- ...'
+flags 'rule 2: a fake linked to repo code' \
+  'bash/tests/baz:2: rule 2: fake runs repo code: ln -sf "${repo_root}/bash/bin/foo" "$fake_bin/foo"' \
+  bash/tests/baz "${sh}"$'ln -sf "${repo_root}/bash/bin/foo" "$fake_bin/foo"'
+flags 'rule 2: a one-line fake that resolves the real tool' \
+  "bash/tests/baz:2: rule 2: fake runs repo code: printf '#!/bin/sh\\\\nexec \"\$(timvisher_real_bin gh x)\" \"\$@\"\\\\n' > \"\$t/bin/gh\"" \
+  bash/tests/baz "${sh}"$'printf \'#!/bin/sh\\\\nexec "$(timvisher_real_bin gh x)" "$@"\\\\n\' > "$t/bin/gh"'
+flags 'LaunchAgents suites are unit suites' \
+  'LaunchAgents/tests/job:3: rule 2: fake runs repo code: exec bash/bin/foo' \
+  LaunchAgents/tests/job "${sh}"$'cat > "$mockbin/launchctl" <<\'MOCK\'\nexec bash/bin/foo\nMOCK'
+
+clean 'an integration suite may run real units from a fake' \
+  bash/tests/integration/foo "${sh}"$'mock_command foo\ncat > "$tmpdir/mockbin/bar" <<MOCK\nexec python3 "$script_dir/python/bin/bar" "\\$@"\nMOCK\nln -s "$repo_root/bash/bin/foo" "$t/bin/foo"'
+clean 'a fake that calls back into the unit under test' \
+  bash/tests/foo "${sh}"$'script="$script_dir/bin/foo"\ncat > "$mockbin/claudeshot" <<M\n"$script_dir/bin/foo" record\nM'
+clean 'linking the unit itself into a bin dir' \
+  bash/tests/foo "${sh}"$'script="$script_dir/bin/foo"\nln -s "$script" "$tmpdir/uvbin/foo"'
+clean 'a wrapper suite faking the binary it wraps' \
+  bash/bin/gh $'#!/usr/bin/env bash\nreal=$(timvisher_real_bin gh "$0")\nexec "$real" "$@"' \
+  bash/tests/gh "${sh}"$'cat > "$tmpdir/prefix/bin/gh" <<\'MOCK\'\necho real-gh\nMOCK\nmock_command gh'
+clean 'a fixture written to a fake repo, not a fake bin' \
+  bash/tests/baz "${sh}"$'cat > "$fcore/bash/install.bash" <<\'INSTALL\'\nexec "$core/bash/bin/foo"\nINSTALL'
+clean 'a suite name with no unit in the repo' \
+  bash/tests/install "${sh}"$'cat > "$overlay/git/bin/install" <<\'INSTALL\'\necho fake\nINSTALL'
+clean 'faking another tool' \
+  bash/tests/foo "${sh}"$'mock_command gh git\ncat > "$tmpdir/bin/bar" <<\'FAKE\'\necho fake bar\nFAKE'
+clean 'whole-line comments' \
+  bash/tests/foo "${sh}"$'# mock_command foo\n# exec "$repo_root/bash/bin/foo"'
+clean 'an unterminated heredoc in a string does not hide the rest' \
+  bash/tests/baz "${sh}"$'x=$\'cat <<EOF\\nhi\'\ncat > "$tmpdir/bin/gh" <<\'FAKE\'\necho gh\nFAKE'
+clean 'helpers deeper than lib are not suites' \
+  bash/tests/lib/fixtures/foo "${sh}"$'mock_command foo'
+
+run_test
+scratch bash/tests/foo "${sh}"$'mock_command foo\nmock_respond foo --stdout x -- run' &&
+  printf '%s\n' '# why' 'bash/tests/foo:mock_command foo  # reason' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+if [[ $out == "bash/tests/foo:3: rule 1: fakes its unit 'foo': mock_respond foo --stdout x -- run" ]]
+then
+  pass 'a path:text entry allows only lines with that text'
+else
+  fail "path:text entry: got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/tests/foo  # whole file' > "$t/allow"
+if out=$(lint_scratch --allow "$t/allow" 2>&1)
+then
+  pass 'a path entry allows the whole file'
+else
+  fail "path entry: got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/tests/foo  # whole file' 'bash/tests/gone  # gone' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+rc=$?
+if (( rc == 1 )) && [[ $out == "$t/allow:2: allow entry matches no finding: bash/tests/gone" ]]
+then
+  pass 'a stale allow entry fails'
+else
+  fail "stale entry: rc=$rc got '$out'"
+fi
+
+run_test
+printf '%s\n' 'bash/tests/foo' > "$t/allow"
+out=$(lint_scratch --allow "$t/allow" 2>&1)
+rc=$?
+if (( rc == 2 )) && [[ $out == *"needs a '# reason' comment"* ]]
+then
+  pass 'an allow entry without a reason is an error'
+else
+  fail "entry without a reason: rc=$rc got '$out'"
+fi
+
+run_test
+mkdir -p "$t/plain"
+out=$("$lint" "$t/plain" 2>&1)
+rc=$?
+if (( rc == 2 )) && [[ $out == *'not a git worktree'* ]]
+then
+  pass 'a root that is not a git worktree is an error'
+else
+  fail "non-git root: rc=$rc got '$out'"
+fi
+
+run_test
+out=$("$lint" --help 2>/dev/null)
+if [[ $out == Usage:* ]]
+then
+  pass '--help prints usage on stdout'
+else
+  fail "--help stdout: '$out'"
+fi
+
+run_test
+if out=$("$lint" 2>/dev/null)
+then
+  fail 'no arguments exited 0'
+elif [[ -n $out ]]
+then
+  fail "no arguments printed '$out' on stdout"
+else
+  pass 'no arguments: usage on stderr only, non-zero'
+fi
+
+echo ""
+echo "Results: $((tests - failures))/${tests} passed"
+
+if (( 0 < failures ))
+then
+  exit 1
+fi

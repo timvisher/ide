@@ -49,6 +49,17 @@ with `"$(mock_real git)"`, and lets the unit reach real git with
 The wrapper's own suite mocks the real git behind it. The header of
 `mock_commands.bash` documents the rest.
 
+A unit suite tests one unit. Its suite never fakes the unit itself,
+and a fake never runs real code from the repo: no fake that execs or
+links something under `bash/bin/`, `python/bin/` or `~/bin/`, or finds
+it with `timvisher_real_bin`. A test of two units together goes in
+`bash/tests/integration/`. `bash/tests/test_isolation` enforces both
+rules with `timvisher_lint_test_isolation`; a real exception goes in
+`bash/tests/lib/test_isolation.allow` with its reason. At run time
+every unit suite's `PATH` starts with stubs for `gh`, `curl` and `ssh`
+that fail the call (exit 127) naming the suite, so reaching a real one
+unfaked fails the suite; fakes the suite puts ahead of them still win.
+
 Tests whose subject is real repository state (worktrees, bare caches,
 pushes, submodules) go in `bash/tests/integration/<suite>`, apart from
 the unit suite. Default runs skip them; they run only on request, with
