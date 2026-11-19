@@ -1,0 +1,585 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+# shellcheck source=/dev/null
+source ~/.functions/git_trunks.bash ||
+  die 'Unable to source ~/.functions/git_trunks.bash, which says where the trunks live'
+
+script_path=$(realpath "${BASH_SOURCE[0]}") ||
+  die "Unable to resolve the low-disk script path"
+script_dir=${script_path%/*}
+
+plugin_dirs=(
+  "${script_dir}/plugins"
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/timvisher/ide/low-disk/plugins"
+)
+
+tmux_socket_dir=${TMUX_TMPDIR:-/tmp}/tmux-${UID}
+tmux_pane_format=$'#{session_attached}\x1f#{session_name}\x1f#{session_path}\x1f#{pane_current_path}'
+
+export LOW_DISK=$script_path
+
+# Help text is printed with printf rather than a heredoc: bash may back a
+# heredoc with a temp file, and low-disk has to work with no free space.
+show_help() {
+  printf '%s\n' \
+    'Usage: low-disk <subcommand> [args...]' \
+    '' \
+    'Subcommands:' \
+    '  measure [<plugin>...]          Print what each plugin finds and how much' \
+    '                                 disk it uses, as one JSON object.' \
+    '  reclaim <plugin>:<target>...   Ask each plugin to reclaim its targets and' \
+    '                                 print what it did, as one JSON object.' \
+    '  activity                       Print each timvisher_git worktree with its' \
+    '                                 tmux sessions, whether a client is attached,' \
+    '                                 and whether dev_ci protects it.' \
+    '  size <path>...                 Print the disk each path uses, for plugins.' \
+    '' \
+    'Plugins are executables in:' \
+    "  ${plugin_dirs[0]}" \
+    "  ${plugin_dirs[1]}" \
+    '' \
+    'Exit status is non-zero when any plugin fails; its entry carries an' \
+    '"error" field and the other plugins still report.'
+}
+
+usage() {
+  show_help >&2
+}
+
+# `--args --` ends jq's option parsing only from jq 1.7 on; earlier versions
+# would let a session or target named like an option through as one.
+require_jq() {
+  local version
+  version=$(jq --version 2>/dev/null) || die 'jq is required but not found'
+  version=${version#jq-}
+  [[ $version =~ ^([0-9]+)\.([0-9]+) ]] ||
+    die "Cannot tell which jq this is: '%s'" "$version"
+  (( 1 < BASH_REMATCH[1] || (1 == BASH_REMATCH[1] && 7 <= BASH_REMATCH[2]) )) ||
+    die 'jq 1.7 or newer is required; found %s' "$version"
+}
+
+declare -A plugins=()
+plugin_names=()
+
+nearest_existing() {
+  local ancestor=$1
+  while [[ ! -e $ancestor && $ancestor == */* ]]
+  do
+    ancestor=${ancestor%/*}
+    [[ -n $ancestor ]] || ancestor=/
+  done
+  printf '%s\n' "$ancestor"
+}
+
+# A missing path is fine to skip; one we cannot tell is missing, because an
+# ancestor cannot be searched, is not.
+require_missing() {
+  local ancestor
+  ancestor=$(nearest_existing "$1")
+  [[ -d $ancestor && ! -x $ancestor ]] &&
+    die "Cannot tell whether '%s' exists: '%s' cannot be searched" "$1" "$ancestor"
+  return 0
+}
+
+require_listable() {
+  [[ -d $1 && -r $1 && -x $1 ]] ||
+    die "Cannot list '%s'; refusing to report without it" "$1"
+}
+
+discover_plugins() {
+  local dir path name
+  for dir in "${plugin_dirs[@]}"
+  do
+    if [[ ! -e $dir ]]
+    then
+      require_missing "$dir"
+      continue
+    fi
+    require_listable "$dir"
+    for path in "$dir"/*
+    do
+      [[ -f $path && -x $path ]] || continue
+      name=${path##*/}
+      [[ $name =~ ^[a-z0-9][a-z0-9-]*$ ]] || continue
+      if [[ -n ${plugins[$name]+x} ]]
+      then
+        die "Plugin '%s' is defined twice: '%s' and '%s'" "$name" "${plugins[$name]}" "$path"
+      fi
+      plugins[$name]=$path
+      plugin_names+=("$name")
+    done
+  done
+}
+
+require_plugin() {
+  [[ -n $1 && -n ${plugins[$1]+x} ]] ||
+    die "Unknown plugin '%s'. Known plugins: %s" "$1" "${plugin_names[*]}"
+}
+
+run_plugin() {
+  local name=$1 out rc
+  shift
+  out=$("${plugins[$name]}" "$@" </dev/null)
+  rc=$?
+  if (( rc != 0 ))
+  then
+    jq -nc --arg n "$name" --arg e "exited ${rc}" '{($n): {error: $e}}'
+    return 1
+  fi
+  if ! printf '%s' "$out" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1
+  then
+    jq -nc --arg n "$name" --arg e 'did not print exactly one JSON object' '{($n): {error: $e}}'
+    return 1
+  fi
+  printf '%s' "$out" | jq -c --arg n "$name" '{($n): .}'
+}
+
+collect() {
+  jq -s '{plugins: (add // {})}'
+}
+
+canonical() {
+  (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+# Symlinks are followed one component at a time with readlink, so a path
+# can be resolved even where a directory on it cannot be entered.
+physical() {
+  local path=$1 out='' component target hops=0
+  [[ $path == /* ]] || return 1
+  path=${path#/}
+  while [[ -n $path ]]
+  do
+    component=${path%%/*}
+    if [[ $path == */* ]]
+    then
+      path=${path#*/}
+    else
+      path=''
+    fi
+    case $component in
+      ''|.) continue ;;
+      ..) out=${out%/*}; continue ;;
+    esac
+    if [[ -L ${out}/${component} ]]
+    then
+      (( hops += 1 ))
+      (( hops < 40 )) || return 1
+      target=$(readlink -- "${out}/${component}") || return 1
+      if [[ $target == /* ]]
+      then
+        out=''
+        target=${target#/}
+      fi
+      path=${target}${path:+/${path}}
+      continue
+    fi
+    out=${out}/${component}
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# An existing directory we cannot enter is not the same as a missing one.
+# Returns 1 for a path that is gone and 2 for one that cannot be inspected,
+# so each caller can decide what each means for it. For both, the resolved
+# value is the path with every symlink we can read followed, so callers can
+# still tell which worktree it is under.
+canonical_or_gone() {
+  local -n __resolved=$2
+  __resolved=$(canonical "$1") && return 0
+  __resolved=$(physical "$1") || __resolved=$1
+  [[ -e $1 ]] && return 2
+  local nearest
+  nearest=$(nearest_existing "$1")
+  [[ -d $nearest && ! -x $nearest ]] && return 2
+  return 1
+}
+
+# Worktree paths come from each trunk's worktrees/*/gitdir file rather than
+# `git worktree list`: plain reads, no git process, no git wrapper log write.
+# The trunks are walked here rather than with timvisher_git_trunks_each,
+# which skips dot-named orgs and repos and any directory it cannot list:
+# one we cannot read fails the command instead of quietly leaving its
+# worktrees out.
+list_worktrees() {
+  local -n __worktrees=$1 __repos=$2
+  local trunks_root
+  trunks_root=$(timvisher_git_trunks_root) ||
+    die 'Cannot tell where the trunks live'
+  if [[ ! -e $trunks_root ]]
+  then
+    require_missing "$trunks_root"
+    return 0
+  fi
+  require_listable "$trunks_root"
+  # Resolved first because a relative gitdir is relative to the physical
+  # trunk, and the root may be a link onto another volume.
+  trunks_root=$(canonical "$trunks_root") ||
+    die "Cannot resolve the trunk root '%s'" "$trunks_root"
+  local org_dir trunk admin entry gitdir_file worktree_git worktree
+  shopt -s dotglob
+  for org_dir in "$trunks_root"/*
+  do
+    [[ -d $org_dir ]] || continue
+    require_listable "$org_dir"
+    for trunk in "$org_dir"/*
+    do
+      [[ -d $trunk ]] || continue
+      require_listable "$trunk"
+      for admin in "${trunk}/worktrees" "${trunk}/.git/worktrees"
+      do
+        if [[ ! -e $admin ]]
+        then
+          require_missing "$admin"
+          continue
+        fi
+        require_listable "$admin"
+        for entry in "$admin"/*
+        do
+          [[ -d $entry ]] || continue
+          require_listable "$entry"
+          gitdir_file=${entry}/gitdir
+          [[ -e $gitdir_file ]] || continue
+          [[ -r $gitdir_file ]] ||
+            die "Cannot read '%s'; refusing to report without it" "$gitdir_file"
+          IFS= read -r worktree_git < "$gitdir_file" || [[ -n $worktree_git ]] || continue
+          [[ $worktree_git == /* ]] || worktree_git=${entry}/${worktree_git}
+          canonical_or_gone "${worktree_git%/.git}" worktree
+          case $? in
+            1) continue ;;
+            2) die "Cannot inspect the worktree '%s'; refusing to report without it" "${worktree_git%/.git}" ;;
+          esac
+          [[ -z ${__repos[$worktree]+x} ]] || continue
+          __repos["$worktree"]=${org_dir##*/}/${trunk##*/}
+          __worktrees+=("$worktree")
+        done
+      done
+    done
+  done
+  shopt -u dotglob
+}
+
+list_protected() {
+  local -n __protected=$1
+  command -v timvisher_dev_ci >/dev/null 2>&1 || return 0
+  local out path resolved
+  out=$(timvisher_dev_ci worktrees active </dev/null) ||
+    die 'timvisher_dev_ci worktrees active failed; refusing to report activity without the protection list'
+  while IFS= read -r path
+  do
+    [[ -n $path ]] || continue
+    [[ $path == /* ]] ||
+      die "timvisher_dev_ci listed a relative path '%s'; refusing to guess what it is relative to" "$path"
+    canonical_or_gone "$path" resolved
+    case $? in
+      1) continue ;;
+      2) die "Cannot inspect the protected worktree '%s'; refusing to report without it" "$path" ;;
+    esac
+    __protected["$resolved"]=1
+  done < <(printf '%s\n' "$out")
+}
+
+# Every socket in the tmux socket directory is asked, not just the default
+# one, so sessions started with -L still count. Only a stale socket ("no
+# server running") or one removed while we looked counts as having no
+# sessions; anything else, such as a sandbox refusing the connection, fails
+# rather than reporting attached worktrees as idle. Panes are listed rather
+# than sessions so a pane that has cd'd into a worktree counts too. Fields
+# are separated by \x1f, which session names and paths do not contain in
+# practice; a line that does not split into four fields fails the command.
+list_panes() {
+  local -n __panes=$1
+  if [[ ! -e $tmux_socket_dir ]]
+  then
+    require_missing "$tmux_socket_dir"
+    return 0
+  fi
+  [[ -d $tmux_socket_dir && -r $tmux_socket_dir && -x $tmux_socket_dir ]] ||
+    die "Cannot read the tmux socket directory '%s'" "$tmux_socket_dir"
+  local socket out err rc line rest sockets=()
+  shopt -s dotglob
+  for socket in "$tmux_socket_dir"/*
+  do
+    [[ -S $socket ]] && sockets+=("$socket")
+  done
+  shopt -u dotglob
+  (( 0 < ${#sockets[@]} )) || return 0
+  command -v tmux >/dev/null 2>&1 ||
+    die "tmux sockets exist in '%s' but tmux is not installed" "$tmux_socket_dir"
+  for socket in "${sockets[@]}"
+  do
+    # stdout and stderr are kept apart without a temp file: stderr streams
+    # out first, then a NUL, the captured stdout, a NUL and the status.
+    err='' out='' rc=''
+    {
+      IFS= read -r -d '' err
+      IFS= read -r -d '' out
+      IFS= read -r -d '' rc
+    } < <(
+      {
+        out=$(tmux -S "$socket" list-panes -a -F "$tmux_pane_format")
+        rc=$?
+      } 2>&1
+      printf '\0%s\0%s\0' "$out" "$rc"
+    )
+    if [[ $rc != 0 ]]
+    then
+      [[ $err == *'no server running'* || $err == *'(No such file or directory)'* ]] && continue
+      die "tmux list-panes on '%s' failed: %s" "$socket" "$err"
+    fi
+    while IFS= read -r line
+    do
+      [[ -n $line ]] || continue
+      rest=${line//[^$'\x1f']/}
+      [[ ${#rest} == 3 && ${line%%$'\x1f'*} =~ ^[0-9]+$ ]] ||
+        die "Cannot parse tmux list-panes output from '%s': %s" "$socket" "$line"
+      __panes+=("$line")
+    done < <(printf '%s\n' "$out")
+  done
+}
+
+cmd_activity() {
+  local worktrees=() panes=()
+  declare -A repos=() protected=()
+  list_worktrees worktrees repos
+  list_protected protected
+  list_panes panes
+
+  local line clients name candidate resolved worktree inside pane_names=() pane_attached=() pane_paths=()
+  for line in "${panes[@]}"
+  do
+    clients=${line%%$'\x1f'*}
+    line=${line#*$'\x1f'}
+    name=${line%%$'\x1f'*}
+    line=${line#*$'\x1f'}
+    # tmux keeps a session path as given, so it may be empty or relative to
+    # wherever the session was started; it is skipped rather than resolved
+    # against our own directory, and the session's panes, whose paths are
+    # always absolute, place it instead. tmux reports an empty pane path
+    # when it cannot read the foreground process's directory (sudo); in an
+    # attached session that hides where the user is working. A pane whose
+    # directory was deleted (make clean) still counts for the worktree it
+    # was in.
+    local session_path=${line%%$'\x1f'*} pane_path=${line#*$'\x1f'}
+    if [[ -z $pane_path ]] && (( 0 < clients ))
+    then
+      die "tmux cannot tell where a pane of the attached session '%s' is; refusing to report activity without it" "$name"
+    fi
+    for candidate in "$session_path" "$pane_path"
+    do
+      [[ $candidate == /* ]] || continue
+      canonical_or_gone "$candidate" resolved
+      case $? in
+        1)
+          inside=0
+          for worktree in "${worktrees[@]}"
+          do
+            [[ $resolved == "$worktree" || $resolved == "$worktree"/* ]] && inside=1
+          done
+          (( inside )) || continue
+          ;;
+        2)
+          for worktree in "${worktrees[@]}"
+          do
+            [[ $resolved == "$worktree" || $resolved == "$worktree"/* ]] &&
+              die "Cannot inspect '%s' in the worktree '%s'; refusing to report activity without it" "$candidate" "$worktree"
+          done
+          continue
+          ;;
+      esac
+      pane_names+=("$name")
+      pane_attached+=("$( (( 0 < clients )) && echo true || echo false )")
+      pane_paths+=("$resolved")
+    done
+  done
+
+  local i records=()
+  for worktree in "${worktrees[@]}"
+  do
+    records+=("$worktree" "${repos[$worktree]}" "$( [[ -n ${protected[$worktree]+x} ]] && echo true || echo false )")
+  done
+  local worktree_count=${#worktrees[@]}
+  for (( i = 0; i < ${#pane_paths[@]}; i++ ))
+  do
+    for worktree in "${worktrees[@]}"
+    do
+      [[ ${pane_paths[i]} == "$worktree" || ${pane_paths[i]} == "$worktree"/* ]] || continue
+      records+=("$worktree" "${pane_names[i]}" "${pane_attached[i]}")
+    done
+  done
+  jq -n --argjson worktrees "$worktree_count" '
+    $ARGS.positional as $r
+    | reduce range(0; $worktrees) as $i ({};
+        .[$r[3 * $i]] = {repo: $r[3 * $i + 1], protected: ($r[3 * $i + 2] == "true"), attached: false, sessions: []})
+    | reduce range(3 * $worktrees; $r | length; 3) as $j (.;
+        .[$r[$j]].sessions |= (. + [{name: $r[$j + 1], attached: ($r[$j + 2] == "true")}] | unique)
+        | .[$r[$j]].attached = (.[$r[$j]].attached or ($r[$j + 2] == "true")))
+    | {worktrees: .}' --args -- "${records[@]}"
+}
+
+# Each path is sized by its own du, in parallel because du is bound by
+# filesystem metadata. Workers report an index into the argument list
+# rather than the path, so every record stays far below PIPE_BUF and
+# parallel writes cannot interleave, and paths holding tabs or newlines
+# never pass through the pipe. -x keeps du off other mounts. du exits
+# non-zero when it cannot read part of a tree; that size is reported as
+# incomplete rather than dropped. Fields are separated by \x1f, not a tab:
+# tab is IFS whitespace, so an empty field between two tabs would vanish and
+# shift the next one into its place. `stat -c` is GNU's form and fails on
+# macOS, where `stat -f` takes over.
+cmd_size() {
+  (( 0 < $# )) ||
+    {
+      jq -n '{sizes: {}}'
+      return
+    }
+  local arg
+  for arg in "$@"
+  do
+    [[ -n $arg ]] || die 'size cannot measure an empty path'
+  done
+  local jobs
+  jobs=$(getconf _NPROCESSORS_ONLN) && [[ $jobs =~ ^[0-9]+$ ]] ||
+    die 'Cannot tell how many processors to size paths with'
+  local paths=("$@") i
+  # shellcheck disable=SC2016 # the sh -c script expands its own variables
+  for (( i = 0; i < ${#paths[@]}; i++ ))
+  do
+    printf '%d\0%s\0' "$i" "${paths[i]}"
+  done |
+    xargs -0 -n 2 -P "$jobs" sh -c '
+      out=$(du -skx -- "$2" 2>/dev/null)
+      rc=$?
+      dev=$(stat -c %d -- "$2" 2>/dev/null || stat -f %d -- "$2" 2>/dev/null)
+      printf "%s\037%s\037%s\037%s\n" "$1" "$rc" "${out%%	*}" "$dev"' size |
+    {
+      local index rc kib dev failed=0
+      declare -A reported=()
+      while IFS=$'\x1f' read -r index rc kib dev
+      do
+        [[ $index =~ ^[0-9]+$ && -n ${paths[index]+x} && -z ${reported[$index]+x} ]] || continue
+        reported[$index]=1
+        [[ $dev =~ ^[0-9]+$ ]] || dev=null
+        if [[ $kib =~ ^[0-9]+$ ]]
+        then
+          jq -nc --arg p "${paths[index]}" --argjson b "$(( kib * 1024 ))" --argjson d "$dev" \
+            --argjson i "$( (( rc == 0 )) && echo false || echo true )" \
+            '{($p): {bytes: $b, incomplete: $i, device: $d}}' || failed=1
+        else
+          jq -nc --arg p "${paths[index]}" --argjson d "$dev" \
+            '{($p): {bytes: null, incomplete: true, device: $d}}' || failed=1
+        fi
+      done
+      for (( index = 0; index < ${#paths[@]}; index++ ))
+      do
+        [[ -n ${reported[$index]+x} ]] && continue
+        jq -nc --arg p "${paths[index]}" '{($p): {bytes: null, incomplete: true, device: null}}' || failed=1
+      done
+      exit "$failed"
+    } |
+    jq -s '{sizes: (add // {})}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 && PIPESTATUS[2] == 0 && PIPESTATUS[3] == 0 ))
+}
+
+cmd_measure() {
+  local requested=("$@") names=() name failed=0
+  declare -A chosen=()
+  (( 0 < ${#requested[@]} )) || requested=("${plugin_names[@]}")
+  for name in "${requested[@]}"
+  do
+    require_plugin "$name"
+    [[ -n ${chosen[$name]+x} ]] && continue
+    chosen[$name]=1
+    names+=("$name")
+  done
+  {
+    for name in "${names[@]}"
+    do
+      run_plugin "$name" measure || failed=1
+    done
+    exit "$failed"
+  } | collect
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+}
+
+cmd_reclaim() {
+  (( 0 < $# )) ||
+    {
+      usage
+      return 1
+    }
+  local spec name order=() failed=0
+  declare -A seen=()
+  for spec in "$@"
+  do
+    name=${spec%%:*}
+    [[ -n $name && $spec == *:?* ]] ||
+      die "Target '%s' is not of the form <plugin>:<target>" "$spec"
+    require_plugin "$name"
+    if [[ -z ${seen[$name]+x} ]]
+    then
+      seen[$name]=1
+      order+=("$name")
+    fi
+  done
+  local targets
+  {
+    for name in "${order[@]}"
+    do
+      targets=()
+      declare -A queued=()
+      for spec in "$@"
+      do
+        [[ ${spec%%:*} == "$name" && -z ${queued[$spec]+x} ]] || continue
+        queued[$spec]=1
+        targets+=("${spec#*:}")
+      done
+      run_plugin "$name" reclaim "${targets[@]}" || failed=1
+    done
+    exit "$failed"
+  } | collect
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+}
+
+case ${1-} in
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+  measure)
+    require_jq
+    discover_plugins
+    shift
+    cmd_measure "$@"
+    exit
+    ;;
+  reclaim)
+    require_jq
+    discover_plugins
+    shift
+    cmd_reclaim "$@"
+    exit
+    ;;
+  activity)
+    require_jq
+    cmd_activity
+    exit
+    ;;
+  size)
+    require_jq
+    shift
+    cmd_size "$@"
+    exit
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

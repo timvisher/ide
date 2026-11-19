@@ -833,6 +833,10 @@ topic_forge_context() {
   remote_url="$forge_base/$repo_name.git"
 }
 
+# Only existence and creation are forge-specific. The Dolt-data guard and
+# everything after it work against any git+ssh remote, so a second forge
+# is a second case rather than a plugin layer: there are two, and no
+# third in prospect.
 forge_repo_exists() {
   case $forge_kind in
     github)
@@ -856,6 +860,9 @@ forge_repo_create() {
         --description "Dolt remote for the beads topic '${topic_rel}'" >&2
       ;;
     git-shell)
+      # new-topic also seeds the repo and sets the group ownership and
+      # setgid bits a second identity needs in order to push to it later;
+      # the generic push cannot supply them.
       ssh -o BatchMode=yes "$forge_login" new-topic "$repo_name" </dev/null >&2
       ;;
   esac

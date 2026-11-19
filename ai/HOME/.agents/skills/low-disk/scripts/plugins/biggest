@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+# shellcheck source=/dev/null
+source ~/.functions/logging.bash ||
+  {
+    echo "Unable to source logging functions" >&2
+    exit 1
+  }
+
+[[ -n ${LOW_DISK-} && -x $LOW_DISK ]] ||
+  die 'LOW_DISK is not set; run this plugin through low-disk'
+
+roots_spec=${LOW_DISK_BIGGEST_ROOTS:-${HOME}:/private/var/tmp}
+roots=()
+while [[ -n $roots_spec ]]
+do
+  root=${roots_spec%%:*}
+  [[ $root == / ]] || root=${root%/}
+  [[ -n $root ]] && roots+=("$root")
+  if [[ $roots_spec == *:* ]]
+  then
+    roots_spec=${roots_spec#*:}
+  else
+    roots_spec=''
+  fi
+done
+
+device_of() {
+  stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null
+}
+
+# An entry on a different device from its root is a mount point (OrbStack,
+# FUSE, cloud storage): walking it is slow or hangs and is not this disk.
+# Telling which device it is on still stats it, so a dead network mount can
+# hang here; nothing short of not looking avoids that.
+measure() {
+  local root ancestor resolved root_device entry entry_device entries=()
+  shopt -s dotglob nullglob
+  for root in "${roots[@]}"
+  do
+    if [[ ! -e $root ]]
+    then
+      ancestor=$root
+      while [[ ! -e $ancestor && $ancestor == */* ]]
+      do
+        ancestor=${ancestor%/*}
+        [[ -n $ancestor ]] || ancestor=/
+      done
+      [[ -d $ancestor && ! -x $ancestor ]] &&
+        die "Cannot tell whether the root '%s' exists below '%s'" "$root" "$ancestor"
+      continue
+    fi
+    [[ -d $root && -r $root && -x $root ]] ||
+      die "Cannot list the root '%s'" "$root"
+    resolved=$(CDPATH='' cd -- "$root" && pwd -P) ||
+      die "Cannot resolve the root '%s'" "$root"
+    root=$resolved
+    root_device=$(device_of "$root") ||
+      die "Cannot tell which device '%s' is on" "$root"
+    for entry in "${root%/}"/*
+    do
+      [[ -d $entry && ! -L $entry ]] || continue
+      entry_device=$(device_of "$entry") ||
+        die "Cannot tell which device '%s' is on" "$entry"
+      [[ $entry_device == "$root_device" ]] || continue
+      entries+=("$entry")
+    done
+  done
+  shopt -u dotglob nullglob
+  "$LOW_DISK" size "${entries[@]}" |
+    jq '{targets: (.sizes | to_entries
+      | sort_by(-(.value.bytes // 0))
+      | map({(.key): (.value + {path: .key})})
+      | add // {})}'
+  (( PIPESTATUS[0] == 0 && PIPESTATUS[1] == 0 ))
+}
+
+reclaim() {
+  jq -n --arg reason 'biggest only measures; reclaim through the plugin that owns the directory, or by hand' \
+    '{targets: ($ARGS.positional | map({(.): {reclaimed: false, reason: $reason}}) | add // {})}' \
+    --args -- "$@"
+}
+
+case ${1-} in
+  measure)
+    measure
+    ;;
+  reclaim)
+    shift
+    reclaim "$@"
+    ;;
+  *)
+    die "Usage: biggest measure | biggest reclaim <target>..."
+    ;;
+esac

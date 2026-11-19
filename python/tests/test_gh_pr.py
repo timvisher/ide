@@ -306,13 +306,38 @@ class AgentPrTest(GhTestCase):
         self.assertIn("timvisher_git_push_grant_decision", self.err)
         self.assertEqual(theirs, self.remote_head())
 
-    def test_an_agents_ours_settles_the_title_without_touching_the_branch(self):
+    def test_an_agents_ours_settles_the_title(self):
         self.agent_create()
         self.github.update_pull(REPO, 1, title="Edited on GitHub")
         (self.work / "pr.md").write_text("Edited here\n\nBody\n")
         self.assertEqual(3, self.agent("push")[0])
         self.assertEqual(0, self.agent("push", "--ours")[0], self.err)
         self.assertEqual("Edited here", self.pull_state()["title"])
+
+    def test_after_someone_elses_push_an_agents_ours_pushes_its_draft_over_theirs(self):
+        self.agent_create()
+        commit_on_remote(self.tmp, self.remote, "feature", "someone else's")
+        self.rewrite("changed\n")
+        self.assertEqual(0, self.agent("push", "--ours")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_an_agents_ours_pushes_a_branch_that_is_behind(self):
+        self.agent_create()
+        git("commit", "-q", "--allow-empty", "-m", "more", cwd=self.work)
+        self.assertEqual(0, self.agent("push")[0], self.err)
+        git("reset", "-q", "--hard", "HEAD~1", cwd=self.work)
+        self.assertEqual(4, self.agent("push")[0])
+        self.assertEqual(0, self.agent("push", "--ours")[0], self.err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.work), self.remote_head())
+
+    def test_an_agents_ours_still_cant_push_a_pr_that_isnt_a_draft(self):
+        self.agent_create()
+        self.github.update_pull(REPO, 1, draft=False)
+        pushed = self.remote_head()
+        self.rewrite("changed\n")
+        self.assertEqual(1, self.agent("push", "--ours")[0])
+        self.assertIn("timvisher_gh_agent_refused", self.codes())
+        self.assertEqual(pushed, self.remote_head())
 
     def test_an_agent_cant_push_a_pr_that_isnt_a_draft(self):
         self.agent_create()

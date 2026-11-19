@@ -48,6 +48,31 @@ end makeNewProfile2
 -- The following doesn't work because AppleScript. When a handler uses given you must pass at least one argument using given to get any of the defaults
 -- makeNewProfile2()
 
+-- System Events rather than Vivaldi's own windows, which include every
+-- Space's: only the windows on this Space can be seen.
+on visibleWindows()
+	if application "Vivaldi" is not running then
+		return {}
+	end if
+	
+	tell application "System Events"
+		return windows of application process "Vivaldi" whose subrole is "AXStandardWindow" and value of attribute "AXMinimized" is false
+	end tell
+end visibleWindows
+
+on activateOrMakeNewWindow()
+	set ws to my visibleWindows()
+	if 0 is (count of ws) then
+		my makeNewProfileWindow("")
+		return
+	end if
+	
+	tell application "System Events" to perform action "AXRaise" of item 1 of ws
+	tell application "Vivaldi" to activate
+end activateOrMakeNewWindow
+
+-- activateOrMakeNewWindow()
+
 on getTabWithUrl(u)
 	if application "Vivaldi" is not running then
 		return missing value
@@ -137,6 +162,31 @@ on activateTab(w, tabId)
 	return false
 end activateTab
 
+on frontVisibleWindowIsTitled(theTitle)
+	if theTitle is "" then
+		return false
+	end if
+	
+	set deadline to (current date) + 1
+	repeat
+		set ws to my visibleWindows()
+		if 0 is less than (count of ws) then
+			tell application "System Events" to set frontTitle to name of item 1 of ws
+			-- Not `is`: System Events' title appends the browser and profile.
+			if frontTitle starts with theTitle then
+				return true
+			end if
+		end if
+		if deadline < (current date) then
+			return false
+		end if
+		delay 0.05
+	end repeat
+end frontVisibleWindowIsTitled
+
+-- Not matched to System Events' windows by name or bounds: several of
+-- Vivaldi's windows share both. The tab's window is raised instead,
+-- and kept only if that made it the front window on this Space.
 on focusTabWithUrl(u)
 	if application "Vivaldi" is not running then
 		return false
@@ -146,33 +196,111 @@ on focusTabWithUrl(u)
 	repeat with wRef in ws
 		set w to contents of wRef
 		set tabId to my tabIdWithUrl(w, u, true)
-		if missing value is not tabId and my activateTab(w, tabId) then
-			tell application "Vivaldi"
-				set index of w to 1
-				activate
-				set t to tab id tabId of w
-			end tell
-			my waitForTabToLoad(t)
-			return true
+		if missing value is not tabId then
+			set previousId to missing value
+			try
+				tell application "Vivaldi" to set previousId to id of active tab of w
+			on error m number n
+				if not my isGoneError(n) then error m number n
+			end try
+			if missing value is not previousId and my activateTab(w, tabId) then
+				set tabTitle to ""
+				try
+					tell application "Vivaldi"
+						set index of w to 1
+						set t to tab id tabId of w
+						set tabTitle to title of t
+					end tell
+				on error m number n
+					if not my isGoneError(n) then error m number n
+				end try
+				if my frontVisibleWindowIsTitled(tabTitle) then
+					tell application "Vivaldi" to activate
+					my waitForTabToLoad(t)
+					return true
+				end if
+				my activateTab(w, previousId)
+			end if
 		end if
 	end repeat
 	return false
 end focusTabWithUrl
 
+on tabIds()
+	set ids to {}
+	if application "Vivaldi" is not running then return ids
+	tell application "Vivaldi" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		try
+			tell application "Vivaldi" to set ids to ids & (id of tabs of w)
+		on error m number n
+			if not my isGoneError(n) then error m number n
+		end try
+	end repeat
+	return ids
+end tabIds
+
+-- A tab is found by its id not being in knownIds rather than by its
+-- URL alone: SSO and other redirects change the URL while it loads.
+-- The URL only picks between several new tabs, e.g. when Vivaldi
+-- restores a session as it starts. With several new tabs and none
+-- matching, no tab is safe to claim.
+on newTab(u, knownIds)
+	if application "Vivaldi" is not running then return missing value
+	set newTabs to {}
+	tell application "Vivaldi" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		tell application "Vivaldi"
+			repeat 3 times
+				try
+					set windowTabIds to id of tabs of w
+					set windowTabUrls to URL of tabs of w
+				on error m number n
+					if my isGoneError(n) then exit repeat
+					error m number n
+				end try
+				if (count of windowTabIds) is (count of windowTabUrls) then
+					repeat with i from 1 to count of windowTabIds
+						set tabId to item i of windowTabIds
+						if knownIds does not contain tabId then
+							set tabUrl to item i of windowTabUrls
+							considering case
+								set matched to tabUrl is u or tabUrl is (u & "/")
+							end considering
+							if matched then return tab id tabId of w
+							set end of newTabs to tab id tabId of w
+						end if
+					end repeat
+					exit repeat
+				end if
+			end repeat
+		end tell
+	end repeat
+	if 1 is (count of newTabs) then return item 1 of newTabs
+	return missing value
+end newTab
+
+-- Through openUrl, not a new tab made in Vivaldi's front window:
+-- the default URL handler (Finicky) picks the browser and profile.
+-- Vivaldi runs every profile in one process, so the tab shows up
+-- here whichever profile Finicky picks. When Finicky picks another
+-- app, no tab shows up: return false rather than error, since the URL
+-- did open.
 on openTabWithUrl(u)
-	tell application "Vivaldi"
-		activate
-		if (count of windows) is 0 then
-			set w to make new window
-			set t to active tab of w
-			set URL of t to u
-		else
-			set w to window id (id of front window)
-			set t to make new tab at end of tabs of w with properties {URL:u}
-			my activateTab(w, id of t)
+	set knownIds to my tabIds()
+	tell script "timvisher Browser" to openUrl(u)
+	set deadline to (current date) + 10
+	repeat
+		set t to my newTab(u, knownIds)
+		if t is not missing value then
+			my waitForTabToLoad(t)
+			return true
 		end if
-	end tell
-	my waitForTabToLoad(t)
+		if deadline < (current date) then return false
+		delay 0.1
+	end repeat
 end openTabWithUrl
 
 on closeTabWithUrl(u)
