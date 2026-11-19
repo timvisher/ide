@@ -48,6 +48,31 @@ end makeNewProfile2
 -- The following doesn't work because AppleScript. When a handler uses given you must pass at least one argument using given to get any of the defaults
 -- makeNewProfile2()
 
+-- System Events rather than Vivaldi's own windows, which include every
+-- Space's: only the windows on this Space can be seen.
+on visibleWindows()
+	if application "Vivaldi" is not running then
+		return {}
+	end if
+	
+	tell application "System Events"
+		return windows of application process "Vivaldi" whose subrole is "AXStandardWindow" and value of attribute "AXMinimized" is false
+	end tell
+end visibleWindows
+
+on activateOrMakeNewWindow()
+	set ws to my visibleWindows()
+	if 0 is (count of ws) then
+		my makeNewProfileWindow("")
+		return
+	end if
+	
+	tell application "System Events" to perform action "AXRaise" of item 1 of ws
+	tell application "Vivaldi" to activate
+end activateOrMakeNewWindow
+
+-- activateOrMakeNewWindow()
+
 on getTabWithUrl(u)
 	if application "Vivaldi" is not running then
 		return missing value
@@ -137,6 +162,31 @@ on activateTab(w, tabId)
 	return false
 end activateTab
 
+on frontVisibleWindowIsTitled(theTitle)
+	if theTitle is "" then
+		return false
+	end if
+	
+	set deadline to (current date) + 1
+	repeat
+		set ws to my visibleWindows()
+		if 0 is less than (count of ws) then
+			tell application "System Events" to set frontTitle to name of item 1 of ws
+			-- Not `is`: System Events' title appends the browser and profile.
+			if frontTitle starts with theTitle then
+				return true
+			end if
+		end if
+		if deadline < (current date) then
+			return false
+		end if
+		delay 0.05
+	end repeat
+end frontVisibleWindowIsTitled
+
+-- Not matched to System Events' windows by name or bounds: several of
+-- Vivaldi's windows share both. The tab's window is raised instead,
+-- and kept only if that made it the front window on this Space.
 on focusTabWithUrl(u)
 	if application "Vivaldi" is not running then
 		return false
@@ -146,14 +196,31 @@ on focusTabWithUrl(u)
 	repeat with wRef in ws
 		set w to contents of wRef
 		set tabId to my tabIdWithUrl(w, u, true)
-		if missing value is not tabId and my activateTab(w, tabId) then
-			tell application "Vivaldi"
-				set index of w to 1
-				activate
-				set t to tab id tabId of w
-			end tell
-			my waitForTabToLoad(t)
-			return true
+		if missing value is not tabId then
+			set previousId to missing value
+			try
+				tell application "Vivaldi" to set previousId to id of active tab of w
+			on error m number n
+				if not my isGoneError(n) then error m number n
+			end try
+			if missing value is not previousId and my activateTab(w, tabId) then
+				set tabTitle to ""
+				try
+					tell application "Vivaldi"
+						set index of w to 1
+						set t to tab id tabId of w
+						set tabTitle to title of t
+					end tell
+				on error m number n
+					if not my isGoneError(n) then error m number n
+				end try
+				if my frontVisibleWindowIsTitled(tabTitle) then
+					tell application "Vivaldi" to activate
+					my waitForTabToLoad(t)
+					return true
+				end if
+				my activateTab(w, previousId)
+			end if
 		end if
 	end repeat
 	return false
