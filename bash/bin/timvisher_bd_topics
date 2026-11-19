@@ -996,9 +996,9 @@ topic_pull() {
       bd init --remote "$remote_url" --skip-hooks --skip-agents --non-interactive </dev/null >&2) ||
     die "Unable to clone '%s' into '%s'" "$remote_url" "$topic_abs"
 
-  # bd init's .gitignore ignores .dolt/ and *.db, which would stop the
-  # topics tree's git repo tracking this topic's database the way it
-  # tracks every other topic's.
+  # bd init's .gitignore ignores .dolt/ and *.db. Where the topics tree
+  # is kept in git, that would stop it tracking this topic's database
+  # the way it tracks every other topic's; elsewhere the file is noise.
   if (( had_gitignore == 0 ))
   then
     rm -f -- "$topic_abs/.gitignore"
