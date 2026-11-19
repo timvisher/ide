@@ -533,5 +533,142 @@ through the width mode's composition function."
   (should (<= acp--log-buffer-max-bytes (* 2 1000 1000)))
   (should (<= agent-shell--log-buffer-max-bytes (* 2 1000 1000))))
 
+(defmacro init-test--with-clipboard-host (system-type env pbcopy &rest body)
+  (declare (indent 3))
+  `(let* ((system-type ,system-type)
+          (process-environment
+           (append ,env
+                   (list "DISPLAY" "WAYLAND_DISPLAY")
+                   process-environment))
+          (bin (make-temp-file "init-test-bin" t))
+          (exec-path (list bin)))
+     (unwind-protect
+         (progn
+           (when ,pbcopy
+             (let ((f (expand-file-name "pbcopy" bin)))
+               (write-region "" nil f)
+               (set-file-modes f #o755)))
+           ,@body)
+       (delete-directory bin t))))
+
+(ert-deftest test-init-no-native-clipboard-on-a-workspace ()
+  "Linux with no display is a workspace."
+  (should (init-test--with-clipboard-host 'gnu/linux nil nil
+            (ide-no-native-clipboard-p))))
+
+(ert-deftest test-init-no-native-clipboard-off-on-the-laptop ()
+  "The laptop (darwin, with pbcopy) keeps its native clipboard."
+  (should-not (init-test--with-clipboard-host 'darwin nil t
+                (ide-no-native-clipboard-p))))
+
+(ert-deftest test-init-no-native-clipboard-off-with-a-display ()
+  "Linux with an X or Wayland display has a native clipboard."
+  (should-not (init-test--with-clipboard-host 'gnu/linux '("DISPLAY=:0") nil
+                (ide-no-native-clipboard-p)))
+  (should-not (init-test--with-clipboard-host
+                  'gnu/linux '("WAYLAND_DISPLAY=wayland-0") nil
+                (ide-no-native-clipboard-p))))
+
+(ert-deftest test-init-no-native-clipboard-on-with-a-linux-pbcopy ()
+  "Linux with pbcopy and no display is still a workspace."
+  (should (init-test--with-clipboard-host 'gnu/linux nil t
+            (ide-no-native-clipboard-p))))
+
+(ert-deftest test-init-no-native-clipboard-matches-this-host ()
+  "init.el installs the pbcopy cut function exactly where there's no
+native clipboard."
+  (should (eq (eq interprogram-cut-function #'ide-pbcopy-cut)
+              (and (ide-no-native-clipboard-p) t))))
+
+(defmacro init-test--with-pbcopy (exit-code &rest body)
+  "Run BODY with a pbcopy on `exec-path' that exits EXIT-CODE, or none
+when EXIT-CODE is nil. The stub records its stdin in the file `copied'.
+OSC 52 sends are collected in `sent' instead of reaching the terminal."
+  (declare (indent 1))
+  `(let* ((dir (make-temp-file "init-test-clip" t))
+          (copied (expand-file-name "copied" dir))
+          (exec-path (list dir))
+          (sent nil))
+     (unwind-protect
+         (progn
+           (when ,exit-code
+             (let ((pbcopy (expand-file-name "pbcopy" dir)))
+               (write-region (format "#!/bin/sh\ncat > '%s'\nexit %d\n" copied ,exit-code)
+                             nil pbcopy)
+               (set-file-modes pbcopy #o755)))
+           (cl-letf (((symbol-function 'ide-tty-clipboard--osc-52)
+                      (lambda (text _frame) (push text sent))))
+             ,@body))
+       (delete-directory dir t))))
+
+(defun init-test--finish (proc)
+  (while (process-live-p proc)
+    (accept-process-output proc 0.1))
+  (accept-process-output nil 0.1))
+
+(ert-deftest test-init-pbcopy-cut-command-kill-goes-to-pbcopy ()
+  "A kill made by a command goes to pbcopy, and no OSC 52 when pbcopy
+delivered it."
+  (init-test--with-pbcopy 0
+    (let ((this-command 'kill-ring-save))
+      (init-test--finish (ide-pbcopy-cut "to-the-laptop")))
+    (should (equal "to-the-laptop"
+                   (with-temp-buffer (insert-file-contents copied) (buffer-string))))
+    (should-not sent)))
+
+(ert-deftest test-init-pbcopy-cut-falls-back-once-when-not-sent ()
+  "When pbcopy certainly didn't send it (exit 3), the kill goes by OSC
+52, once."
+  (init-test--with-pbcopy 3
+    (let ((this-command 'kill-region))
+      (init-test--finish (ide-pbcopy-cut "fallback")))
+    (should (equal '("fallback") sent))))
+
+(ert-deftest test-init-pbcopy-cut-never-resends-an-unconfirmed-copy ()
+  "A copy pbcopy may have delivered (exit 4) is not sent again by OSC
+52."
+  (init-test--with-pbcopy 4
+    (let ((this-command 'kill-region))
+      (init-test--finish (ide-pbcopy-cut "maybe-landed")))
+    (should-not sent)))
+
+(ert-deftest test-init-pbcopy-cut-falls-back-on-any-other-failure ()
+  "A pbcopy failing with a code other than 4 counts as not sent."
+  (init-test--with-pbcopy 1
+    (let ((this-command 'kill-region))
+      (init-test--finish (ide-pbcopy-cut "other-failure")))
+    (should (equal '("other-failure") sent))))
+
+(ert-deftest test-init-pbcopy-cut-osc-52-without-pbcopy ()
+  "With no pbcopy, a kill goes by OSC 52 directly."
+  (init-test--with-pbcopy nil
+    (let ((this-command 'kill-region))
+      (should-not (ide-pbcopy-cut "no-pbcopy")))
+    (should (equal '("no-pbcopy") sent))))
+
+(ert-deftest test-init-pbcopy-cut-ignores-programmatic-kills ()
+  "kill-new outside a command (timers, filters, emacsclient --eval)
+doesn't leave the box."
+  (init-test--with-pbcopy 0
+    (let ((this-command nil))
+      (should-not (ide-pbcopy-cut "from-a-package")))
+    (should-not (file-exists-p copied))
+    (should-not sent)))
+
+(ert-deftest test-init-tty-clipboard-osc-52-wraps-for-tmux ()
+  "The OSC 52 fallback goes through tmux's passthrough inside tmux, and
+plain outside it."
+  (let (out)
+    (cl-letf (((symbol-function 'send-string-to-terminal)
+               (lambda (s &optional _terminal) (push s out))))
+      (let ((process-environment (cons "TMUX=/tmp/tmux-1/default,1,0"
+                                       process-environment)))
+        (ide-tty-clipboard--osc-52 "hi" (selected-frame)))
+      (let ((process-environment (cons "TMUX" process-environment)))
+        (ide-tty-clipboard--osc-52 "hi" (selected-frame))))
+    (should (equal (list "\e]52;c;aGk=\a"
+                         "\ePtmux;\e\e]52;c;aGk=\a\e\\")
+                   out))))
+
 (provide 'init-test)
 ;;; init-test.el ends here
