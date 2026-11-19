@@ -71,7 +71,7 @@ usage() {
       names a topic, its forge kind and its repo. Forges are defined in
       ~/.config/timvisher/ide/bd_topics_forge, one per line:
       'github git+ssh://<host>/<owner> [<repo-prefix>]' or
-      'nas git+ssh://<user>@<host>/<dir>'; the first is the default.
+      'git-shell git+ssh://<user>@<host>/<dir>'; the first is the default.
     - remote replicate adds a local topic to the registry that holds its
       forge, naming its repo from the topic path and the forge's prefix.
       It edits a tracked file; commit it like any other change.
@@ -665,7 +665,7 @@ read_forge() {
     die "No '%s' forge in '%s'" "${wanted:-default}" "$forge_config"
 
   case $__forge_kind in
-    github|nas)
+    github|git-shell)
       ;;
     *)
       die "Unknown forge kind '%s' in '%s'" "$__forge_kind" "$forge_config"
@@ -839,7 +839,7 @@ forge_repo_exists() {
       gh -R "$forge_owner/$repo_name" repo view "$forge_owner/$repo_name" \
         --json name >/dev/null 2>&1
       ;;
-    nas)
+    git-shell)
       git ls-remote "${remote_url#git+}" >/dev/null 2>&1
       ;;
   esac
@@ -855,7 +855,7 @@ forge_repo_create() {
         --private --add-readme --disable-issues --disable-wiki \
         --description "Dolt remote for the beads topic '${topic_rel}'" >&2
       ;;
-    nas)
+    git-shell)
       ssh -o BatchMode=yes "$forge_login" new-topic "$repo_name" </dev/null >&2
       ;;
   esac

@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "forges": [
-    "nas"
+    "git-shell"
   ],
   "topics": [
     {
       "topic": "ide/ai/airc",
-      "forge": "nas",
+      "forge": "git-shell",
       "repo": "ide-ai-airc"
     }
   ]
