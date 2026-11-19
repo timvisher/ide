@@ -27,7 +27,10 @@ run_test() {
 
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_bd_topics"
 
-tmpdir=$(mktemp -d)
+# pwd -P, not a bare mktemp -d: on macOS mktemp hands back a /var/folders
+# path, while the script resolves its own location with pwd -P and reports
+# /private/var. Resolving here keeps the two comparable.
+tmpdir=$(cd "$(mktemp -d)" && pwd -P) || exit 1
 trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/topics" || exit 1
