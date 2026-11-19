@@ -159,20 +159,81 @@ on focusTabWithUrl(u)
 	return false
 end focusTabWithUrl
 
+on tabIds()
+	set ids to {}
+	if application "Google Chrome" is not running then return ids
+	tell application "Google Chrome" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		try
+			tell application "Google Chrome" to set ids to ids & (id of tabs of w)
+		on error m number n
+			if not my isGoneError(n) then error m number n
+		end try
+	end repeat
+	return ids
+end tabIds
+
+-- A tab is found by its id not being in knownIds rather than by its
+-- URL alone: SSO and other redirects change the URL while it loads.
+-- The URL only picks between several new tabs, e.g. when Google Chrome
+-- restores a session as it starts. With several new tabs and none
+-- matching, no tab is safe to claim.
+on newTab(u, knownIds)
+	if application "Google Chrome" is not running then return missing value
+	set newTabs to {}
+	tell application "Google Chrome" to set ws to get windows
+	repeat with wRef in ws
+		set w to contents of wRef
+		tell application "Google Chrome"
+			repeat 3 times
+				try
+					set windowTabIds to id of tabs of w
+					set windowTabUrls to URL of tabs of w
+				on error m number n
+					if my isGoneError(n) then exit repeat
+					error m number n
+				end try
+				if (count of windowTabIds) is (count of windowTabUrls) then
+					repeat with i from 1 to count of windowTabIds
+						set tabId to item i of windowTabIds
+						if knownIds does not contain tabId then
+							set tabUrl to item i of windowTabUrls
+							considering case
+								set matched to tabUrl is u or tabUrl is (u & "/")
+							end considering
+							if matched then return tab id tabId of w
+							set end of newTabs to tab id tabId of w
+						end if
+					end repeat
+					exit repeat
+				end if
+			end repeat
+		end tell
+	end repeat
+	if 1 is (count of newTabs) then return item 1 of newTabs
+	return missing value
+end newTab
+
+-- Through openUrl, not a new tab made in Google Chrome's front window:
+-- the default URL handler (Finicky) picks the browser and profile.
+-- Google Chrome runs every profile in one process, so the tab shows up
+-- here whichever profile Finicky picks. When Finicky picks another
+-- app, no tab shows up: return false rather than error, since the URL
+-- did open.
 on openTabWithUrl(u)
-	tell application "Google Chrome"
-		activate
-		if (count of windows) is 0 then
-			set w to make new window
-			set t to active tab of w
-			set URL of t to u
-		else
-			set w to window id (id of front window)
-			set t to make new tab at end of tabs of w with properties {URL:u}
-			my activateTab(w, id of t)
+	set knownIds to my tabIds()
+	tell script "timvisher Browser" to openUrl(u)
+	set deadline to (current date) + 10
+	repeat
+		set t to my newTab(u, knownIds)
+		if t is not missing value then
+			my waitForTabToLoad(t)
+			return true
 		end if
-	end tell
-	my waitForTabToLoad(t)
+		if deadline < (current date) then return false
+		delay 0.1
+	end repeat
 end openTabWithUrl
 
 on closeTabWithUrl(u)
