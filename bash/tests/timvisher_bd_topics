@@ -27,7 +27,10 @@ run_test() {
 
 script="$(cd "$(dirname "$0")/.." && pwd)/bin/timvisher_bd_topics"
 
-tmpdir=$(mktemp -d)
+# pwd -P, not a bare mktemp -d: on macOS mktemp hands back a /var/folders
+# path, while the script resolves its own location with pwd -P and reports
+# /private/var. Resolving here keeps the two comparable.
+tmpdir=$(cd "$(mktemp -d)" && pwd -P) || exit 1
 trap 'rm -rf "$tmpdir"' EXIT
 
 mkdir -p "$tmpdir/topics" || exit 1
@@ -545,13 +548,23 @@ else
   fail "mv repo-name check"
 fi
 
-# remote: gh, bd, dolt and git ls-remote are mocks; the fixture topic has
-# an embedded database whose repo_state.json the unit reads directly.
-mock_command gh bd dolt
+# remote and sync: gh, ssh, bd, dolt and git ls-remote are mocks. The
+# fixture topic has an embedded database whose repo_state.json the unit
+# reads directly. The unit runs from a copy so that its core registry,
+# found next to the script, is a fixture rather than the repo's own.
+mkdir -p "$tmpdir/ide/bash/bin" || exit 1
+cp -- "$script" "$tmpdir/ide/bash/bin/timvisher_bd_topics" || exit 1
+script="$tmpdir/ide/bash/bin/timvisher_bd_topics"
+mock_command gh bd dolt ssh
 forge_file="$tmpdir/config/timvisher/ide/bd_topics_forge"
 forge_url='git+ssh://git@ddoghq.github.com/tim-visher_ddog'
+nas_base='git+ssh://me@nas.example/volume3/git/topics'
 remote_topic="$tmpdir/topics/Remote/Alpha One"
 remote_url="$forge_url/bd-topic_remote-alpha-one.git"
+nas_url="$nas_base/remote-alpha-one.git"
+core_registry="$tmpdir/ide/bash/bin/timvisher_bd_topics.config/replicated.json"
+overlay_registry="$tmpdir/config/timvisher/ide/bash/bin/timvisher_bd_topics.config/replicated.json"
+mkdir -p "${core_registry%/*}" "${overlay_registry%/*}" || exit 1
 
 write_repo_state() {
   local dir=$1 remotes=$2
@@ -560,26 +573,51 @@ write_repo_state() {
     "$remotes" > "$dir/.dolt/repo_state.json"
 }
 
+write_registry() {
+  local file=$1 forge=$2 entries=$3
+  printf '{"schema": 1, "forges": ["%s"], "topics": [%s]}\n' "$forge" "$entries" > "$file"
+}
+
+alpha_entry() {
+  printf '{"topic": "Remote/Alpha One", "forge": "%s", "repo": "%s"}' "$1" "$2"
+}
+
+mock_remote_add() {
+  # shellcheck disable=SC2016
+  mock_respond bd --run '
+    printf "{\"remotes\": {\"origin\": {\"name\": \"origin\", \"url\": \"%s\"}}}\n" "$5" \
+      > "$BEADS_DIR/embeddeddolt/alpha/.dolt/repo_state.json"' \
+    -- dolt remote add origin "$1"
+}
+
 reset_remote_fixture() {
-  mock_reset gh bd dolt git
+  mock_reset gh bd dolt git ssh
   mock_git_toplevel
   rm -rf -- "$tmpdir/topics/Remote"
   write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" '{}'
-  printf 'github %s bd-topic_\n' "$forge_url" > "$forge_file"
+  printf 'github %s bd-topic_\ngit-shell %s\n' "$forge_url" "$nas_base" > "$forge_file"
+  write_registry "$core_registry" git-shell ''
+  write_registry "$overlay_registry" github "$(alpha_entry github bd-topic_remote-alpha-one)"
   mock_respond bd --stdout '  Database: alpha' -- dolt show
-  mock_respond bd -- dolt remote add origin "$remote_url"
+  mock_remote_add "$remote_url"
   mock_respond bd -- sync --remote origin
+  mock_respond bd -- dolt push --remote origin
+  mock_respond bd -- dolt pull --remote origin
   mock_respond dolt -- log --oneline '*'
   mock_respond gh --exit 1 -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
   mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo create ...
   mock_respond git -- ls-remote "${remote_url#git+}" refs/dolt/data
-  mock_respond bd -- dolt push --remote origin
 }
 
-# Test: remote creates the repo, adds origin, syncs and reports.
+set_alpha_origin() {
+  write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
+    "{\"origin\": {\"name\": \"origin\", \"url\": \"$1\"}}"
+}
+
+# Test: sync creates the repo, adds origin, pushes and syncs.
 run_test
 reset_remote_fixture
-result=$(run_cli remote 'Remote/Alpha One' 2>/dev/null)
+result=$(run_cli sync 'Remote/Alpha One' 2>/dev/null)
 if [[ $result == "Remote/Alpha One"$'\t'"$remote_url" ]] &&
     mock_called gh -R tim-visher_ddog/bd-topic_remote-alpha-one repo create \
       tim-visher_ddog/bd-topic_remote-alpha-one --private --add-readme ... &&
@@ -587,33 +625,47 @@ if [[ $result == "Remote/Alpha One"$'\t'"$remote_url" ]] &&
     mock_called bd dolt push --remote origin &&
     [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
-  pass "remote creates the repo with a README, adds origin, pushes and syncs"
+  pass "sync creates the repo with a README, adds origin, pushes and syncs"
 else
-  fail "remote happy path: result='${result}' calls='$(mock_calls)'"
+  fail "sync happy path: result='${result}' calls='$(mock_calls)'"
 fi
 
-# Test: remote reruns bd sync once after the schema-migration failure.
+# Test: with no topics, sync covers every replicated topic.
 run_test
 reset_remote_fixture
+if run_cli sync >/dev/null 2>&1 &&
+    mock_called bd dolt push --remote origin &&
+    [[ $(mock_call_count bd sync --remote origin) == 1 ]]
+then
+  pass "sync with no topics syncs every replicated topic"
+else
+  fail "sync with no topics: calls='$(mock_calls)'"
+fi
+
+# Test: remote sync reruns bd sync once after the schema-migration failure.
+run_test
+reset_remote_fixture
+set_alpha_origin "$remote_url"
 mock_respond bd --times 1 --exit 1 --stdout 'local changes would be stomped by merge: events' -- sync --remote origin
-if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+if run_cli remote sync 'Remote/Alpha One' >/dev/null 2>&1 &&
     [[ $(mock_call_count bd sync --remote origin) == 2 ]]
 then
-  pass "remote reruns bd sync after the migration's stomped-merge failure"
+  pass "remote sync reruns bd sync after the migration's stomped-merge failure"
 else
-  fail "remote stomped retry: calls='$(mock_calls bd)'"
+  fail "remote sync stomped retry: calls='$(mock_calls bd)'"
 fi
 
 # Test: any other bd sync failure is not retried.
 run_test
 reset_remote_fixture
+set_alpha_origin "$remote_url"
 mock_respond bd --exit 2 --stdout 'conflict' -- sync --remote origin
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+if ! run_cli remote sync 'Remote/Alpha One' >/dev/null 2>&1 &&
     [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
-  pass "remote stops on a bd sync failure it doesn't recognize"
+  pass "remote sync stops on a bd sync failure it doesn't recognize"
 else
-  fail "remote other sync failure: calls='$(mock_calls bd)'"
+  fail "remote sync other failure: calls='$(mock_calls bd)'"
 fi
 
 # Test: a remote on a database bd doesn't use stops everything.
@@ -621,51 +673,51 @@ run_test
 reset_remote_fixture
 write_repo_state "$remote_topic/.beads/embeddeddolt/stray" \
   '{"origin": {"name": "origin", "url": "git+ssh://git@github.com/DataDog/dd-source.git"}}'
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count gh) == 0 && $(mock_call_count bd sync --remote origin) == 0 ]]
+if ! run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! run_cli remote push 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ $(mock_call_count gh) == 0 && $(mock_call_count bd sync --remote origin) == 0 ]] &&
+    ! mock_called bd dolt push ...
 then
-  pass "remote refuses a topic whose other database has a remote"
+  pass "sync and push refuse a topic whose other database has a remote"
 else
-  fail "remote stray database: calls='$(mock_calls)'"
+  fail "stray database: calls='$(mock_calls)'"
 fi
 
 # Test: an existing origin elsewhere is left alone.
 run_test
 reset_remote_fixture
-write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
-  '{"origin": {"name": "origin", "url": "file:///elsewhere"}}'
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    [[ $(mock_call_count bd sync --remote origin) == 0 ]]
+set_alpha_origin 'file:///elsewhere'
+if ! run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ $(mock_call_count bd sync --remote origin) == 0 ]] &&
+    ! mock_called bd dolt push ...
 then
-  pass "remote refuses a topic with a different origin"
+  pass "sync refuses a topic with a different origin"
 else
-  fail "remote different origin: calls='$(mock_calls)'"
+  fail "different origin: calls='$(mock_calls)'"
 fi
 
-# Test: a rerun after origin is set only syncs.
+# Test: once origin is set, sync only syncs.
 run_test
 reset_remote_fixture
-write_repo_state "$remote_topic/.beads/embeddeddolt/alpha" \
-  "{\"origin\": {\"name\": \"origin\", \"url\": \"$remote_url\"}}"
-mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${remote_url#git+}" refs/dolt/data
-if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+set_alpha_origin "$remote_url"
+if run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
     [[ $(mock_call_count gh) == 0 ]] &&
     ! mock_called bd dolt remote add ... &&
     ! mock_called bd dolt push ... &&
     [[ $(mock_call_count bd sync --remote origin) == 1 ]]
 then
-  pass "remote reruns only bd sync when origin is already set"
+  pass "sync only runs bd sync when origin is already set"
 else
-  fail "remote rerun: calls='$(mock_calls)'"
+  fail "sync rerun: calls='$(mock_calls)'"
 fi
 
-# Test: an existing empty repo is reused; one holding Dolt data is not.
+# Test: push reuses an empty repo, but not one holding Dolt history the
+# topic doesn't share, and sync refuses that topic outright.
 run_test
 reset_remote_fixture
 mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
-mock_respond git -- ls-remote "${remote_url#git+}" refs/dolt/data
 reused=0
-run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+run_cli remote push 'Remote/Alpha One' >/dev/null 2>&1 &&
   ! mock_called gh -R '*' repo create ... &&
   mock_called bd dolt remote add origin "$remote_url" &&
   reused=1
@@ -673,63 +725,238 @@ reset_remote_fixture
 mock_respond gh -- -R tim-visher_ddog/bd-topic_remote-alpha-one repo view ...
 mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${remote_url#git+}" refs/dolt/data
 if (( reused == 1 )) &&
-    ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    ! mock_called bd dolt remote add ...
+    ! run_cli remote push 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! mock_called bd dolt remote add ... &&
+    [[ $(run_cli sync --plan 'Remote/Alpha One' 2>/dev/null) == "Remote/Alpha One"$'\t'refuse ]]
 then
-  pass "remote reuses an empty repo but not one holding Dolt data"
+  pass "push reuses an empty repo; push and sync refuse one with unshared Dolt history"
 else
-  fail "remote existing repo: reused=${reused} calls='$(mock_calls)'"
+  fail "existing repo: reused=${reused} calls='$(mock_calls)'"
 fi
 
 # Test: main and origin/main must match after the sync.
 run_test
 reset_remote_fixture
+set_alpha_origin "$remote_url"
 mock_respond dolt --stdout 'abc commit' -- log --oneline origin/main..main
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1
+if ! run_cli remote sync 'Remote/Alpha One' >/dev/null 2>&1
 then
-  pass "remote fails when main is ahead of origin/main after bd sync"
+  pass "remote sync fails when main is ahead of origin/main after bd sync"
 else
-  fail "remote ahead check passed with a commit ahead"
+  fail "remote sync ahead check passed with a commit ahead"
 fi
 
 # Test: a failing comparison is a failure, not zero commits.
 run_test
 reset_remote_fixture
+set_alpha_origin "$remote_url"
 mock_respond dolt --exit 1 -- log --oneline main..origin/main
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1
+if ! run_cli remote sync 'Remote/Alpha One' >/dev/null 2>&1
 then
-  pass "remote fails when dolt log cannot compare the branches"
+  pass "remote sync fails when dolt log cannot compare the branches"
 else
-  fail "remote treated a failed dolt log as in sync"
+  fail "remote sync treated a failed dolt log as in sync"
 fi
 
-# Test: without a prefix the repo is named for the topic alone.
+# Test: a NAS topic's repo is created with new-topic, not gh.
 run_test
 reset_remote_fixture
-printf 'github %s\n' "$forge_url" > "$forge_file"
-mock_respond bd -- dolt remote add origin "$forge_url/remote-alpha-one.git"
-mock_respond git -- ls-remote "${forge_url#git+}/remote-alpha-one.git" refs/dolt/data
-mock_respond gh --exit 1 -- -R tim-visher_ddog/remote-alpha-one repo view ...
-mock_respond gh -- -R tim-visher_ddog/remote-alpha-one repo create ...
-if run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
-    mock_called gh -R tim-visher_ddog/remote-alpha-one repo create ... &&
-    mock_called bd dolt remote add origin "$forge_url/remote-alpha-one.git"
+write_registry "$core_registry" git-shell "$(alpha_entry git-shell remote-alpha-one)"
+write_registry "$overlay_registry" github ''
+mock_remote_add "$nas_url"
+mock_respond git --exit 128 -- ls-remote "${nas_url#git+}"
+mock_respond git -- ls-remote "${nas_url#git+}" refs/dolt/data
+mock_respond ssh -- -o BatchMode=yes me@nas.example new-topic remote-alpha-one
+result=$(run_cli sync 'Remote/Alpha One' 2>/dev/null)
+if [[ $result == "Remote/Alpha One"$'\t'"$nas_url" ]] &&
+    mock_called ssh -o BatchMode=yes me@nas.example new-topic remote-alpha-one &&
+    mock_called bd dolt remote add origin "$nas_url" &&
+    [[ $(mock_call_count gh) == 0 ]]
 then
-  pass "remote names the repo for the topic alone when the forge has no prefix"
+  pass "sync creates a NAS topic's repo with new-topic"
 else
-  fail "remote without a prefix: calls='$(mock_calls)'"
+  fail "NAS sync: result='${result}' calls='$(mock_calls)'"
+fi
+
+# Test: an existing empty NAS repo is reused, not recreated.
+run_test
+reset_remote_fixture
+write_registry "$core_registry" git-shell "$(alpha_entry git-shell remote-alpha-one)"
+write_registry "$overlay_registry" github ''
+mock_remote_add "$nas_url"
+mock_respond git -- ls-remote "${nas_url#git+}"
+mock_respond git -- ls-remote "${nas_url#git+}" refs/dolt/data
+if run_cli remote push 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ $(mock_call_count ssh) == 0 ]] &&
+    mock_called bd dolt remote add origin "$nas_url"
+then
+  pass "push reuses an empty NAS repo"
+else
+  fail "NAS reuse: calls='$(mock_calls)'"
+fi
+
+# Test: replicate adds a topic to the registry that holds its forge, with
+# the forge's prefix, and unreplicate takes it out again.
+run_test
+reset_remote_fixture
+write_registry "$overlay_registry" github ''
+github_line=$(run_cli remote replicate 'Remote/Alpha One' 2>/dev/null)
+github_repo=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["topics"][0]["repo"])' "$overlay_registry" 2>/dev/null)
+run_cli remote unreplicate 'Remote/Alpha One' >/dev/null 2>&1
+emptied=$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["topics"]))' "$overlay_registry" 2>/dev/null)
+nas_line=$(run_cli remote replicate --forge git-shell 'Remote/Alpha One' 2>/dev/null)
+nas_repo=$(python3 -I -c 'import json,sys; t=json.load(open(sys.argv[1]))["topics"][0]; print(t["forge"], t["repo"])' "$core_registry" 2>/dev/null)
+if [[ $github_line == "Remote/Alpha One"$'\t'github$'\t'bd-topic_remote-alpha-one$'\t'"$overlay_registry" &&
+    $github_repo == bd-topic_remote-alpha-one && $emptied == 0 &&
+    $nas_line == "Remote/Alpha One"$'\t'git-shell$'\t'remote-alpha-one$'\t'"$core_registry" &&
+    $nas_repo == 'git-shell remote-alpha-one' ]]
+then
+  pass "replicate writes the registry holding the forge; unreplicate removes the entry"
+else
+  fail "replicate: github='${github_line}' (${github_repo}) emptied='${emptied}' nas='${nas_line}' (${nas_repo})"
+fi
+
+# Test: replicate refuses a topic already on another forge, a forge no
+# registry holds, and a topic that isn't here.
+run_test
+reset_remote_fixture
+write_registry "$core_registry" github ''
+mkdir -p "$tmpdir/topics/Remote/Elsewhere" || exit 1
+if ! run_cli remote replicate --forge git-shell 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! run_cli remote replicate 'Remote/Elsewhere' >/dev/null 2>&1 &&
+    [[ $(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["topics"]))' "$overlay_registry") == 1 ]]
+then
+  write_registry "$core_registry" git-shell ''
+  if ! run_cli remote replicate --forge git-shell 'Remote/Alpha One' >/dev/null 2>&1
+  then
+    pass "replicate refuses a forge switch, an unheld forge and a missing topic"
+  else
+    fail "replicate moved a topic to another forge"
+  fi
+else
+  fail "replicate refusals"
+fi
+
+# Test: replicate says which registries when more than one holds the
+# forge, rather than claiming none does.
+run_test
+reset_remote_fixture
+write_registry "$overlay_registry" git-shell ''
+err=$(run_cli remote replicate --forge git-shell 'Remote/Alpha One' 2>&1 >/dev/null)
+if [[ $err == *"More than one replication registry"* && $err == *"$core_registry"* &&
+    $err == *"$overlay_registry"* && $err != *"No replication registry"* ]]
+then
+  pass "replicate names the registries when more than one holds the forge"
+else
+  fail "replicate ambiguity: err='${err}'"
+fi
+
+# Test: a topic missing from the registry can't be pushed or synced.
+run_test
+reset_remote_fixture
+write_registry "$overlay_registry" github ''
+if ! run_cli remote push 'Remote/Alpha One' >/dev/null 2>&1 &&
+    ! run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
+    [[ $(mock_call_count gh) == 0 ]] && ! mock_called bd dolt push ...
+then
+  pass "push and sync refuse a topic that isn't replicated"
+else
+  fail "unreplicated topic: calls='$(mock_calls)'"
+fi
+
+# Test: the same topic in both registries is an error.
+run_test
+reset_remote_fixture
+write_registry "$core_registry" git-shell "$(alpha_entry git-shell remote-alpha-one)"
+if ! run_cli remote status >/dev/null 2>&1 && ! run_cli sync >/dev/null 2>&1 &&
+    [[ $(mock_call_count gh) == 0 ]]
+then
+  pass "a topic in both registries stops every command"
+else
+  fail "duplicate registry entry: calls='$(mock_calls)'"
+fi
+
+# Test: pull clones a missing topic with bd's git ceiling set to the
+# topics root, and removes the .gitignore bd init writes.
+run_test
+reset_remote_fixture
+rm -rf -- "$remote_topic"
+mock_respond git --stdout 'abc123	refs/dolt/data' -- ls-remote "${remote_url#git+}" refs/dolt/data
+# shellcheck disable=SC2016
+mock_respond bd --run '
+  [[ $GIT_CEILING_DIRECTORIES == "$EXPECT_CEILING" ]] || exit 9
+  mkdir -p "$BEADS_DIR/embeddeddolt/alpha/.dolt" &&
+    printf "{\"remotes\": {\"origin\": {\"name\": \"origin\", \"url\": \"%s\"}}}\n" "$3" \
+      > "$BEADS_DIR/embeddeddolt/alpha/.dolt/repo_state.json" &&
+    printf "# Beads / Dolt files (added by bd init)\n.dolt/\n" > "$BEADS_DIR/../.gitignore"' \
+  -- init --remote "$remote_url" ...
+result=$(EXPECT_CEILING=$topics_real run_cli remote pull 'Remote/Alpha One' 2>/dev/null)
+if [[ $result == "Remote/Alpha One"$'\t'"$remote_url" &&
+    -d $remote_topic/.beads/embeddeddolt/alpha && ! -e $remote_topic/.gitignore ]] &&
+    ! mock_called bd dolt pull ...
+then
+  pass "pull clones a missing topic under a git ceiling and drops bd's .gitignore"
+else
+  fail "pull clone: result='${result}' calls='$(mock_calls)'"
+fi
+
+# Test: pull refuses a topic that is here without origin, and pulls one
+# that has it.
+run_test
+reset_remote_fixture
+refused=0
+! run_cli remote pull 'Remote/Alpha One' >/dev/null 2>&1 &&
+  ! mock_called bd dolt pull ... && ! mock_called bd init ... &&
+  refused=1
+set_alpha_origin "$remote_url"
+if (( refused == 1 )) && run_cli remote pull 'Remote/Alpha One' >/dev/null 2>&1 &&
+    mock_called bd dolt pull --remote origin
+then
+  pass "pull refuses a topic here without origin and pulls one with it"
+else
+  fail "pull existing: refused=${refused} calls='$(mock_calls)'"
+fi
+
+# Test: sync --plan and remote status report each step and change nothing.
+run_test
+reset_remote_fixture
+plan=$(run_cli sync --plan 2>/dev/null)
+status=$(run_cli remote status 2>/dev/null)
+if [[ $plan == "Remote/Alpha One"$'\t'push &&
+    $status == "Remote/Alpha One"$'\t'github$'\t'bd-topic_remote-alpha-one$'\t'push$'\t'- ]] &&
+    ! mock_called gh -R '*' repo create ... &&
+    ! mock_called bd dolt remote add ... && ! mock_called bd dolt push ... &&
+    [[ $(mock_call_count bd sync --remote origin) == 0 ]]
+then
+  pass "sync --plan and remote status report steps without changing anything"
+else
+  fail "plan: plan='${plan}' status='${status}' calls='$(mock_calls)'"
+fi
+
+# Test: remote status reports a synced topic's ahead/behind counts.
+run_test
+reset_remote_fixture
+set_alpha_origin "$remote_url"
+mock_respond dolt --stdout 'abc commit' -- log --oneline main..origin/main
+status=$(run_cli remote status 'Remote/Alpha One' 2>/dev/null)
+if [[ $status == "Remote/Alpha One"$'\t'github$'\t'bd-topic_remote-alpha-one$'\t'sync$'\t'0/1 ]]
+then
+  pass "remote status reports a synced topic's ahead/behind counts"
+else
+  fail "status counts: status='${status}'"
 fi
 
 # Test: no forge configured.
 run_test
 reset_remote_fixture
 rm -f -- "$forge_file"
-if ! run_cli remote 'Remote/Alpha One' >/dev/null 2>&1 &&
+if ! run_cli sync 'Remote/Alpha One' >/dev/null 2>&1 &&
     [[ $(mock_call_count gh) == 0 ]]
 then
-  pass "remote refuses without a forge configured"
+  pass "sync refuses without a forge configured"
 else
-  fail "remote without a forge: calls='$(mock_calls)'"
+  fail "no forge: calls='$(mock_calls)'"
 fi
 
 echo ""
