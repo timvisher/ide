@@ -838,6 +838,20 @@ else
   fail "replicate refusals"
 fi
 
+# Test: replicate says which registries when more than one holds the
+# forge, rather than claiming none does.
+run_test
+reset_remote_fixture
+write_registry "$overlay_registry" git-shell ''
+err=$(run_cli remote replicate --forge git-shell 'Remote/Alpha One' 2>&1 >/dev/null)
+if [[ $err == *"More than one replication registry"* && $err == *"$core_registry"* &&
+    $err == *"$overlay_registry"* && $err != *"No replication registry"* ]]
+then
+  pass "replicate names the registries when more than one holds the forge"
+else
+  fail "replicate ambiguity: err='${err}'"
+fi
+
 # Test: a topic missing from the registry can't be pushed or synced.
 run_test
 reset_remote_fixture

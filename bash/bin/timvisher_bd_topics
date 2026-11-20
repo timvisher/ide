@@ -774,8 +774,10 @@ if cmd == "list":
 elif cmd == "file-for":
     kind, paths = args[0], args[1:]
     hits = [p for p in paths if os.path.exists(p) and kind in load(p)["forges"]]
-    if len(hits) != 1:
-        sys.exit(f"{len(hits)} registries hold the {kind!r} forge")
+    if not hits:
+        sys.exit(f"No replication registry holds the {kind!r} forge")
+    if 1 < len(hits):
+        sys.exit(f"More than one replication registry holds the {kind!r} forge: {', '.join(hits)}")
     print(hits[0])
 elif cmd == "add":
     path, topic, forge, repo = args
@@ -1839,7 +1841,7 @@ case $cmd in
 
         read_forge "$wanted_forge" forge_kind forge_base forge_prefix
         registry_file=$(registry_py file-for "$forge_kind" "${registry_files[@]}") ||
-          die "No replication registry holds the '%s' forge" "$forge_kind"
+          exit 1
 
         for topic_input in "$@"
         do
