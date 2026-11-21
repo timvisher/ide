@@ -7,7 +7,7 @@
     {
       "topic": "Akwissasne 2026",
       "forge": "git-shell",
-      "repo": "akwissasne-2026"
+      "repo": "Akwissasne-2026"
     },
     {
       "topic": "agent-shell",
@@ -32,7 +32,7 @@
     {
       "topic": "evernote.el",
       "forge": "git-shell",
-      "repo": "evernote-el"
+      "repo": "evernote.el"
     },
     {
       "topic": "gemedet k8s",
@@ -97,7 +97,7 @@
     {
       "topic": "timvisher-macbook-air/cleanup/Downloads",
       "forge": "git-shell",
-      "repo": "timvisher-macbook-air-cleanup-downloads"
+      "repo": "timvisher-macbook-air-cleanup-Downloads"
     }
   ]
 }
