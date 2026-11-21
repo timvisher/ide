@@ -25,19 +25,9 @@
       "repo": "beads"
     },
     {
-      "topic": "beads-dd-tmp-20261121T183105Z",
-      "forge": "git-shell",
-      "repo": "beads-dd-tmp-20261121t183105z"
-    },
-    {
       "topic": "claude-agent-acp",
       "forge": "git-shell",
       "repo": "claude-agent-acp"
-    },
-    {
-      "topic": "claude-agent-acp-dd-tmp-20261121T183105Z",
-      "forge": "git-shell",
-      "repo": "claude-agent-acp-dd-tmp-20261121t183105z"
     },
     {
       "topic": "evernote.el",
