@@ -5,6 +5,11 @@
   ],
   "topics": [
     {
+      "topic": "agent-shell",
+      "forge": "git-shell",
+      "repo": "agent-shell"
+    },
+    {
       "topic": "ide/ai/airc",
       "forge": "git-shell",
       "repo": "ide-ai-airc"
