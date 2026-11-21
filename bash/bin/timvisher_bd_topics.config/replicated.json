@@ -10,11 +10,6 @@
       "repo": "agent-shell"
     },
     {
-      "topic": "agent-shell-dd-tmp-20261121T183105Z",
-      "forge": "git-shell",
-      "repo": "agent-shell-dd-tmp-20261121t183105z"
-    },
-    {
       "topic": "ide",
       "forge": "git-shell",
       "repo": "ide"
