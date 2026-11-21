@@ -15,11 +15,6 @@
       "repo": "ide"
     },
     {
-      "topic": "ide-dd-tmp-20261121T183105Z",
-      "forge": "git-shell",
-      "repo": "ide-dd-tmp-20261121t183105z"
-    },
-    {
       "topic": "ide/ai/airc",
       "forge": "git-shell",
       "repo": "ide-ai-airc"
