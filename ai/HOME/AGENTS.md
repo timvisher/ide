@@ -248,8 +248,12 @@ The list is not the guide — read the file.
 - Two separate IDE configuration git repositories:
   - `~/git/ide/` - General IDE configuration repo
     (`timvisher-ide.git`)
-  - `~/.config/timvisher/ide/` - DataDog system extensions IDE repo
-    (`timvisher-ide-datadog-system-extensions.git`)
+  - `~/.config/timvisher/ide/` - the system extensions overlay for
+    this class of machine. Which repo that is varies by machine, so
+    check rather than assume:
+    `git -C ~/.config/timvisher/ide remote -v`. Personal machines
+    have `ide-system-extensions-personal`; DataDog machines have
+    `timvisher-ide-datadog-system-extensions`.
 - Agent runtime configuration is at `~/.config/timvisher/ide/ai/`
 - The actual `~/AGENTS.md` file is a symlink to
   `~/git/ide/ai/HOME/AGENTS.md`
