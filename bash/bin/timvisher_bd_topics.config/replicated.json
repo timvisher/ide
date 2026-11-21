@@ -5,9 +5,44 @@
   ],
   "topics": [
     {
+      "topic": "Akwissasne 2026",
+      "forge": "git-shell",
+      "repo": "akwissasne-2026"
+    },
+    {
       "topic": "agent-shell",
       "forge": "git-shell",
       "repo": "agent-shell"
+    },
+    {
+      "topic": "aws/personal",
+      "forge": "git-shell",
+      "repo": "aws-personal"
+    },
+    {
+      "topic": "beads",
+      "forge": "git-shell",
+      "repo": "beads"
+    },
+    {
+      "topic": "claude-agent-acp",
+      "forge": "git-shell",
+      "repo": "claude-agent-acp"
+    },
+    {
+      "topic": "evernote.el",
+      "forge": "git-shell",
+      "repo": "evernote-el"
+    },
+    {
+      "topic": "gemedet k8s",
+      "forge": "git-shell",
+      "repo": "gemedet-k8s"
+    },
+    {
+      "topic": "gemedet-nas recovery",
+      "forge": "git-shell",
+      "repo": "gemedet-nas-recovery"
     },
     {
       "topic": "ide",
@@ -18,6 +53,51 @@
       "topic": "ide/ai/airc",
       "forge": "git-shell",
       "repo": "ide-ai-airc"
+    },
+    {
+      "topic": "instagram-reminders",
+      "forge": "git-shell",
+      "repo": "instagram-reminders"
+    },
+    {
+      "topic": "minecraft server",
+      "forge": "git-shell",
+      "repo": "minecraft-server"
+    },
+    {
+      "topic": "reimbursements",
+      "forge": "git-shell",
+      "repo": "reimbursements"
+    },
+    {
+      "topic": "relaxation-videos",
+      "forge": "git-shell",
+      "repo": "relaxation-videos"
+    },
+    {
+      "topic": "servarr",
+      "forge": "git-shell",
+      "repo": "servarr"
+    },
+    {
+      "topic": "system extensions",
+      "forge": "git-shell",
+      "repo": "system-extensions"
+    },
+    {
+      "topic": "system extensions/budgeting",
+      "forge": "git-shell",
+      "repo": "system-extensions-budgeting"
+    },
+    {
+      "topic": "timvisher-macbook-air",
+      "forge": "git-shell",
+      "repo": "timvisher-macbook-air"
+    },
+    {
+      "topic": "timvisher-macbook-air/cleanup/Downloads",
+      "forge": "git-shell",
+      "repo": "timvisher-macbook-air-cleanup-downloads"
     }
   ]
 }
