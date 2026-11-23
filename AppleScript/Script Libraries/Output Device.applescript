@@ -1,9 +1,16 @@
 on setOutputDevice(outputDeviceName)
-	if getOutputDevice() as text is equal to outputDeviceName then
+	if getOutputDevice() as text is equal to outputDeviceName and getSystemOutputDevice() as text is equal to outputDeviceName then
 		display notification "Output device already '" & outputDeviceName & "'"
 	else
 		try
-			tell script "timvisher utilities" to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-s", quoted form of outputDeviceName})
+			tell script "timvisher utilities" to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-t", "output", "-s", quoted form of outputDeviceName})
+			-- Set system too: beep plays through it, and it does not follow the default output.
+			-- By id, not name: a headset's input half shares its name, and `-t system -s` picks that half and silently no-ops.
+			tell script "timvisher utilities" to set outputDeviceLine to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-c", "-t", "output", "-f", "cli"})
+			set text item delimiters to ","
+			set outputDeviceId to text item -2 of outputDeviceLine
+			set text item delimiters to ""
+			tell script "timvisher utilities" to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-t", "system", "-i", outputDeviceId})
 			display notification "Set output device to '" & outputDeviceName & "'"
 		on error
 			display notification "'" & outputDeviceName & "' does not exist"
@@ -20,6 +27,10 @@ end setOutputDevice
 on getOutputDevice()
 	tell script "timvisher utilities" to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-c"})
 end getOutputDevice
+
+on getSystemOutputDevice()
+	tell script "timvisher utilities" to doShellScript({"/opt/homebrew/bin/SwitchAudioSource", "-c", "-t", "system"})
+end getSystemOutputDevice
 
 on getSpeakerDeviceName()
 	tell script "timvisher utilities"
