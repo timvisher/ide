@@ -9,10 +9,10 @@ description: >-
   violation means the work gets reverted (bash: never `set -euo
   pipefail`, never `seq`; applescript: always check encoding before
   editing; terraform: never hand-write `.terraform.lock.hcl`;
-  emacs-lisp: never write batch-mode workarounds; org-mode: never pad
-  list structures). `ls ~/.agents/languages/` and the skills listing
-  are authoritative — not any list written down elsewhere, including
-  this one.
+  emacs-lisp: never write batch-mode workarounds; org-mode: never put
+  blank lines between list items). `ls ~/.agents/languages/` and the
+  skills listing are authoritative — not any list written down
+  elsewhere, including this one.
 ---
 
 # Guides

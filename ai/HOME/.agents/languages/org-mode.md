@@ -3,7 +3,8 @@
 - Always use org mode 'inactive' timestamp formats when referencing dates
   are datetimes.
 - Always have whitespace padding around heading bodies.
-- Never have whitespace padding around 'list' structures.
+- Always have whitespace padding around list structures, but never
+  within them: no blank lines between items, nested items included.
 - Always wrap at 72 characters
 - Org files are structured. Interact with them in a way that honors that
   structure.

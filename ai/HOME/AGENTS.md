@@ -236,10 +236,11 @@ The list is not the guide — read the file.
   `[]` and `0` are all truthy. ERT for tests.
 - `~/.agents/languages/org-mode.md` —
   Inactive timestamps always. Whitespace padding around heading
-  bodies, _*never*_ around list structures. Wrap at 72 characters. Org
-  files are structured — interact with them in a way that honors that;
-  for large files use the org-mode skill and its `org-*` helper tools
-  rather than flat-text editing.
+  bodies and around list structures, _*never*_ within a list (no
+  blank lines between items). Wrap at 72 characters. Org files are
+  structured — interact with them in a way that honors that; for large
+  files use the org-mode skill and its `org-*` helper tools rather
+  than flat-text editing.
 
 ### Repository Organization
 
